@@ -34,6 +34,12 @@ ROUTER = Route("openrouter", "openrouter.ai", "openrouter-deepseek", "openai-res
 DIRECT_PAYLOAD = {"model": DIRECT.model, "stream": True, "max_tokens": 131072,
                   "thinking": {"type": "enabled"}, "reasoning_effort": "max", "stream_options": {"include_usage": True},
                   "messages": [{"role": "user", "content": "fixture input text"}]}
+DIRECT_RESPONSES = replace(DIRECT, connection="deepseek-responses", wire="openai-responses")
+DIRECT_RESPONSES_PAYLOAD = {
+    "model": DIRECT.model, "stream": True, "store": False, "max_output_tokens": 131072,
+    "reasoning": {"effort": "max"},
+    "input": [{"type": "message", "role": "user", "content": "fixture input text"}],
+}
 ROUTER_PAYLOAD = {"model": ROUTER.model, "stream": True, "store": False, "max_output_tokens": 131072,
                   "reasoning": {"effort": "max", "summary": "auto"},
                   "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fixture input text"}]}],
@@ -69,9 +75,10 @@ class FrontierTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
 
-    def meter(self, route=DIRECT, output=131072, requests=None, cap="0.75"):
+    def meter(self, route=DIRECT, output=131072, requests=None, cap="0.75", *, default_output_limit=False):
         limits = RunLimits(requests, WIRE_BYTES, output, byte_ceiling=WIRE_BYTES, output_ceiling=route.completion_limit)
-        meter = CaseMeter(route, limits, KEY, TOKEN, Decimal(cap), "fixture-case", 300, self.directory / "meter.json")
+        meter = CaseMeter(route, limits, KEY, TOKEN, Decimal(cap), "fixture-case", 300, self.directory / "meter.json",
+                          default_output_limit=default_output_limit)
         meter.arm()
         return meter
 
@@ -173,6 +180,64 @@ class FrontierTests(unittest.TestCase):
         self.assertEqual(Decimal(accounting["token_estimate_usd"]), Decimal("0.00019236"))
         self.assertIsNone(accounting["provider_billed_usd"])
         self.assertEqual(meter.rejections[-1]["reason"], "request limit")
+
+    def test_direct_responses_terminal_usage_is_normalized_without_router_receipts(self):
+        meter = self.meter(DIRECT_RESPONSES)
+        response = {"id": "fixture-plain-id", "model": DIRECT.model, "reasoning": {"effort": "max"}, "usage": {
+            "input_tokens": 1000, "output_tokens": 120, "input_tokens_details": {"cached_tokens": 640},
+        }}
+        connection = mock.Mock()
+        connection.getresponse.side_effect = [
+            StreamReply({"type": "response.completed", "response": response}),
+            StreamReply({"type": "response.incomplete", "response": response}),
+            StreamReply({"type": "response.completed", "response": {**response, "usage": {"input_tokens": 1000}}}),
+        ]
+        with mock.patch("frontier.http.client.HTTPSConnection", return_value=connection), \
+                mock.patch("paid_model.upstream_json") as lookup, serve(meter.handler()) as endpoint:
+            self.assertEqual([request(endpoint, DIRECT_RESPONSES, DIRECT_RESPONSES_PAYLOAD).status for _ in range(3)],
+                             [200, 200, 200])
+            lookup.assert_not_called()
+        self.assertEqual(("/responses", "/responses", "/responses"),
+                         tuple(call.args[1] for call in connection.request.call_args_list))
+        self.assertEqual(["token_estimate", "token_estimate", "request_upper_bound"],
+                         [row["basis"] for row in meter.attempts])
+        accounting = meter.accounting()
+        self.assertEqual(Decimal("0.00051168"), Decimal(accounting["token_estimate_usd"]))
+        self.assertEqual(2000, accounting["usage"]["prompt_tokens"])
+        self.assertEqual(1280, accounting["usage"]["prompt_cache_hit_tokens"])
+        self.assertEqual(720, accounting["usage"]["prompt_cache_miss_tokens"])
+        self.assertIsNone(accounting["provider_billed_usd"])
+
+    def test_direct_responses_admits_only_local_tools_and_fixed_effort(self):
+        meter = self.meter(DIRECT_RESPONSES)
+        valid = {**DIRECT_RESPONSES_PAYLOAD, "tools": [{"type": "custom", "name": "apply_patch"}]}
+        self.assertEqual((131072, ["apply_patch"]), meter.checked_output(valid))
+        for invalid in (
+            {**valid, "tools": [{"type": "web_search"}]},
+            {**valid, "tools": [{"type": "deepseek_read_url"}]},
+            {**valid, "tools": [{"type": "custom", "name": "another"}]},
+            {**valid, "store": True},
+            {**valid, "previous_response_id": "unexpected"},
+            {**valid, "reasoning": {"effort": "high"}},
+            {**valid, "max_output_tokens": 131073},
+        ):
+            self.assertIsNone(meter.checked_output(invalid))
+
+    def test_codex_transport_supplies_the_metered_ceiling_when_the_client_omits_it(self):
+        meter = self.meter(DIRECT_RESPONSES, default_output_limit=True)
+        no_limit = {key: value for key, value in DIRECT_RESPONSES_PAYLOAD.items() if key != "max_output_tokens"}
+        observed = []
+
+        def transfer(client, body):
+            observed.append(json.loads(body)["max_output_tokens"])
+            reply_to_client(client, 200)
+            return {"status": "connection_failed"}
+
+        with mock.patch.object(meter, "transfer", side_effect=transfer), serve(meter.handler()) as endpoint:
+            self.assertEqual(200, request(endpoint, DIRECT_RESPONSES, no_limit).status)
+            self.assertEqual(400, request(endpoint, DIRECT_RESPONSES, {**no_limit, "max_output_tokens": 131073}).status)
+        self.assertEqual([131072], observed)
+        self.assertEqual(131072, meter.attempts[0]["max_output_tokens"])
 
     def test_auth_and_invalid_charge_affecting_fields_never_send(self):
         meter = self.meter()

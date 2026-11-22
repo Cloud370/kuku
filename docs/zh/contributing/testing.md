@@ -250,6 +250,8 @@ printf '%s\n' log-summary-date-ranges cancel-async-tasks regex-log large-scale-t
 
 对照直连 DeepSeek 时，使用 `--provider deepseek` 和含 `KUKU_TEST_DEEPSEEK_API_KEY` 的私有文件。默认模型为 `deepseek-flash`。要在同一题目和判分器下测试 Pro，使用 `--model deepseek-v4-pro`。计量程序会记录所选模型，并在启动前校验价格和额度。
 
+SDK 直连 DeepSeek 默认走 Chat Completions。可使用 `--wire openai-responses` 选择官方 Responses API，沿用同一个模型、账本和原始判分器。对照 harness 时固定协议。计量程序记录官方用量并按公开的 token 单价估算费用。[DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
+
 下载官方快照生成可分享的报告。每题按时间顺序传入历次运行，保留所有失败。结果分别给出上游评分、SDK 完成状态、模型成本和判分耗时。Pi 官方数据使用同一模型版本，每题四次，经过审计，使用 Runta 和 Baseten。官方每通过一次的耗时，用所有计分运行的 Agent 与判分总耗时除以审计后的通过次数。失败和超时的耗时也计入总耗时。对比缓存时同时查看实际服务商、输入 token 中已缓存的比例、用量覆盖情况和首个请求。报告只导出允许公开的字段，原始 Session 与私有凭据保存在本机。[官方结果](https://frontierharness.org/live/) · [OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection)
 
 ```sh
@@ -305,6 +307,18 @@ python3 scripts/acceptance/benchmark_compare.py \
 导出工具先核对题目文件摘要、Docker 镜像 ID、模型路由和运行限额。对照报告包含原始评分和测试数、agent 与判分耗时、模型请求数与 token 用量、估算美元费用，以及资源验收、harness RSS、容器内存峰值、CPU 秒数和 OOM 事件。容器内存峰值取启动到判分前的内核高水位，覆盖计入 cgroup 的 harness、工具子进程和采样开销。harness RSS 统计主进程的驻留页面，包含共享映射。CPU 秒数取 agent 执行前后两次内核读数的差值。分享对照 JSON 时附上轮次、主机和构建模式。需要精确复现依赖树时附上 Pi lockfile。凭据、原始 Prompt、工具输出和 Session 文件留在本机。
 
 对照报告累计宿主计量代理接纳的所有请求的转发耗时和序列化请求体字节数，也计入已发起的重试。转发耗时涵盖上游连接和响应传输。有任一请求缺少相应读数时，该项总量留空。首个输出时间的中位数按已观测的请求计算，并附样本数。计量代理拒绝的请求中，因单题预算被拒绝的请求会单独计数。
+
+### 本地严格 Kuku–Codex 对照
+
+在独立目录安装固定版本的 Codex npm 包。把 DeepSeek 官方模型目录中的 `deepseek-flash` 条目单独保存在安装目录的 `deepseek-flash-models.json` 中。[官方 Codex 模型目录](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/#option-2-edit-the-configuration-file-manually)
+
+```sh
+codex_ref="$PWD/benchmarks/tools/codex-0.164.0"
+npm install --prefix "$codex_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @openai/codex@0.164.0
+```
+
+沿用 Pi 示例中的共同参数，并给两次运行都加上 `--wire openai-responses`。Kuku 使用 `--sdk-binary`，Codex 使用 `--codex-prefix "$codex_ref"`。Codex 在容器内使用独立配置和轨迹文件，关闭网页搜索和子 Agent 工具，并接收局部计量代理的令牌。客户端省略输出上限时，代理补上两组共用的上限。用 `benchmark_compare.py --kuku RUN_DIRECTORY --codex RUN_DIRECTORY` 导出同配置的运行。报告记录 Codex 原生二进制、npm 锁文件和模型目录的哈希。FrontierHarness 公布的 Codex 版本使用 Baseten 模型目录和 Runta 运行环境。[官方运行配置](https://github.com/frontier-harness-eval/eval/tree/release/v1.1)
 
 运行器有逐条响应的工具调用记录时，对照报告会分别统计零次、一次和多次调用的响应数。这项指标衡量模型如何组批。SDK 验证失败时，导出工具可以从保存的 Session 日志统计观察到的调用次数，并注明来源。实际执行是否重叠需另用工具开始和结算记录核对。
 

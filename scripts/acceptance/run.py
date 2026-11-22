@@ -27,8 +27,8 @@ import zipfile
 
 from benchmark_resources import (CASE_RESOURCE_LIMITS, ResourceSampler, case_resource_evidence, include_final_process_usage,
                                  read_case_cgroup, validate_case_limits)
-from benchmark_runtime import (attempt_passed, bundle_binary, bundle_ca, bundle_prompts, file_hashes,
-                               fresh_verifier_directory, reward, verifier_passed, verifier_summary)
+from benchmark_runtime import (attempt_passed, bundle_ca, file_hashes, fresh_verifier_directory,
+                               inspect_reference_agent, prepare_benchmark_agent, reward, verifier_passed, verifier_summary)
 from evidence import FailureSummary, inspect_sdk
 
 
@@ -360,8 +360,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                "--cpus", str(cpus), "--memory", memory,
                "--mount", f"type=bind,source={logs},target=/logs"]
     runner_command = None
-    pi = mode == "live" and getattr(args, "pi_prefix", None) is not None
-    strict = mode == "live" and (pi or getattr(args, "require_resource_evidence", False))
+    reference = mode == "live" and any(getattr(args, name, None) for name in ("pi_prefix", "codex_prefix"))
+    strict = mode == "live" and (reference or getattr(args, "require_resource_evidence", False))
     if strict:
         command += ["--memory-swap", memory]
     record = {"mode": mode, "resources": {"scope": "benchmark_container_including_sdk_and_tools"}}
@@ -372,26 +372,10 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
     if mode == "live":
         data_dir = attempt / "session-data"
         data_dir.mkdir()
-        if pi:
-            from benchmark_pi import inspect_pi, prepare_pi
-            instruction = (source / "instruction.md").read_text(encoding="utf-8")
-            runner_command, pi_args, config_path = prepare_pi(args, attempt, instruction, record)
-            command += ["--workdir", case["workspace"], *pi_args]
-            record["harness"] = "pi"
-        else:
-            runner_command, record["runtime_files"] = bundle_binary(args.sdk_binary.resolve(), attempt)
-            record["max_command_seconds"] = getattr(args, "max_command_seconds", None)
-            if prompts_dir := getattr(args, "prompts_dir", None):
-                record["prompt_overrides"] = bundle_prompts(prompts_dir, attempt / "runtime" / "prompts")
-                runner_command += ["--prompts-dir", "/kuku/runtime/prompts"]
-            config_path = "/kuku/config.toml"
-            record["session_id"] = "benchmark-" + uuid.uuid4().hex[:12]
-            runner_command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
-                               "--config", config_path, "--data-dir", "/kuku/data",
-                               "--session-id", record["session_id"], "--agent", "main",
-                               "--connection", args.connection, "--output", "/logs/agent/result.json", *args.sdk_args]
-            command += ["--mount", f"type=bind,source={source / 'instruction.md'},target=/kuku/instruction.md,readonly"]
-            record["harness"] = "kuku"
+        runner_command, runner_args, config_path = prepare_benchmark_agent(args, case, source, attempt, record)
+        if reference:
+            command += ["--workdir", case["workspace"]]
+        command += runner_args
         record["runtime_ca"] = bundle_ca(attempt / "runtime")
         record["runtime_files"]["ca-certificates.crt"] = record["runtime_ca"]["sha256"]
         command += ["--mount", f"type=bind,source={attempt / 'runtime'},target=/kuku/runtime,readonly",
@@ -426,7 +410,7 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                 record["execution"] = capture([
                     "docker", "exec", container, "sh", "-c",
                     'printf "%s\\n" "$$" > /logs/agent/sdk.pid; exec "$@"', "sh", *runner_command,
-                ], attempt, "pi" if pi else "sdk", timeout=sdk_timeout_sec or case["timeout_sec"],
+                ], attempt, record["harness"] if reference else "sdk", timeout=sdk_timeout_sec or case["timeout_sec"],
                                                secrets=secrets.values())
             finally:
                 if on_sdk_finished is not None:
@@ -440,9 +424,9 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                                                                          record["resources"], cpus)
                 except ValueError as error:
                     record["resource_evidence"] = {"passed": False, "reasons": [str(error)], "before": before}
-            if pi:
+            if reference:
                 evidence_key = "agent_evidence"
-                record[evidence_key] = inspect_pi(data_dir, instruction)
+                record[evidence_key] = inspect_reference_agent(record["harness"], data_dir, source / "instruction.md")
             else:
                 evidence_key = "sdk_evidence"
                 record["sdk_result"] = str(process_result)
@@ -897,8 +881,8 @@ def main():
     secrets = {}
     if paid:
         if metered:
-            if bool(args.sdk_binary) == bool(args.pi_prefix) or args.config or args.connection or args.sdk_args:
-                raise ValueError("Frontier live requires exactly one runner (--sdk-binary or --pi-prefix) and generates its config")
+            if sum(bool(runner) for runner in (args.sdk_binary, args.pi_prefix, args.codex_prefix)) != 1 or args.config or args.connection or args.sdk_args:
+                raise ValueError("Frontier live requires one runner (--sdk-binary, --pi-prefix or --codex-prefix) and generates its config")
             if args.reserve_usd is not None or args.reservation_reason:
                 raise ValueError("Frontier live uses --case-cap-usd for its host-metered budget")
             limits = (args.case_cap_usd, args.max_output_tokens, args.max_requests, args.agent_timeout_sec)

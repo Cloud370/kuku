@@ -250,6 +250,8 @@ If account data policy excludes the requested provider, use a separately named t
 
 For a direct DeepSeek comparison, use `--provider deepseek` and a private file containing `KUKU_TEST_DEEPSEEK_API_KEY`. The default is `deepseek-flash`. Use `--model deepseek-v4-pro` to test Pro under the same task and verifier. The meter records the selected model and prices it before starting the run.
 
+The SDK defaults to Chat Completions on direct DeepSeek. Use `--wire openai-responses` to select the official Responses API with the same model, ledger and original verifier. Keep the wire format fixed when comparing harnesses. The meter records native usage and estimates cost from the published token prices. [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
+
 Download the official snapshot and generate a shareable report. Supply each case's attempts in chronological order, including every failure. Each local result separates the upstream reward, SDK completion, model cost and verifier duration. Pi's official figures use the same model version and include four trials per task, audited scoring, Runta and Baseten. Official time per pass divides total agent and verifier time across scored attempts by the number of audited passes. Failed and timed-out attempts contribute to that total. For cache comparisons use the recorded service provider and observed cached input divided by observed total input, with coverage and the initial request identified. Private session files, credentials and raw request payloads stay out of the public report. [Official results](https://frontierharness.org/live/) · [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection)
 
 ```sh
@@ -305,6 +307,18 @@ python3 scripts/acceptance/benchmark_compare.py \
 The exporter checks the task file digest, Docker image ID, model route and limits before pairing the attempts. Compare verifier reward and tests, agent and verifier wall time, model requests, token counts and estimated USD, then resource acceptance, harness RSS, container peak memory, CPU seconds and OOM events. Container peak is the kernel high-water mark from startup to the pre-verifier snapshot and includes memory charged to the cgroup for the harness, tool subprocesses and measurement overhead. Harness RSS covers the primary process's resident pages, including shared mappings. CPU seconds are the delta between snapshots around agent execution. Share the comparison JSON together with the rounds, host and build profile used for the test. Include the Pi lockfile if readers need to reproduce the exact dependency tree. Keep credentials, raw prompts, tool output and Session files private.
 
 The paired report includes the sum of host meter relay time and serialized request body bytes across all admitted attempts, including retries that started. Relay time covers outbound connection and response transfer. The report leaves either total empty when an attempt is missing the corresponding measurement. Median time to first output uses the measured requests and includes its sample count. Meter rejections include a separate count for the case spend cap.
+
+### Strict local Kuku–Codex comparison
+
+Pin an isolated Codex npm install and put the single `deepseek-flash` entry from DeepSeek's documented model catalog in `deepseek-flash-models.json` inside that install prefix. [Official Codex model catalog](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/#option-2-edit-the-configuration-file-manually)
+
+```sh
+codex_ref="$PWD/benchmarks/tools/codex-0.164.0"
+npm install --prefix "$codex_ref" --registry=https://registry.npmjs.org --save-exact \
+  --ignore-scripts --no-audit --no-fund @openai/codex@0.164.0
+```
+
+Use the same shared flags as in the Pi example, plus `--wire openai-responses` on both trials. Select `--sdk-binary` for Kuku and `--codex-prefix "$codex_ref"` for Codex. The Codex process uses its own config and rollout files inside the container with web search and subagent tools disabled. It receives the loopback meter token. The meter supplies the shared output ceiling if the client omits it. Use `benchmark_compare.py --kuku RUN_DIRECTORY --codex RUN_DIRECTORY` to export matching runs. The report records the native Codex binary, npm lock and model catalog hashes. FrontierHarness's published Codex version uses a Baseten catalog and Runta runtimes. [Published suite](https://github.com/frontier-harness-eval/eval/tree/release/v1.1)
 
 When the runner's inspection recorded tool calls per response, the paired export reports how many responses contained zero, one, or multiple calls. This describes the model's batches. If SDK validation failed, the exporter can report the observed tool-call count from the saved Session journal and identifies that source. Measure actual execution overlap separately with tool start and settlement evidence.
 

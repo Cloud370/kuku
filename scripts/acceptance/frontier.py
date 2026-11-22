@@ -37,6 +37,9 @@ CHAT_FIELDS = {"model", "messages", "stream", "stream_options", "max_tokens", "t
                "thinking", "reasoning_effort"}
 RESPONSES_FIELDS = {"model", "input", "instructions", "stream", "max_output_tokens", "temperature", "tools",
                     "reasoning", "store", "provider", "session_id"}
+DIRECT_RESPONSES_FIELDS = (RESPONSES_FIELDS - {"provider"}) | {
+    "parallel_tool_calls", "tool_choice", "include", "prompt_cache_key", "text", "client_metadata",
+}
 RESPONSE_DELTAS = {"response.output_text.delta": "text", "response.refusal.delta": "text",
                    "response.reasoning_text.delta": "reasoning", "response.reasoning_summary_text.delta": "reasoning",
                    "response.function_call_arguments.delta": "tool_argument"}
@@ -140,17 +143,22 @@ def send_json_error(client, status, code, message, *, retry_after=None):
         client.wfile.write(body)
 
 
-def text_input(items, router):
+def text_input(items, responses, *, allow_apply_patch=False):
     if not isinstance(items, list) or not items:
         return False
     for item in items:
         if not isinstance(item, dict):
             return False
         content = item.get("content")
-        if router and item.get("type") not in (None, "message", "reasoning", "function_call", "function_call_output"):
-            return False
+        if responses:
+            kind = item.get("type")
+            if kind in ("custom_tool_call", "custom_tool_call_output") and allow_apply_patch:
+                if kind == "custom_tool_call" and item.get("name") != "apply_patch":
+                    return False
+            elif kind not in (None, "message", "reasoning", "function_call", "function_call_output"):
+                return False
         if isinstance(content, list):
-            if router:
+            if responses:
                 allowed = ("input_text", "output_text", "reasoning_text", "summary_text", "refusal")
                 if not all(isinstance(part, dict) and part.get("type") in allowed for part in content):
                     return False
@@ -234,12 +242,13 @@ def timing_facts(observation, complete_output_tokens=None, receipt_output_tokens
 
 
 class CaseMeter(RequestBoundary):
-    def __init__(self, route, limits, key, token, cap, case_id, timeout, evidence):
+    def __init__(self, route, limits, key, token, cap, case_id, timeout, evidence, *, default_output_limit=False):
         super().__init__(route, limits, key, token)
         self.phase = case_id
         self.cap = cap
         self.timeout = timeout
         self.evidence = evidence
+        self.default_output_limit = default_output_limit
         self.serial = threading.Lock()
         self.closed = threading.Event()
         self.drained = threading.Event()
@@ -276,17 +285,19 @@ class CaseMeter(RequestBoundary):
                 self.active_socket = None
 
     def checked_output(self, payload):
-        router = self.route.router
-        if (not isinstance(payload, dict) or payload.keys() - (RESPONSES_FIELDS if router else CHAT_FIELDS)
-                or not text_input(payload.get("input" if router else "messages"), router)):
+        route = self.route
+        fields = RESPONSES_FIELDS if route.router else DIRECT_RESPONSES_FIELDS if route.responses else CHAT_FIELDS
+        if (not isinstance(payload, dict) or payload.keys() - fields
+                or not text_input(payload.get("input" if route.responses else "messages"), route.responses,
+                                  allow_apply_patch=route.responses and not route.router)):
             return None
-        if router:
-            effort = {"effort": self.route.effort}
+        if route.router:
+            effort = {"effort": route.effort}
             if (payload.get("reasoning") not in (effort, {**effort, "summary": "auto"})
                     or set(payload.get("provider", {})) != {"order", "only", "allow_fallbacks", "require_parameters", "max_price"}
                     or set(payload["provider"]["max_price"]) != {"prompt", "completion"}):
                 return None
-        elif payload.get("stream_options") != {"include_usage": True}:
+        elif not route.responses and payload.get("stream_options") != {"include_usage": True}:
             return None
         return super().checked_output(payload)
 
@@ -321,6 +332,8 @@ class CaseMeter(RequestBoundary):
                     if len(incoming) != length:
                         return self.deny(400, "incomplete request")
                     payload = json.loads(incoming.decode("utf-8"), object_pairs_hook=unique_object)
+                    if meter.default_output_limit and isinstance(payload, dict):
+                        payload.setdefault("max_output_tokens", meter.limits.output_tokens)
                     checked = meter.checked_output(payload)
                     if checked is None:
                         return self.deny(400, "model, route, effort or output limit")
@@ -383,13 +396,20 @@ class CaseMeter(RequestBoundary):
             super().observe(observation, line, event=event)
             if arrival is not None:
                 timing = observation["timing"]
-                for kind in output_deltas(event, self.route.router):
+                for kind in output_deltas(event, self.route.responses):
                     timing.setdefault(f"request_to_first_{kind}_delta_seconds", arrival)
                     timing.setdefault("request_to_first_output_delta_seconds", arrival)
                     timing["request_to_last_output_delta_seconds"] = arrival
-            if self.route.router:
+            if self.route.responses:
                 response = event.get("response")
                 if isinstance(response, dict):
+                    if effort := (response.get("reasoning") or {}).get("effort"):
+                        observation["reported_reasoning_effort"] = effort
+                    if event.get("type") == "response.failed":
+                        observation["response_status"] = "response.failed"
+                    if not self.route.router:
+                        self.observe_direct_responses_usage(observation, event["type"], response)
+                        return
                     for metadata in (event.get("openrouter_metadata"), response.get("openrouter_metadata")):
                         if isinstance(metadata, dict):
                             observe_receipt_id(observation, metadata.get("generation_id"), "metadata")
@@ -397,10 +417,6 @@ class CaseMeter(RequestBoundary):
                                 if provider := selected_provider(metadata):
                                     observation["stream_selected_provider"] = provider
                     observe_receipt_id(observation, response.get("id"), "response_id")
-                    if effort := (response.get("reasoning") or {}).get("effort"):
-                        observation["reported_reasoning_effort"] = effort
-                    if event.get("type") == "response.failed":
-                        observation["response_status"] = "response.failed"
                     usage = response.get("usage") or {}
                     if usage and isinstance(observation.get("usage"), dict):
                         details = usage.get("input_tokens_details") or {}
@@ -408,6 +424,18 @@ class CaseMeter(RequestBoundary):
                         observation["usage"]["reasoning_tokens"] = (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
         except (AttributeError, ArithmeticError, TypeError, ValueError, RecursionError):
             pass
+
+    def observe_direct_responses_usage(self, observation, event_type, response):
+        if event_type not in ("response.completed", "response.incomplete"):
+            return
+        usage = response.get("usage") or {}
+        details = usage.get("input_tokens_details") or {}
+        if valid_counts(usage, "input_tokens", "output_tokens") and valid_counts(details, "cached_tokens"):
+            observation["usage"] = dict(zip(DEEPSEEK_COUNTS, (
+                usage["input_tokens"], usage["output_tokens"], details["cached_tokens"],
+                usage["input_tokens"] - details["cached_tokens"],
+            )))
+            observation["stream_done"] = True
 
     def transfer(self, client, body):
         route = self.route
@@ -637,6 +665,7 @@ class CaseMeter(RequestBoundary):
             "upstream_provider": route.upstream_name, "allow_fallbacks": False,
             "excluded_upstreams": route.excluded_upstreams, "catalog_upstream_model": route.upstream_model,
             "case_cap_usd": str(self.cap), "price_source": route.price_source,
+            "default_output_limit_applied_if_absent": self.default_output_limit,
             "price_usd_per_million_tokens": route.evidence(self.limits)["price_usd_per_million_tokens"],
             "limits": {"max_requests": self.limits.requests, "max_request_bytes": self.limits.request_bytes,
                        "max_output_tokens": self.limits.output_tokens, "agent_timeout_sec": self.timeout,
@@ -703,10 +732,14 @@ def ledger_edit(operation, *arguments):
 
 def run_live(args, case, source, image, directory, secrets):
     pi_prefix = getattr(args, "pi_prefix", None)
+    codex_prefix = getattr(args, "codex_prefix", None)
     node_binary = getattr(args, "node_binary", None)
     if pi_prefix is not None:
         from benchmark_pi import pi_config, pi_install
         pi_install(pi_prefix, node_binary)
+    if codex_prefix is not None:
+        from benchmark_codex import codex_config, codex_install
+        codex_install(codex_prefix, "deepseek-flash")
     provider = getattr(args, "provider", "openrouter")
     upstream = getattr(args, "upstream", None)
     key = secrets.get(f"KUKU_TEST_{provider.upper()}_API_KEY")
@@ -715,18 +748,20 @@ def run_live(args, case, source, image, directory, secrets):
     router = provider == "openrouter"
     effort = getattr(args, "reasoning_effort", None) or "max"
     route = route_for(provider, model=ROUTER_MODEL if router else getattr(args, "model", None), effort=effort,
-                      upstream=(upstream or "deepseek"), key=key, verify_catalog=router)
+                      upstream=(upstream or "deepseek"), key=key, verify_catalog=router,
+                      wire="openai-responses" if codex_prefix else getattr(args, "wire", None))
     output_tokens = route.completion_limit if args.max_output_tokens is None else args.max_output_tokens
     if output_tokens is None:
         raise ValueError("The selected provider route did not declare an output token limit. Set --max-output-tokens.")
     limits = RunLimits(args.max_requests, WIRE_BYTES, output_tokens, byte_ceiling=WIRE_BYTES,
                        output_ceiling=route.completion_limit)
     timeout = args.agent_timeout_sec if args.agent_timeout_sec is not None else case["timeout_sec"]
-    if timeout <= 0 or (pi_prefix is None and not args.sdk_binary.is_file()):
+    if timeout <= 0 or (not (pi_prefix or codex_prefix) and not args.sdk_binary.is_file()):
         raise ValueError("Frontier live requires a positive timeout and an installed runner")
     cap = Decimal(str(money(args.case_cap_usd)))
     token = random_secrets.token_urlsafe(32)
-    meter = CaseMeter(route, limits, key, token, cap, case["id"], timeout, directory / "meter.json")
+    meter = CaseMeter(route, limits, key, token, cap, case["id"], timeout, directory / "meter.json",
+                      default_output_limit=codex_prefix is not None)
     request_ceiling = route.request_ceiling(limits.output_tokens)
     if request_ceiling > cap:
         meter.outcome = "cap_below_request_ceiling"
@@ -742,6 +777,8 @@ def run_live(args, case, source, image, directory, secrets):
             config = Path(scratch) / ("models.json" if pi_prefix else "config.toml")
             if pi_prefix:
                 write_json(config, pi_config(route, endpoint, limits, TOKEN_VARIABLE))
+            elif codex_prefix:
+                config.write_text(codex_config(route, endpoint, TOKEN_VARIABLE), encoding="utf-8")
             else:
                 config.write_text(route.config(endpoint, limits, context_window=route.context), encoding="utf-8")
             sdk_args = ["--reasoning-effort", route.effort, "--timeout", str(timeout),
@@ -758,6 +795,7 @@ def run_live(args, case, source, image, directory, secrets):
                                      prompts_dir=getattr(args, "prompts_dir", None),
                                      cpus=getattr(args, "cpus", 1),
                                      pi_prefix=pi_prefix, node_binary=node_binary, pi_model=route.model, pi_effort=route.effort,
+                                     codex_prefix=codex_prefix, codex_model=route.model,
                                      require_resource_evidence=getattr(args, "require_resource_evidence", False))
             ledger_edit(budget.reserve, run_id, float(cap),
                         f"{case['id']} single-case cap on {route.model} ({route.effort}) via {route.host}/{route.upstream}")
@@ -765,7 +803,7 @@ def run_live(args, case, source, image, directory, secrets):
             thread.start()
             try:
                 meter.arm()
-                hard_timeout = timeout if pi_prefix or caller.require_resource_evidence else timeout + 45
+                hard_timeout = timeout if pi_prefix or codex_prefix or caller.require_resource_evidence else timeout + 45
                 result = benchmark_attempt(caller, case, source, image, directory, "live", {TOKEN_VARIABLE: token},
                                            sdk_timeout_sec=hard_timeout,
                                            on_sdk_finished=meter.stop_admissions)

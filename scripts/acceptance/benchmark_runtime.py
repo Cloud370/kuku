@@ -8,6 +8,7 @@ import re
 import shutil
 import ssl
 import subprocess
+from uuid import uuid4
 
 
 def file_hashes(directory):
@@ -30,6 +31,40 @@ def bundle_binary(binary, directory, filename="session_task"):
     if loader:
         command = [f"/kuku/runtime/{loader}", "--library-path", "/kuku/runtime", *command]
     return command, file_hashes(destination)
+
+
+def prepare_benchmark_agent(args, case, source, attempt, record):
+    instruction_path = source / "instruction.md"
+    if getattr(args, "pi_prefix", None):
+        from benchmark_pi import prepare_pi
+        record["harness"] = "pi"
+        return prepare_pi(args, attempt, instruction_path.read_text(encoding="utf-8"), record)
+    if getattr(args, "codex_prefix", None):
+        from benchmark_codex import prepare_codex
+        record["harness"] = "codex"
+        return prepare_codex(args, attempt, instruction_path.read_text(encoding="utf-8"), record)
+    command, record["runtime_files"] = bundle_binary(args.sdk_binary.resolve(), attempt)
+    record["harness"] = "kuku"
+    record["max_command_seconds"] = getattr(args, "max_command_seconds", None)
+    if prompts_dir := getattr(args, "prompts_dir", None):
+        record["prompt_overrides"] = bundle_prompts(prompts_dir, attempt / "runtime" / "prompts")
+        command += ["--prompts-dir", "/kuku/runtime/prompts"]
+    config = "/kuku/config.toml"
+    record["session_id"] = "benchmark-" + uuid4().hex[:12]
+    command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
+                "--config", config, "--data-dir", "/kuku/data", "--session-id", record["session_id"],
+                "--agent", "main", "--connection", args.connection, "--output", "/logs/agent/result.json", *args.sdk_args]
+    mount = ["--mount", f"type=bind,source={instruction_path},target=/kuku/instruction.md,readonly"]
+    return command, mount, config
+
+
+def inspect_reference_agent(harness, data_dir, instruction_path):
+    instruction = instruction_path.read_text(encoding="utf-8")
+    if harness == "pi":
+        from benchmark_pi import inspect_pi
+        return inspect_pi(data_dir, instruction)
+    from benchmark_codex import inspect_codex
+    return inspect_codex(data_dir, instruction)
 
 
 def bundle_prompts(source, destination):

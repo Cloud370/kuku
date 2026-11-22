@@ -14,6 +14,9 @@ import unittest
 from unittest import mock
 import zipfile
 
+from benchmark_runtime import bundle_prompts
+from benchmark_codex import inspect_codex
+
 
 SPEC = importlib.util.spec_from_file_location("acceptance", Path(__file__).with_name("run.py"))
 ACCEPTANCE = importlib.util.module_from_spec(SPEC)
@@ -32,6 +35,30 @@ class AcceptanceTests(unittest.TestCase):
         budget = ACCEPTANCE.Budget(self.directory / "budget.json")
         budget.initialize("test-only authorization", limit, 0)
         return budget
+
+    def test_codex_rollout_inspection_requires_exact_input_paired_calls_and_completion(self):
+        session = self.directory / "sessions/2026/11/22"
+        session.mkdir(parents=True)
+        journal = session / "rollout-local.jsonl"
+        instruction = "Write two files.\n"
+        def entry(kind, **payload):
+            return {"type": kind, "payload": payload}
+        turns = [
+            entry("session_meta", id="fixture"),
+            entry("turn_context", cwd="/app"),
+            entry("response_item", type="message", role="user", content=[{"type": "input_text", "text": instruction}]),
+            entry("response_item", type="function_call", call_id="exec"),
+            entry("response_item", type="custom_tool_call", call_id="patch"),
+            entry("response_item", type="function_call_output", call_id="exec"),
+            entry("response_item", type="custom_tool_call_output", call_id="patch"),
+            entry("event_msg", type="task_complete", last_agent_message="Finished."),
+        ]
+        for end in (len(turns), len(turns) - 2):
+            journal.write_text("".join(json.dumps(row) + "\n" for row in turns[:end]), encoding="utf-8")
+            result = inspect_codex(self.directory, instruction)
+            self.assertEqual(end == len(turns), result["passed"])
+            self.assertEqual(2, result["tool_calls"])
+            self.assertFalse(inspect_codex(self.directory, instruction.rstrip())["passed"])
 
     def test_unsettled_and_failed_runs_keep_their_full_reservation(self):
         budget = self.budget()
@@ -241,7 +268,7 @@ class AcceptanceTests(unittest.TestCase):
         (source / "blocks" / "scratch.txt").write_bytes(b"irrelevant")
         target = self.directory / "snapshot"
         digest = hashlib.sha256(guidance.read_bytes()).hexdigest()
-        self.assertEqual(ACCEPTANCE.bundle_prompts(source, target), {str(Path("blocks") / "tool-guidance.md"): digest})
+        self.assertEqual(bundle_prompts(source, target), {str(Path("blocks") / "tool-guidance.md"): digest})
         guidance.write_bytes(b"Changed after snapshot.\n")
         self.assertEqual((target / "blocks" / "tool-guidance.md").read_bytes(), b"Plain guidance.\n")
 
@@ -401,14 +428,14 @@ class AcceptanceTests(unittest.TestCase):
         for closed in (False, True):
             with self.subTest(closed=closed), mock.patch.multiple(
                 ACCEPTANCE,
-                bundle_binary=mock.Mock(return_value=(["/kuku/runtime/session_task"], {})),
                 bundle_ca=mock.Mock(return_value={"sha256": "", "runtime_path": "/kuku/runtime/ca.crt"}),
                 ResourceSampler=mock.Mock(return_value=sampler),
                 include_final_process_usage=mock.Mock(),
                 inspect_sdk=mock.Mock(return_value={"passed": False, "durable_cleanup_closed": closed}),
                 reward=mock.Mock(return_value=1.0),
                 verifier_summary=mock.Mock(return_value=summary),
-            ), mock.patch.object(ACCEPTANCE, "capture", side_effect=capture) as calls:
+            ), mock.patch("benchmark_runtime.bundle_binary", return_value=(["/kuku/runtime/session_task"], {})), \
+                    mock.patch.object(ACCEPTANCE, "capture", side_effect=capture) as calls:
                 result = ACCEPTANCE.benchmark_attempt(args, case, self.directory, "fixture", self.directory / str(closed),
                                                       "live", {}, sdk_timeout_sec=1)
                 self.assertTrue(result["execution"]["timed_out"])

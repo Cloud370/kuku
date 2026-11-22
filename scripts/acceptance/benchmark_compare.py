@@ -120,15 +120,19 @@ def attempt(directory, harness):
     if (result.get('harness') != harness or result.get('mode') != 'live'
             or not cpus or requirements != {**CASE_RESOURCE_LIMITS, 'cpus': cpus}):
         raise EvidenceError(f'expected strict live {harness} evidence')
-    route = {'service': 'deepseek', 'wire': 'openai-chat', 'provider': 'api.deepseek.com',
+    route = {'service': 'deepseek', 'provider': 'api.deepseek.com',
              'model_requested': 'deepseek-flash'}
+    wire = meter.get('wire')
+    expected_wire = {'pi': ('openai-chat',), 'codex': ('openai-responses',),
+                     'kuku': ('openai-chat', 'openai-responses')}
     effort = meter.get('effort')
-    if any(meter.get(key) != value for key, value in route.items()) or effort not in ('low', 'high', 'max'):
+    if (any(meter.get(key) != value for key, value in route.items())
+            or wire not in expected_wire[harness] or effort not in ('low', 'high', 'max')):
         raise EvidenceError('paired runs require direct DeepSeek Flash with a recorded reasoning effort')
     model_version = meter.get('model_version')
     if not isinstance(model_version, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,120}', model_version):
         model_version = None
-    route.update(effort=effort, model_version=model_version)
+    route.update(wire=wire, effort=effort, model_version=model_version)
     task_digest = digest_map(benchmark.get('task_files_sha256'))
     image_id = benchmark.get('image_id')
     limits = object_value(meter.get('limits'))
@@ -149,12 +153,13 @@ def attempt(directory, harness):
     resources = object_value(result.get('resource_evidence'))
     accounting = object_value(meter.get('accounting'))
     package = object_value(result.get('pi_package'))
+    codex_package = object_value(result.get('codex_package'))
     runtime_files = object_value(result.get('runtime_files'))
     prompt_digest = digest_map(result.get('prompt_overrides'))
     if 'prompt_overrides' in result and not prompt_digest:
         raise EvidenceError('invalid recorded Prompt override snapshot')
-    agent = object_value(result.get('agent_evidence' if harness == 'pi' else 'sdk_evidence'))
-    tool_facts = agent if harness == 'pi' else object_value(agent.get('facts'))
+    agent = object_value(result.get('sdk_evidence' if harness == 'kuku' else 'agent_evidence'))
+    tool_facts = object_value(agent.get('facts')) if harness == 'kuku' else agent
     tool_batches = object_value(agent.get('tool_batches'))
     tool_calls = count(tool_facts.get('tool_calls'))
     tool_call_source = 'runner_inspection' if tool_calls is not None else None
@@ -172,6 +177,7 @@ def attempt(directory, harness):
     original_verifier_passed = (verifier_passed('live', verification, result.get('reward'), verifier_summary)
                                 if type(verification.get('exit_code')) is int else None)
     version = package.get('version')
+    codex_version = codex_package.get('version')
     return shared, {
         'harness': harness, 'passed': boolean(record.get('passed')), 'task_passed': boolean(result.get('task_passed')),
         'failure_kind': allowed(result.get('failure_kind'), FAILURE_KINDS), 'reward': number(result.get('reward')),
@@ -185,6 +191,10 @@ def attempt(directory, harness):
             'pi_lock_sha256': hex_digest(package.get('lock_sha256'), 64),
             'pi_cli_sha256': hex_digest(package.get('cli_sha256'), 64),
             'node_binary_sha256': hex_digest(runtime_files.get('node'), 64),
+            'codex_version': codex_version if isinstance(codex_version, str) and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', codex_version) else None,
+            'codex_lock_sha256': hex_digest(codex_package.get('lock_sha256'), 64),
+            'codex_catalog_sha256': hex_digest(codex_package.get('catalog_sha256'), 64),
+            'codex_binary_sha256': hex_digest(runtime_files.get('codex'), 64),
         },
         'agent_seconds': number(object_value(result.get('execution')).get('seconds')),
         'agent_timed_out': boolean(object_value(result.get('execution')).get('timed_out')),
@@ -218,9 +228,9 @@ def require_matching(left, right):
         raise EvidenceError('paired configuration differs in ' + ', '.join(mismatches))
 
 
-def compare(kuku, pi):
+def compare(kuku, reference, harness='pi'):
     shared, left = attempt(kuku, 'kuku')
-    other, right = attempt(pi, 'pi')
+    other, right = attempt(reference, harness)
     require_matching(shared, other)
     return {'schema_version': 1, 'configuration': shared, 'attempts': [left, right]}
 
@@ -263,19 +273,19 @@ def compare_effort(baseline, candidate):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('kuku', 'pi', 'baseline', 'candidate'):
+    for name in ('kuku', 'pi', 'codex', 'baseline', 'candidate'):
         parser.add_argument(f'--{name}', type=Path, metavar='RUN_DIRECTORY')
     parser.add_argument('--compare-effort', action='store_true',
                         help='compare two SDK attempts with different reasoning efforts and the same Prompt')
     args = parser.parse_args()
     try:
-        if args.kuku and args.pi and not (args.baseline or args.candidate or args.compare_effort):
-            report = compare(args.kuku, args.pi)
-        elif args.baseline and args.candidate and not (args.kuku or args.pi):
+        if args.kuku and bool(args.pi) != bool(args.codex) and not (args.baseline or args.candidate or args.compare_effort):
+            report = compare(args.kuku, args.pi or args.codex, 'pi' if args.pi else 'codex')
+        elif args.baseline and args.candidate and not (args.kuku or args.pi or args.codex):
             comparator = compare_effort if args.compare_effort else compare_prompts
             report = comparator(args.baseline, args.candidate)
         else:
-            parser.error('provide --kuku and --pi or --baseline and --candidate (optionally with --compare-effort)')
+            parser.error('provide --kuku and one reference (--pi or --codex), or --baseline and --candidate')
         print(json.dumps(report, indent=2, allow_nan=False))
     except EvidenceError as error:
         parser.exit(2, f'error: {error}\n')
