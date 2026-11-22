@@ -161,7 +161,7 @@
           "id": "fix-ocaml-gc",
           "role": "diagnose a compiler bootstrap failure and verify the repair with the basic test suite",
           "workspace": "/app",
-          "artifacts": ["/app/ocaml/runtime/major_gc.c"],
+          "artifacts": ["/app/ocaml/runtime/shared_heap.c"],
           "timeout_sec": 3600
         }
       ]

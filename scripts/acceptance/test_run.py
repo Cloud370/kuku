@@ -415,7 +415,7 @@ class AcceptanceTests(unittest.TestCase):
                          ("/app", ["/app/sol.sql"], 900))
         _, compiler = ACCEPTANCE.manifest_case("fix-ocaml-gc", "frontier")
         self.assertEqual((compiler["workspace"], compiler["artifacts"], compiler["timeout_sec"]),
-                         ("/app", ["/app/ocaml/runtime/major_gc.c"], 3600))
+                         ("/app", ["/app/ocaml/runtime/shared_heap.c"], 3600))
         _, package_server = ACCEPTANCE.manifest_case("pypi-server", "frontier")
         self.assertEqual((package_server["workspace"], package_server["artifacts"], package_server["timeout_sec"]),
                          ("/app", [], 900))
