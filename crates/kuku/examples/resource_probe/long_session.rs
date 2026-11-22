@@ -42,6 +42,8 @@ impl ModelAdapter for FixtureModel {
     fn stream(&self, request: ModelRequest) -> AdapterFuture<'_, ModelStream> {
         Box::pin(async move {
             let messages = request.body["messages"].as_array().unwrap();
+            let input_tokens =
+                (!self.inspect_only).then(|| (request.body.to_string().len() / 2) as u64);
             let last = messages.last().unwrap();
             let prompt = last["content"].as_str().unwrap_or_default();
             let step = request
@@ -124,7 +126,7 @@ impl ModelAdapter for FixtureModel {
             events.extend([
                 ModelEvent::StopReason { reason },
                 ModelEvent::StreamUsage {
-                    input_tokens: None,
+                    input_tokens,
                     output_tokens: None,
                     cache_read_input_tokens: None,
                     cache_creation_input_tokens: None,
@@ -250,7 +252,7 @@ fn options(
     tier.max_output_tokens = Some(8192);
     config.discovery.auto_discover = false;
     config.plugin.enabled = false;
-    config.handoff.enabled = true;
+    config.handoff.enabled = !model.inspect_only;
     let mut options = SessionOptions::new(
         required(args, "workspace")?,
         required(args, "data-dir")?,
