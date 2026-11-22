@@ -11,7 +11,6 @@ use super::chunk::ProviderChunk;
 use super::replay::{native_replay, validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
-use super::trace::ProviderTraceDirection;
 use super::transport::{send_prepared, TransportResponse};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
 
@@ -200,25 +199,14 @@ pub(crate) async fn stream_prepared(
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
     let TransportResponse { response, trace } =
         send_prepared(config, prepared, trace_metadata).await?;
-    let url = prepared.url.clone();
     let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new(
         config.capabilities.profile == ProviderProfile::DeepSeek,
     )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
-    let frame_trace = trace.clone();
     Ok(stream_sse_events(
         response,
-        move |frame| {
-            if let Some(trace) = &frame_trace {
-                trace.record(
-                    ProviderTraceDirection::Event,
-                    Some(&url),
-                    None,
-                    json!({ "frame": frame }),
-                );
-            }
-        },
+        trace,
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))

@@ -147,7 +147,7 @@ Messages 默认使用 `x-api-key` 认证；OpenRouter 三种协议都使用 Bear
 | `max_age_days` | integer | `14` |
 | `max_total_size_mb` | integer | `512` |
 
-可观测性日志默认开启，且没有禁用开关。kuku 会先按时间清理日志，再按总大小预算清理。清理日志永远不会触碰 Session 的 `events.jsonl` 文件。`logs/provider-trace/` 下显式开启的 provider trace 文件也使用同一套保留预算。
+可观测性日志默认开启，且没有禁用开关。kuku 会先按时间清理日志，再按总大小预算清理。清理日志永远不会触碰 Session 的 `events.jsonl` 文件。Provider trace 另有[写入时上限](environment-variables.md#provider-trace-日志)。
 
 ## `plugin`
 

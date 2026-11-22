@@ -32,11 +32,7 @@ $KUKU_HOME/
 
 `credentials/` contains private, immutable plaintext key files created by interactive setup. Configs reference them with `api_key = "file:<absolute-path>"`; secrets are not copied into TOML or shown by `kuku config show`. The credentials directory must be outside the workspace. On Unix it uses mode `0700`, and each key file uses `0600` (owner access only). On Windows, setup requires a protected ACL that grants access only to the current user. Symlinks and insecure existing paths are rejected rather than repaired. Files are not encrypted and are not automatically deleted when a config changes.
 
-When provider tracing is enabled with `KUKU_PROVIDER_TRACE=1`, request and response diagnostics are written under:
-
-```text
-$KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
-```
+Rotating [provider diagnostics and full traces](environment-variables.md#provider-trace-logs) live under `$KUKU_HOME/logs/provider-trace/`.
 
 ## Project-Scoped Layout
 

@@ -9,15 +9,19 @@ use serde_json::Value;
 
 fn trace_contents(home: &Path, session_id: &str) -> String {
     let root = home.join("logs").join("provider-trace");
-    std::fs::read_dir(root)
+    let records = std::fs::read_dir(root)
         .unwrap()
         .filter_map(Result::ok)
-        .map(|entry| entry.path().join(format!("{session_id}.jsonl")))
-        .find(|path| path.is_file())
-        .map(std::fs::read_to_string)
-        .transpose()
-        .unwrap()
-        .unwrap_or_else(|| panic!("provider trace missing for {session_id}"))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect::<Vec<_>>()
+        .join("");
+    records
+        .lines()
+        .filter(|line| serde_json::from_str::<Value>(line).unwrap()["session_id"] == session_id)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn assert_redacted_trace(raw: &str, provider: &str, secret: &str) {
@@ -107,5 +111,72 @@ async fn openai_adapters_write_redacted_provider_traces() {
         "responses-secret",
     );
 
+    std::env::remove_var("KUKU_PROVIDER_TRACE");
+    let request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/chat/completions")
+            .header("authorization", "Bearer HEADER_SECRET")
+            .body_contains("REQUEST_SECRET");
+        then.status(200)
+            .header("x-fixture", "RESPONSE_HEADER_SECRET")
+            .body(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"REPLY_SECRET\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"index\":0,\"id\":\"ID_SECRET\",\"format\":\"google-gemini-v1\",\"data\":\"CIPHER_SECRET\"}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"index\":0,\"id\":\"SECOND_ID_SECRET\",\"signature\":\"SIGNATURE_SECRET\"},{\"id\":\"ID_SECRET\",\"data\":\"MORE_SECRET\"}]}}]}\n\n",
+                "data: MALFORMED_SECRET\n\n",
+            ));
+    });
+    for (session, mode) in [
+        ("s_preview_trace", kuku::ProviderTraceMode::Auto),
+        ("s_trace_diagnostic", kuku::ProviderTraceMode::Diagnostic),
+    ] {
+        assert!(query("REQUEST_SECRET")
+            .session(session)
+            .provider(Provider::OpenAiCompatible)
+            .model("test-chat")
+            .base_url(server.base_url())
+            .api_key("HEADER_SECRET")
+            .config(test_config())
+            .provider_trace(mode)
+            .run()
+            .await
+            .is_err());
+    }
+    request.assert_hits(2);
+    let raw = trace_contents(env.home.path(), "s_trace_diagnostic");
+    let auto = trace_contents(env.home.path(), "s_preview_trace");
+    assert_eq!(!auto.is_empty(), env!("KUKU_BUILD_IS_PREVIEW") == "true");
+    std::env::set_var("KUKU_PROVIDER_TRACE", "0");
+    assert!(query("REQUEST_SECRET")
+        .session("s_trace_disabled")
+        .provider(Provider::OpenAiCompatible)
+        .model("test-chat")
+        .base_url(server.base_url())
+        .api_key("HEADER_SECRET")
+        .config(test_config())
+        .run()
+        .await
+        .is_err());
+    assert!(trace_contents(env.home.path(), "s_trace_disabled").is_empty());
+    assert!(!raw.contains("SECRET"), "{raw}");
+    let records = raw
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(records[0]["direction"], "request");
+    assert_eq!(records[1]["status"], 200);
+    assert_eq!(records[2]["sequence"], 1);
+    let first = &records[3]["reasoning_details"][0];
+    let second = &records[4]["reasoning_details"][0];
+    assert_eq!(first["index"], second["index"]);
+    assert_eq!(first["format"], "google-gemini-v1");
+    assert_eq!(second["type"], "reasoning.text");
+    assert_ne!(first["id_alias"], second["id_alias"]);
+    assert_eq!(
+        first["id_alias"],
+        records[4]["reasoning_details"][1]["id_alias"]
+    );
+    assert_eq!(records[6]["failure_kind"], "invalid_response");
+    assert_eq!(records[6]["after_sequence"], 4);
     restore_env("KUKU_PROVIDER_TRACE", previous_trace);
 }

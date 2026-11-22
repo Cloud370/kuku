@@ -147,7 +147,7 @@ In a Session, `enabled` controls automatic context compaction. It can run when m
 | `max_age_days` | integer | `14` |
 | `max_total_size_mb` | integer | `512` |
 
-Observability logs are on by default and have no disable switch. kuku prunes logs by age first, then by total size budget. Pruning never touches session `events.jsonl` files. Opt-in provider trace files under `logs/provider-trace/` use the same retention budget.
+Observability logs are on by default and have no disable switch. kuku prunes logs by age first, then by total size budget. Pruning never touches session `events.jsonl` files. Provider traces also have a [write-time limit](environment-variables.md#provider-trace-logs).
 
 ## `plugin`
 

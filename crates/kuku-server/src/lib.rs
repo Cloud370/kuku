@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 use crate::run_manager::RunManager;
 
 /// Build version shared by the server and packaged clients.
-pub const BUILD_VERSION: &str = env!("KUKU_VERSION");
+pub use kuku::BUILD_VERSION;
 
 /// Shared host resources and authorization supplied to HTTP handlers.
 pub struct AppState {

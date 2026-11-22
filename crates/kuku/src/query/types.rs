@@ -50,6 +50,7 @@ pub struct Query {
     pub(crate) service_tier: Option<String>,
     pub(crate) authorizer: Option<Arc<dyn crate::permission::ToolAuthorizer>>,
     pub(crate) model_adapter: Option<Arc<dyn crate::ModelAdapter>>,
+    pub(crate) provider_trace: crate::ProviderTraceMode,
     pub(crate) tool_adapters:
         Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
     pub(crate) input_source: crate::session::InputSource,
@@ -643,6 +644,12 @@ impl std::fmt::Debug for StreamingChunkState {
 // ---------- Query builder ----------
 
 impl Query {
+    /// Select the provider diagnostics policy for this query.
+    pub fn provider_trace(mut self, mode: crate::ProviderTraceMode) -> Self {
+        self.provider_trace = mode;
+        self
+    }
+
     /// Create a new query builder for the given prompt.
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
@@ -679,6 +686,7 @@ impl Query {
             service_tier: None,
             authorizer: None,
             model_adapter: None,
+            provider_trace: crate::ProviderTraceMode::Auto,
             tool_adapters: Arc::new(std::collections::BTreeMap::new()),
             input_source: crate::session::InputSource::Host("local".into()),
             input_skills: Vec::new(),

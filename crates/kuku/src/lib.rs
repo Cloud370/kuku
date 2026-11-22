@@ -37,7 +37,11 @@ pub use adapter::{
 };
 pub use error::{Error, Result};
 pub use execution::OutputReference;
+pub use provider::trace::ProviderTraceMode;
 pub use provider::types::ProviderFailureKind;
+
+/// Version and source revision embedded at build time.
+pub const BUILD_VERSION: &str = env!("KUKU_VERSION");
 pub use provider::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
     ProviderSettings, ProviderUsage,

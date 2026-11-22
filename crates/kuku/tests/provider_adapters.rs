@@ -1,15 +1,23 @@
+#[path = "../src/log/mod.rs"]
+#[allow(dead_code, unused_imports)]
+mod log;
+
+mod session {
+    pub use kuku::session::validate_session_id;
+}
+
 mod config {
     pub use kuku::config::{
-        resolve_request_url, ApiKey, MediaAdapterSupport, ModelPricing, ModelThinkingTest,
-        PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile,
-        ProviderProxy, RequestedOutput, ResolvedThinking, ThinkLevel,
+        resolve_request_url, ApiKey, LogsConfig, MediaAdapterSupport, ModelPricing,
+        ModelThinkingTest, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions,
+        ProviderProfile, ProviderProxy, RequestedOutput, ResolvedThinking, ThinkLevel,
     };
 }
 
 use kuku::{Error, Result};
 
 mod error {
-    pub use kuku::Result;
+    pub use kuku::{Error, Result};
 }
 
 mod context {

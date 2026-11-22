@@ -1,11 +1,10 @@
-use serde_json::json;
 use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::config::ProviderAuth;
 
 use super::error::{classify_http_error, transport_error};
 use super::prepare::{authentication, invalid_request, is_official_openrouter};
-use super::trace::{ProviderTrace, ProviderTraceDirection, ProviderTraceMetadata};
+use super::trace::{ProviderTrace, ProviderTraceMetadata};
 use super::types::{
     PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ProviderKind, ResolvedProvider,
 };
@@ -59,24 +58,28 @@ async fn send(
     })?;
     let headers = request_headers(config, prepared, &api_key)?;
     let trace = ProviderTrace::from_request(
-        trace_metadata.as_ref(),
+        trace_metadata,
         config.connection_name.clone(),
         prepared.model.clone(),
     );
     if let Some(trace) = &trace {
-        let mut body = prepared.body.as_json().clone();
-        if prepared.kind == ProviderKind::OpenAiResponses {
-            super::openai_responses::redact_tool_images(&mut body);
-        }
-        trace.record(
-            ProviderTraceDirection::Request,
-            Some(&prepared.url),
-            Some(&headers),
-            json!({"body": body}),
-        );
+        let body = trace.full().then(|| {
+            let mut body = prepared.body.as_json().clone();
+            if prepared.kind == ProviderKind::OpenAiResponses {
+                super::openai_responses::redact_tool_images(&mut body);
+            }
+            body
+        });
+        trace.request(&prepared.url, &headers, body);
     }
-    let mut request = super::http_client::api_client(&config.options.proxy)
-        .map_err(|error| invalid_request(&error.to_string()))?
+    let client = super::http_client::api_client(&config.options.proxy).map_err(|error| {
+        let failure = invalid_request(&error.to_string());
+        if let Some(trace) = &trace {
+            trace.failure(failure.kind);
+        }
+        failure
+    })?;
+    let mut request = client
         .post(&prepared.url)
         .headers(headers)
         .body(prepared.body.as_bytes().clone());
@@ -84,24 +87,15 @@ async fn send(
         request = request.redirect(wreq::redirect::Policy::none());
     }
     let response = request.send().await.map_err(|error| {
+        let failure = transport_error(&error);
         if let Some(trace) = &trace {
-            trace.record(
-                ProviderTraceDirection::Error,
-                Some(&prepared.url),
-                None,
-                json!({"error": "provider transport failed"}),
-            );
+            trace.failure(failure.kind);
         }
-        transport_error(&error)
+        failure
     })?;
     let status = response.status();
     if let Some(trace) = &trace {
-        trace.record(
-            ProviderTraceDirection::Response,
-            Some(&prepared.url),
-            Some(response.headers()),
-            json!({"status": status.as_u16()}),
-        );
+        trace.response(&prepared.url, status.as_u16(), response.headers());
     }
     if !status.is_success() {
         let retry_after = response
@@ -129,6 +123,9 @@ async fn send(
                 .push_str(&format!(" (Retry-After: {}s)", delay.as_secs_f64().ceil()));
         }
         failure.provider_request_id = request_id;
+        if let Some(trace) = &trace {
+            trace.failure(failure.kind);
+        }
         if let Some(capture) = trial_error_body {
             *capture = body;
         }
@@ -197,6 +194,8 @@ async fn read_error_body(response: wreq::Response) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::config::ProviderProfile;
     use crate::provider::types::{PreparedBody, SecretString};

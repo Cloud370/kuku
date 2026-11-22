@@ -2,6 +2,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::chunk::ProviderChunk;
 use super::error::transport_error;
+use super::trace::ProviderTrace;
 use super::types::{ProviderFailure, ProviderFailureKind};
 use super::ProviderChunkStream;
 
@@ -36,106 +37,80 @@ pub(crate) fn parse_sse_frame(frame: &str) -> Option<SseFrame> {
 
 pub(crate) fn stream_sse_events(
     response: wreq::Response,
-    mut on_raw_frame: impl FnMut(&str) + Send + 'static,
+    trace: Option<ProviderTrace>,
     mut on_frame: impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send + 'static,
     mut on_eof: impl FnMut() -> Result<Vec<ProviderChunk>, ProviderFailure> + Send + 'static,
 ) -> ProviderChunkStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProviderChunk, ProviderFailure>>(16);
     tokio::spawn(async move {
-        run_sse_loop(response, &mut on_raw_frame, &mut on_frame, &mut on_eof, &tx).await;
+        let outcome = run_sse_loop(response, trace.as_ref(), &mut on_frame, &mut on_eof, &tx).await;
+        if let Some(trace) = &trace {
+            if let Err(failure) = &outcome {
+                trace.failure(failure.kind);
+            } else {
+                trace.flush();
+            }
+        }
+        if let Err(failure) = outcome {
+            let _ = tx.send(Err(failure)).await;
+        }
     });
     Box::pin(ReceiverStream::new(rx))
 }
 
 async fn run_sse_loop(
     response: wreq::Response,
-    on_raw_frame: &mut (impl FnMut(&str) + Send),
+    trace: Option<&ProviderTrace>,
     on_frame: &mut (impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
     on_eof: &mut (impl FnMut() -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
     tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
-) {
+) -> Result<(), ProviderFailure> {
     use tokio_stream::StreamExt;
     let mut byte_stream = response.bytes_stream();
     let mut decoder = SseDecoder::default();
     loop {
         let next = tokio::select! {
-            _ = tx.closed() => return,
+            _ = tx.closed() => return Ok(()),
             next = byte_stream.next() => next,
         };
-        match next {
-            Some(Ok(bytes)) => {
-                let frames = match decoder.feed(&bytes) {
-                    Ok(frames) => frames,
-                    Err(failure) => {
-                        let _ = tx.send(Err(failure)).await;
-                        return;
-                    }
-                };
-                for frame in frames {
-                    if !emit_frame(&frame, on_raw_frame, on_frame, tx).await {
-                        return;
-                    }
-                }
-            }
-            Some(Err(error)) => {
-                let _ = tx.send(Err(transport_error(&error))).await;
-                return;
-            }
-            None => {
-                match decoder.finish() {
-                    Ok(Some(frame)) => {
-                        if !emit_frame(&frame, on_raw_frame, on_frame, tx).await {
-                            return;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(failure) => {
-                        let _ = tx.send(Err(failure)).await;
-                        return;
-                    }
-                }
-                let chunks = match on_eof() {
-                    Ok(chunks) => chunks,
-                    Err(failure) => {
-                        let _ = tx.send(Err(failure)).await;
-                        return;
-                    }
-                };
-                for chunk in chunks {
-                    if tx.send(Ok(chunk)).await.is_err() {
-                        return;
-                    }
-                }
-                return;
+        let Some(bytes) = next else { break };
+        for frame in decoder.feed(&bytes.map_err(|error| transport_error(&error))?)? {
+            if !emit_frame(&frame, trace, on_frame, tx).await? {
+                return Ok(());
             }
         }
     }
+    if let Some(frame) = decoder.finish()? {
+        if !emit_frame(&frame, trace, on_frame, tx).await? {
+            return Ok(());
+        }
+    }
+    for chunk in on_eof()? {
+        if tx.send(Ok(chunk)).await.is_err() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 async fn emit_frame(
     frame: &str,
-    on_raw_frame: &mut (impl FnMut(&str) + Send),
+    trace: Option<&ProviderTrace>,
     on_frame: &mut (impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
     tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
-) -> bool {
+) -> Result<bool, ProviderFailure> {
     if frame.trim().is_empty() {
-        return true;
+        return Ok(true);
     }
-    on_raw_frame(frame);
-    match on_frame(frame) {
-        Ok(chunks) => {
-            for chunk in chunks {
-                if tx.send(Ok(chunk)).await.is_err() {
-                    return false;
-                }
-            }
-            true
-        }
-        Err(failure) => {
-            let _ = tx.send(Err(failure)).await;
-            false
+    if let Some(trace) = trace {
+        trace.frame(frame);
+    }
+    for chunk in on_frame(frame)? {
+        if tx.send(Ok(chunk)).await.is_err() {
+            return Ok(false);
         }
     }
+    Ok(true)
 }
 
 #[derive(Default)]
@@ -288,7 +263,7 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-        let stream = stream_sse_events(response, |_| {}, |_| Ok(Vec::new()), || Ok(Vec::new()));
+        let stream = stream_sse_events(response, None, |_| Ok(Vec::new()), || Ok(Vec::new()));
         drop(stream);
         tokio::time::timeout(std::time::Duration::from_secs(2), server)
             .await
