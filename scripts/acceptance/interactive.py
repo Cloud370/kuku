@@ -708,12 +708,13 @@ def dense_transcript(client, reference=False):
     workspace = client.workspace("dense-transcript")
     scenario = DenseTranscript(client, workspace)
     screens = []
-    tool_state = "Running tools" if reference else "↳  Tools"
-    reply_state = "Streaming reply" if reference else "↓  Reply"
+    tool_state = "Running tools"
+    reply_state = "Streaming reply" if reference else "Reply"
     tool_heading = re.compile(
         r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
         r"Write file|Edit file|Run command|Tool [a-z_]+)"
         r"(?: ×\d+)? · (?:ok|error|running)\b"
+        r"|^\s*(?:│\s*)?(?:\d+ file reads|Wrote\s+|Edited\s+)"
         rf"|╭─ (?:Run command|{re.escape(TOOL_PROGRAM)})\b"
     )
 
@@ -750,33 +751,30 @@ def dense_transcript(client, reference=False):
         return {"summary_rows": len(headings), "tool_rows": last - headings[0] + 1}
 
     def inspect_tools(terminal, before_resize):
+        rows = 18
+        terminal.request("resize", rows=rows, cols=140)
         try:
-            before_page_up = page_up_after_rendered_resize(
-                terminal,
-                read_while,
-                32,
-                (TOOL_PROGRAM, scenario.draft),
-            )
+            before_page_up = page_up_after_rendered_resize(terminal, read_while, rows, (scenario.draft,))
         except AssertionError as error:
             raise AssertionError(
-                f"{error}\nWide running-tools screen before resize to 32:\n{before_resize}"
+                f"{error}\nWide running-tools screen before resize to {rows}:\n{before_resize}"
             ) from error
-        screens.append(("32-row running-tools screen before PageUp", before_page_up))
+        screens.append((f"{rows}-row running-tools screen before PageUp", before_page_up))
         try:
-            collapsed = read_while(terminal, lambda value: running_view(value, 32)
+            collapsed = read_while(terminal, lambda value: running_view(value, rows)
                                    and scenario.activity_group in value and "Reading history" in value,
                                    "the original reading position before opening the group")
         except AssertionError as error:
             raise AssertionError(
-                f"{error}\n32-row running-tools screen before PageUp:\n{before_page_up}"
+                f"{error}\n{rows}-row running-tools screen before PageUp:\n{before_page_up}"
             ) from error
-        screens.append(("32-row reading-history screen after PageUp", collapsed))
+        screens.append((f"{rows}-row reading-history screen after PageUp", collapsed))
         assert scenario.read_target not in collapsed and scenario.draft in collapsed, (
-            f"{collapsed}\n32-row running-tools screen before PageUp:\n{before_page_up}"
+            f"{collapsed}\n{rows}-row running-tools screen before PageUp:\n{before_page_up}"
         )
         anchor = row_of(collapsed, scenario.activity_group)
-        terminal.click_text(collapsed, scenario.activity_composition)
-        anchored = terminal.expect(scenario.read_target, state=scenario.draft)["screen"]
+        terminal.click_text(collapsed, scenario.activity_group)
+        anchored = terminal.expect("Read samples/read-01.txt", state=scenario.draft)["screen"]
         assert row_of(anchored, scenario.activity_group) == anchor
         terminal.request("resize", rows=38, cols=140)
         opened = terminal.expect(scenario.read_target, state="Search text · sample-marker in samples", also=(scenario.draft,))["screen"]
@@ -800,7 +798,7 @@ def dense_transcript(client, reference=False):
         terminal.expect("Requested arguments")
         terminal.request("resize", rows=44, cols=140)
         error = terminal.expect(f"path does not exist: {scenario.missing}",
-                                also=("Requested arguments", "Tools", scenario.draft), rows=44)["screen"]
+                                also=("Requested arguments", tool_state, scenario.draft), rows=44)["screen"]
         screens.append(("Independent failed call with its exact error", error))
         terminal.click_text(error, "Read file · error")
         terminal.press("\x1b[1;5F")
@@ -820,8 +818,7 @@ def dense_transcript(client, reference=False):
                               "the wide tool turn")
             screens.append(("Dense tool turn with a running command and local draft", wide))
             if not reference:
-                assert all(text in wide for text in (scenario.activity_group, scenario.activity_composition, *scenario.file_cards)), wide
-                terminal.request("resize", rows=32, cols=140)
+                assert all(text in wide for text in (scenario.activity_group, *scenario.file_cards)), wide
                 inspect_tools(terminal, wide)
             terminal.request("resize", rows=26, cols=74)
             running_card = "Run command · running" if reference else "╰─ running"

@@ -9,8 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, CardFrame, ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MODEL, MUTED, SURFACE_TEXT,
-    WARNING,
+    emphasis, CardFrame, ACCENT, MIN_TRANSCRIPT_INDENT_WIDTH, MODEL, MUTED, SURFACE_TEXT, WARNING,
 };
 
 use super::agent::{AgentCard, AgentRequest};
@@ -18,6 +17,7 @@ use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails};
 
 mod command;
 mod file_change;
+mod inspection;
 mod outcome;
 mod script;
 mod session;
@@ -56,6 +56,7 @@ pub(super) struct Tool {
     name: String,
     invocation: String,
     arguments: String,
+    script_source: String,
     request_title: String,
     start_summary: String,
     progress: String,
@@ -71,6 +72,10 @@ impl ToolView {
 }
 
 impl Tool {
+    pub(super) fn positioned_at_result(&self) -> bool {
+        matches!(&self.state, State::Recorded(outcome) if outcome.receipt.is_none())
+    }
+
     pub(super) fn from_entry(entry: &HistoryEntry) -> Self {
         let name = capped(
             entry
@@ -91,7 +96,23 @@ impl Tool {
 
         let args = entry.details.get("args").unwrap_or(&Value::Null);
         let invocation = invocation(&name, args);
-        let arguments = arguments_json(args);
+        let script_source = if name == "run_js" {
+            capped(args["code"].as_str(), MAX_DETAIL_BYTES)
+        } else {
+            String::new()
+        };
+        let arguments = if script_source.is_empty() {
+            arguments_json(args)
+        } else {
+            let other_args = args
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(name, _)| name.as_str() != "code")
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            arguments_json(&Value::Object(other_args))
+        };
         let agent_request = AgentRequest::from_call(&name, args);
         let request_title = if matches!(name.as_str(), "run_command" | "run_js") {
             capped(args["title"].as_str().map(str::trim), MAX_LABEL_BYTES)
@@ -102,6 +123,7 @@ impl Tool {
             name,
             invocation,
             arguments,
+            script_source,
             request_title,
             agent_request,
             ..Self::default()
@@ -123,6 +145,9 @@ impl Tool {
         }
         if !incoming.arguments.is_empty() {
             self.arguments = incoming.arguments;
+        }
+        if !incoming.script_source.is_empty() {
+            self.script_source = incoming.script_source;
         }
         if incoming.agent_request.is_some() {
             self.agent_request = incoming.agent_request;
@@ -247,7 +272,7 @@ impl Tool {
         {
             return None;
         }
-        let name = self.name.as_str();
+        let name = self.name();
         match name {
             "read_file" | "find_files" | "search_text" | "list_agents" | "query_session"
             | "stat_file" | "read_output" | "search_output" | "list_values" => Some(name),
@@ -296,7 +321,7 @@ impl Tool {
     }
 
     pub(super) fn inspection_result(&self) -> Option<String> {
-        let result = match self.name.as_str() {
+        let result = match self.name() {
             "read_file" => self.file_caption()?,
             "find_files" | "search_text" => {
                 single_line(cap(self.search_summary()?, MAX_LABEL_BYTES))
@@ -346,9 +371,40 @@ impl Tool {
     }
 
     pub(super) fn render(&self, width: usize, details: ToolDetails, in_group: bool) -> Vec<Row> {
+        if let Some(command) = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.command_preview.as_deref())
+            .filter(|command| command.concise() && command.body().lines().take(4).count() <= 3)
+        {
+            return self.render_short_command(command, width, details);
+        }
+        if self.saved_script_return() {
+            return self.render_saved_script(width, details);
+        }
+        if self.name() == "read_file"
+            && self
+                .state
+                .outcome()
+                .is_some_and(|outcome| outcome.status != "ok")
+        {
+            return self.render_failed_read(width, details);
+        }
         if details != ToolDetails::Inspection {
             if let Some(rows) = self.render_agent_check(width, in_group) {
                 return rows;
+            }
+        }
+        if in_group && matches!(self.group_name(), Some("read_file" | "run_js")) {
+            if let Some(rows) =
+                self.render_inspection_rows(width, details == ToolDetails::Inspection)
+            {
+                return rows;
+            }
+        }
+        if let Some(outcome) = self.state.outcome().filter(|_| !in_group) {
+            if let Some(script) = &outcome.script {
+                return self.render_script_with_rail(script, &outcome.status, width, details);
             }
         }
         let has_frame = self.name == "run_command"
@@ -419,28 +475,19 @@ impl Tool {
                 || caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES))),
                 |summary| join_details([self.invocation.as_str(), summary]),
             );
-            let mut label = self.title().into_owned();
-            if !target.is_empty() {
-                label.push_str(&format!(" · {target}"));
-            }
-            let mut line = Line::styled(shorten(&label, width), emphasis(ACCENT));
-            let room = width.saturating_sub(line.width());
-            if let Some(summary) = self
+            let action = self.title();
+            let summary = self
                 .search_summary()
-                .filter(|summary| *summary != target && room >= 12)
-            {
-                line.push_span(Span::styled(
-                    shorten(
-                        &format!(" · {}", single_line(cap(summary, MAX_LABEL_BYTES))),
-                        room,
-                    ),
-                    Style::new()
-                        .fg(MUTED)
-                        .remove_modifier(ratatui::style::Modifier::BOLD),
-                ));
-            }
-            let rows = render_rows(vec![line], width, 1, 0).collect();
-            return finish_card(rows);
+                .filter(|summary| *summary != target)
+                .map_or_else(String::new, |value| {
+                    single_line(cap(value, MAX_LABEL_BYTES))
+                });
+            let heading = if target.is_empty() {
+                Row::caption(&action, &summary, ACCENT, width)
+            } else {
+                Row::action(&format!("{action} · "), &target, &summary, ACCENT, width)
+            };
+            return vec![heading];
         }
         if let Some(change) = self.file_change() {
             return self.render_change(change, width, details);
@@ -482,16 +529,6 @@ impl Tool {
         } else {
             self.render_header(width, inset, caption.as_deref())
         };
-        if !inspecting && self.is_missing_read() {
-            rows.extend(render_preview(
-                self.result(),
-                ERROR,
-                width,
-                MAX_SUMMARY_ROWS,
-                inset,
-            ));
-            return finish_card(rows);
-        }
         let invocation = self.invocation();
         let command_summary = command.map(|preview| preview.summary());
         let summary = command_summary
@@ -604,6 +641,27 @@ impl Tool {
             && self.file_change().is_some_and(|change| !change.unconfirmed)
     }
 
+    pub(super) fn saved_script_return(&self) -> bool {
+        matches!(&self.state, State::Recorded(outcome) if outcome.status == "ok"
+            && !outcome.attention
+            && outcome.script.as_ref().is_some_and(|script| script.saved_return_only()))
+    }
+
+    pub(super) fn workspace_outcome(&self) -> bool {
+        self.compact_file_change() || self.saved_script_return()
+    }
+
+    pub(super) fn separates_activity(&self) -> bool {
+        self.state.outcome().is_some_and(|outcome| {
+            outcome.status != "ok"
+                || outcome.attention
+                || outcome
+                    .script
+                    .as_ref()
+                    .is_some_and(|script| script.label(&outcome.status).is_some())
+        })
+    }
+
     fn file_change(&self) -> Option<&FileChange> {
         let State::Recorded(outcome) = &self.state else {
             return None;
@@ -676,18 +734,6 @@ impl Tool {
         } else {
             ""
         }
-    }
-
-    fn is_missing_read(&self) -> bool {
-        let path = self.invocation.as_str();
-        self.name == "read_file"
-            && self
-                .state
-                .outcome()
-                .is_some_and(|outcome| outcome.status == "error")
-            && !path.is_empty()
-            && self.summary().strip_prefix("failed: path not found: ") == Some(path)
-            && self.result().strip_prefix("path does not exist: ") == Some(path)
     }
 
     fn status_label(&self) -> (String, Color) {

@@ -1,11 +1,10 @@
 use std::collections::VecDeque;
 
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, TurnSummary};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use serde_json::Value;
 
-use crate::markup::{render_literal, wrap_bounded, LinkDestination};
+use crate::markup::{wrap_bounded, LinkDestination};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{ACCENT, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
 
@@ -35,7 +34,7 @@ use self::body::Body;
 pub(crate) use self::details::DetailKey;
 use self::details::{DetailRecord, Details};
 use self::job::JobNotice;
-use self::message::{render_assistant_source, render_record, render_user};
+use self::message::{render_assistant_source, render_user};
 pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
 pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroupRequest};
@@ -105,6 +104,7 @@ enum ToolDetails {
     Collapsed,
     GroupMember,
     CompactFile,
+    ExpandedFile,
     Inspection,
 }
 
@@ -596,15 +596,24 @@ impl Record {
             self.turn_summary = record.turn_summary;
             self.rendered = RenderCache::default();
         }
-        match (&mut self.body, record.body) {
-            (Body::Tool(tool), Body::Tool(incoming)) => tool.merge(*incoming),
-            (Body::Compaction(current), Body::Compaction(incoming)) => current.update(incoming),
+        let earliest = self.position.into_iter().chain(record.position).min();
+        self.position = match (&mut self.body, record.body) {
+            (Body::Tool(tool), Body::Tool(incoming)) => {
+                let position = if incoming.positioned_at_result() {
+                    record.position.or(self.position)
+                } else if tool.positioned_at_result() {
+                    self.position
+                } else {
+                    earliest
+                };
+                tool.merge(*incoming);
+                position
+            }
+            (Body::Compaction(current), Body::Compaction(incoming)) => {
+                current.update(incoming);
+                earliest
+            }
             _ => return,
-        }
-        self.position = match (self.position, record.position) {
-            (Some(current), Some(incoming)) => Some(current.min(incoming)),
-            (None, Some(incoming)) => Some(incoming),
-            (current, None) => current,
         };
         self.rendered = RenderCache::default();
     }
@@ -760,20 +769,12 @@ impl Record {
                 Body::Interrupted(text) => {
                     message::render_markdown_record("Interrupted", WARNING, text, width)
                 }
-                Body::Notice(title, text, color) => render_record(
-                    title,
-                    *color,
-                    render_literal(text, Style::default()),
-                    width,
-                    0,
-                ),
-                Body::Job(job) => render_record(
-                    "Background job",
-                    job.color,
-                    render_literal(&job.text, Style::default()),
-                    width,
-                    0,
-                ),
+                Body::Notice(title, text, color) => {
+                    message::render_activity_record(title, *color, text, width)
+                }
+                Body::Job(job) => {
+                    message::render_activity_record("Background job", job.color, &job.text, width)
+                }
                 Body::ModelError { .. } | Body::Retry { .. } => {
                     retry::render(&self.body, width, retry_heading, retry_end)
                         .expect("retry history or error body")
@@ -841,17 +842,7 @@ fn render_rows(
 ) -> impl Iterator<Item = Row> {
     wrap_bounded(lines, width.saturating_sub(usize::from(inset)), limit)
         .into_iter()
-        .map(move |mut line| {
-            if inset > 0 && !line.spans.is_empty() {
-                line.spans
-                    .insert(0, Span::raw(" ".repeat(usize::from(inset))));
-            }
-            Row {
-                line,
-                inset,
-                links: Vec::new(),
-            }
-        })
+        .map(move |line| Row::plain(line).indented(inset))
 }
 
 fn capped(text: Option<&str>, bytes: usize) -> String {

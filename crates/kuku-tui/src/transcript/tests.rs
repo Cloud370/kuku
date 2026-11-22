@@ -35,7 +35,9 @@ fn rows(transcript: &mut Transcript) -> Vec<String> {
 }
 
 fn compact(text: &str) -> String {
-    text.split_whitespace().collect()
+    text.split_whitespace()
+        .filter(|word| *word != "│")
+        .collect()
 }
 
 #[test]
@@ -64,21 +66,20 @@ fn compaction_progress_updates_the_same_card_and_reveals_the_checkpoint_on_reque
     transcript.apply(completed, None);
     let preview = rows(&mut transcript).join("\n");
     assert!(!preview.contains("Compacting context"));
-    assert!(preview.contains("Context compacted") && preview.contains("2.1s"));
-    let preview_words = preview.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(preview_words.contains("~16K → ~8K input tokens"));
-    assert!(!preview_words.contains("KiB"));
-    assert!(preview_words.contains("7 messages summarized"), "{preview}");
-    assert!(preview.contains("Earlier work verified.") && !preview.contains("parse_range"));
+    assert!(preview.contains("Context compacted · ~16K → ~8K input tokens"));
+    assert!(!preview.contains("KiB") && !preview.contains("Earlier work verified."));
     let (detail, _, _) = transcript
         .visible_detail_choices()
         .into_iter()
         .next()
         .unwrap();
     assert!(transcript.toggle_detail(&detail));
-    assert!(rows(&mut transcript).join("\n").contains("parse_range"));
+    let open = rows(&mut transcript).join("\n");
+    assert!(open.contains("Context compacted · ~16K → ~8K input tokens"));
+    assert!(open.contains("2.1s · 7 messages summarized"));
+    assert!(open.contains("Earlier work verified.") && open.contains("parse_range"));
     assert!(transcript.toggle_detail(&detail));
-    assert!(!rows(&mut transcript).join("\n").contains("parse_range"));
+    assert_eq!(preview, rows(&mut transcript).join("\n"));
 }
 
 #[test]
@@ -368,7 +369,7 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
                 && pair[1].trim_start() == "我来检查"
                 && pair[1].starts_with("  ")
         }));
-        assert!(plain.iter().any(|row| row.starts_with("╭─ Read file")));
+        assert!(plain.iter().any(|row| row.starts_with("Read file")));
         assert!(plain.iter().any(|row| row.contains("error")));
         assert!(plain
             .iter()

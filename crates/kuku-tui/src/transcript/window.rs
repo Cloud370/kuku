@@ -423,6 +423,8 @@ impl Window {
             .map(|span| {
                 let open = layout.items.group_open(&window_records[span.range.clone()]);
                 let range = span.range.clone();
+                let framed = span.summary.framed();
+                let keeps_outcomes = span.summary.keeps_outcomes();
                 let heading = GroupHeading::from_span(
                     span,
                     window_records,
@@ -430,7 +432,7 @@ impl Window {
                     layout.width,
                     layout.agents,
                 );
-                (range, Some(heading), open)
+                (range, Some(heading), open, framed, keeps_outcomes)
             })
             .collect::<Vec<_>>()
             .into_iter();
@@ -467,19 +469,35 @@ impl Window {
             previous_turn = record.turn.or(previous_turn);
             if current
                 .as_ref()
-                .is_some_and(|(range, _, _)| range.end <= index)
+                .is_some_and(|(range, _, _, _, _)| range.end <= index)
             {
                 current = spans.next();
             }
             let member = current
                 .as_mut()
-                .filter(|(range, _, _)| range.contains(&index));
+                .filter(|(range, _, _, _, _)| range.contains(&index));
             let grouped = member.is_some();
-            let collapsed = member.as_ref().is_some_and(|(_, _, open)| !open);
+            let framed = member.as_ref().is_some_and(|(_, _, _, framed, _)| *framed);
+            let group_inset = if grouped && !framed {
+                super::body_inset(layout.width)
+            } else {
+                0
+            };
+            let keep_outcome = member.as_ref().is_some_and(|(_, _, _, _, keeps)| {
+                *keeps && record.tool().is_some_and(super::Tool::workspace_outcome)
+            });
+            let collapsed = member
+                .as_ref()
+                .is_some_and(|(_, _, open, _, _)| !open && !keep_outcome);
             let closes_group = member
                 .as_ref()
-                .is_some_and(|(range, _, open)| *open && index + 1 == range.end);
-            let group = member.and_then(|(_, heading, _)| heading.take());
+                .is_some_and(|(range, _, _, _, _)| index + 1 == range.end);
+            let activity_gap = closes_group
+                && !framed
+                && records
+                    .peek()
+                    .is_some_and(|(_, next)| next.turn == record.turn);
+            let group = member.and_then(|(_, heading, _, _, _)| heading.take());
             let user_turn = heading.filter(|_| {
                 layout.width >= 14 && matches!(&record.body, Body::User { sender: None, .. })
             });
@@ -492,24 +510,26 @@ impl Window {
                 let trim = grouped
                     || records.peek().is_some_and(|(_, next)| {
                         record.turn == next.turn
-                            && record
-                                .tool()
-                                .is_some_and(|tool| tool.agent_card().is_none())
+                            && record.tool().is_some_and(|tool| {
+                                tool.agent_card().is_none() && !tool.separates_activity()
+                            })
                             && next.tool().is_some_and(|tool| tool.agent_card().is_none())
                     });
-                let mode = if grouped {
-                    ToolDetails::GroupMember
-                } else if compact_files[index] && layout.tools == ToolDetails::Expanded {
+                let mode = if compact_files[index]
+                    || keep_outcome && record.tool().is_some_and(super::Tool::compact_file_change)
+                {
                     ToolDetails::CompactFile
+                } else if grouped {
+                    ToolDetails::GroupMember
                 } else {
                     layout.tools
                 };
                 let (key, rows, detail) = record.render(
                     Layout {
-                        width: if grouped {
+                        width: if framed {
                             group_frame.content_width()
                         } else {
-                            layout.width
+                            layout.width.saturating_sub(usize::from(group_inset))
                         },
                         tools: mode,
                         ..layout
@@ -542,11 +562,15 @@ impl Window {
                 thinking,
                 group,
                 grouped,
+                framed,
+                group_inset,
                 collapsed,
                 rows,
                 note,
-                footer: if closes_group {
+                footer: if closes_group && framed && !collapsed {
                     Row::frame_end(&group_frame)
+                } else if activity_gap {
+                    vec![Row::plain(ratatui::text::Line::default())]
                 } else {
                     Vec::new()
                 },
@@ -565,6 +589,8 @@ impl Window {
                 thinking: false,
                 group: None,
                 grouped: false,
+                framed: false,
+                group_inset: 0,
                 collapsed: false,
                 rows: &group.rows,
                 note: &[],
@@ -845,6 +871,8 @@ pub(super) struct Block<'a> {
     pub(super) detail: Option<DetailRecord<'a>>,
     pub(super) rewind_group: Option<&'a RewindGroupState>,
     pub(super) grouped: bool,
+    pub(super) framed: bool,
+    pub(super) group_inset: u16,
     collapsed: bool,
 }
 

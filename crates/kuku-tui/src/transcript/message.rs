@@ -101,12 +101,22 @@ pub(super) fn render_markdown_record(
     text: &str,
     width: usize,
 ) -> Vec<Row> {
-    let (lines, links) = crate::markup::linked_markdown(text, width, MAX_VISUAL_ROWS);
-    let mut rows = render_record(title, color, lines, width, 0);
+    let mut rows = render_record(title, color, Vec::new(), width, 0);
+    rows.extend(markdown_body(text, width, 0));
+    rows
+}
+
+pub(super) fn markdown_body(text: &str, width: usize, inset: u16) -> Vec<Row> {
+    let content_width = width.saturating_sub(usize::from(inset));
+    let (mut lines, links) = crate::markup::linked_markdown(text, content_width, MAX_VISUAL_ROWS);
+    if lines.last().is_some_and(|line| !line.spans.is_empty()) {
+        lines.push(Line::default());
+    }
+    let mut rows: Vec<_> = render_rows(lines, content_width, MAX_VISUAL_ROWS, 0).collect();
     for row in &mut rows {
         row.links = links.resolve(&mut row.line);
     }
-    rows
+    rows.into_iter().map(|row| row.indented(inset)).collect()
 }
 
 pub(super) fn render_record(
@@ -122,6 +132,29 @@ pub(super) fn render_record(
     }
     let mut rows: Vec<_> = render_rows(vec![title], width, MAX_VISUAL_ROWS, 0).collect();
     rows.extend(render_rows(lines, width, MAX_VISUAL_ROWS, inset));
+    rows
+}
+
+pub(super) fn render_activity_record(
+    title: &str,
+    color: Color,
+    text: &str,
+    width: usize,
+) -> Vec<Row> {
+    let mut rows = vec![Row::caption(title, "", color, width)];
+    if !text.is_empty() {
+        let inset = super::body_inset(width);
+        rows.extend(
+            render_rows(
+                render_literal(text, Style::default()),
+                width - usize::from(inset),
+                MAX_VISUAL_ROWS,
+                0,
+            )
+            .map(|row| row.with_rail(inset)),
+        );
+    }
+    rows.push(Row::plain(Line::default()));
     rows
 }
 

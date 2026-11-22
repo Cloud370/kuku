@@ -296,6 +296,23 @@ class MessageActionSelectionTests(unittest.TestCase):
         select_message_action(terminal, screen, "Copy")
         terminal.press.assert_called_once_with("\r")
 
+    def test_tabs_through_a_choice_with_visible_transcript_text_to_its_right(self):
+        terminal = MagicMock()
+        screen = "\n".join([
+            "  │   Message actions                                           │",
+            "  │   › Copy                                                    │",
+            "  │     Expand                                      transcript text",
+            "  │     Full output                                             │",
+            "  │   Operate message · Enter Run                               │",
+        ])
+        terminal.request.side_effect = [
+            {"screen": screen.replace("› Copy", "  Copy").replace("  Expand", "› Expand")},
+            {"screen": screen.replace("› Copy", "  Copy").replace("  Full output", "› Full output")},
+            {"screen": "The message action ran"},
+        ]
+        select_message_action(terminal, screen, "Full output")
+        assert [entry.args[0] for entry in terminal.press.call_args_list] == ["\t", "\t", "\r"]
+
 
 class TranscriptResizeSynchronizationTests(unittest.TestCase):
     activity_composition = "12 file reads · 3 file searches · 2 text searches"
@@ -330,6 +347,7 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
         )
         self.assertFalse(rendered_running_transcript(stale, 32, markers))
         self.assertTrue(rendered_running_transcript(resized, 32, markers))
+        self.assertTrue(rendered_running_transcript(self.running_frame(27), 32, markers))
 
         background = resized.replace("Tools", "Running")
         self.assertTrue(rendered_running_transcript(background, 32, markers))

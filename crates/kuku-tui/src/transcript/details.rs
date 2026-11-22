@@ -12,21 +12,14 @@ use crate::theme::{emphasis, CardFrame, ACCENT, MUTED, SUCCESS};
 use super::agent::{AgentCard, AgentCards};
 use super::tool::{tool_title, Tool};
 use super::{
-    render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails, Transcript,
-    MAX_RECORDS,
+    body_inset, render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails,
+    Transcript, MAX_RECORDS,
 };
 
-const INSPECTIONS: [(&str, &str, &str); 9] = [
-    ("read_file", "file read", "file reads"),
-    ("find_files", "file search", "file searches"),
-    ("search_text", "text search", "text searches"),
-    ("list_agents", "Agent listing", "Agent listings"),
-    ("query_session", "Session query", "Session queries"),
-    ("stat_file", "file stat", "file stats"),
-    ("read_output", "output read", "output reads"),
-    ("search_output", "output search", "output searches"),
-    ("list_values", "value listing", "value listings"),
-];
+mod inspection;
+pub(super) use inspection::inspection_composition;
+use inspection::INSPECTIONS;
+
 const GROUP_DETAIL_ROWS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +102,11 @@ impl Details {
 
     pub(super) fn tool_mode(&self, key: &Key, fallback: ToolDetails) -> ToolDetails {
         if self.inspections.contains(key) {
-            ToolDetails::Inspection
+            if fallback == ToolDetails::CompactFile {
+                ToolDetails::ExpandedFile
+            } else {
+                ToolDetails::Inspection
+            }
         } else {
             fallback
         }
@@ -524,9 +521,11 @@ impl Transcript {
             groups(&window.records)
                 .into_iter()
                 .find(|span| {
-                    window.records[span.range.clone()]
-                        .iter()
-                        .any(|record| record.key == *key)
+                    window.records[span.range.clone()].iter().any(|record| {
+                        record.key == *key
+                            && !(span.summary.keeps_outcomes()
+                                && record.tool().is_some_and(Tool::workspace_outcome))
+                    })
                 })
                 .and_then(|span| {
                     let records = &window.records[span.range];
@@ -599,6 +598,16 @@ pub(super) struct GroupSummary {
     kind: GroupKind,
 }
 
+impl GroupSummary {
+    pub(super) fn framed(&self) -> bool {
+        matches!(self.kind, GroupKind::Delegation { .. })
+    }
+
+    pub(super) fn keeps_outcomes(&self) -> bool {
+        matches!(self.kind, GroupKind::WorkspaceActivity { .. })
+    }
+}
+
 #[derive(PartialEq, Eq)]
 enum GroupKind {
     Delegation {
@@ -607,6 +616,9 @@ enum GroupKind {
         checks: usize,
     },
     Inspections,
+    WorkspaceActivity {
+        has_inspections: bool,
+    },
 }
 
 pub(super) struct GroupHeading {
@@ -617,6 +629,15 @@ pub(super) struct GroupHeading {
 }
 
 impl GroupHeading {
+    pub(super) fn expandable(&self) -> bool {
+        !matches!(
+            self.summary.kind,
+            GroupKind::WorkspaceActivity {
+                has_inspections: false
+            }
+        )
+    }
+
     pub(super) fn from_span(
         span: GroupSpan,
         records: &[Record],
@@ -648,6 +669,38 @@ impl GroupHeading {
     }
 
     pub(super) fn new(summary: GroupSummary, open: bool, width: usize) -> Self {
+        if !summary.framed() {
+            let label = if summary.composition.is_empty() || !summary.listing.is_empty() {
+                &summary.title
+            } else {
+                &summary.composition
+            };
+            let mut rows = vec![Row::plain(Line::styled(
+                shorten(label, width),
+                emphasis(ACCENT),
+            ))];
+            if !open {
+                for detail in [summary.preview.as_deref().unwrap_or(""), &summary.listing] {
+                    if !detail.is_empty() {
+                        rows.extend(
+                            render_rows(
+                                render_literal(detail, Style::default()),
+                                width.saturating_sub(usize::from(body_inset(width))),
+                                GROUP_DETAIL_ROWS,
+                                0,
+                            )
+                            .map(|row| row.with_rail(body_inset(width))),
+                        );
+                    }
+                }
+            }
+            return Self {
+                agent_link: None,
+                summary,
+                open,
+                rows,
+            };
+        }
         let frame = CardFrame::new(width);
         let columns = frame.title_width();
         let marker = if open { "▾ " } else { "▸ " };
@@ -783,6 +836,52 @@ pub(super) fn groups(records: &[Record]) -> Vec<GroupSpan> {
             }
         }
         let start = index;
+        if first.tool().is_some_and(workspace_activity) {
+            let count = 1 + records[start + 1..]
+                .iter()
+                .take_while(|record| {
+                    same_turn(record) && record.tool().is_some_and(workspace_activity)
+                })
+                .count();
+            let range = start..start + count;
+            let tools = || records[range.clone()].iter().filter_map(Record::tool);
+            let changes = tools().filter(|tool| tool.compact_file_change()).count();
+            let saved = tools().filter(|tool| tool.saved_script_return()).count();
+            if count > 1 && changes + saved > 0 {
+                let composition = inspection_composition(tools(), false);
+                let has_inspections = !composition.is_empty();
+                let steps = if changes == 1 {
+                    "1 file change".to_owned()
+                } else if changes > 1 {
+                    format!("{changes} file changes")
+                } else {
+                    String::new()
+                };
+                let title = [&composition, &steps]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let title = if title.is_empty() {
+                    format!("{saved} saved outputs")
+                } else {
+                    title
+                };
+                groups.push(GroupSpan {
+                    range: range.clone(),
+                    summary: GroupSummary {
+                        title,
+                        composition: String::new(),
+                        listing: String::new(),
+                        preview: None,
+                        kind: GroupKind::WorkspaceActivity { has_inspections },
+                    },
+                });
+                index = range.end;
+                continue;
+            }
+        }
         if let Some(name) = group_name(first) {
             loop {
                 let next = next_action(index);
@@ -828,6 +927,13 @@ fn group_name(record: &Record) -> Option<&str> {
     record.tool()?.group_name()
 }
 
+fn workspace_activity(tool: &Tool) -> bool {
+    tool.workspace_outcome()
+        || tool
+            .group_name()
+            .is_some_and(|name| !matches!(name, "list_agents" | "query_session"))
+}
+
 fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
     let count = records.iter().filter_map(group_name).count();
     let mixed = records
@@ -844,22 +950,11 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
         .rev()
         .find(|record| group_name(record) == Some("list_agents"))
         .and_then(|record| record.tool()?.agent_listing());
-    let mut parts = Vec::new();
-    if mixed {
-        for (name, one, many) in INSPECTIONS {
-            if name == "list_agents" && listing.is_some() {
-                continue;
-            }
-            let count = records
-                .iter()
-                .filter_map(Record::tool)
-                .map(|tool| tool.inspection_count(name))
-                .fold(0, u64::saturating_add);
-            if count > 0 {
-                parts.push(format!("{count} {}", if count == 1 { one } else { many }));
-            }
-        }
-    }
+    let composition = if mixed {
+        inspection_composition(records.iter().filter_map(Record::tool), listing.is_some())
+    } else {
+        String::new()
+    };
     let preview = if mixed && count == 2 {
         let results = records
             .iter()
@@ -871,7 +966,7 @@ fn group_summary(first: &str, records: &[Record]) -> GroupSummary {
     };
     GroupSummary {
         title,
-        composition: parts.join(" · "),
+        composition,
         listing: listing.unwrap_or_default(),
         preview,
         kind: GroupKind::Inspections,

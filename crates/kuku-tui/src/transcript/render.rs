@@ -93,7 +93,7 @@ impl Transcript {
                 skip = skip.saturating_sub(group.rows.len());
                 let end = lines.len()
                     - usize::from(lines.last().is_some_and(|line| line.spans.is_empty()));
-                if first < end {
+                if first < end && group.expandable() {
                     visible.push(VisibleDetail::group(
                         first..end,
                         block.key,
@@ -105,10 +105,10 @@ impl Transcript {
             let first = lines.len();
             let footer_skip = skip.saturating_sub(block.body_height());
             for row in block.body_rows().skip(skip).take(limit - lines.len()) {
-                let row = if block.grouped {
+                let row = if block.framed {
                     row.clone().framed(&group_frame)
                 } else {
-                    row.clone()
+                    row.clone().with_rail(block.group_inset)
                 };
                 self.visible_links
                     .extend(row.links.into_iter().map(|link| (lines.len(), link)));

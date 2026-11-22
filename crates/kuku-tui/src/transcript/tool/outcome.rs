@@ -205,6 +205,19 @@ pub(super) struct FileRead {
 }
 
 impl FileRead {
+    pub(super) fn group_caption(&self) -> String {
+        if self.total > 0
+            && self.start == 1
+            && self.count == self.total
+            && !self.truncated
+            && !self.cached
+        {
+            String::new()
+        } else {
+            self.caption()
+        }
+    }
+
     fn from_result(structured: &Value, truncated: bool) -> Option<Self> {
         if structured["kind"].as_str() != Some("file_content") {
             return None;

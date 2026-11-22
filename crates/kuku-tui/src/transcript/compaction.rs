@@ -1,14 +1,14 @@
 use kuku_client::HistoryEntry;
-use ratatui::style::Style;
+use ratatui::text::Line;
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use unicode_width::UnicodeWidthStr;
 
-use crate::markup::render_literal;
-use crate::text::{compact_token_count, shorten, single_line};
+use crate::text::{compact_token_count, single_line};
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
 
-use super::{capped, message, render_record, Row, MAX_BODY_BYTES};
+use super::{body_inset, capped, message, Row, MAX_BODY_BYTES};
 
 #[derive(Debug, Clone)]
 pub(super) enum Compaction {
@@ -125,6 +125,8 @@ impl Compaction {
         open: bool,
         elapsed_seconds: Option<u64>,
     ) -> Vec<Row> {
+        let rail = body_inset(width);
+        let body_width = width.saturating_sub(usize::from(rail));
         let (title, color, body) = match self {
             Self::Queued => ("Compaction queued", MUTED, String::new()),
             Self::Running { provider_limit, .. } => (
@@ -142,36 +144,46 @@ impl Compaction {
                 messages,
                 summary,
             } => {
-                let stats = format!(
-                    "{} · ~{} → ~{} input tokens\n{messages} messages summarized",
-                    duration(*elapsed_ms),
+                let counts = format!(
+                    "~{} → ~{}",
                     compact_token_count(input_tokens.0),
                     compact_token_count(input_tokens.1),
                 );
-                if open {
-                    return message::render_markdown_record(
-                        "Context compacted ▾",
-                        SUCCESS,
-                        &format!("{stats}\n\n{summary}"),
+                let unit = if "Context compacted ·  input tokens".width() + counts.width() <= width
+                {
+                    "input tokens"
+                } else {
+                    "tokens"
+                };
+                let mut rows = vec![
+                    Row::plain(Line::default()),
+                    Row::caption(
+                        "Context compacted",
+                        &format!("{counts} {unit}"),
+                        ACCENT,
                         width,
-                    );
-                }
-                let preview = summary
-                    .lines()
-                    .map(str::trim)
-                    .find(|line| !line.is_empty() && !line.starts_with('#'));
-                let body = preview.map_or(stats.clone(), |line| {
-                    format!("{stats}\n{}", shorten(&single_line(line), 160))
-                });
-                (
-                    if summary.is_empty() {
-                        "Context compacted"
+                    ),
+                ];
+                if open {
+                    let count = if *messages == 1 {
+                        "message"
                     } else {
-                        "Context compacted ▸"
-                    },
-                    SUCCESS,
-                    body,
-                )
+                        "messages"
+                    };
+                    let details =
+                        format!("{} · {messages} {count} summarized", duration(*elapsed_ms));
+                    rows.push(Row::caption(&details, "", MUTED, body_width).with_rail(rail));
+                    if !summary.trim().is_empty() {
+                        rows.push(Row::plain(Line::default()).with_rail(rail));
+                        let mut body = message::markdown_body(summary, body_width, 0);
+                        if body.last().is_some_and(|row| row.line.spans.is_empty()) {
+                            body.pop();
+                        }
+                        rows.extend(body.into_iter().map(|row| row.with_rail(rail)));
+                    }
+                }
+                rows.push(Row::plain(Line::default()));
+                return rows;
             }
             Self::Ended {
                 elapsed_ms,
@@ -206,13 +218,7 @@ impl Compaction {
                 "Using the context from before the latest compaction.".into(),
             ),
         };
-        render_record(
-            title,
-            color,
-            render_literal(&body, Style::default()),
-            width,
-            0,
-        )
+        message::render_activity_record(title, color, &body, width)
     }
 }
 

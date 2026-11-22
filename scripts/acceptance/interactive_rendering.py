@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,17 +12,12 @@ from urllib.parse import urlencode
 from interactive_fixture import InstalledClient, Response, StreamPause, eventually, is_composer_heading, run_cases
 from interactive_responses import responses_reasoning
 
-RUNNING_STATUS_ROWS_FROM_BOTTOM = 6
-
-
 def rendered_running_transcript(screen, height, markers):
     rows = screen.splitlines()
-    status_row = height - RUNNING_STATUS_ROWS_FROM_BOTTOM
     return (
         len(rows) == height
-        and status_row >= 0
-        and is_composer_heading(rows[status_row])
-        and any(label in rows[status_row] for label in ("Tools", "Running"))
+        and any(is_composer_heading(row) and any(label in row for label in ("Tools", "Running"))
+                for row in rows[-6:-3])
         and all(marker in screen for marker in markers)
     )
 
@@ -37,7 +33,7 @@ def page_up_after_rendered_resize(terminal, read_while, height, markers):
 
 
 def select_message_action(terminal, screen, action):
-    labels = {"Copy", "Source", "Thinking", "Expand", "Full output"}
+    choice = re.compile(r"(?P<selected>› | {2})(?P<label>Copy|Source|Thinking|Expand|Full output)(?= {2}|$)")
 
     def action_rows(value):
         lines = value.splitlines()
@@ -52,7 +48,7 @@ def select_message_action(terminal, screen, action):
             (
                 index
                 for index, line in enumerate(rows)
-                if any(line.rstrip(" │┃─╮╯").endswith(f"› {label}") for label in labels)
+                if (match := choice.search(line)) and match["selected"] == "› "
             ),
             None,
         )
@@ -66,21 +62,12 @@ def select_message_action(terminal, screen, action):
         return rows[first_choice:end]
 
     def visible_actions(value):
-        visible = []
-        for line in action_rows(value):
-            line = line.rstrip(" │┃─╮╯")
-            for label in labels:
-                if line.endswith(label) or line.endswith(f"› {label}"):
-                    visible.append(label)
-                    break
-        return visible
+        return [match["label"] for line in action_rows(value) if (match := choice.search(line))]
 
     def selected_action(value):
         for line in action_rows(value):
-            line = line.rstrip(" │┃─╮╯")
-            for label in labels:
-                if line.endswith(f"› {label}"):
-                    return label
+            if (match := choice.search(line)) and match["selected"] == "› ":
+                return match["label"]
         return None
 
     visible = visible_actions(screen)
@@ -338,11 +325,19 @@ def file_change_cards(client):
         client.provider.next("verify").tool("edit_file", "update", path="hello.py", old_text='"Hello"', new_text='"Welcome"')
         client.provider.next("update").tool("write_file", "summary", path="notes.md", content="# Report\n\n- Checked the greeting.\n")
         client.provider.next("summary").text("Saved the example.")
-        screen = terminal.expect("Saved the example.", also=("╭─ Write file", "╭─ Edit file", "1 line written", "+1 −1", "3 lines written"))["screen"]
-        assert "Checked the greeting." in screen and "# Report" not in screen, screen
+        edit = "Edited   hello.py"
+        write = "Wrote    notes.md"
+        screen = terminal.expect("Saved the example.", also=("1 file read · 3 file changes", "Wrote    hello.py", edit, write))["screen"]
+        assert "Checked the greeting." not in screen, screen
+        terminal.click_text(screen, edit)
+        changed = terminal.expect('-1 │ print("Hello")', also=('+1 │ print("Welcome")', edit, "+1 −1", write))["screen"]
+        assert "Requested arguments · edit_file" not in changed, changed
+        assert "Read hello.py" not in changed, changed
+        terminal.click_text(changed, write)
+        written = terminal.expect("Checked the greeting.", also=(write, "3 lines written"))["screen"]
+        assert "# Report" not in written, written
         settled = terminal.expect("Saved the example.", state="Finished")["screen"]
         assert "Input accepted" not in settled and "Finished 0s" not in settled, settled
-        assert '+print("Welcome")' in screen and '-print("Hello")' in screen, screen
         assert (workspace / "hello.py").read_text() == 'print("Welcome")\n'
         terminal.exit_cleanly()
     client.provider.assert_idle()

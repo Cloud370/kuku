@@ -138,6 +138,24 @@ pub(crate) fn file_source(text: &str, language: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
+pub(crate) fn code_card(
+    text: &str,
+    language: &str,
+    width: usize,
+    limit: usize,
+) -> Vec<Line<'static>> {
+    let code = CodeBlock {
+        language: Some(language.to_owned()),
+        text: crate::text::replace_tabs(&crate::text::terminal_text(text)),
+    };
+    let mut rows = code.render(width, limit, &mut SyntaxBudget::default());
+    if rows.len() > limit {
+        rows.truncate(limit);
+        rows.push(CardFrame::new(width).foot("…"));
+    }
+    rows
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SyntaxBudget {
     bytes: usize,

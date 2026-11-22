@@ -101,6 +101,42 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
 }
 
 #[test]
+fn script_details_show_source_in_the_javascript_code_card() {
+    let mut transcript = Transcript::default();
+    for event in [
+        json!({"id":1,"agent":"main","turn":1,"type":"tool_call","tool":"run_js","tool_call_id":"script",
+            "args":{"title":"Save the report","code":"const marker = '```';\nreturn { marker };"}}),
+        json!({"id":2,"agent":"main","turn":1,"type":"tool_result","tool_call_id":"script","status":"ok",
+            "structured":{"kind":"workspace_script_result","actions":[],"value":null,"timed_out":false,
+                "cleanup_incomplete":false,"not_dispatched":0,"output_ref":{"id":"saved","offset":0,"bytes":16000}}}),
+    ] {
+        transcript.apply(serde_json::from_value(event).unwrap(), None);
+    }
+    let view = transcript.project(80, 20);
+    let label = "Save the report · Saved JSON";
+    let index = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains(label))
+        .unwrap();
+    assert!(!view
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("const marker")));
+    let detail = transcript.detail_at(index).unwrap().clone();
+    assert!(transcript.toggle_detail(&detail));
+    let view = transcript.project(80, 20);
+    let text: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
+    assert!(text[index].contains(label));
+    assert!(text.iter().any(|line| line.contains("╭─ javascript")));
+    assert!(text
+        .iter()
+        .any(|line| line.contains("const marker = '```';")));
+    assert!(text.iter().any(|line| line.contains("return { marker };")));
+    assert!(!text.iter().any(|line| line.contains("Requested arguments")));
+}
+
+#[test]
 fn late_live_output_does_not_change_a_full_preview() {
     let mut tool = Tool::default();
     let first = json!({"type":"tool_output", "event":{"stdout":"中".repeat(MAX_DETAIL_BYTES)}});
@@ -296,11 +332,11 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
     let rows: Vec<_> = compact.lines.iter().map(ToString::to_string).collect();
     let write_row = rows
         .iter()
-        .position(|line| line.contains("Write notes.txt · 2 lines written"))
+        .position(|line| line.contains("Wrote    notes.txt"))
         .unwrap();
     let edit_row = rows
         .iter()
-        .position(|line| line.contains("Edit notes.txt · +1 −2"))
+        .position(|line| line.contains("Edited   notes.txt"))
         .unwrap();
     assert!(write_row < edit_row);
     let compact_text = rows.join("\n");
@@ -318,39 +354,33 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
         .collect::<Vec<_>>()
         .join("\n");
     for fact in [
-        "Write file · ok · notes.txt",
+        "Wrote    notes.txt",
         "saved UTF-8 中",
         "actual␛line",
         "2 lines written",
-        "Edit file · ok · notes.txt",
-        "17    │ -first",
-        "18    │ -second",
-        "   17 │ +new line",
+        "Edited   notes.txt",
+        "-17 │ first",
+        "-18 │ second",
+        "+17 │ new line",
         "+1 −2",
         "No permission for failed.txt",
     ] {
         assert!(rendered.contains(fact), "missing {fact}\n{rendered}");
     }
     assert!(!rendered.contains("incorrect preview") && !rendered.contains("3 lines written"));
-    let edit_header = view
+    assert!(!rendered.contains("Requested arguments · edit_file"));
+    assert!(!rendered.contains("sentinel new"));
+    assert_eq!("-first\n-second\n+new line", transcript.tools()[1].diff);
+    assert!(transcript.toggle_detail(&edit_key));
+    let folded = transcript.project(90, 40);
+    assert!(folded
         .lines
         .iter()
-        .position(|line| line.to_string().contains("Edit file · ok · notes.txt"))
-        .unwrap();
-    assert!(view.lines[edit_header]
-        .to_string()
-        .starts_with("╭─ Edit file"));
-    assert!(rendered.contains("╰─ +1 −2"));
-    let inspected = transcript
-        .project(90, 40)
+        .any(|line| line.to_string().contains("Edited   notes.txt")));
+    assert!(!folded
         .lines
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        inspected.contains("Requested arguments · edit_file") && inspected.contains("sentinel new")
-    );
+        .iter()
+        .any(|line| line.to_string().contains("-17 │")));
 }
 
 #[test]
@@ -378,20 +408,24 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     let lines: Vec<_> = screen.lines().collect();
     let heading = lines
         .iter()
-        .position(|line| line.starts_with(r#"╭─ check-file ["file with spaces"]"#))
+        .position(|line| line.starts_with(r#"check-file ["file with spaces"]"#))
         .unwrap();
-    assert!(lines[heading].ends_with('╮') && !lines[heading].contains("exit"));
-    assert!(lines[heading + 1].trim_matches('│').trim().is_empty());
-    assert_eq!(lines[heading + 2].trim_matches('│').trim(), "GONE");
-    assert!(lines[heading + 3].trim_matches('│').trim().is_empty());
-    assert!(lines[heading + 4].starts_with("╰─ ok · exit 0 · 180ms"));
+    assert!(lines[heading].ends_with("ok · exit 0 · 180ms"));
+    assert_eq!(lines[heading + 1], "│ GONE");
     let key = transcript.detail_at(heading).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript.project(80, 24);
+    let inspected: Vec<_> = inspected.lines.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        1,
+        inspected
+            .iter()
+            .filter(|line| line.contains("check-file"))
+            .count()
+    );
     assert!(inspected
-        .lines
         .iter()
-        .any(|line| line.to_string().contains("check-file")));
+        .any(|line| line.contains("Full output in Messages")));
     assert!(
         !screen.contains("stdout") && !screen.contains("Saved output") && !screen.contains('␍')
     );

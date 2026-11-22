@@ -18,7 +18,7 @@ mod stream;
 pub(crate) use stream::MarkdownStream;
 mod table;
 
-pub(crate) use code::file_source;
+pub(crate) use code::{code_card, file_source};
 use code::{CodeBlock, SyntaxBudget};
 use table::Table;
 
@@ -100,7 +100,7 @@ pub(crate) fn wrap_bounded(
     wrap_with_indent(lines, width, limit, "")
 }
 
-fn wrap_with_indent(
+pub(crate) fn wrap_with_indent(
     lines: Vec<Line<'static>>,
     width: usize,
     limit: usize,

@@ -4,9 +4,12 @@ use ratatui::text::Line;
 use serde_json::Value;
 
 use crate::text::single_line;
-use crate::theme::{CardFrame, ERROR, SUCCESS, SURFACE_TEXT, WARNING};
+use crate::theme::{CardFrame, ACCENT, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING};
 
-use super::{arguments_json, capped, Row, Tool, MAX_DETAIL_BYTES};
+use super::{
+    arguments_json, body_inset, capped, finish_card, render_preview, Row, Tool, ToolDetails,
+    MAX_DETAIL_BYTES,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct CommandPreview {
@@ -168,6 +171,45 @@ impl CommandPreview {
 }
 
 impl Tool {
+    pub(super) fn render_short_command(
+        &self,
+        command: &CommandPreview,
+        width: usize,
+        details: ToolDetails,
+    ) -> Vec<Row> {
+        let title = single_line(self.command_title());
+        let (status, color) = self.status_label();
+        let rail = body_inset(width);
+        let body_width = width.saturating_sub(usize::from(rail));
+        let headline_color = if color == crate::theme::SUCCESS {
+            ACCENT
+        } else {
+            color
+        };
+        let mut rows = vec![Row::caption(&title, &status, headline_color, width)];
+        if details != ToolDetails::Collapsed {
+            rows.extend(
+                render_preview(command.body(), SURFACE_TEXT, body_width, 3, 0)
+                    .map(|row| row.with_rail(rail)),
+            );
+        }
+        if details == ToolDetails::Inspection {
+            let invocation = single_line(self.invocation());
+            if !invocation.is_empty() && invocation != title {
+                rows.extend(
+                    render_preview(&invocation, MUTED, body_width, 2, 0)
+                        .map(|row| row.with_rail(rail)),
+                );
+            }
+            if self.view().has_full_output() {
+                rows.push(
+                    Row::caption("Full output in Messages", "", MUTED, body_width).with_rail(rail),
+                );
+            }
+        }
+        finish_card(rows)
+    }
+
     pub(super) fn command_title(&self) -> &str {
         if !self.request_title.is_empty() {
             return &self.request_title;

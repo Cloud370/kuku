@@ -9,13 +9,15 @@ use kuku_client::{
 use ratatui::style::Color;
 use serde_json::Value;
 
+use crate::markup::code_card;
 use crate::text::single_line;
 use crate::theme::{ACCENT, MUTED, SURFACE_TEXT, WARNING};
 
 use super::command::CommandPreview;
 use super::{
-    arguments_json, capped, finish_card, render_preview, tool_title, Row, Tool, ToolDetails,
-    ToolView, MAX_DETAIL_BYTES, MAX_INSPECTION_ROWS, MAX_RESULT_ROWS, MAX_WARNING_ROWS,
+    arguments_json, body_inset, capped, finish_card, render_preview, tool_title, Row, Tool,
+    ToolDetails, ToolView, MAX_DETAIL_BYTES, MAX_INSPECTION_ROWS, MAX_RESULT_ROWS,
+    MAX_WARNING_ROWS,
 };
 
 #[derive(Debug, Clone)]
@@ -51,6 +53,12 @@ impl ScriptPreview {
 
     pub(super) fn read_only(&self) -> bool {
         self.read_only
+    }
+
+    pub(super) fn saved_return_only(&self) -> bool {
+        self.facts.output_ref.is_some()
+            && self.facts.actions.is_empty()
+            && self.label("ok").is_none()
     }
 
     pub(super) fn inspection_count(&self, operation: &str) -> u64 {
@@ -91,12 +99,16 @@ impl ScriptPreview {
     pub(super) fn evidence(&self, status: &str) -> String {
         let mut lines = vec![self.summary()];
         lines.extend(self.notes(status));
-        lines.extend(self.facts.actions.iter().map(action_detail));
+        lines.extend(self.action_details());
         let value = self.returned_value();
         if !value.is_empty() {
             lines.push(value);
         }
         lines.join("\n")
+    }
+
+    pub(super) fn action_details(&self) -> impl Iterator<Item = String> + '_ {
+        self.facts.actions.iter().map(action_detail)
     }
 
     pub(super) fn outputs(&self) -> Vec<ToolView> {
@@ -164,8 +176,8 @@ impl ScriptPreview {
     }
 
     fn returned_value(&self) -> String {
-        if let Some(output) = &self.facts.output_ref {
-            format!("JSON return saved · {} bytes", output.bytes)
+        if self.facts.output_ref.is_some() {
+            "JSON saved".to_owned()
         } else if self.facts.value.is_null() {
             String::new()
         } else {
@@ -175,6 +187,67 @@ impl ScriptPreview {
 }
 
 impl Tool {
+    pub(super) fn render_saved_script(&self, width: usize, details: ToolDetails) -> Vec<Row> {
+        let open = details == ToolDetails::Inspection;
+        let mut rows = vec![Row::caption(
+            &self.title(),
+            "Saved JSON",
+            SURFACE_TEXT,
+            width,
+        )];
+        if open {
+            rows.extend(self.script_code_rows(width, body_inset(width)));
+            rows.extend(render_preview(
+                "Open the saved JSON from Messages.",
+                MUTED,
+                width,
+                2,
+                body_inset(width),
+            ));
+        }
+        rows
+    }
+
+    pub(super) fn render_script_with_rail(
+        &self,
+        script: &ScriptPreview,
+        status: &str,
+        width: usize,
+        details: ToolDetails,
+    ) -> Vec<Row> {
+        let rail = body_inset(width);
+        let mut content = self.render_script(
+            script,
+            status,
+            width.saturating_sub(usize::from(rail)),
+            0,
+            details,
+        );
+        if content.last().is_some_and(|row| row.line.spans.is_empty()) {
+            content.pop();
+        }
+        let mut content = content.into_iter();
+        let mut rows = content.next().into_iter().collect::<Vec<_>>();
+        rows.extend(content.map(|row| row.with_rail(rail)));
+        finish_card(rows)
+    }
+
+    pub(super) fn script_code_rows(&self, width: usize, inset: u16) -> Vec<Row> {
+        if self.script_source.is_empty() {
+            return Vec::new();
+        }
+        let width = width.saturating_sub(usize::from(inset));
+        code_card(
+            &self.script_source,
+            "javascript",
+            width,
+            MAX_INSPECTION_ROWS,
+        )
+        .into_iter()
+        .map(|line| Row::plain(line).indented(inset))
+        .collect()
+    }
+
     pub(super) fn render_script(
         &self,
         script: &ScriptPreview,
@@ -212,9 +285,6 @@ impl Tool {
         if details == ToolDetails::Collapsed {
             return finish_card(rows);
         }
-        if details == ToolDetails::Inspection {
-            self.render_arguments(&mut rows, width, inset);
-        }
         let limit = match details {
             ToolDetails::Inspection => MAX_INSPECTION_ROWS,
             ToolDetails::GroupMember => 1,
@@ -238,6 +308,9 @@ impl Tool {
                 1,
                 inset,
             ));
+        }
+        if details == ToolDetails::Inspection {
+            rows.extend(self.script_code_rows(width, inset));
         }
         if !actions.is_empty() || script.facts.output_ref.is_some() {
             let hint = if script.facts.output_ref.is_some() || actions.iter().any(has_output) {

@@ -6,13 +6,13 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::markup::{file_source, render_diff, render_markdown, wrap_bounded};
+use crate::markup::{file_source, render_diff, render_markdown, wrap_with_indent};
 use crate::text::{cap, shorten, shorten_middle, single_line};
-use crate::theme::{ACCENT, MUTED, WARNING};
+use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};
 
 use super::{
-    join_details, render_rows, Row, Tool, ToolDetails, MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS,
-    MAX_PREVIEW_BYTES,
+    body_inset, join_details, render_rows, Row, Tool, ToolDetails, MAX_CHANGE_ROWS,
+    MAX_INSPECTION_ROWS, MAX_PREVIEW_BYTES,
 };
 
 impl Tool {
@@ -22,8 +22,19 @@ impl Tool {
         width: usize,
         details: ToolDetails,
     ) -> Vec<Row> {
-        if details == ToolDetails::CompactFile {
-            return compact_change_row(change, self.invocation(), width);
+        if matches!(
+            details,
+            ToolDetails::CompactFile | ToolDetails::ExpandedFile
+        ) {
+            let open = details == ToolDetails::ExpandedFile;
+            let path = self.invocation();
+            let mut rows = vec![compact_change_row(change, path, width)];
+            if open {
+                let inset = body_inset(width);
+                let preview = change.lines(path, width - usize::from(inset), MAX_INSPECTION_ROWS);
+                rows.extend(render_rows(preview, width, MAX_INSPECTION_ROWS + 1, inset));
+            }
+            return rows;
         }
         let frame = crate::theme::CardFrame::new(width);
         let path = self.invocation();
@@ -149,10 +160,13 @@ impl FileChange {
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("");
+        let mut gutter = 0;
         let mut lines = if text.is_empty() {
             Vec::new()
         } else if self.diff {
-            numbered_diff(text, &self.preview_line_numbers, width)
+            let (lines, gutter_width) = numbered_diff(text, &self.preview_line_numbers, width);
+            gutter = gutter_width;
+            lines
         } else if language.eq_ignore_ascii_case("md") || language.eq_ignore_ascii_case("markdown") {
             let mut lines = render_markdown(text, width, limit);
             if lines.last().is_some_and(|line| line.spans.is_empty()) {
@@ -167,7 +181,7 @@ impl FileChange {
                 last.push_span(Span::styled("…", Style::new().fg(MUTED)));
             }
         }
-        wrap_bounded(lines, width, limit)
+        wrap_with_indent(lines, width, limit, &" ".repeat(gutter))
     }
 
     fn new(
@@ -199,38 +213,42 @@ fn plural(count: u64, one: &'static str, many: &'static str) -> &'static str {
     }
 }
 
-fn numbered_diff(text: &str, numbers: &[u64], width: usize) -> Vec<Line<'static>> {
+fn numbered_diff(text: &str, numbers: &[u64], width: usize) -> (Vec<Line<'static>>, usize) {
     let mut lines = render_diff(text);
     let digits = numbers.iter().copied().max().unwrap_or(0).to_string().len();
-    if numbers.is_empty() || width <= digits + 5 {
-        return lines;
+    let gutter = digits + 4;
+    if numbers.is_empty() || width < gutter + 2 {
+        return (lines, 0);
     }
-    let both = width > 2 * digits + 10;
     for (line, number) in lines.iter_mut().zip(numbers) {
-        let marker = line
-            .spans
-            .first()
-            .and_then(|span| span.content.chars().next());
-        let label = match marker {
-            Some('-') if both => format!("{number:>digits$} {:digits$} │ ", ""),
-            Some('+') if both => format!("{:digits$} {number:>digits$} │ ", ""),
-            Some('-' | '+') => format!("{number:>digits$} │ "),
-            _ => continue,
-        };
-        line.spans
-            .insert(0, Span::styled(label, Style::new().fg(MUTED)));
+        if let Some(span) = line.spans.first_mut() {
+            if let Some(marker @ ('-' | '+')) = span.content.chars().next() {
+                span.content = span.content[1..].to_owned().into();
+                line.spans.insert(
+                    0,
+                    Span::styled(
+                        format!("{marker}{number:<digits$} │ "),
+                        Style::new().fg(MUTED),
+                    ),
+                );
+            }
+        }
     }
-    lines
+    (lines, gutter)
 }
 
-fn compact_change_row(change: &FileChange, path: &str, width: usize) -> Vec<Row> {
-    let action = match change.tool {
-        "write_file" => "Write",
-        "remove_file" => "Remove",
-        _ => "Edit",
+fn compact_change_row(change: &FileChange, path: &str, width: usize) -> Row {
+    let (action, color) = match change.tool {
+        "write_file" => ("Wrote", SUCCESS),
+        "remove_file" => ("Removed", WARNING),
+        _ => ("Edited", SUCCESS),
     };
-    let action = format!("▸ {action} ");
-    let stats = format!(" · {}", change.stats);
+    let action = if width >= 36 {
+        format!("{action:<8} ")
+    } else {
+        format!("{action} ")
+    };
+    let stats = format!("  {}", change.stats);
     let stats = shorten(
         &stats,
         width.saturating_sub(action.width() + 2).min(width / 2),
@@ -239,10 +257,18 @@ fn compact_change_row(change: &FileChange, path: &str, width: usize) -> Vec<Row>
         &single_line(path),
         width.saturating_sub(action.width() + stats.width()),
     );
+    let padding = if width >= 60 {
+        22usize
+            .saturating_sub(path.width())
+            .min(width.saturating_sub(action.width() + path.width() + stats.width()))
+    } else {
+        0
+    };
     let line = Line::from(vec![
-        Span::styled(action, Style::new().fg(ACCENT)),
+        Span::styled(shorten(&action, width), Style::new().fg(color)),
         Span::raw(path),
+        Span::raw(" ".repeat(padding)),
         Span::styled(stats, Style::new().fg(MUTED)),
     ]);
-    render_rows(vec![line], width, 1, 0).collect()
+    Row::plain(line)
 }
