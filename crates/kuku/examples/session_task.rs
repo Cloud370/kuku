@@ -225,6 +225,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
         }
     };
     let mut error = None;
+    let mut task_deadline_elapsed = false;
     let snapshot = match tokio::time::timeout(Duration::from_secs(timeout), task).await {
         Ok(Ok(snapshot)) => Some(snapshot),
         Ok(Err(failure)) => {
@@ -232,6 +233,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
             session.agent(agent).ok()
         }
         Err(_) => {
+            task_deadline_elapsed = true;
             error = Some(format!("task exceeded {timeout}s"));
             if let Err(failure) = session.cancel(agent).await {
                 error = Some(failure.to_string());
@@ -313,6 +315,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
             snapshot.status == AgentStatus::Idle && snapshot.pending_inputs == 0
         });
     let mut result = json!({"session_id":session.id(),"agent":snapshot,"agents":session.agents(),"events_path":session.events_path(),"last_event_id":after,"facts":facts,"provider_settings":settings,"provider_reports":reports,"streaming":streaming,"limits":{"max_requests":limits.max_requests_per_open,"max_agents":limits.max_agents,"max_output_tokens":limits.max_output_tokens_per_request,"max_request_bytes":limits.max_request_bytes,"max_command_seconds":limits.max_command_seconds,"max_context_tokens":max_context_tokens,"automatic_retries":5 * u8::from(limits.retry_transient_provider_errors)},"elapsed_ms":started.elapsed().as_millis(),"cleanup":{"closed":close.is_ok()},"runtime_completed":passed,"error":error});
+    result["task_deadline_elapsed"] = json!(task_deadline_elapsed);
     result["process_resources"] = json!(process_resources::sample());
     if inspected_name.is_some() {
         result["workspace"] = json!({"named_before": named_before, "named_after": named_after, "outcomes": workspace_outcomes});

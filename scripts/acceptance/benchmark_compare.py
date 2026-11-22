@@ -184,6 +184,8 @@ def attempt(directory, harness):
                                 if type(verification.get('exit_code')) is int else None)
     version = package.get('version')
     codex_version = codex_package.get('version')
+    runner_timeout = boolean(object_value(result.get('execution')).get('timed_out'))
+    sdk_deadline = boolean(agent.get('task_deadline_elapsed')) if harness == 'kuku' else None
     return shared, {
         'harness': harness, 'passed': boolean(record.get('passed')), 'task_passed': boolean(result.get('task_passed')),
         'failure_kind': allowed(result.get('failure_kind'), FAILURE_KINDS), 'reward': number(result.get('reward')),
@@ -203,7 +205,9 @@ def attempt(directory, harness):
             'codex_binary_sha256': hex_digest(runtime_files.get('codex'), 64),
         },
         'agent_seconds': number(object_value(result.get('execution')).get('seconds')),
-        'agent_timed_out': boolean(object_value(result.get('execution')).get('timed_out')),
+        'agent_timed_out': True if sdk_deadline else runner_timeout,
+        'sdk_task_deadline_elapsed': sdk_deadline,
+        'supervisor_timed_out': runner_timeout,
         'verifier_seconds': number(verification.get('seconds')),
         'original_verifier_passed': original_verifier_passed,
         'tests': {key: count(verifier_summary.get(key)) for key in TEST_FIELDS},

@@ -28,6 +28,7 @@ from run import Budget, benchmark_attempt, money, write_json
 ROUTER_MODEL_VERSION = "DeepSeek-V4.1-Flash-1017"
 ROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 WIRE_BYTES = 4 * 1024 * 1024
+SDK_SHUTDOWN_SECONDS = 45
 TOKEN_VARIABLE = "KUKU_INTENT_FIXTURE_TOKEN"
 DEEPSEEK_COUNTS = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
 ROUTER_COUNTS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_write_input_tokens", "reasoning_tokens")
@@ -839,7 +840,7 @@ def run_live(args, case, source, image, directory, secrets):
             thread.start()
             try:
                 meter.arm()
-                hard_timeout = timeout if pi_prefix or codex_prefix or caller.require_resource_evidence else timeout + 45
+                hard_timeout = timeout if pi_prefix or codex_prefix else timeout + SDK_SHUTDOWN_SECONDS
                 result = benchmark_attempt(caller, case, source, image, directory, "live", {TOKEN_VARIABLE: token},
                                            sdk_timeout_sec=hard_timeout,
                                            on_sdk_finished=meter.stop_admissions)

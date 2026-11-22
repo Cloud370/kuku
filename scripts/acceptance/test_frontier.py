@@ -576,7 +576,7 @@ class FrontierTests(unittest.TestCase):
             args = SimpleNamespace(provider="openrouter", upstream=None, sdk_binary=binary, ledger=ledger.path,
                                    max_requests=None if output is None else 48, max_output_tokens=output,
                                    case_cap_usd=1.5, agent_timeout_sec=None,
-                                   require_streaming=True, run_id=None)
+                                   require_streaming=True, require_resource_evidence=True, run_id=None)
             result = run_live(args, case, directory, "fake-image", directory, {ROUTER.credential: KEY, DIRECT.credential: "unused"})
             return result, json.loads((directory / "meter.json").read_text())
 

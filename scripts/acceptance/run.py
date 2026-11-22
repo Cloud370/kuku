@@ -436,8 +436,9 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
                                                     expected_max_command_seconds=record["max_command_seconds"])
         else:
             record["execution"] = {"exit_code": 0, "scope": "untouched environment; no Agent or oracle"}
-        timed_out = record["execution"].get("timed_out")
-        if timed_out and not record.get("sdk_evidence", {}).get("durable_cleanup_closed"):
+        sdk = record.get("sdk_evidence", {})
+        timed_out = record["execution"].get("timed_out") or sdk.get("task_deadline_elapsed")
+        if timed_out and not sdk.get("durable_cleanup_closed"):
             record.update(passed=False, failure_kind="runtime",
                           verification={"skipped": "runner timed out without a verified Session close"})
             return record
@@ -453,8 +454,8 @@ def benchmark_attempt(args, case, source, image, directory, mode, secrets, *, sd
         record["verifier_summary"] = verifier_summary(logs)
         record["original_verifier_passed"] = verifier_passed("live", record["verification"],
                                                             record["reward"], record["verifier_summary"])
-        record["task_passed"] = attempt_passed(mode, record["execution"], record["verification"],
-                                               record["reward"], record["verifier_summary"])
+        record["task_passed"] = not timed_out and attempt_passed(
+            mode, record["execution"], record["verification"], record["reward"], record["verifier_summary"])
         agent_passed = mode != "live" or record[evidence_key]["passed"]
         resources_passed = not strict or record["resource_evidence"]["passed"]
         record["passed"] = record["task_passed"] and agent_passed and resources_passed

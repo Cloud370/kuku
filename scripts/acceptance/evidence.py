@@ -603,6 +603,9 @@ def inspect_sdk(result_path, data_dir, connection=None, container_data=None, ses
         report = json_file(result_path)
         inspected["runtime_completed"] = report.get("runtime_completed")
         inspected["cleanup_closed"] = report.get("cleanup", {}).get("closed")
+        if "task_deadline_elapsed" in report:
+            require(type(report["task_deadline_elapsed"]) is bool, "invalid SDK task deadline evidence")
+            inspected["task_deadline_elapsed"] = report["task_deadline_elapsed"]
         if expected_max_command_seconds is not None:
             limit = (report.get("limits") or {}).get("max_command_seconds")
             require(type(limit) is int and limit == expected_max_command_seconds,

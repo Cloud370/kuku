@@ -426,22 +426,25 @@ class AcceptanceTests(unittest.TestCase):
         sampler.finish.return_value = {}
 
         def capture(_command, _directory, label, **_options):
-            return {"exit_code": -9, "timed_out": True} if label == "sdk" else {"exit_code": 0, "timed_out": False}
+            if label == "sdk":
+                return {"exit_code": 1 if sdk_deadline else -9, "timed_out": not sdk_deadline}
+            return {"exit_code": 0, "timed_out": False}
 
-        for closed in (False, True):
-            with self.subTest(closed=closed), mock.patch.multiple(
+        for sdk_deadline, closed in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(sdk_deadline=sdk_deadline, closed=closed), mock.patch.multiple(
                 ACCEPTANCE,
                 bundle_ca=mock.Mock(return_value={"sha256": "", "runtime_path": "/kuku/runtime/ca.crt"}),
                 ResourceSampler=mock.Mock(return_value=sampler),
                 include_final_process_usage=mock.Mock(),
-                inspect_sdk=mock.Mock(return_value={"passed": False, "durable_cleanup_closed": closed}),
+                inspect_sdk=mock.Mock(return_value={"passed": False, "durable_cleanup_closed": closed,
+                                                    "task_deadline_elapsed": sdk_deadline}),
                 reward=mock.Mock(return_value=1.0),
                 verifier_summary=mock.Mock(return_value=summary),
             ), mock.patch("benchmark_runtime.bundle_binary", return_value=(["/kuku/runtime/session_task"], {})), \
                     mock.patch.object(ACCEPTANCE, "capture", side_effect=capture) as calls:
-                result = ACCEPTANCE.benchmark_attempt(args, case, self.directory, "fixture", self.directory / str(closed),
+                result = ACCEPTANCE.benchmark_attempt(args, case, self.directory, "fixture", self.directory / f"{sdk_deadline}-{closed}",
                                                       "live", {}, sdk_timeout_sec=1)
-                self.assertTrue(result["execution"]["timed_out"])
+                self.assertEqual(not sdk_deadline, result["execution"]["timed_out"])
                 self.assertFalse(result["passed"])
                 self.assertEqual("runtime", result["failure_kind"])
                 self.assertEqual(closed, any(call.args[2] == "verifier" for call in calls.call_args_list))
