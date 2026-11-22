@@ -66,7 +66,7 @@ $KUKU_HOME/p/<workspace>/
 
 `events.jsonl` 是权威事实。操作系统锁保护唯一 writer，锁文件可在关闭后保留。`outputs/` 按有界帧保存命令捕获、派生输出和命名值的内容。日志单独记录命名和分享。公开 SDK 在日志中使用扁平 Agent 地址，不设每 Agent 目录或隐藏别名。旧 Session 的历史回滚备份可继续保留。Session API 保留已接纳的上下文。
 
-日志最初以 JSON Lines 写入。关闭较大的 Session 时，可以把历史记录封存为独立的 gzip 帧，并在文件内保存恢复检查点。新记录仍以 JSON Lines 追加到同一文件的尾部。两种布局都可用 `kuku events --file <path> --all --json` 流式导出完整事件。[Session 事件](events.md)
+日志最初以 JSON Lines 写入。[符合门槛的 Session 关闭](../how-it-works/sessions.md#日志何时压缩)会尝试把历史记录封存为独立的 gzip 帧，并在文件内保存恢复检查点。新记录仍以 JSON Lines 追加到同一文件的尾部。两种布局都可用 `kuku events --file <path> --all --json` 流式导出完整事件。[Session 事件](events.md)
 
 所有权见 [Sessions](../how-it-works/sessions.md)，有界读取与保留边界见 [SDK](sdk.md)。
 

@@ -30,6 +30,16 @@ A targeted stop of the observed Agent execution leaves detached Jobs running. `S
 
 The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail. A sealed prefix can restore runtime state from its inline checkpoint and replay only later records. If the checkpoint cannot be used, opening replays the history. Packed event frames are checked when read. [Measured reopen time and memory](performance.md#reopening-a-large-session)
 
+### When the journal is compressed
+
+The runtime checks for journal compression after a clean Session close, once work and durable writes have settled. For SDK callers, this happens during `Session::close()`. The server also closes idle runtime Sessions after their work and Jobs settle. Exiting the TUI disconnects that client while the managed server can continue.
+
+- The first seal becomes eligible at **32 MiB** of committed journal data.
+- After sealing, the next seal becomes eligible when the uncompressed tail reaches both **32 MiB** and the on-disk size of the sealed prefix. A 65 MiB sealed prefix needs at least 65 MiB of new tail data.
+- The runtime publishes the replacement atomically if it is smaller. The full logical history remains available through [the event CLI](../reference/cli.md#kuku-events).
+
+### Model context
+
 Agent creation/configuration, delivery/acceptance, prepared steps, authorization, dispatch, results, waits, replies, and settlements are separate facts. See [Agent loop](agent-loop.md) for model terminal states and bounded output-limit recovery. A completed turn or model claim does not prove business success; inspect actual files, command results, and the task judge.
 
 Provider-visible system text, prelude, tools, and admitted canonical messages are frozen in a context segment. Messages are admitted once per segment; each prepared step records the segment and message boundary, selected connection/settings, correlation, and request hash. It does not append another full wire request. Reopening with the same route and capabilities keeps the committed prefix. Explicit context, tool, or handoff changes may establish a committed successor segment.
