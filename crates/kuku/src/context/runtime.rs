@@ -665,10 +665,16 @@ enum SnapshotKey {
 
 #[derive(Default)]
 struct SnapshotCache {
-    entries: BTreeMap<SnapshotKey, (u64, StoredEvent)>,
+    entries: BTreeMap<SnapshotKey, FileSnapshot>,
     visible_writes: BTreeSet<u64>,
     segment: Option<u64>,
     pending: Option<WriteAdmissions>,
+}
+
+struct FileSnapshot {
+    accessed: u64,
+    event: StoredEvent,
+    event_bytes: usize,
 }
 
 struct WriteAdmissions {
@@ -699,10 +705,10 @@ impl SnapshotCache {
                 }) {
                     self.visible_writes.extend(batch.receipts);
                 }
-                self.entries.retain(|key, (_, event)| {
+                self.entries.retain(|key, snapshot| {
                     matches!(key, SnapshotKey::Read(..))
-                        || event.id > source_head
-                        || self.visible_writes.contains(&event.id)
+                        || snapshot.event.id > source_head
+                        || self.visible_writes.contains(&snapshot.event.id)
                 });
             }
             _ => {}
@@ -739,12 +745,12 @@ impl SnapshotCache {
             else {
                 continue;
             };
-            if let Some((_, event)) = self
+            if let Some(snapshot) = self
                 .entries
                 .get(&SnapshotKey::Write(turn, call.into()))
-                .filter(|(_, event)| event.id <= source_head)
+                .filter(|snapshot| snapshot.event.id <= source_head)
             {
-                batch.receipts.insert(event.id);
+                batch.receipts.insert(snapshot.event.id);
             }
         }
     }
@@ -754,7 +760,7 @@ impl SnapshotCache {
         event: &mut StoredEvent,
         agent: &str,
         latest_turn: Option<u64>,
-    ) -> bool {
+    ) -> Result<bool> {
         let EventPayload::ToolResult {
             conversation,
             turn,
@@ -766,21 +772,21 @@ impl SnapshotCache {
             ..
         } = &mut event.payload
         else {
-            return false;
+            return Ok(false);
         };
         if status != "ok" || !belongs(conversation.as_deref(), *turn, agent, latest_turn) {
-            return false;
+            return Ok(false);
         }
         let key = if value["kind"] == "file_content" {
             let Some(path) = value["canonical_path"].as_str() else {
-                return false;
+                return Ok(false);
             };
             let key = SnapshotKey::Read(path.into(), value["start_line"].as_u64().unwrap_or(1));
             if value["cached"] == true {
-                if let Some((accessed, _)) = self.entries.get_mut(&key) {
-                    *accessed = event.id;
+                if let Some(snapshot) = self.entries.get_mut(&key) {
+                    snapshot.accessed = event.id;
                 }
-                return true;
+                return Ok(true);
             }
             key
         } else if let Some((path, hash)) = super::replay::supplied_file_version(value) {
@@ -792,40 +798,46 @@ impl SnapshotCache {
             model_content.clear();
             SnapshotKey::Write(*turn, tool_call_id.clone())
         } else {
-            return false;
+            return Ok(false);
         };
         *conversation = Some(agent.into());
-        self.entries.insert(key, (event.id, event.clone()));
+        self.entries.insert(
+            key,
+            FileSnapshot {
+                accessed: event.id,
+                event_bytes: serde_json::to_vec(event)?.len(),
+                event: event.clone(),
+            },
+        );
         if self.entries.len() > MAX_CACHED_FILE_SNAPSHOTS {
             self.remove_oldest();
         }
-        true
+        Ok(true)
     }
 
     fn remove_oldest(&mut self) -> bool {
         let Some(key) = self
             .entries
             .iter()
-            .min_by_key(|(_, (accessed, _))| *accessed)
+            .min_by_key(|(_, snapshot)| snapshot.accessed)
             .map(|(key, _)| key.clone())
         else {
             return false;
         };
-        let (_, event) = self.entries.remove(&key).expect("oldest snapshot exists");
-        self.visible_writes.remove(&event.id);
+        let snapshot = self.entries.remove(&key).expect("oldest snapshot exists");
+        self.visible_writes.remove(&snapshot.event.id);
         if let Some(batch) = self.pending.as_mut() {
-            batch.receipts.remove(&event.id);
+            batch.receipts.remove(&snapshot.event.id);
         }
         true
     }
 
     fn into_events(self) -> impl Iterator<Item = StoredEvent> {
-        self.entries
-            .into_iter()
-            .filter_map(move |(key, (_, event))| {
-                (matches!(key, SnapshotKey::Read(..)) || self.visible_writes.contains(&event.id))
-                    .then_some(event)
-            })
+        self.entries.into_iter().filter_map(move |(key, snapshot)| {
+            (matches!(key, SnapshotKey::Read(..))
+                || self.visible_writes.contains(&snapshot.event.id))
+            .then_some(snapshot.event)
+        })
     }
 }
 

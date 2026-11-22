@@ -255,13 +255,14 @@ pub(super) async fn dispatch(
         let slot = media::spawn(session, &pending, &queued, event_tx);
         return start_slot(pending, queued, slot);
     }
-    let prior_events = match queued.tool_call.name.as_str() {
-        "find_files" | "search_text" | "stat_file" => Vec::new(),
-        _ => crate::context::runtime::read_agent_events(
+    let prior_events = if crate::tool::dispatch::uses_prior_events(&queued.tool_call.name) {
+        crate::context::runtime::read_agent_events(
             &pending.events_path,
             pending.conversation.as_str(),
             pending.query.runtime_limits.max_request_bytes,
-        )?,
+        )?
+    } else {
+        Vec::new()
     };
     let output = if queued.tool_call.name == "fetch_url" {
         match output_spec(&pending, &queued.tool_call.id) {

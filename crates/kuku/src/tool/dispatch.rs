@@ -65,6 +65,19 @@ pub(crate) fn dispatch_workspace_file(
     Some(result)
 }
 
+pub(crate) fn uses_prior_events(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "edit_file"
+            | "write_file"
+            | "remove_file"
+            | "remember_memory"
+            | "forget_memory"
+            | "run_command"
+    )
+}
+
 fn supplied_write_content<'a>(
     events: &'a [StoredEvent],
     actor: &crate::conversation::address::ConversationAddress,

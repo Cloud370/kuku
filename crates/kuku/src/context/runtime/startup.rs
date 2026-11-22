@@ -16,6 +16,10 @@ pub(crate) fn read_agent_events(
     let mut current = Vec::<StoredEvent>::new();
     let mut skills = Vec::<StoredEvent>::new();
     let mut snapshots = SnapshotCache::default();
+    let mut metadata_bytes = 2;
+    let mut current_bytes = 2;
+    let mut skills_bytes = 2;
+    let budget = max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR);
     scan(path, 0, |mut event| {
         let mut changed = false;
         let key = match &event.payload {
@@ -43,6 +47,7 @@ pub(crate) fn read_agent_events(
         };
         if let Some(key) = key {
             metadata.insert(key, event);
+            metadata_bytes = serde_json::to_vec(&metadata)?.len();
             return Ok(());
         }
         if let EventPayload::ContextSkills { conversation, .. } = &event.payload {
@@ -51,6 +56,7 @@ pub(crate) fn read_agent_events(
                     skills.remove(0);
                 }
                 skills.push(event);
+                skills_bytes = serde_json::to_vec(&skills)?.len();
             }
             return Ok(());
         }
@@ -61,6 +67,7 @@ pub(crate) fn read_agent_events(
             if conversation == agent {
                 latest_turn = Some(*turn);
                 current.clear();
+                current_bytes = json_array_bytes(1, serde_json::to_vec(&event)?.len());
                 current.push(event);
             }
             return Ok(());
@@ -70,7 +77,7 @@ pub(crate) fn read_agent_events(
                 snapshots.observe_context(value);
             }
         }
-        changed |= snapshots.observe_result(&mut event, agent, latest_turn);
+        changed |= snapshots.observe_result(&mut event, agent, latest_turn)?;
         let turn = match &event.payload {
             EventPayload::ModelResponse {
                 turn, conversation, ..
@@ -165,16 +172,25 @@ pub(crate) fn read_agent_events(
                 commands_run.clear();
                 *memory_changed = None;
             }
+            current_bytes += serde_json::to_vec(&event)?.len() + usize::from(!current.is_empty());
             current.push(event);
             changed = true;
         }
         if !changed {
             return Ok(());
         }
-        trim_snapshot_cache(&metadata, &current, &skills, &mut snapshots, max_bytes)?;
+        trim_snapshot_cache(
+            metadata_bytes + current_bytes + skills_bytes,
+            &mut snapshots,
+            budget,
+        )?;
         Ok(())
     })?;
-    trim_snapshot_cache(&metadata, &current, &skills, &mut snapshots, max_bytes)?;
+    trim_snapshot_cache(
+        metadata_bytes + current_bytes + skills_bytes,
+        &mut snapshots,
+        budget,
+    )?;
     let selected = metadata
         .into_values()
         .chain(current)
@@ -183,7 +199,7 @@ pub(crate) fn read_agent_events(
         .map(|event| (event.id, event))
         .collect::<BTreeMap<_, _>>();
     let result = selected.into_values().collect::<Vec<_>>();
-    if serde_json::to_vec(&result)?.len() > max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR) {
+    if serde_json::to_vec(&result)?.len() > budget {
         return Err(Error::InvalidArgument(
             "agent startup facts exceed the context selection byte limit".into(),
         ));
@@ -192,27 +208,70 @@ pub(crate) fn read_agent_events(
 }
 
 fn trim_snapshot_cache(
-    metadata: &BTreeMap<String, StoredEvent>,
-    current: &[StoredEvent],
-    skills: &[StoredEvent],
+    other_bytes: usize,
     snapshots: &mut SnapshotCache,
-    max_bytes: usize,
+    budget: usize,
 ) -> Result<()> {
-    let budget = max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR);
-    while serde_json::to_vec(&(
-        metadata,
-        current,
-        skills,
-        snapshots.entries.values().collect::<Vec<_>>(),
-    ))?
-    .len()
-        > budget
-    {
+    loop {
+        let entry_bytes = snapshots
+            .entries
+            .values()
+            .map(|snapshot| {
+                let access_bytes = snapshot.accessed.checked_ilog10().unwrap_or(0) as usize + 1;
+                json_array_bytes(2, snapshot.event_bytes + access_bytes)
+            })
+            .sum();
+        let snapshot_bytes = json_array_bytes(snapshots.entries.len(), entry_bytes);
+        if json_array_bytes(4, other_bytes + snapshot_bytes) <= budget {
+            return Ok(());
+        }
         if !snapshots.remove_oldest() {
             return Err(Error::InvalidArgument(
                 "agent startup facts exceed the context selection byte limit".into(),
             ));
         }
     }
-    Ok(())
+}
+
+fn json_array_bytes(entries: usize, content_bytes: usize) -> usize {
+    content_bytes + entries.saturating_sub(1) + 2
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{trim_snapshot_cache, EventPayload, SnapshotCache, StoredEvent};
+    use crate::context::runtime::{FileSnapshot, SnapshotKey};
+
+    #[test]
+    fn snapshot_budget_matches_the_encoded_selection_at_the_eviction_boundary() {
+        let event = StoredEvent {
+            id: 99,
+            payload: EventPayload::Unknown(json!({"text":"a\\b\n文"})),
+        };
+        let accessed = 1000;
+        let metadata = json!({"snapshot": "fixture"});
+        let current = [&event];
+        let skills = [&event];
+        let exact_size = serde_json::to_vec(&(&metadata, current, skills, [(accessed, &event)]))
+            .unwrap()
+            .len();
+        let other_bytes = serde_json::to_vec(&metadata).unwrap().len()
+            + serde_json::to_vec(&current).unwrap().len()
+            + serde_json::to_vec(&skills).unwrap().len();
+        let mut snapshots = SnapshotCache::default();
+        snapshots.entries.insert(
+            SnapshotKey::Read("fixture".into(), 1),
+            FileSnapshot {
+                accessed,
+                event_bytes: serde_json::to_vec(&event).unwrap().len(),
+                event,
+            },
+        );
+        trim_snapshot_cache(other_bytes, &mut snapshots, exact_size).unwrap();
+        assert_eq!(1, snapshots.entries.len());
+        trim_snapshot_cache(other_bytes, &mut snapshots, exact_size - 1).unwrap();
+        assert!(snapshots.entries.is_empty());
+    }
 }
