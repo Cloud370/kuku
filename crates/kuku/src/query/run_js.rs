@@ -39,14 +39,6 @@ pub(super) fn spawn(
                 Error::InvalidArgument("workspace execution requires an open Session".into())
             })?,
     };
-    let methods = run_js::method_definitions(|op| {
-        let definition = super::run::find_tool_definition(pending, op.name())?;
-        Some(if op == ScriptOperation::ReadOutput {
-            super::runtime_tools::output::definition_local()
-        } else {
-            definition.clone()
-        })
-    });
     let limits = pending.query.runtime_limits.workspace_script.clone();
     let host_capacity = session.workspace_execution_host();
     let host = Arc::new(WorkspaceHost {
@@ -73,7 +65,7 @@ pub(super) fn spawn(
             .authorizer
             .clone()
             .expect("Session provides authority"),
-        methods,
+        methods: selected_methods(pending),
     });
     let code = queued.tool_call.args["code"].as_str().map(str::to_owned);
     let cancel = Arc::new(Notify::new());
@@ -125,6 +117,25 @@ pub(super) fn spawn(
         cancel,
         job: Some(job),
         nested_permissions: Arc::new(Mutex::new(HashMap::new())),
+    })
+}
+
+pub(super) fn method_hint(pending: &PendingRun, name: &str) -> Option<String> {
+    super::run::find_tool_definition(pending, "run_js")?;
+    selected_methods(pending)
+        .iter()
+        .any(|method| method.name == name)
+        .then(|| format!("Use run_js and call tools.{name}(args) inside the JavaScript code."))
+}
+
+fn selected_methods(pending: &PendingRun) -> Vec<ToolDefinition> {
+    run_js::method_definitions(|op| {
+        let definition = super::run::find_tool_definition(pending, op.name())?;
+        Some(if op == ScriptOperation::ReadOutput {
+            super::runtime_tools::output::definition_local()
+        } else {
+            definition.clone()
+        })
     })
 }
 

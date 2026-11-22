@@ -452,9 +452,25 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         .save_named_value("main", "log", NamedValueSource::Output(id.clone()), false)
         .await
         .unwrap();
+    let rejected = fixture(
+        &server,
+        |request| {
+            latest_input_contains(request, "find the two known strings")
+                && results(request).len() == 1
+                && body(request)["tools"].as_array().unwrap().iter().any(|tool| {
+                    tool["function"]["name"] == "run_js"
+                        && tool["function"]["description"]
+                            .as_str()
+                            .is_some_and(|description| description.contains("tools.search_output("))
+                })
+        },
+        json!({"tool_calls":[tool("direct-search", "search_output", json!({"name":"log","text":"needle"}))]}),
+        "tool_calls",
+    )
+    .await;
     let requested = fixture(
         &server,
-        |request| !producing(request) && results(request).len() == 1,
+        |request| latest_input_contains(request, "find the two known strings") && results(request).len() == 2,
         json!({"tool_calls":[tool("script-search", "run_js", json!({"code":r#"
             const first = await tools.search_output({name:"log",text:"needle",stream:"stdout",limit:1});
             if (first.status !== "ok") return first;
@@ -466,7 +482,10 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
     ).await;
     let done = fixture(
         &server,
-        |request| !producing(request) && results(request).len() == 2,
+        |request| {
+            latest_input_contains(request, "find the two known strings")
+                && results(request).len() == 3
+        },
         json!({"content":"script search settled"}),
         "stop",
     )
@@ -479,6 +498,9 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         ))
         .unwrap();
     idle(&session).await;
+    let (status, content, _) = stored_result(&session, "direct-search");
+    assert_eq!("error", status);
+    assert!(content.contains("Use run_js and call tools.search_output(args)"));
     let (status, content, facts) = stored_result(&session, "script-search");
     assert_eq!("ok", status, "{content}");
     let returned = &facts.unwrap()["value"];
@@ -508,9 +530,47 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         assert_eq!(json!(["text"]), action.tool.input_schema["required"]);
     }
     assert_eq!(json!("withheld"), actions[2].args["text"]);
+
+    session
+        .configure_agent(
+            "select-script-only",
+            "main",
+            AgentConfig {
+                tools: Some(vec!["run_js".into()]),
+                no_agents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let unavailable = fixture(
+        &server,
+        |request| latest_input_contains(request, "check deselected method") && results(request).len() == 3,
+        json!({"tool_calls":[tool("unavailable-search", "search_output", json!({"name":"log","text":"needle"}))]}),
+        "tool_calls",
+    )
+    .await;
+    let unavailable_done = fixture(
+        &server,
+        |request| {
+            latest_input_contains(request, "check deselected method") && results(request).len() == 4
+        },
+        json!({"content":"search unavailable"}),
+        "stop",
+    )
+    .await;
+    session
+        .send(Input::new("deselected", "main", "check deselected method"))
+        .unwrap();
+    idle(&session).await;
+    let (status, content, _) = stored_result(&session, "unavailable-search");
+    assert_eq!("error", status);
+    assert_eq!("unknown tool: search_output", content);
     session.close().await.unwrap();
+    rejected.assert_hits_async(1).await;
     requested.assert_hits_async(1).await;
     done.assert_hits_async(1).await;
+    unavailable.assert_hits_async(1).await;
+    unavailable_done.assert_hits_async(1).await;
 }
 
 #[tokio::test]

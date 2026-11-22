@@ -31,10 +31,13 @@ pub(super) async fn advance(
 ) -> Result<PendingStep> {
     super::provider::ensure_resolved(&mut pending)?;
     let Some(definition) = find_tool_definition(&pending, &queued.tool_call.name).cloned() else {
-        let result = ToolResultEnvelope::error(
-            "unknown tool",
-            format!("unknown tool: {}", queued.tool_call.name),
-        );
+        let name = &queued.tool_call.name;
+        let mut message = format!("unknown tool: {name}");
+        if let Some(hint) = super::run_js::method_hint(&pending, name) {
+            message.push_str(". ");
+            message.push_str(&hint);
+        }
+        let result = ToolResultEnvelope::error("unknown tool", message);
         return finish_inline(pending, queued, result);
     };
     match prepare(&mut pending, &mut queued, &definition).await {
