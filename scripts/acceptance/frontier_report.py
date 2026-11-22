@@ -15,7 +15,8 @@ from statistics import median
 import sys
 from urllib.parse import urlencode
 
-from benchmark_resources import EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO, complete_process_io, peak_rss_kib
+from benchmark_resources import (CPU_THROTTLING_FIELDS, EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO,
+                                 complete_process_io, peak_rss_kib)
 from evidence import EVENT_LINE_BYTES, EVENT_RECORD_LIMIT, SessionCapacityEvidence
 from paid_model import upstream_json, usd
 from run import load_secrets, locked, write_json
@@ -782,7 +783,13 @@ def latest_container_block_io(snapshots):
     return None
 
 
-def resource_summary(source):
+def cpu_throttling_summary(evidence):
+    raw = object_value(object_value(evidence).get('cpu_throttling'))
+    counters = {field: count(raw.get(field)) for field in CPU_THROTTLING_FIELDS}
+    return counters if all(value is not None for value in counters.values()) else None
+
+
+def resource_summary(source, evidence=None):
     resources = object_value(source)
     memory = object_value(resources.get('harness_memory')).copy()
     memory['peak_rss_kib'] = peak_rss_kib(memory.get('peak_rss_kib'), resources.get('sdk_peak_rss_kib'),
@@ -807,6 +814,7 @@ def resource_summary(source):
         },
         'process_including_waited_children': process,
         'container': {
+            'cpu_throttling': cpu_throttling_summary(evidence),
             'samples': count(resources.get('container_samples')),
             'retained_snapshot_count': len(snapshots) if isinstance(snapshots, list) else None,
             'capture_incomplete': capture_incomplete,
@@ -903,7 +911,7 @@ def local_attempt(case, directory, ordinal, label, receipt_key=None):
             'tests': {key: count(verifier.get(key)) for key in TEST_FIELDS} if verifier else None,
         },
         'tools': tools,
-        'resources': resource_summary(result.get('resources')),
+        'resources': resource_summary(result.get('resources'), result.get('resource_evidence')),
         **measure,
     }
 

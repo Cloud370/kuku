@@ -16,6 +16,7 @@ PROC_TICKS_PER_SECOND_FALLBACK = 100
 CASE_MEMORY_BYTES = 2 * 1024**3
 CASE_RESOURCE_LIMITS = {'cpus': 1, 'memory_bytes': CASE_MEMORY_BYTES, 'swap_bytes': 0}
 CGROUP_FILES = ('cpu.max', 'cpu.stat', 'memory.max', 'memory.swap.max', 'memory.peak', 'memory.events')
+CPU_THROTTLING_FIELDS = ('nr_periods', 'nr_throttled', 'throttled_usec')
 PROC = '''p=$(cat /logs/agent/sdk.pid 2>/dev/null) || exit 1
 d=/proc/$p
 cat "$d/stat" "$d/status" 2>/dev/null || exit 1
@@ -56,7 +57,14 @@ def parse_case_cgroup(output):
     cpu_usec = int(cpu['usage_usec'])
     if min(quota, period, limit, peak) <= 0 or min(cpu_usec, swap, *oom.values()) < 0:
         raise ValueError('invalid cgroup counter value')
+    try:
+        throttling = {field: int(cpu[field]) for field in CPU_THROTTLING_FIELDS}
+    except (KeyError, ValueError):
+        throttling = None
+    if throttling is not None and min(throttling.values()) < 0:
+        throttling = None
     return {'cpu_quota_usec': quota, 'cpu_period_usec': period, 'cpu_usage_usec': cpu_usec,
+            'cpu_throttling': throttling,
             'memory_limit_bytes': limit, 'swap_limit_bytes': swap, 'memory_peak_bytes': peak,
             'memory_events': oom}
 
@@ -71,6 +79,12 @@ def case_resource_evidence(before, after, resources, cpus=CASE_RESOURCE_LIMITS['
     validate_case_limits(before, cpus)
     validate_case_limits(after, cpus)
     cpu = after['cpu_usage_usec'] - before['cpu_usage_usec']
+    throttling = None
+    start, end = before.get('cpu_throttling'), after.get('cpu_throttling')
+    if start is not None and end is not None:
+        deltas = {field: end[field] - start[field] for field in CPU_THROTTLING_FIELDS}
+        if min(deltas.values()) >= 0:
+            throttling = deltas
     oom = {key: after['memory_events'][key] - before['memory_events'][key] for key in before['memory_events']}
     peak = after['memory_peak_bytes']
     rss = resources['harness_memory']['peak_rss_kib']
@@ -82,7 +96,8 @@ def case_resource_evidence(before, after, resources, cpus=CASE_RESOURCE_LIMITS['
     if resources['capture_incomplete'] or not rss:
         reasons.append('harness process memory evidence is incomplete')
     return {'passed': not reasons, 'reasons': reasons, 'scope': 'container_start_to_before_verifier',
-            'cpu_seconds': cpu / 1_000_000 if cpu >= 0 else None, 'memory_peak_bytes': peak,
+            'cpu_seconds': cpu / 1_000_000 if cpu >= 0 else None, 'cpu_throttling': throttling,
+            'memory_peak_bytes': peak,
             'memory_limit_bytes': after['memory_limit_bytes'], 'swap_limit_bytes': after['swap_limit_bytes'],
             'memory_event_deltas': oom, 'harness_peak_rss_kib': rss, 'before': before, 'after': after}
 

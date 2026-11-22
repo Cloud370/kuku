@@ -29,6 +29,7 @@ class ResourceEvidenceTest(unittest.TestCase):
         resources = {'capture_incomplete': False, 'harness_memory': {'peak_rss_kib': 30_000}}
         evidence = case_resource_evidence(before, after, resources)
         self.assertTrue(evidence['passed'])
+        self.assertIsNone(evidence['cpu_throttling'])
         self.assertEqual(evidence['cpu_seconds'], 2.5)
         self.assertEqual(evidence['memory_peak_bytes'], 80_000_000)
         self.assertEqual(evidence['harness_peak_rss_kib'], 30_000)
@@ -41,6 +42,34 @@ class ResourceEvidenceTest(unittest.TestCase):
         self.assertFalse(case_resource_evidence(before, after, {**resources, 'capture_incomplete': True})['passed'])
         with self.assertRaisesRegex(ValueError, 'swap disabled'):
             validate_case_limits({**before, 'swap_limit_bytes': 1024})
+
+    def test_cpu_throttling_is_a_delta_and_distinguishes_zero_from_missing(self):
+        def snapshot(stats):
+            return parse_case_cgroup(
+                '[cpu.max]\n100000 100000\n[cpu.stat]\nusage_usec 1000000\n'
+                + stats
+                + f'[memory.max]\n{CASE_MEMORY_BYTES}\n[memory.swap.max]\n0\n'
+                  '[memory.peak]\n14000000\n[memory.events]\noom 0\noom_kill 0\n')
+
+        before = snapshot('nr_periods 10\nnr_throttled 3\nthrottled_usec 300\n')
+        after = snapshot('nr_periods 16\nnr_throttled 9\nthrottled_usec 537819\n')
+        resources = {'capture_incomplete': False, 'harness_memory': {'peak_rss_kib': 30_000}}
+        evidence = case_resource_evidence(before, after, resources)
+        self.assertTrue(evidence['passed'])
+        self.assertEqual(evidence['cpu_throttling'], {
+            'nr_periods': 6, 'nr_throttled': 6, 'throttled_usec': 537519,
+        })
+        self.assertEqual(case_resource_evidence(before, before, resources)['cpu_throttling'], {
+            'nr_periods': 0, 'nr_throttled': 0, 'throttled_usec': 0,
+        })
+        for stats in ('nr_periods 16\n',
+                      'nr_periods 16\nnr_throttled -1\nthrottled_usec 537819\n',
+                      'nr_periods 16\nnr_throttled invalid\nthrottled_usec 537819\n',
+                      'nr_periods 9\nnr_throttled 3\nthrottled_usec 301\n'):
+            with self.subTest(stats=stats):
+                evidence = case_resource_evidence(before, snapshot(stats), resources)
+                self.assertIsNone(evidence['cpu_throttling'])
+                self.assertTrue(evidence['passed'])
 
     def test_proc_cpu_ticks_have_windows_fallback_without_sysconf(self):
         sampler = ResourceSampler('unused')

@@ -308,6 +308,8 @@ python3 scripts/acceptance/benchmark_compare.py \
 
 导出工具先核对题目文件摘要、Docker 镜像 ID、模型路由和运行限额。对照报告包含原始评分和测试数、agent 与判分耗时、模型请求数与 token 用量、估算美元费用，以及资源验收、harness RSS、容器内存峰值、CPU 秒数和 OOM 事件。容器内存峰值取启动到判分前的内核高水位，覆盖计入 cgroup 的 harness、工具子进程和采样开销。harness RSS 统计主进程的驻留页面，包含共享映射。CPU 秒数取 agent 执行前后两次内核读数的差值。分享对照 JSON 时附上轮次、主机和构建模式。需要精确复现依赖树时附上 Pi lockfile。凭据、原始 Prompt、工具输出和 Session 文件留在本机。
 
+严格模式还会把 `nr_periods`、`nr_throttled` 和 `throttled_usec` 写入对照 JSON 的 `container_cpu_throttling`。这些值取判分前同一对内核读数的差值，反映容器自身的 CPU 配额节流。采样缺失或不一致时记为 `null`，实测计数没有增加时记为零。结合配置的配额、实际 CPU 用量和这些计数解读墙钟耗时。[Linux cgroup v2 CPU 接口](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)
+
 对照报告累计宿主计量代理接纳的所有请求的转发耗时和序列化请求体字节数，也计入已发起的重试。转发耗时涵盖上游连接和响应传输。有任一请求缺少相应读数时，该项总量留空。首个输出时间的中位数按已观测的请求计算，并附样本数。对耗时最长的已观测请求，报告记录总耗时，以及观测到的首个输出、首段文本和首个工具参数的时间。上游提供推理 token 数时也一并记录。计量代理拒绝的请求中，因单题预算被拒绝的请求会单独计数。
 
 计量代理也会统计完整模型回复发出的函数及自定义工具调用。对照报告给出已观测的回复数和批量分布，并保留运行器独立记录的派发证据。流缺少完整证据时，该项留空。

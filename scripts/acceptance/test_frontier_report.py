@@ -170,14 +170,19 @@ class PairedReportTests(unittest.TestCase):
                             'provider_context_tokens': 1048576, 'max_requests': None}}
         with tempfile.TemporaryDirectory() as temporary:
             kuku, pi = (Path(temporary) / name for name in ('kuku', 'pi'))
+            throttle = {'nr_periods': 3, 'nr_throttled': 2, 'throttled_usec': 10000}
             for directory in (kuku, pi):
+                resource_evidence = {'cpu_throttling': {**throttle, 'private': SECRET}} if directory == kuku else {}
                 write_json(directory / 'result.json', {'group': 'benchmark', 'benchmark': benchmark,
                                                         'attempts': [{'harness': directory.name, 'mode': 'live',
                                                                       'resource_requirements': CASE_RESOURCE_LIMITS,
+                                                                      'resource_evidence': resource_evidence,
                                                                       'reward': 0, 'session_data': SECRET}]})
                 write_json(directory / 'meter.json', meter)
             report = compare(kuku, pi)
             self.assertEqual([result['reward'] for result in report['attempts']], [0, 0])
+            self.assertEqual([result['container_cpu_throttling'] for result in report['attempts']],
+                             [throttle, None])
             self.assertNotIn(SECRET, json.dumps(report))
             journal = kuku / 'live' / 'session-data' / 'p' / 'app' / 'sessions' / 'fixture' / 'events.jsonl'
             journal.parent.mkdir(parents=True)
@@ -566,7 +571,10 @@ class FrontierReportTests(unittest.TestCase):
             local_evidence(directory, False)
             live = directory / 'live'
             result = json.loads((live / 'result.json').read_text())
-            write_json(live / 'result.json', {**result, 'reward': 1.0, 'failure_kind': 'runtime', 'resources': {
+            throttle = {'nr_periods': 3, 'nr_throttled': 0, 'throttled_usec': 0}
+            write_json(live / 'result.json', {**result, 'reward': 1.0, 'failure_kind': 'runtime',
+                                              'resource_evidence': {'cpu_throttling': {**throttle, 'private': SECRET}},
+                                              'resources': {
                 'harness_memory': {'peak_rss_kib': 31415, 'mean_rss_kib': 30000.4, 'samples': 11,
                                    'observed_seconds': 10, 'window_seconds': 12.5, 'coverage_ratio': 0.8},
                 'harness_cpu_seconds': 2.3,
@@ -600,6 +608,7 @@ class FrontierReportTests(unittest.TestCase):
             self.assertIsNone(attempt['resources']['process_including_waited_children']['io']['read_bytes'])
             self.assertEqual(attempt['resources']['process_including_waited_children']['sampling_errors'], 3)
             self.assertEqual(attempt['resources']['container']['samples'], 9)
+            self.assertEqual(attempt['resources']['container']['cpu_throttling'], throttle)
             self.assertEqual(attempt['resources']['container']['retained_snapshot_count'], 3)
             self.assertEqual(attempt['resources']['container']['sampling_errors'], 1)
             self.assertEqual(attempt['resources']['container']['block_io'], {

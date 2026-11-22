@@ -13,7 +13,7 @@ from benchmark_resources import CASE_RESOURCE_LIMITS
 from benchmark_runtime import verifier_passed
 from evidence import tool_batch_summary
 from frontier_report import (FAILURE_KINDS, TASK_COMMIT, TEST_FIELDS, EvidenceError, allowed, boolean,
-                             count, hex_digest, middle, money, number, object_value, read_object,
+                             count, cpu_throttling_summary, hex_digest, middle, money, number, object_value, read_object,
                              session_events, session_journal, session_summary)
 from run import manifest_case
 
@@ -256,6 +256,7 @@ def attempt(directory, harness):
         'accounting_complete': boolean(accounting.get('complete')),
         'resources_passed': boolean(resources.get('passed')),
         'container_cpu_seconds': number(resources.get('cpu_seconds')),
+        'container_cpu_throttling': cpu_throttling_summary(resources),
         'container_memory_peak_bytes': count(resources.get('memory_peak_bytes')),
         'harness_peak_rss_kib': count(resources.get('harness_peak_rss_kib')),
         'oom_events': count(memory_events.get('oom')),
