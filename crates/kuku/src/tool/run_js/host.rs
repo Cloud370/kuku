@@ -304,6 +304,11 @@ fn selected_facts(structured: &Value) -> Value {
             }
         }
     }
+    if structured["termination"].as_str().is_some() {
+        if let Some(program) = super::recovery::command_program(structured) {
+            facts["program"] = json!(program);
+        }
+    }
     facts
 }
 

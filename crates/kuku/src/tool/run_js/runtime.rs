@@ -16,6 +16,7 @@ use crate::tool::{ToolDefinition, ToolFaults, ToolResultEnvelope};
 use crate::WorkspaceExecutionHost;
 
 use super::host::{bound_action_facts, bounded_json, cap_str};
+use super::recovery::command_program;
 use super::vm::{self, BufferedResponse, Reply, Request};
 use super::{
     append_recovery_evidence, ScriptExecution, ScriptHost, ScriptOperation,
@@ -237,6 +238,17 @@ async fn buffer_response(
         return Err("run_js has stopped");
     }
     if op == ScriptOperation::RunCommand {
+        let launch_program = envelope
+            .structured
+            .as_ref()
+            .filter(|facts| {
+                matches!(
+                    facts["termination"].as_str(),
+                    Some("program_missing" | "start_failed")
+                )
+            })
+            .and_then(command_program)
+            .map(str::to_owned);
         if let Some(Value::Object(facts)) = &mut envelope.structured {
             facts.retain(|key, _| {
                 matches!(
@@ -252,6 +264,9 @@ async fn buffer_response(
                         | "inline_pipes"
                 )
             });
+            if let Some(program) = launch_program {
+                facts.insert("program".into(), Value::String(program));
+            }
         }
     }
     let observation = observation.filter(|_| envelope.status == "ok");

@@ -323,6 +323,68 @@ async fn command_guard_reason_reaches_direct_calls_and_scripts_without_raw_argum
 }
 
 #[tokio::test]
+async fn run_js_reports_the_real_native_program_when_launch_fails() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    const PROGRAM: &str = "kuku-nonexistent-launch-regression-fixture";
+    let first = fixture(
+        &server,
+        |request| tool_count(request) == 0,
+        response(json!({"tool_calls":[
+            tool("caught", "run_js", json!({"code":format!(
+                "try {{ await tools.run_command({{program:'{PROGRAM}'}}); }} catch (error) {{ return {{program:error.program, termination:error.termination}}; }}"
+            )})),
+            tool("uncaught", "run_js", json!({"code":format!("await tools.run_command({{program:'{PROGRAM}'}});")})),
+        ]}), "tool_calls"),
+    ).await;
+    let continuation = fixture(
+        &server,
+        |request| {
+            let body = request_body(request);
+            let result = |id| {
+                body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|message| message["tool_call_id"] == id)
+                    .and_then(|message| message["content"].as_str())
+            };
+            let expected = json!({"program":PROGRAM,"termination":"program_missing"});
+            result("caught").and_then(|text| serde_json::from_str::<Value>(text).ok())
+                == Some(expected)
+                && result("uncaught").is_some_and(|text| {
+                    text.lines()
+                        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                        .any(|row| {
+                            row["program"] == PROGRAM
+                                && row["termination"] == "program_missing"
+                                && row["started"] == false
+                        })
+                })
+        },
+        response(json!({"content":"launch evidence received"}), "stop"),
+    )
+    .await;
+    let session = Session::open(options(&server, workspace.path(), data.path()))
+        .await
+        .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("input", "main", "check launch recovery"))
+        .unwrap();
+    assert_eq!(
+        Some("launch evidence received"),
+        idle(&session).await.last_output.as_deref()
+    );
+    session.close().await.unwrap();
+    first.assert_hits_async(1).await;
+    continuation.assert_hits_async(1).await;
+}
+
+#[tokio::test]
 async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuration() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
