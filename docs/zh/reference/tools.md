@@ -128,6 +128,8 @@ Session 的默认预览上限为 8 KiB，包含摘要和保留输出引用。即
 
 两个流的方法相同。`await run.stdout.text()` 读取完整的解码文本，上限为 1 MiB，`await run.stdout.json()` 将同一文本解析为 JSON。用 `for await (const line of run.stderr.lines())` 逐行读取去掉 LF 或 CRLF 的解码文本，单行上限为 128 KiB。遇到捕获不完整或有损解码时，这些方法会报错。需要查看已保留的部分输出或原始字节时，使用 `tools.output_chunks({id: run.output_ref.id})`。保留输出的分页读取经过 `read_output` 授权。
 
+把 `run.stdout` 或 `run.stderr` 作为 JSON 返回时，完整的空流返回空字符串，已随命令回执交付且能无损解码的完整文本返回字符串。其他情况返回 `{stream, bytes, capture_complete, output_ref}`。可使用该引用另行发起经过授权的读取。脚本的返回大小限制按序列化后的值计算。
+
 以下示例检查 Git 工作树，从完整的状态输出中统计条目数。
 
 ```javascript

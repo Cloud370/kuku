@@ -128,6 +128,8 @@ Return a small JSON value to give the model the evidence it needs. A script that
 
 For either stream, `await run.stdout.text()` reads the complete decoded text up to 1 MiB, and `await run.stdout.json()` parses that text as JSON. Use `for await (const line of run.stderr.lines())` to stream decoded text without LF or CRLF terminators. Lines can contain up to 128 KiB each. The helpers reject incomplete or lossy output. Use `tools.output_chunks({id: run.output_ref.id})` to inspect retained partial output or raw bytes. Reads that page through retained output use the authorized `read_output` method.
 
+Returning `run.stdout` or `run.stderr` as JSON produces a string for an empty complete stream or for complete, losslessly decoded text already included in the command response. Other streams produce `{stream, bytes, capture_complete, output_ref}`. Use the reference for a separate authorized read. The script return size limit applies to the serialized value.
+
 For example, check a Git working tree and return a count derived from the complete status output.
 
 ```javascript

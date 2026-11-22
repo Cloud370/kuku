@@ -19,7 +19,8 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
         const run = await tools.run_command({});
         const lines = [];
         for await (const line of run.stderr.lines()) lines.push(line);
-        return {exit:run.exit_code, output:await run.stdout.json(), lines, id:run.output_ref.id};
+        return {exit:run.exit_code, output:await run.stdout.json(), lines, id:run.output_ref.id,
+            stdout:run.stdout, stderr:run.stderr};
         "#,
         TestHost {
             operations: vec![ScriptOperation::RunCommand],
@@ -51,7 +52,8 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
     assert_eq!("ok", result.status, "{}", result.model_content);
     let facts = facts(&result);
     assert_eq!(
-        json!({"exit":7, "output":{"value":7}, "lines":["note","last"], "id":"capture"}),
+        json!({"exit":7, "output":{"value":7}, "lines":["note","last"], "id":"capture",
+                "stdout":"{\"value\":7}", "stderr":"note\r\nlast"}),
         facts.value
     );
     assert_eq!(1, facts.actions.len());
@@ -131,7 +133,8 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
         return [missing, cancelled, await errorFor(() => partial.stdout.json()),
             await errorFor(async () => { for await (const line of partial.stdout.lines()) {} }),
             await errorFor(() => invalid.stdout.json()), await errorFor(() => binary.stdout.text()),
-            await errorFor(() => retained.stdout.text())];
+            await errorFor(() => retained.stdout.text()),
+            {partial:partial.stdout, binary:binary.stdout, retained:retained.stdout, empty:retained.stderr}];
         "#,
         TestHost {
             operations: vec![ScriptOperation::RunCommand],
@@ -189,6 +192,49 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
         .unwrap()
         .contains("tools.read_output is required"));
     assert_eq!("capture", returned[6]["id"]);
+    for (key, bytes, complete) in [
+        ("partial", 4, false),
+        ("binary", 2, true),
+        ("retained", 2500, true),
+    ] {
+        assert_eq!(
+            json!({
+                "stream":"stdout", "bytes":bytes, "capture_complete":complete,
+                "output_ref":{"id":"capture", "offset":0, "bytes":bytes}
+            }),
+            returned[7][key]
+        );
+    }
+    assert_eq!("", returned[7]["empty"]);
+    assert_eq!(6, facts(&result).actions.len());
+}
+
+#[tokio::test]
+async fn returned_inline_command_text_counts_against_the_script_result_budget() {
+    let result = run(
+        r#"const run = await tools.run_command({}); return run.stdout;"#,
+        TestHost {
+            operations: vec![ScriptOperation::RunCommand],
+            callback: |_, _| async {
+                let bytes = vec![b'x'; 128];
+                command(128, 0, true, json!({"stdout":bytes}))
+            },
+        },
+        WorkspaceScriptLimits {
+            result_bytes: 128,
+            ..WorkspaceScriptLimits::default()
+        },
+    )
+    .await;
+    assert_eq!("error", result.status);
+    assert!(result
+        .model_content
+        .contains("script result exceeds 128 bytes"));
+    assert_eq!(1, facts(&result).actions.len());
+    assert_eq!(
+        "capture",
+        facts(&result).actions[0].result["output_ref"]["id"]
+    );
 }
 
 #[tokio::test]

@@ -223,7 +223,18 @@
             if (total !== size) failure("retained output size differs from the command result");
         }
 
-        return Object.freeze({text, json, lines});
+        function toJSON() {
+            if (captureComplete) {
+                if (size === 0) return "";
+                if (inline?.length === size) {
+                    const decoded = decode(Uint8Array.from(inline), true, true);
+                    if (!decoded.lossy_utf8) return decoded.text;
+                }
+            }
+            return {stream, bytes: size, capture_complete: captureComplete, output_ref: reference};
+        }
+
+        return Object.freeze(Object.defineProperty({text, json, lines}, "toJSON", {value: toJSON}));
     }
 
     function renderLine(stream, line, chunk, endedWithLf) {
