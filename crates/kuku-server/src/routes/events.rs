@@ -43,6 +43,9 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 pub(super) struct EventsQuery {
     workspace: PathBuf,
     after: Option<u64>,
+    before: Option<u64>,
+    #[serde(default)]
+    reverse: bool,
     #[serde(alias = "conversation")]
     agent: Option<String>,
     limit: Option<usize>,
@@ -84,8 +87,23 @@ pub(super) async fn events(
     let after = query.after.unwrap_or(0);
     let limit = query.limit.unwrap_or(100);
     validate_limit(limit)?;
-    let events = EventStore::read_page(&target.path, after, limit)?;
+    let reverse = query.reverse || query.before.is_some();
+    if reverse && query.after.is_some() {
+        return Err(ApiError::invalid(
+            "after cannot be used with before or reverse",
+        ));
+    }
+    let events = if reverse {
+        EventStore::read_page_before(&target.path, query.before, limit)?
+    } else {
+        EventStore::read_page(&target.path, after, limit)?
+    };
     let next_after = events.last().map_or(after, |event| event.id);
+    let next_before = if reverse {
+        events.first().map(|event| event.id)
+    } else {
+        None
+    };
     let filtered = events
         .iter()
         .filter(|event| {
@@ -97,7 +115,7 @@ pub(super) async fn events(
         .map(|event| json!({"id":event.id,"payload":event.payload}))
         .collect::<Vec<_>>();
     Ok(Json(
-        json!({"ok":true,"events":filtered,"next_after":next_after}),
+        json!({"ok":true,"events":filtered,"next_after":next_after,"next_before":next_before}),
     ))
 }
 

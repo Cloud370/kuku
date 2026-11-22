@@ -7,7 +7,7 @@
 ```bash
 kuku list SESSION_ID
 kuku show SESSION_ID --agent reviewer --json
-kuku events SESSION_ID --after 0 --limit 100 --json
+kuku events SESSION_ID --kind runtime.step_prepared --limit 20 --json
 ```
 
 快照包含已落盘的状态、最近回复、用量及待决问题或授权。`config` 记录该 Agent 显式指定的配置，沿用默认值的字段可以是 `null`。事件命令会在标准错误中打印下一页的游标。先找 `runtime.step_prepared` 核对请求实际选择的连接、模型和设置，再按 Agent、Turn 以及请求或调用 ID 对照 `model.response`、`tool.call` 和 `tool.result`。[事件参考](../reference/events.md)
@@ -17,8 +17,8 @@ kuku events SESSION_ID --after 0 --limit 100 --json
 可以在一页事件中提取端点报告的计数。
 
 ```bash
-kuku events SESSION_ID --limit 256 --json |
-  jq -c 'select(.kind == "runtime.model_usage") | {agent, turn, request_id, usage}'
+kuku events SESSION_ID --kind runtime.model_usage --json |
+  jq -c '{agent, turn, request_id, usage}'
 ```
 
 `input_tokens` 包含端点报告的缓存读取。字段缺失表示端点没有提供相应数值。检查跨轮次复用时，继续使用同一 Agent，对照它的上下文段和模型服务回报的用量。[SDK 用量](../reference/sdk.md#限额与用量)

@@ -400,6 +400,33 @@ impl Client {
         .await
     }
 
+    /// Read a raw ledger page up to an exclusive event cursor.
+    pub async fn events_before(
+        &self,
+        workspace: &Path,
+        session_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<EventPage, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            reverse: bool,
+            before: Option<u64>,
+            limit: usize,
+        }
+        self.get(
+            ["sessions", session_id, "events"],
+            &Query {
+                workspace,
+                reverse: true,
+                before,
+                limit,
+            },
+        )
+        .await
+    }
+
     /// Read a page of displayable history up to an exclusive durable cursor.
     pub async fn history(
         &self,

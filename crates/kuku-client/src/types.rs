@@ -538,6 +538,9 @@ pub struct EventPage {
     pub events: Vec<StoredEvent>,
     /// Exclusive cursor for the next page, including scanned events excluded by filters.
     pub next_after: u64,
+    /// Exclusive cursor for the next older page when reading in reverse.
+    #[serde(default)]
+    pub next_before: Option<u64>,
 }
 
 fn deserialize_ledger_events<'de, D>(deserializer: D) -> Result<Vec<StoredEvent>, D::Error>
@@ -571,7 +574,7 @@ where
 }
 
 /// The overall state visible in session listings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     /// The service has an active session.
@@ -586,7 +589,7 @@ pub enum SessionStatus {
 }
 
 /// A readable summary used to pick a stored Session.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
     /// Stable Session identity.
     pub session_id: String,

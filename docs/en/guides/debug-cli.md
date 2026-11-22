@@ -7,7 +7,7 @@ In the same workspace, replace `SESSION_ID` with the printed ID and `reviewer` w
 ```bash
 kuku list SESSION_ID
 kuku show SESSION_ID --agent reviewer --json
-kuku events SESSION_ID --after 0 --limit 100 --json
+kuku events SESSION_ID --kind runtime.step_prepared --limit 20 --json
 ```
 
 The snapshot contains the recorded status, last response, usage and pending question or permission. Its `config` fields are Agent overrides and may be null when defaults apply. The event command prints a cursor to stderr for the next page. Locate `runtime.step_prepared` to see the effective connection, model and settings before a request. Then correlate `model.response`, `tool.call` and `tool.result` by Agent, Turn and request or call ID. [Events](../reference/events.md)
@@ -17,8 +17,8 @@ The snapshot contains the recorded status, last response, usage and pending ques
 For one event page, examine the counters returned by the endpoint.
 
 ```bash
-kuku events SESSION_ID --limit 256 --json |
-  jq -c 'select(.kind == "runtime.model_usage") | {agent, turn, request_id, usage}'
+kuku events SESSION_ID --kind runtime.model_usage --json |
+  jq -c '{agent, turn, request_id, usage}'
 ```
 
 `input_tokens` includes cache reads when reported. A missing counter means the endpoint supplied no value. To examine reuse across Turns, continue the same Agent and compare its prepared segment and provider-reported usage. [SDK accounting](../reference/sdk.md#limits-and-accounting)

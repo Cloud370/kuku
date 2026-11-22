@@ -285,7 +285,7 @@ fn event_brief_renders_permission_requested() {
         },
     };
 
-    let line = render_event_brief(&event, 1);
+    let line = render_event_brief(&event, true);
 
     assert!(line.contains("permission.requested"));
     assert!(line.contains("request  run_command  execute  cargo test"));
@@ -354,7 +354,7 @@ fn event_brief_renders_conversation_address_for_conversation_opened() {
         })),
     };
 
-    let line = render_event_brief(&event, 1);
+    let line = render_event_brief(&event, true);
 
     assert!(line.contains("conversation.opened"));
     assert!(line.contains("session://s_001/conversations/c_main"));
@@ -385,8 +385,8 @@ fn event_brief_renders_terminal_turn_states() {
         })),
     };
 
-    let cancelled_line = render_event_brief(&cancelled, 1);
-    let interrupted_line = render_event_brief(&interrupted, 1);
+    let cancelled_line = render_event_brief(&cancelled, true);
+    let interrupted_line = render_event_brief(&interrupted, true);
 
     assert!(cancelled_line.contains("turn.cancelled"));
     assert!(cancelled_line.contains("turn=2"));

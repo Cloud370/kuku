@@ -68,9 +68,7 @@ kuku events <session-id> --agent review
 ```
 
 - `kuku show` 读取一个 Agent 的最后持久响应。
-- `kuku events` 读取持久账本事实。
-- 省略 `--agent` 检查完整账本。
-- 使用 `--after <id> --limit <n> --json` 读取有界持久页，默认上限为 100 条。
+- `kuku events` 默认显示最近 40 条已提交事件。用 `--agent` 或 `--kind` 找指定事件，用 `--all --json` 导出完整日志。[事件查询](../reference/cli.md#kuku-events)
 - Session 位于其他位置时，检查命令接受 `--workspace` 和 `--data-dir`。
 
 ## 保存和复用值

@@ -130,6 +130,8 @@ To answer `ask_user` or a deferred tool authorization, use the request ID from t
 
 `/events?workspace=...&after=0&limit=100` returns `events` and `next_after`. The raw event page is for auditing. Each record has an `id` and `payload`. An optional `agent` filter applies within the scanned page, and `next_after` advances even if that page has no matches. See [Session events](events.md) for the journal schema.
 
+To read older pages, pass `reverse=true` for the latest page or `before=<id>` for records strictly below that ID. Both return the page in ascending event order and report the oldest scanned ID in `next_before`. Use that ID to continue toward earlier history.
+
 Persisted pages may include `model.recovery` for an output-limit retry in a direct or child-Agent query. These records follow the same `agent` filter; see [Session events](events.md) for their meaning.
 
 Read a known tool output by its ID in `/outputs/{output_id}`, passing `workspace` and optionally `agent` (default `main`), `offset` and `max_bytes`. The Agent must own or have received the output. Use `search` for a literal match within the range. The response wraps the chunk in `output`. Pass `output.next_offset` to continue when `output.has_more` is true. [Retained output](tools.md)

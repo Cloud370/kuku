@@ -205,24 +205,26 @@ Read the last durable response. `--json` returns the Agent snapshot, including a
 ## `kuku events`
 
 ```text
-kuku events [-v|-vv] [--agent <address>] [--after <id>] [--limit <n>] [--json] <session-id>
+kuku events <session-id> [--agent <address>] [--kind <event-kind>] [--search <text>]
+kuku events --file <path> [--before <id> | --after <id>] [--limit <n>] [--json]
+kuku events <session-id> --all [--after <id>] --json
 ```
 
-- `-v` or `-vv` increases the brief display detail.
-- `--json` emits complete stored event records.
-- `--after` is an exclusive durable cursor; `--limit` defaults to 100 and accepts 1–256 records. Filtering applies within that bounded ledger page. The last scanned cursor is printed to stderr, even when filtering excludes every record.
-- `--workspace` and `--data-dir` select the stored Session location.
-- `--conversation` remains an alias for `--agent` on inspection commands.
+- With no cursor, the CLI starts at the latest committed event. `--before <id>` continues toward older records. `--after <id>` reads toward newer records. Both cursors are exclusive.
+- `--limit` defaults to 40 and accepts 1–256 matching records. `--kind` matches the event kind exactly. `--search` matches a case-insensitive substring of event content. The CLI prints the continuation flag and cursor to stderr.
+- `--all` streams all matching records oldest first. `--json` writes one complete event per line to stdout. `--verbose` adds metadata in the text display.
+- `--file` reads a local Session journal directly, including a packed journal. A Session ID is resolved with `--workspace` and `--data-dir`; a Session held open by the local service is read through that service. `--remote` reads from the selected service.
 
-The server pages through committed `events.jsonl` facts. Observability logs live separately under `$KUKU_HOME/logs/`. [File layout](file-layout.md)
+Observability logs live under `$KUKU_HOME/logs/`. [File layout](file-layout.md)
 
 ## `kuku list`
 
 ```text
-kuku list [<session-id>] [--all] [--workspace <path>] [--data-dir <path>] [--verbose]
+kuku list [--all] [--workspace <path>] [--data-dir <path>] [--json | --verbose]
+kuku list <session-id> [--workspace <path>] [--data-dir <path>] [--json]
 ```
 
-With a Session identity, `list` shows stable Agent addresses, statuses, and pending-input counts.
+With a Session ID, `list` shows Agent addresses, statuses, and pending-input counts. `--json` emits a JSON array of Sessions or Agents. Session sizes report bytes on disk for the journal.
 
 ## `kuku delete`
 

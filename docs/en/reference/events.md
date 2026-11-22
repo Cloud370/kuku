@@ -5,10 +5,10 @@ Each Session writes one `events.jsonl` journal. Stored rows have a Session-local
 ## Reading a page
 
 ```bash
-kuku events SESSION_ID --after 0 --limit 100 --json
+kuku events SESSION_ID --limit 20 --json
 ```
 
-The CLI writes one JSON record per line to stdout and the next cursor to stderr. Pass that cursor to `--after` to read the next page. Add `--agent reviewer` to filter the current page. The cursor advances across all scanned records even if the filter produced an empty page. [CLI](cli.md#kuku-events) · [Server API](server-api.md)
+The CLI writes one JSON record per line to stdout. It prints the continuation argument to stderr. Pass `--before` to continue toward older records or select `--after` to start a forward scan. Add `--agent reviewer` or `--kind tool.result` to find matching facts. Use `--file <path> --all --json` to export a local journal, including sealed history. [CLI](cli.md#kuku-events) · [Server API](server-api.md)
 
 ## Facts recorded by the public Session SDK
 

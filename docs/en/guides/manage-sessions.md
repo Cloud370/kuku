@@ -68,9 +68,7 @@ kuku events <session-id> --agent review
 ```
 
 - `kuku show` reads the last durable response for one Agent.
-- `kuku events` reads the persisted ledger facts.
-- omit `--agent` for full-ledger inspection.
-- use `--after <id> --limit <n> --json` for a bounded durable event page; the default limit is 100.
+- `kuku events` shows the latest 40 committed records. Use `--agent` or `--kind` to find specific events. Use `--all --json` to export the ledger. [Event inspection](../reference/cli.md#kuku-events)
 - inspection accepts `--workspace` and `--data-dir` when the Session lives elsewhere.
 
 ## Save and reuse a value

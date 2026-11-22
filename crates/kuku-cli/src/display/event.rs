@@ -1,6 +1,6 @@
 use kuku::event::{EventPayload, StoredEvent};
 
-fn event_conversation(payload: &EventPayload) -> Option<&str> {
+pub(crate) fn event_conversation(payload: &EventPayload) -> Option<&str> {
     match payload {
         EventPayload::ModelResponse { conversation, .. }
         | EventPayload::ModelError { conversation, .. }
@@ -61,9 +61,9 @@ pub fn filter_events_for_conversation<'a>(
         .collect()
 }
 
-pub fn render_event_brief(event: &StoredEvent, verbose: u8) -> String {
+pub fn render_event_brief(event: &StoredEvent, verbose: bool) -> String {
     let mut line = format!("evt:{} | {}", event.id, event.payload.kind_name());
-    let details = event_details(&event.payload, verbose > 0);
+    let details = event_details(&event.payload, verbose);
     if !details.is_empty() {
         line.push_str(" | ");
         line.push_str(&details);
@@ -413,8 +413,8 @@ mod tests {
             },
         };
 
-        assert!(render_event_brief(&allow, 1).contains("allow  run_command  session"));
-        assert!(render_event_brief(&handoff, 1).contains("keep_turns=2"));
+        assert!(render_event_brief(&allow, true).contains("allow  run_command  session"));
+        assert!(render_event_brief(&handoff, true).contains("keep_turns=2"));
     }
 
     #[test]

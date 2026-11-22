@@ -392,42 +392,63 @@ pub struct ShowArgs {
 
 #[derive(Args)]
 pub struct EventsArgs {
-    /// Session ID
-    pub session_id: String,
+    /// Session ID in the selected workspace
+    #[arg(required_unless_present = "file")]
+    pub session_id: Option<String>,
 
-    /// Stable agent address (defaults to full ledger)
+    /// Read a local journal file directly
+    #[arg(long, conflicts_with_all = ["session_id", "remote"])]
+    pub file: Option<PathBuf>,
+
+    /// Stable agent address (defaults to the full ledger)
     #[arg(long = "agent", alias = "conversation")]
     pub conversation: Option<String>,
 
-    /// Return events after this durable cursor
-    #[arg(long, default_value_t = 0)]
-    pub after: u64,
-    /// Maximum records (1..=256)
-    #[arg(long, default_value_t = 100)]
-    pub limit: usize,
+    /// Return events after this exclusive cursor, oldest first
+    #[arg(long, conflicts_with = "before")]
+    pub after: Option<u64>,
+    /// Return events before this exclusive cursor, starting from the newest
+    #[arg(long)]
+    pub before: Option<u64>,
+    /// Stream all records from the start or --after
+    #[arg(long, conflicts_with_all = ["before", "limit"])]
+    pub all: bool,
+    /// Only include the given event kind
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// Search event content, ignoring case
+    #[arg(long)]
+    pub search: Option<String>,
+    /// Maximum records returned (1..=256)
+    #[arg(long, default_value_t = 40, value_parser = clap::value_parser!(u16).range(1..=256))]
+    pub limit: u16,
     /// Emit stored event JSON lines
     #[arg(long)]
     pub json: bool,
 
-    /// Verbose output (-v for metadata, -vv for full context)
-    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
-    pub verbose: u8,
+    /// Show additional event metadata
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
 }
 
 // ── List ──
 
 #[derive(Args)]
 pub struct ListArgs {
-    /// Show conversations for a specific session
+    /// Show Agents in a specific Session
     pub session_id: Option<String>,
 
-    /// List sessions across all workspaces
-    #[arg(short = 'a', long = "all")]
+    /// List Sessions across all workspaces
+    #[arg(short = 'a', long, conflicts_with = "session_id")]
     pub all: bool,
 
-    /// Verbose listing (mtime, created_at)
-    #[arg(short = 'v', long = "verbose")]
+    /// Include the modification time in the Session table
+    #[arg(short = 'v', long, conflicts_with_all = ["session_id", "json"])]
     pub verbose: bool,
+
+    /// Print a JSON array of Sessions or Agents
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ── Delete ──

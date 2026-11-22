@@ -205,24 +205,26 @@ kuku show <session-id> [--agent <address>] [--json] [--workspace <path>] [--data
 ## `kuku events`
 
 ```text
-kuku events [-v|-vv] [--agent <address>] [--after <id>] [--limit <n>] [--json] <session-id>
+kuku events <session-id> [--agent <address>] [--kind <event-kind>] [--search <text>]
+kuku events --file <path> [--before <id> | --after <id>] [--limit <n>] [--json]
+kuku events <session-id> --all [--after <id>] --json
 ```
 
-- `-v` 或 `-vv` 增加简要显示的细节。
-- `--json` 输出完整的持久事件记录。
-- `--after` 为排他的持久游标；`--limit` 默认 100，接受 1–256 条。地址过滤在此有界账本页内进行。即使所有记录被过滤，最后扫描的游标也会输出到 stderr。
-- `--workspace`、`--data-dir` 指定 Session 存储位置。
-- 检查命令仍接受 `--conversation` 作为 `--agent` 别名。
+- 默认从最近提交的事件开始。用 `--before <id>` 向旧记录翻页，用 `--after <id>` 向新记录读取。两个游标都排除指定 ID。
+- `--limit` 默认返回 40 条匹配记录，允许 1–256 条。用 `--kind` 精确匹配事件类型，用 `--search` 按不区分大小写的子串搜索事件内容。续页参数和游标输出到 stderr。
+- `--all` 从旧到新流式读取全部匹配记录。`--json` 每行输出一条完整事件到 stdout，`--verbose` 给文本视图增加元数据。
+- `--file` 直接读取本地 Session 日志，也支持已压缩的文件。用 Session ID 时，`--workspace` 和 `--data-dir` 指定存储位置。由本地服务打开的 Session 通过该服务查询。`--remote` 查询指定服务。
 
-服务分页读取 `events.jsonl` 中已提交的事实。可观察性日志单独保存在 `$KUKU_HOME/logs/`。[文件布局](file-layout.md)
+可观测性日志保存在 `$KUKU_HOME/logs/`。[文件布局](file-layout.md)
 
 ## `kuku list`
 
 ```text
-kuku list [<session-id>] [--all] [--workspace <path>] [--data-dir <path>] [--verbose]
+kuku list [--all] [--workspace <path>] [--data-dir <path>] [--json | --verbose]
+kuku list <session-id> [--workspace <path>] [--data-dir <path>] [--json]
 ```
 
-指定 Session 后列出稳定 Agent 地址、状态和待接纳输入数量。
+指定 Session ID 时，`list` 显示 Agent 地址、状态及待处理输入数量。`--json` 输出 Session 或 Agent 的 JSON 数组。Session 的大小为日志在磁盘上占用的文件字节数。
 
 ## `kuku delete`
 

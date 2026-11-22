@@ -177,6 +177,33 @@ async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
         .unwrap();
     assert_eq!(9, full["events"].as_array().unwrap().len());
     assert_eq!(9, full["next_after"]);
+
+    let page: serde_json::Value = server
+        .session_request(id, "events", &[("reverse", "true"), ("limit", "2")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(8, page["next_before"]);
+    assert_eq!(8, page["events"][0]["id"]);
+    assert_eq!(9, page["events"][1]["id"]);
+
+    let older: serde_json::Value = server
+        .session_request(
+            id,
+            "events",
+            &[("before", "8"), ("limit", "2"), ("agent", "missing")],
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(6, older["next_before"]);
+    assert!(older["events"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

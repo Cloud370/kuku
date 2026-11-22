@@ -5,10 +5,10 @@
 ## 读取一页
 
 ```bash
-kuku events SESSION_ID --after 0 --limit 100 --json
+kuku events SESSION_ID --limit 20 --json
 ```
 
-CLI 在标准输出中逐行写出 JSON，在标准错误中给出下一游标。将该游标传给 `--after` 读取下一页。加上 `--agent reviewer` 可以过滤当前页。即使过滤后这一页为空，游标也按实际扫描过的日志前移。[CLI](cli.md#kuku-events) · [Server API](server-api.md)
+CLI 将每条 JSON 事件写到 stdout，把续页参数写到 stderr。用 `--before` 继续向旧记录翻页，或用 `--after` 从指定游标向新记录读。可用 `--agent reviewer` 或 `--kind tool.result` 查找相关事件。`--file <path> --all --json` 可导出本地日志，包括已封存的历史。[CLI](cli.md#kuku-events) · [服务 API](server-api.md)
 
 ## 公开 Session SDK 记录的事实
 
