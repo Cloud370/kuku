@@ -118,7 +118,7 @@ pub(super) fn run(
             requests,
             replies,
         }
-        .run(source, methods)
+        .run(&source, methods)
     })
 }
 
@@ -146,12 +146,12 @@ struct Worker<'js> {
 }
 
 impl<'js> Worker<'js> {
-    fn run(&self, source: String, methods: Vec<ToolDefinition>) -> Result<Value, Failure> {
+    fn run(&self, source: &str, methods: Vec<ToolDefinition>) -> Result<Value, Failure> {
         self.check_running()?;
         let console = self.console().map_err(|error| self.describe(error))?;
         let result = self
             .start(source, methods)
-            .and_then(|promise| self.complete(promise));
+            .and_then(|promise| self.complete(promise, source));
         self.pending.borrow_mut().closed = true;
         let result = result.and_then(|value| {
             if value.is_undefined() {
@@ -160,7 +160,7 @@ impl<'js> Worker<'js> {
                 Ok(value)
             }
         });
-        let result = result.and_then(|value| self.return_value(value));
+        let result = result.and_then(|value| self.return_value(value, source));
         self.check_running()?;
         result
     }
@@ -172,7 +172,7 @@ impl<'js> Worker<'js> {
 
     fn start(
         &self,
-        source: String,
+        source: &str,
         definitions: Vec<ToolDefinition>,
     ) -> Result<Promise<'js>, Failure> {
         let tools = self
@@ -185,8 +185,10 @@ impl<'js> Worker<'js> {
         let body = format!("\"use strict\";\n{source}");
         let script: Function = constructor
             .call(("tools", body))
-            .map_err(|error| self.describe_at(error, Some(&source)))?;
-        script.call((tools,)).map_err(|error| self.describe(error))
+            .map_err(|error| self.describe_at(error, Some(source)))?;
+        script
+            .call((tools,))
+            .map_err(|error| self.describe_at(error, Some(source)))
     }
 
     fn tools(&self, definitions: Vec<ToolDefinition>) -> rquickjs::Result<Object<'js>> {
@@ -231,12 +233,12 @@ impl<'js> Worker<'js> {
         ))
     }
 
-    fn complete(&self, promise: Promise<'js>) -> Result<JsValue<'js>, Failure> {
+    fn complete(&self, promise: Promise<'js>, source: &str) -> Result<JsValue<'js>, Failure> {
         loop {
             self.check_running()?;
             if let Some(result) = promise.result() {
                 self.pending.borrow_mut().closed = true;
-                let value = result.map_err(|error| self.describe(error))?;
+                let value = result.map_err(|error| self.describe_at(error, Some(source)))?;
                 if !self.pending.borrow().requests.is_empty() {
                     return Err(Failure::Error(
                         "script returned with pending host operations; await every host call"
@@ -294,11 +296,12 @@ impl<'js> Worker<'js> {
         }
     }
 
-    fn return_value(&self, value: JsValue<'js>) -> Result<Value, Failure> {
+    fn return_value(&self, value: JsValue<'js>, source: &str) -> Result<Value, Failure> {
         if value.is_undefined() {
             return Ok(Value::Null);
         }
-        let json = json_bytes(&self.ctx, value).map_err(|error| self.describe(error))?;
+        let json =
+            json_bytes(&self.ctx, value).map_err(|error| self.describe_at(error, Some(source)))?;
         let max_bytes = self.execution.limits.result_bytes;
         if json.len() > max_bytes {
             return Err(Failure::Error(format!(
@@ -323,7 +326,7 @@ impl<'js> Worker<'js> {
         self.describe_at(error, None)
     }
 
-    fn describe_at(&self, error: Error, compiling: Option<&str>) -> Failure {
+    fn describe_at(&self, error: Error, source: Option<&str>) -> Failure {
         self.pending.borrow_mut().closed = true;
         if let Err(stopped) = self.check_running() {
             return stopped;
@@ -332,9 +335,11 @@ impl<'js> Worker<'js> {
             return runtime_error(error);
         }
         let exception = self.ctx.catch();
-        let location = compiling
+        let location = source
             .zip(exception.as_exception())
-            .and_then(|(source, error)| compilation_location(source, error));
+            .and_then(|(source, error)| script_location(source, error))
+            .map(|location| format!(" ({location})"));
+        let message_budget = MAX_EXCEPTION_BYTES - location.as_ref().map_or(0, String::len);
         let message = if let Some(error) = exception.as_exception() {
             error.as_object().get("message").ok()
         } else {
@@ -344,10 +349,10 @@ impl<'js> Worker<'js> {
             .filter(JsValue::is_string)
             .and_then(|value| json_bytes(&self.ctx, value).ok())
             .map(|json| {
-                if json.len() > MAX_EXCEPTION_BYTES {
+                if json.len() > message_budget {
                     format!(
                         "{}…",
-                        cap_str(json.as_str().trim_start_matches('"'), MAX_EXCEPTION_BYTES)
+                        cap_str(json.as_str().trim_start_matches('"'), message_budget)
                     )
                 } else {
                     serde_json::from_str(json.as_str())
@@ -356,28 +361,28 @@ impl<'js> Worker<'js> {
             });
         let mut message = message.unwrap_or_else(|| "JavaScript threw an exception".into());
         if let Some(location) = location {
-            message.push_str(&format!(" ({location})"));
+            message.push_str(&location);
         }
         Failure::Error(message)
     }
 }
 
-fn compilation_location(source: &str, error: &Exception<'_>) -> Option<String> {
+fn script_location(source: &str, error: &Exception<'_>) -> Option<String> {
     let stack = error.stack()?;
-    let coordinates = stack
-        .lines()
-        .next()?
-        .trim_start()
-        .strip_prefix("at <input>:")?;
-    let (line, column) = coordinates.split_once(':')?;
-    let line = line
-        .parse::<usize>()
-        .ok()?
-        .checked_sub(SCRIPT_WRAPPER_LINES)?;
-    let column = column.parse::<usize>().ok()?;
-    if line == 0 || column == 0 {
-        return None;
-    }
+    let (line, column) = stack.lines().find_map(|frame| {
+        let frame = frame.trim_start().strip_prefix("at ")?;
+        let coordinates = frame.strip_prefix("<input>:").or_else(|| {
+            let (_, coordinates) = frame.rsplit_once(" (<input>:")?;
+            coordinates.strip_suffix(')')
+        })?;
+        let (line, column) = coordinates.split_once(':')?;
+        let line = line
+            .parse::<usize>()
+            .ok()?
+            .checked_sub(SCRIPT_WRAPPER_LINES)?;
+        let column = column.parse::<usize>().ok()?;
+        (line > 0 && column > 0).then_some((line, column))
+    })?;
     let lines =
         source.split(['\n', '\r', '\u{2028}', '\u{2029}']).count() - source.matches("\r\n").count();
     if line > lines {

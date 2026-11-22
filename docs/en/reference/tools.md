@@ -118,7 +118,7 @@ Use the command's retained output reference to inspect its capture. [Job API for
 
 `run_js({code})` runs an async JavaScript function body with top-level `await` in a disposable, embedded QuickJS worker. Use `background: true` on the outer tool call to start a [Session Job](#session-jobs). Use standard JavaScript, including `JSON`, regular expressions and `Promise.all` for independent operations. Compose dependent actions with `await` when their inputs follow directly from earlier results. Return a short observation when the next decision needs model judgment. The methods on `tools` reflect the Agent's selected tools. `tools.methods` lists the available host methods and input schemas.
 
-When the compiler supplies a location for a syntax error, the line and column refer to the submitted `code`.
+Syntax and runtime errors include a line and column in the submitted `code` when the engine identifies the location.
 
 Most host methods return `{status, result, truncated}`. Check for `status: "ok"` before using the structured `result`. An unsuccessful action includes an `error` message. Check `truncated` before treating a listing or page as complete. For example, `tools.read_file({path})` exposes raw file text in `result.raw_text`, the SHA-256 `content_hash` and the half-open byte range from `start_byte` to `end_byte`. A script can use these observed ranges for a subsequent edit without returning file contents to the model. Complete read coverage of the same file version also supports overwrite and removal. A script can edit or overwrite the exact version of its own confirmed full write within the same invocation. The actions still pass through host authorization and version checks.
 

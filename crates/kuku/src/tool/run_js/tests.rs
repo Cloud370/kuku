@@ -86,6 +86,46 @@ async fn script_syntax_errors_locate_user_code_before_any_host_action() {
 }
 
 #[tokio::test]
+async fn script_runtime_errors_locate_submitted_code_and_preserve_awaited_actions() {
+    for (code, message, location, actions) in [
+        (
+            "await tools.read_file({path:'notes'});\nconst result = 1;\nreturn tools.missing_method({result});",
+            "not a function",
+            "script line 3, column ",
+            1,
+        ),
+        (
+            "function describe(item) {\n  return item.fields.map(String);\n}\nreturn describe({});",
+            "cannot read property 'map' of undefined",
+            "script line 2, column ",
+            0,
+        ),
+        (
+            "const selector = {id:'capture',stream:'other'};\nreturn await tools.output_text(selector);",
+            "output_text requires id or name and an optional stdout or stderr stream",
+            "script line 2, column ",
+            0,
+        ),
+    ] {
+        let host = TestHost {
+            operations: vec![ScriptOperation::ReadFile, ScriptOperation::ReadOutput],
+            callback: |call: ScriptCall, _| async move {
+                assert_eq!(ScriptOperation::ReadFile, call.op);
+                ToolResultEnvelope::ok("read", "read", json!({"raw_text":"hello"}))
+            },
+        };
+        let output = run(code, host, WorkspaceScriptLimits::default()).await;
+        assert_eq!("error", output.status);
+        assert!(
+            output.model_content.contains(&format!("{message} ({location}")),
+            "{}",
+            output.model_content
+        );
+        assert_eq!(actions, facts(&output).actions.len());
+    }
+}
+
+#[tokio::test]
 async fn script_exposes_only_the_named_methods_and_supports_standard_async_javascript() {
     let host = TestHost {
         operations: vec![ScriptOperation::ReadFile],
