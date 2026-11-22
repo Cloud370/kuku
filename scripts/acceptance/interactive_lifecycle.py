@@ -800,7 +800,7 @@ def keyboard_queue_withdrawal(client):
 
             selected = eventually("Up to select the newest exact queued input", selected_input)
             terminal.press("\x1b[3~")
-            restored = terminal.expect(withdrawn, state="Draft", also=(kept, "Input withdrawn"))["screen"]
+            restored = terminal.expect(withdrawn, state="Draft", also=(kept, "Removed from queue"))["screen"]
             def remaining_input():
                 value = pending_inputs()
                 return value if [entry["receipt"]["command_id"] for entry in value] == [ids[kept]] else None

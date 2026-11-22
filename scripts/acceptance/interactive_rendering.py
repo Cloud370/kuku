@@ -189,7 +189,7 @@ def pending_inputs_excerpt(screen):
         (index for index, line in enumerate(lines) if "Pending inputs" in line),
         max(0, len(lines) - 8),
     )
-    context = [line for line in lines if "Input withdrawn" in line]
+    context = [line for line in lines if "Removed from queue" in line]
     context.extend(lines[start:])
     return "\n".join(context)[:2048]
 
@@ -780,7 +780,7 @@ def check_agent_reading_position(client, terminal):
         def withdrawn_from_pending(screen):
             composer = composer_lines(screen)
             if (
-                "Input withdrawn" in screen
+                "Removed from queue" in screen
                 and queued_row_contains(screen, queued)
                 and not queued_row_contains(screen, discarded)
                 and composer
