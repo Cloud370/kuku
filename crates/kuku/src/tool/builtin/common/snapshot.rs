@@ -180,7 +180,7 @@ pub(crate) fn expected_version(args: &Value) -> Result<Option<&str>, ToolResultE
     value.as_str().map(Some).ok_or_else(|| {
         ToolResultEnvelope::error(
             "failed: expected_version must be a string",
-            "expected_version must be a read_file content_hash",
+            "expected_version must be a content_hash string",
         )
     })
 }
@@ -201,7 +201,11 @@ pub(crate) fn require_version(
                 })
         });
         if !matches {
-            return Err(snapshot_stale_error(relative, 0));
+            return Err(ToolResultEnvelope::error_with_reason(
+                format!("failed: expected_version does not match {relative}"),
+                format!("expected_version does not match the current file. Before modifying it, read {relative} again."),
+                ToolErrorReason::SnapshotStale,
+            ));
         }
     }
     Ok(())

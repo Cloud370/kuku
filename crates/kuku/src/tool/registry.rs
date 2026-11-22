@@ -142,7 +142,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Path of the regular file inside the workspace."},
-                    "expected_version": {"type": "string", "description": "Optional content_hash from stat_file(version=true) or read_file."},
+                    "expected_version": {"type": "string", "description": "Pass content_hash from stat_file({path, version: true}) or read_file. May be omitted after a full read of the current version."},
                     "brief": {"type": "string", "description": "Why this file is being removed, in 3-5 words."}
                 },
                 "required": ["path"]

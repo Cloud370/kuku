@@ -11,6 +11,7 @@ use crate::util::path::{is_blocked_relative_path, normalize_path_sep};
 mod file_io;
 mod snapshot;
 
+pub(super) use file_io::WorkspaceCommitError;
 pub(crate) use file_io::{
     content_hash, ensure_active, file_read_error, file_version, format_content_hash,
     mutation_preview, publish_file, read_file_as_utf8, remove_observed_file, write_atomically,
