@@ -5,34 +5,63 @@ on:
     paths:
       - "apps/web/**"
       - ".github/workflows/web-ci.yml"
-  pull_request:
-    branches: [main, feat/interactive-clients]
-    paths:
-      - "apps/web/**"
-      - ".github/workflows/web-ci.yml"
+  workflow_call:
+    inputs:
+      verify:
+        type: boolean
+        default: true
+      publish-assets:
+        type: boolean
+        default: false
 
 concurrency:
-  group: webui-${{ github.ref }}
+  group: webui-${{ github.ref }}-${{ github.event_name == 'push' && 'push' || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    env:
+      HUSKY: '0'
     steps:
       - uses: actions/checkout@v7
+      - name: Restore or cache Web distribution
+        id: dist
+        uses: actions/cache@v4
+        with:
+          path: apps/web/dist
+          key: web-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/web/**', '.github/workflows/web-ci.yml') }}
       - uses: actions/setup-node@v4
+        id: node
+        if: ${{ inputs.verify || github.event_name == 'push' || steps.dist.outputs.cache-hit != 'true' }}
         with:
           node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
+      - name: Restore or cache installed npm dependencies
+        id: dependencies
+        if: ${{ steps.node.outcome == 'success' }}
+        uses: actions/cache@v4
+        with:
+          path: apps/web/node_modules
+          key: web-modules-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.node.outputs.node-version }}-${{ hashFiles('apps/web/package.json', 'apps/web/package-lock.json', 'apps/web/.npmrc', '.npmrc') }}
+      - run: npm ci --prefer-offline --no-fund
+        if: ${{ steps.node.outcome == 'success' && steps.dependencies.outputs.cache-hit != 'true' }}
         working-directory: apps/web
       - run: npm run typecheck
+        if: ${{ (inputs.verify || github.event_name == 'push') && steps.dist.outputs.cache-hit == 'true' }}
         working-directory: apps/web
       - run: npm run lint
+        if: ${{ inputs.verify || github.event_name == 'push' }}
         working-directory: apps/web
       - run: npm run test
+        if: ${{ inputs.verify || github.event_name == 'push' }}
         working-directory: apps/web
       - run: npm run build
+        if: ${{ steps.dist.outputs.cache-hit != 'true' }}
         working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.publish-assets }}
+        with:
+          name: installed-web-assets
+          path: apps/web/dist
+          if-no-files-found: error

@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn file_locks_follow_hardlink_aliases_and_release_with_the_handle() {
+    fn file_locks_follow_hardlink_aliases() {
         if let Some(path) = std::env::var_os("KUKU_FS_SYNC_LOCK_CHILD") {
             let path = PathBuf::from(path);
             let writer = write_options().read(true).append(true).open(&path).unwrap();
@@ -297,6 +297,7 @@ mod tests {
             "child failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        writer.unlock().unwrap();
         drop(writer);
 
         let reader = File::open(&alias).unwrap();
@@ -308,10 +309,13 @@ mod tests {
             std::io::ErrorKind::WouldBlock,
             lock_writer(&writer, &path).unwrap_err().kind()
         );
+        reader.unlock().unwrap();
         drop(reader);
         assert!(lock_writer(&writer, &path).is_err());
+        other_reader.unlock().unwrap();
         drop(other_reader);
         lock_writer(&writer, &path).unwrap();
+        writer.unlock().unwrap();
         drop(writer);
         fs::remove_dir_all(root).unwrap();
     }

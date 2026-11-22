@@ -12,7 +12,7 @@ from urllib.parse import urlencode, urlsplit
 
 from interactive_composer import agent_setup, composer_actions, startup_info
 from interactive_stream import profile_markdown_stream
-from interactive_lifecycle import first_run_credential_repair, lifecycle_cases, shared_model_editor, verify_restored_tool
+from interactive_lifecycle import first_run_credential_repair, lifecycle_checks, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
     named_output_cards,
@@ -940,11 +940,15 @@ def main():
     parser.add_argument("--bridge", required=True, type=Path)
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--cases", help="run only the comma-separated installed scenarios")
     parser.add_argument("--native-smoke", action="store_true")
     parser.add_argument("--stream-profile", action="store_true")
     parser.add_argument("--upgrade", nargs=2, type=Path, metavar=("OLD_ARCHIVE", "NEW_ARCHIVE"))
     parser.add_argument("--named-output", action="store_true", help="exercise keyboard naming and reopening")
     options = parser.parse_args()
+    if options.cases is not None and any((options.native_smoke, options.browser, options.upgrade,
+                                          options.named_output, options.stream_profile)):
+        parser.error("--cases selects its own installed scenarios")
     if options.native_smoke and any((options.browser, options.upgrade, options.named_output)):
         parser.error("--native-smoke cannot be combined with other scenarios")
     options.binary = options.binary.resolve()
@@ -990,14 +994,24 @@ def main():
                  ("dense-transcript", dense_transcript),
                  ("markdown", markdown_document),
              )]
+    lifecycle = lifecycle_checks(options.binary, options.bridge, options.directory)
     cases.extend([
-        ("settings-and-history", lambda: lifecycle_cases(options.binary, options.bridge, options.directory)),
+        ("settings-and-history", lambda: run_cases(lifecycle)),
         ("rendering", lambda: rendering_cases(options.binary, options.bridge, options.directory)),
     ])
-    if options.browser:
-        def browser():
-            from interactive_browser import browser_handoff
-            native("browser", browser_handoff)
+
+    def browser():
+        from interactive_browser import browser_handoff
+        native("browser", browser_handoff)
+
+    if options.cases is not None:
+        available = dict([*cases, *lifecycle, ("browser", browser)])
+        names = list(dict.fromkeys(options.cases.split(",")))
+        unknown = [name for name in names if name not in available]
+        if unknown:
+            parser.error(f"unknown installed scenarios {unknown!r}")
+        cases = [(name, available[name]) for name in names]
+    elif options.browser:
         cases.append(("browser", browser))
     run_cases(cases)
 

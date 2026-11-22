@@ -349,7 +349,7 @@ async fn complete_retained_text_rejects_growing_lossy_and_oversized_captures() {
                             page.structured.as_mut().unwrap()["complete"] = json!(false);
                             page
                         }
-                        "lossy" => output_page(0, 1, &[("stdout", b"\xff")]),
+                        "lossy" => output_page(0, 2, &[("stdout", b"\xff\0")]),
                         _ => {
                             let bytes = crate::tool::run_js::MAX_OUTPUT_TEXT_BYTES + 1;
                             ToolResultEnvelope::ok("read retained output", "", json!({
@@ -364,7 +364,7 @@ async fn complete_retained_text_rejects_growing_lossy_and_oversized_captures() {
             WorkspaceScriptLimits::default(),
         )
         .await;
-        assert_eq!("error", result.status);
+        assert_eq!("error", result.status, "{case}: {}", result.model_content);
         assert!(
             result.model_content.contains(expected),
             "{}",
