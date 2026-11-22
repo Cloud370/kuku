@@ -621,7 +621,7 @@ impl App {
                 ServiceStatus::Connecting
             };
         }
-        if self.connection_problem.is_some() {
+        if self.setup_required || self.connection_problem.is_some() {
             return ServiceStatus::Offline;
         }
         match self.pane().watch {

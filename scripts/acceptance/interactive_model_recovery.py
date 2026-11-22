@@ -277,4 +277,6 @@ def repair_connection(binary, bridge, directory, issue):
                 terminal.press("\r")
             terminal.expect("Save setup", also=("Save and continue", "fixture-model", "Ready"), absent=("Fix failed models",))
             assert ("/v1/chat/completions", "Bearer fixture-repair-key") in requests
-            terminal.exit_cleanly("\x03")
+            terminal.press("\x03")
+            terminal.expect("New session", also=("/model", "Set up a model"))
+            terminal.exit_cleanly()
