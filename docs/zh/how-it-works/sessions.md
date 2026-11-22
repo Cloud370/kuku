@@ -28,7 +28,7 @@ Session 用 Job 句柄跟踪已派发的命令或工作区脚本。Job 归发起
 
 ## 存储与上下文
 
-[Session 布局](../reference/file-layout.md#session-layout)包含唯一权威 `events.jsonl` 和保留输出。共享 writer 持有操作系统锁，增量追加并同步记录。打开时修复不完整尾部。已封存的历史可用内嵌检查点恢复状态，只重放后续记录。检查点不可用时，重放历史。压缩事件帧在读取时校验。[重开耗时与内存实测](performance.md#重开大型-session)
+[Session 布局](../reference/file-layout.md#session-layout)包含唯一权威 `events.jsonl` 和保留输出。共享 writer 持有操作系统锁，增量追加并同步记录。打开时修复不完整尾部。已封存的历史可用内嵌检查点恢复状态，只重放后续记录。更改模型请求字节上限后，运行时仍可使用该检查点。执行需要启动上下文时，SDK 按当前上限重建。检查点不可用时，重放历史。压缩事件帧在读取时校验。[重开耗时与内存实测](performance.md#重开大型-session)
 
 ### 日志何时压缩
 

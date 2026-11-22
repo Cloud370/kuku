@@ -28,7 +28,7 @@ A targeted stop of the observed Agent execution leaves detached Jobs running. `S
 
 ## Storage and context
 
-The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail. A sealed prefix can restore runtime state from its inline checkpoint and replay only later records. If the checkpoint cannot be used, opening replays the history. Packed event frames are checked when read. [Measured reopen time and memory](performance.md#reopening-a-large-session)
+The [session layout](../reference/file-layout.md#session-layout) contains one authoritative `events.jsonl` journal and retained outputs. One shared writer holds an operating-system lock and incrementally appends synchronized records. Opening repairs an incomplete tail. A sealed prefix can restore runtime state from its inline checkpoint and replay only later records. Changing the model request byte limit preserves that runtime checkpoint. The SDK rebuilds the startup context at the active limit when execution needs it. If the checkpoint cannot be used, opening replays the history. Packed event frames are checked when read. [Measured reopen time and memory](performance.md#reopening-a-large-session)
 
 ### When the journal is compressed
 

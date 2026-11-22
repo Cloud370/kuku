@@ -32,13 +32,20 @@ impl Projection {
         })
     }
 
-    fn observe(&mut self, replay: Replay<'_>, max_bytes: usize) -> Result<bool> {
+    fn observe(
+        &mut self,
+        replay: Replay<'_>,
+        required_startup_limit: Option<usize>,
+    ) -> Result<bool> {
         match replay {
             Replay::Checkpoint(bytes) => {
                 let Ok(mut projected) = serde_json::from_str::<Self>(bytes.get()) else {
                     return Ok(false);
                 };
-                if projected.id != self.id || !projected.startup.accepts_limit(max_bytes) {
+                if projected.id != self.id
+                    || required_startup_limit
+                        .is_some_and(|limit| !projected.startup.accepts_limit(limit))
+                {
                     return Ok(false);
                 }
                 let mut outputs = std::mem::take(&mut self.state.outputs);
@@ -62,15 +69,15 @@ pub(super) fn open(
     max_bytes: usize,
 ) -> Result<(EventStore, Projection)> {
     let mut checkpoint = Projection::new(output_dir, id, max_bytes)?;
-    let writer =
-        EventStore::open_replaying(events, |replay| checkpoint.observe(replay, max_bytes))?;
+    let writer = EventStore::open_replaying(events, |replay| checkpoint.observe(replay, None))?;
+    checkpoint.startup = checkpoint.startup.at_limit(max_bytes);
     Ok((writer, checkpoint))
 }
 
 pub(super) fn pack(writer: EventStore, events: &Path, id: &str, max_bytes: usize) -> Result<()> {
     let output_dir = retention::output_dir(events)?;
     let mut checkpoint = Projection::new(&output_dir, id, max_bytes)?;
-    let head = writer.visit_recovery(|replay| checkpoint.observe(replay, max_bytes))?;
+    let head = writer.visit_recovery(|replay| checkpoint.observe(replay, Some(max_bytes)))?;
     writer.pack_closed(head, &checkpoint)?;
     Ok(())
 }
@@ -138,4 +145,81 @@ fn recover_state(
     };
     state.mark_interrupted();
     Ok((state, cursor, summary))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EventStore, Projection, Replay, StartupCache};
+    use crate::event::EventPayload;
+    use crate::session::runtime::record::Record;
+    use crate::AgentConfig;
+
+    #[test]
+    fn changing_request_limit_keeps_committed_state_and_rebuilds_startup_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events.jsonl");
+        let outputs = dir.path().join("outputs");
+        let mut writer = EventStore::open(&events).unwrap();
+        let original_limit = 4096;
+        let new_limit = 8192;
+        let created = writer
+            .append(
+                Record::AgentCreated {
+                    command_id: "create".into(),
+                    fingerprint: "fingerprint".into(),
+                    address: "main".into(),
+                    config: AgentConfig::default(),
+                }
+                .payload()
+                .unwrap(),
+            )
+            .unwrap();
+        let started = writer
+            .append(EventPayload::TurnStarted {
+                ts: String::new(),
+                conversation: "main".into(),
+                turn: 1,
+            })
+            .unwrap();
+        let prompt = writer
+            .append(EventPayload::MessageUser {
+                ts: String::new(),
+                conversation: "main".into(),
+                turn: 1,
+                text: "a".repeat(20_000),
+                from: None,
+                via_tool_call_id: None,
+                job_delivery: false,
+            })
+            .unwrap();
+        let mut saved = Projection::new(&outputs, "session", original_limit).unwrap();
+        for event in [created, started, prompt.clone()] {
+            saved.observe(Replay::Event(event), None).unwrap();
+        }
+        assert!(saved.startup.read(&events, "main").is_err());
+        let checkpoint = serde_json::value::to_raw_value(&saved).unwrap();
+        let mut live = Projection::new(&outputs, "session", new_limit).unwrap();
+        assert!(live.observe(Replay::Checkpoint(&checkpoint), None).unwrap());
+        assert_eq!(
+            live.state
+                .retry("create", "fingerprint")
+                .unwrap()
+                .unwrap()
+                .event_id,
+            1
+        );
+        let actual = live
+            .startup
+            .at_limit(new_limit)
+            .read(&events, "main")
+            .unwrap();
+        let expected = StartupCache::new(new_limit).read(&events, "main").unwrap();
+        assert!(actual.contains(&prompt));
+        assert_eq!(actual, expected);
+
+        let mut packing = Projection::new(&outputs, "session", new_limit).unwrap();
+        assert!(!packing
+            .observe(Replay::Checkpoint(&checkpoint), Some(new_limit))
+            .unwrap());
+    }
 }

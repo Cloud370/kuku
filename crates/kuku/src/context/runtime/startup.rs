@@ -30,6 +30,14 @@ impl StartupCache {
         }
     }
 
+    pub(crate) fn at_limit(self, max_bytes: usize) -> Self {
+        if self.accepts_limit(max_bytes) {
+            self
+        } else {
+            Self::new(max_bytes)
+        }
+    }
+
     pub(crate) fn accepts_limit(&self, max_bytes: usize) -> bool {
         self.budget == max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR)
     }
