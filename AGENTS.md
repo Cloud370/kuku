@@ -31,7 +31,7 @@ make build                                             # local release build (gl
 make release-linux                                     # portable release build (musl, via cross+Docker)
 ```
 
-Release builds use `x86_64-unknown-linux-musl` via `cross` (fully static, no glibc dependency). Use the default glibc target for development and tests; musl only for release packaging.
+Use the default glibc target for Linux development and tests. See [Release](docs/en/contributing/release.md) for the static musl targets and package verification.
 
 ## Code conventions
 

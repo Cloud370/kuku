@@ -23,10 +23,11 @@ ARCH="$(uname -m)"
 
 case "${OS}-${ARCH}" in
   linux-x86_64|linux-amd64)       PLATFORM="linux-x86_64" ;;
+  linux-aarch64|linux-arm64)      PLATFORM="linux-aarch64" ;;
   darwin-aarch64|darwin-arm64)    PLATFORM="darwin-aarch64" ;;
   *)
     echo "Unsupported platform: ${OS}-${ARCH}"
-    echo "Supported: linux-x86_64, darwin-aarch64"
+    echo "Supported: linux-x86_64, linux-aarch64, darwin-aarch64"
     exit 1
     ;;
 esac

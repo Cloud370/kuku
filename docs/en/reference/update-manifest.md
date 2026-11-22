@@ -17,6 +17,7 @@ Current docs use this manifest for release install scripts and update-channel co
   "pub_date": "2026-05-31T00:00:00.000Z",
   "platforms": {
     "linux-x86_64": { "url": "...", "sha256": "...", "size": 12345678 },
+    "linux-aarch64": { "url": "...", "sha256": "...", "size": 12345678 },
     "darwin-aarch64": { "url": "...", "sha256": "...", "size": 12345678 },
     "windows-x86_64": { "url": "...", "sha256": "...", "size": 12345678 }
   },

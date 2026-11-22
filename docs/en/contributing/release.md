@@ -42,12 +42,14 @@ Example progression:
 
 The Release workflow attaches the packages and manifest before publishing. On first publication, it puts that version's summary at the top of the GitHub Release and appends GitHub's generated changelog. A release without a matching section gets the generated changelog. A rerun can finish an existing draft and preserves its written description.
 
+To download packages for an untagged candidate, run the Release workflow on that branch with the tag field empty. The packages are available as workflow artifacts.
+
 ## Build paths
 
 - `make build` builds the normal local Linux release target.
-- `make release-linux` builds the portable musl release artifact.
+- `make release-linux` builds the portable x86-64 musl release artifact.
 
-Use the musl path for release packaging, not normal development.
+Linux releases ship static musl archives for x86-64 and ARM64. CI builds both and verifies the ARM64 archive on a native Linux ARM64 runner. Use the host target for normal development. Cross-compile `aarch64-unknown-linux-musl` locally when you need a device build.
 
 The release profile uses `opt-level = 2` for runtime performance, with stripped symbols, Thin LTO, four codegen units and aborting panics. Compare binary sizes using the same target, features and source revision. Development/test executables retain debug information and are not distribution artifacts.
 
