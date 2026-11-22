@@ -295,9 +295,10 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect("› Model tests")
             terminal.press("\x1b[A")
             terminal.expect("› Save and continue")
+            terminal.request("resize", rows=32, cols=110)
+            terminal.expect("› Save and continue", also=("└" + "─" * 108 + "┘",), rows=32)
             terminal.press("\r")
             terminal.expect("New session", state="Ready", absent=("Connected", "F2 Restart"))
-            terminal.request("resize", rows=32, cols=110)
             terminal.submit("Use the first saved default")
             first = client.provider.next("Use the first saved default")
             assert first.request["model"] == "beta"
