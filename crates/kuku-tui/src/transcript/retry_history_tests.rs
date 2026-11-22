@@ -661,7 +661,7 @@ fn committed_provider_partial_reply_replaces_live_preview_and_reloads() {
         let text = rendered(&mut transcript);
         assert_eq!(text.matches(partial).count(), 1, "{text}");
         assert!(
-            text.contains("Invalid model response · Reply interrupted"),
+            text.contains("Invalid model response") && text.contains("Interrupted"),
             "{text}"
         );
         assert!(text.contains("Malformed provider event"), "{text}");

@@ -688,7 +688,7 @@ impl Window {
             .records
             .iter()
             .filter_map(|record| match &record.body {
-                Body::Notice("Execution interrupted", ..) | Body::Interrupted(_) => Some((
+                Body::Notice("Execution interrupted", ..) => Some((
                     record.owner.as_ref()?.clone(),
                     record.turn?,
                     record.execution_id,
