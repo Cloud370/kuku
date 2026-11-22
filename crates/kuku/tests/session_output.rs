@@ -53,6 +53,10 @@ fn results(request: &HttpMockRequest) -> Vec<Value> {
 }
 
 fn producing(request: &HttpMockRequest) -> bool {
+    latest_input_contains(request, "produce-output")
+}
+
+fn latest_input_contains(request: &HttpMockRequest, marker: &str) -> bool {
     body(request)["messages"]
         .as_array()
         .unwrap()
@@ -62,7 +66,7 @@ fn producing(request: &HttpMockRequest) -> bool {
         .is_some_and(|item| {
             item["content"]
                 .as_str()
-                .is_some_and(|text| text.contains("produce-output"))
+                .is_some_and(|text| text.contains(marker))
         })
 }
 
@@ -106,6 +110,37 @@ async fn idle(session: &Session) {
     .expect("output fixture did not settle through the public Session");
 }
 
+async fn output_session(
+    server: &MockServer,
+    workspace: &Path,
+    data: &Path,
+    policy: Arc<ReadPolicy>,
+) -> Session {
+    let mut config = common::test_config();
+    config.providers.get_mut("openai").unwrap().base_url = server.url("");
+    let tier = config.tiers.get_mut("balanced").unwrap();
+    tier.provider = "openai".into();
+    tier.model = "session-output".into();
+    tier.think = kuku::config::ThinkLevel::Off;
+    config.handoff.enabled = false;
+    config.plugin.enabled = false;
+    let mut options = SessionOptions::new(workspace, data, config);
+    options.authorizer = policy;
+    options.limits.max_preview_bytes = 1024;
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent(
+            "create",
+            "main",
+            AgentConfig {
+                no_agents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session
+}
+
 async fn captured(
     server: &MockServer,
     workspace: &Path,
@@ -140,28 +175,7 @@ async fn captured(
         "stop",
     )
     .await;
-    let mut config = common::test_config();
-    config.providers.get_mut("openai").unwrap().base_url = server.url("");
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "session-output".into();
-    tier.think = kuku::config::ThinkLevel::Off;
-    config.handoff.enabled = false;
-    config.plugin.enabled = false;
-    let mut options = SessionOptions::new(workspace, data, config);
-    options.authorizer = policy;
-    options.limits.max_preview_bytes = 1024;
-    let session = Session::open(options).await.unwrap();
-    session
-        .create_agent(
-            "create",
-            "main",
-            AgentConfig {
-                no_agents: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let session = output_session(server, workspace, data, policy).await;
     session
         .send(Input::new(
             "produce",
@@ -624,6 +638,117 @@ async fn invalid_output_arguments_and_host_denial_never_expose_outside_output() 
     session.close().await.unwrap();
     requested.assert_hits_async(1).await;
     done.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn model_reads_a_running_job_through_direct_and_script_tools() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let command = if cfg!(windows) {
+        std::fs::write(workspace.path().join("gate.cmd"), concat!(
+            "@echo off\r\necho ready-prefix\r\nset /a ticks=0 >nul\r\n:wait\r\n",
+            "if exist release.txt goto emit\r\nif %ticks% geq 20 exit /b 98\r\n",
+            "set /a ticks+=1 >nul\r\n%SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 >nul\r\ngoto wait\r\n",
+            ":emit\r\necho final-suffix\r\n",
+        )).unwrap();
+        "gate.cmd"
+    } else {
+        "printf 'ready-prefix\\n'; while [ ! -f release.txt ]; do sleep 0.05; done; printf 'final-suffix\\n'"
+    };
+    let mut args = common::shell_args(command);
+    args["background"] = json!(true);
+    let start = fixture(
+        &server,
+        |request| producing(request) && results(request).is_empty(),
+        json!({"tool_calls":[tool("command", "run_command", args)]}),
+        "tool_calls",
+    )
+    .await;
+    let started = fixture(
+        &server,
+        |request| producing(request) && results(request).len() == 1,
+        json!({"content":"command is running"}),
+        "stop",
+    )
+    .await;
+    let session = output_session(
+        &server,
+        workspace.path(),
+        data.path(),
+        Arc::new(ReadPolicy::default()),
+    )
+    .await;
+    session
+        .send(Input::new(
+            "produce",
+            "main",
+            "produce-output from a background process",
+        ))
+        .unwrap();
+    idle(&session).await;
+    let receipt = stored_result(&session, "command").2.unwrap();
+    let id = receipt["output_id"].as_str().unwrap();
+    let job = receipt["job_id"].as_str().unwrap();
+    let read = json!({"id":id});
+    let code = format!(
+        r#"
+const found = await tools.search_output({{id:"{id}",text:"ready-prefix"}});
+return {{matchCount:found.result.matches.length,captureComplete:found.result.capture_complete}};
+"#
+    );
+    let requested = fixture(&server, |request| latest_input_contains(request, "sample capture") && results(request).len() == 1,
+        json!({"tool_calls":[tool("page", "read_output", read.clone()), tool("denied", "read_output", read), tool("script", "run_js", json!({"code":code}))]}),
+        "tool_calls").await;
+    let sampled = fixture(
+        &server,
+        |request| latest_input_contains(request, "sample capture") && results(request).len() == 4,
+        json!({"content":"sampled live capture"}),
+        "stop",
+    )
+    .await;
+    session
+        .send(Input::new(
+            "sample",
+            "main",
+            "sample capture before releasing the process",
+        ))
+        .unwrap();
+    idle(&session).await;
+    let page = json_page(&stored_result(&session, "page"));
+    assert_eq!(false, page["complete"]);
+    assert_eq!(false, page["has_more"]);
+    assert!(page["segments"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("ready-prefix"));
+    assert_eq!("blocked", stored_result(&session, "denied").0);
+    let script = stored_result(&session, "script");
+    assert_eq!("ok", script.0);
+    assert_eq!(
+        json!({"matchCount":1,"captureComplete":false}),
+        script.2.unwrap()["value"]
+    );
+    assert!(
+        matches!(session.save_named_value("main", "early", NamedValueSource::Output(id.to_owned()), false).await, Err(Error::InvalidArgument(message)) if message.contains("still being captured"))
+    );
+
+    std::fs::write(workspace.path().join("release.txt"), []).unwrap();
+    session.wait_job("main", job).await.unwrap();
+    let end = chunk(
+        &session,
+        id,
+        page["next_offset"].as_u64().unwrap(),
+        100,
+        None,
+    );
+    assert!(end.complete);
+    assert!(end.segments[0].text.contains("final-suffix"));
+    session.close().await.unwrap();
+    start.assert_hits_async(1).await;
+    started.assert_hits_async(1).await;
+    requested.assert_hits_async(1).await;
+    sampled.assert_hits_async(1).await;
 }
 
 #[tokio::test]

@@ -144,6 +144,38 @@ async fn output_search_handles_frame_and_incremental_window_boundaries() {
 }
 
 #[tokio::test]
+async fn filtered_read_resumes_a_literal_split_by_the_growing_capture_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = OutputWriter::create(dir.path(), "growing", OutputLimits::default())
+        .await
+        .unwrap();
+    writer
+        .write(OutputStream::Stdout, b"ready: wor")
+        .await
+        .unwrap();
+    writer.file.flush().await.unwrap();
+    let mut request = OutputRead {
+        offset: 0,
+        limit: 100,
+        search: Some("world".to_string()),
+    };
+    let first = read_output(dir.path(), "growing", request.clone()).unwrap();
+    assert!(!first.complete && !first.has_more && first.segments.is_empty());
+    assert_eq!(6, first.next_offset);
+    request.offset = first.next_offset;
+    let unchanged = read_output(dir.path(), "growing", request.clone()).unwrap();
+    assert!(!unchanged.has_more && unchanged.segments.is_empty());
+    assert_eq!(request.offset, unchanged.next_offset);
+
+    writer.write(OutputStream::Stdout, b"ld\n").await.unwrap();
+    writer.finish(false).await.unwrap();
+    let last = read_output(dir.path(), "growing", request).unwrap();
+    assert!(last.complete && !last.has_more);
+    assert_eq!(" world\n", text(&last));
+    assert_eq!(13, last.next_offset);
+}
+
+#[tokio::test]
 async fn output_preserves_raw_bytes_and_reports_lossy_slices() {
     let dir = tempfile::tempdir().unwrap();
     let mut writer = OutputWriter::create(dir.path(), "unicode", OutputLimits::default())

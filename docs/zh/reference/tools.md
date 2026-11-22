@@ -147,7 +147,7 @@ return {exit_code, duration_ms, entries, output_ref};
 
 ## 保留的工具输出
 
-`read_output` 按输出 ID 或当前 Agent 的准确值名读取 Session 保留数据，使用 SDK 的同一有界读取器。每次调用都须经过宿主授权。下表是直接工具的限额，脚本读取器的参数定义见 `tools.methods`。
+`read_output` 按输出 ID 或当前 Agent 的准确值名读取 Session 保留数据。使用运行中命令的输出 ID 时，返回读取时已经写完的捕获帧。每次调用都须经过宿主授权。下表是直接工具的限额，脚本读取器的参数定义见 `tools.methods`。
 
 | Argument | Contract |
 |---|---|
@@ -163,7 +163,7 @@ return {exit_code, duration_ms, entries, output_ref};
 
 文本视图移除 ANSI 颜色码。Windows 优先按 UTF-8 读取；对于标准输出和标准错误中的完整文本行，也会尝试宿主的 OEM 代码页。二进制数据和不完整字符仍可能显示替换符。显示文本与捕获字节不同时，`raw_bytes` 保留原始字节。其他情况下，可由 UTF-8 文本直接得到原始字节。SDK 调用方可统一使用 `OutputSegment::as_bytes()`。
 
-`complete` 表示写入器已完成收尾。`capture_truncated` 表示捕获配额导致输出丢弃；`cleanup_incomplete` 表示管道清理达到截止时间。即使返回的 JSON 页满足大小上限，这些标记也会明确保留。`summary` 包含读取器选出的构建或测试结果行。捕获数据的生命周期和清理语义见 [输出与清理](../how-it-works/sessions.md#输出与清理)。
+`complete` 表示写入器已完成收尾。当 `has_more` 和 `complete` 都为假时，读取已到达当前可用输出的末尾。检查后续输出时，继续使用 `next_offset`。`capture_truncated` 表示捕获配额导致输出丢弃。`cleanup_incomplete` 表示管道清理达到截止时间。`summary` 包含读取器选出的构建或测试结果行。捕获数据的生命周期和清理语义见 [输出与清理](../how-it-works/sessions.md#输出与清理)。
 
 每个调用方自行提供偏移。重复读取已完成的输出不会消费数据，UI 读取也不会推进模型游标。无效 ID、参数类型、扫描上限或搜索长度会返回错误，不进行越界读取。
 

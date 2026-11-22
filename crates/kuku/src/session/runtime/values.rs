@@ -189,6 +189,20 @@ impl Session {
         Ok(read_open_output(file, output_id, request.clone())?)
     }
 
+    pub(crate) fn pin_readable_output(
+        &self,
+        agent: &str,
+        turn: u64,
+        selector: OutputSelector<'_>,
+    ) -> Result<String> {
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        let id = state.select_output(agent, selector)?.to_owned();
+        state.check_output_access(agent, &id)?;
+        self.pin_outputs(&mut state, agent, turn, [id.as_str()])?;
+        Ok(id)
+    }
+
     pub(crate) fn pin_output_selectors(
         &self,
         agent: &str,
@@ -203,15 +217,30 @@ impl Session {
                 self.output_reference(&state, agent, state.select_output(agent, *selector)?)
             })
             .collect::<Result<Vec<_>>>()?;
-        let ids = references
-            .iter()
-            .map(|reference| reference.id.as_str())
+        self.pin_outputs(
+            &mut state,
+            agent,
+            turn,
+            references.iter().map(|reference| reference.id.as_str()),
+        )?;
+        Ok(references)
+    }
+
+    fn pin_outputs<'a>(
+        &self,
+        state: &mut State,
+        agent: &str,
+        turn: u64,
+        ids: impl IntoIterator<Item = &'a str>,
+    ) -> Result<()> {
+        let ids = ids
+            .into_iter()
             .filter(|id| !state.values.is_pinned_for_turn(agent, turn, id))
             .map(str::to_owned)
             .collect::<Vec<_>>();
         if !ids.is_empty() {
             self.commit(
-                &mut state,
+                state,
                 Record::OutputsPinned {
                     agent: agent.into(),
                     turn,
@@ -219,7 +248,7 @@ impl Session {
                 },
             )?;
         }
-        Ok(references)
+        Ok(())
     }
 
     pub(super) fn validate_input_values(

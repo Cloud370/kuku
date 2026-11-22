@@ -147,7 +147,7 @@ An output draft belongs to the current script invocation. See the [authorization
 
 ## Retained Tool Output
 
-`read_output` reads a retained output by ID or the current Agent's named value by exact name. It accepts Session references and uses the SDK's bounded reader. Every call passes host authorization. The limits below apply to the direct tool. For the script reader's schema, see `tools.methods`.
+`read_output` reads retained output by ID or the current Agent's named value by exact name. With a running command's output ID, it returns the complete capture frames available at the time of the read. Every call passes host authorization. The limits below apply to the direct tool. For the script reader's schema, see `tools.methods`.
 
 | Argument | Contract |
 |---|---|
@@ -163,7 +163,7 @@ The result is complete JSON in `model_content`, at most 16,384 UTF-8 bytes; `str
 
 The text view removes ANSI color codes. On Windows, it reads UTF-8 first and tries the host OEM code page for intact text lines on either pipe. Binary data and partial characters can still require replacement. Whenever the display text differs from the captured bytes, `raw_bytes` carries the original bytes. Otherwise its UTF-8 text represents those bytes directly. SDK callers can use `OutputSegment::as_bytes()` for either case.
 
-`complete` reports writer finalization. `capture_truncated` reports discarded output at the capture quota; `cleanup_incomplete` reports a pipe cleanup deadline. These flags remain explicit even when the returned JSON page fits its limit. `summary` contains the reader's selected build/test lines. See [Output and cleanup](../how-it-works/sessions.md#output-and-cleanup) for capture lifetime and cleanup semantics.
+`complete` reports writer finalization. When both `has_more` and `complete` are false, the read has reached the currently available end of the capture. To check for later output, reuse `next_offset`. `capture_truncated` reports discarded output at the capture quota. `cleanup_incomplete` reports a pipe cleanup deadline. `summary` contains the reader's selected build/test lines. See [Output and cleanup](../how-it-works/sessions.md#output-and-cleanup) for capture lifetime and cleanup semantics.
 
 Offsets are supplied by each caller. Repeated reads of finalized output do not consume it, and UI reads cannot advance a model cursor. Invalid IDs, argument types, scan limits, or search lengths produce an error without an out-of-range read.
 

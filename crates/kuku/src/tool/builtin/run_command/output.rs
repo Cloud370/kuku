@@ -667,10 +667,12 @@ fn render_chunk(
     file: &mut fs::File,
 ) -> io::Result<OutputChunk> {
     let mut next_offset = request.offset.saturating_add(window.bytes.len() as u64);
+    let has_more = next_offset < total_bytes;
     let ranges = match &request.search {
         Some(search) => {
-            if next_offset < total_bytes && window.bytes.len() >= search.len() {
-                next_offset -= (search.len() - 1) as u64;
+            if (has_more && window.bytes.len() >= search.len()) || (!has_more && !metadata.complete)
+            {
+                next_offset -= window.bytes.len().min(search.len() - 1) as u64;
             }
             let matcher =
                 regex::bytes::Regex::new(&regex::escape(search)).map_err(invalid_output)?;
@@ -723,7 +725,7 @@ fn render_chunk(
         cleanup_incomplete: metadata.cleanup_incomplete,
         filtered: request.search.is_some(),
         lossy_utf8,
-        has_more: next_offset < total_bytes,
+        has_more,
     })
 }
 

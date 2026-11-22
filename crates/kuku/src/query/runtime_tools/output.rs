@@ -46,7 +46,7 @@ pub(crate) fn definition_local() -> ToolDefinition {
 fn definition_with_bounds(bounds: PageBounds) -> ToolDefinition {
     ToolDefinition {
         name: "read_output".into(),
-        description: "Read retained output by its exact ID or your exact value name. Select a byte offset and bounded scan limit, with an optional literal search. Returns JSON with next_offset and capture status.".into(),
+        description: "Read output by exact ID, including bytes already captured from a running command, or by your exact value name. Select a byte offset and bounded scan limit, with an optional literal search. Continue with next_offset. When has_more and complete are both false, you have reached the current end of a growing capture.".into(),
         input_schema: json!({
             "type":"object",
             "properties":{
@@ -196,8 +196,8 @@ fn pin_name(
     turn: u64,
     selector: OutputSelector<'_>,
 ) -> Result<Option<String>> {
-    let references = session.pin_output_selectors(agent, turn, &[selector])?;
-    Ok(matches!(selector, OutputSelector::Name(_)).then(|| references[0].id.clone()))
+    let id = session.pin_readable_output(agent, turn, selector)?;
+    Ok(matches!(selector, OutputSelector::Name(_)).then_some(id))
 }
 
 fn apply_pinned_name(args: &mut Value, pinned: Option<String>) {
