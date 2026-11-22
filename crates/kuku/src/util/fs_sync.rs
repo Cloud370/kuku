@@ -18,10 +18,12 @@ pub(crate) fn write_options() -> OpenOptions {
     options
 }
 
+#[cfg(not(windows))]
 pub(crate) fn lock_writer(file: &File, path: &Path) -> io::Result<()> {
     file.try_lock().map_err(|error| lock_error(path, error))
 }
 
+#[cfg(not(windows))]
 pub(crate) fn lock_reader(file: &File, path: &Path) -> io::Result<()> {
     file.try_lock_shared()
         .map_err(|error| lock_error(path, error))
@@ -317,7 +319,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{
-        create_dir_all, lock_reader, lock_writer, rename, sync_file, sync_parent, write_options,
+        create_dir_all, lock_journal, rename, sync_file, sync_parent, unlock_journal, write_options,
     };
 
     static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
@@ -384,18 +386,18 @@ mod tests {
     }
 
     #[test]
-    fn file_locks_follow_hardlink_aliases_and_release_with_the_handle() {
+    fn journal_locks_follow_hardlink_aliases_and_release_explicitly() {
         if let Some(path) = std::env::var_os("KUKU_FS_SYNC_LOCK_CHILD") {
             let path = PathBuf::from(path);
             let writer = write_options().read(true).append(true).open(&path).unwrap();
             assert_eq!(
                 std::io::ErrorKind::WouldBlock,
-                lock_writer(&writer, &path).unwrap_err().kind()
+                lock_journal(&writer, &path, true).unwrap_err().kind()
             );
             let reader = File::open(&path).unwrap();
             assert_eq!(
                 std::io::ErrorKind::WouldBlock,
-                lock_reader(&reader, &path).unwrap_err().kind()
+                lock_journal(&reader, &path, false).unwrap_err().kind()
             );
             return;
         }
@@ -409,7 +411,7 @@ mod tests {
             .create_new(true)
             .open(&path)
             .unwrap();
-        lock_writer(&writer, &path).unwrap();
+        lock_journal(&writer, &path, true).unwrap();
         writer.write_all(b"record\n").unwrap();
         sync_file(&writer).unwrap();
         sync_parent(&path).unwrap();
@@ -425,21 +427,25 @@ mod tests {
             "child failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        unlock_journal(&writer).unwrap();
         drop(writer);
 
         let reader = File::open(&alias).unwrap();
-        lock_reader(&reader, &alias).unwrap();
+        lock_journal(&reader, &alias, false).unwrap();
         let other_reader = File::open(&path).unwrap();
-        lock_reader(&other_reader, &path).unwrap();
+        lock_journal(&other_reader, &path, false).unwrap();
         let writer = write_options().read(true).append(true).open(&path).unwrap();
         assert_eq!(
             std::io::ErrorKind::WouldBlock,
-            lock_writer(&writer, &path).unwrap_err().kind()
+            lock_journal(&writer, &path, true).unwrap_err().kind()
         );
+        unlock_journal(&reader).unwrap();
         drop(reader);
-        assert!(lock_writer(&writer, &path).is_err());
+        assert!(lock_journal(&writer, &path, true).is_err());
+        unlock_journal(&other_reader).unwrap();
         drop(other_reader);
-        lock_writer(&writer, &path).unwrap();
+        lock_journal(&writer, &path, true).unwrap();
+        unlock_journal(&writer).unwrap();
         drop(writer);
         fs::remove_dir_all(root).unwrap();
     }
