@@ -16,7 +16,7 @@ import sys
 from urllib.parse import urlencode
 
 from benchmark_resources import EXTERNAL_PROCESS_IO, FINAL_PROCESS_IO, complete_process_io, peak_rss_kib
-from evidence import EVENT_LINE_BYTES, EVENT_RECORD_LIMIT
+from evidence import EVENT_LINE_BYTES, EVENT_RECORD_LIMIT, SessionCapacityEvidence
 from paid_model import upstream_json, usd
 from run import load_secrets, locked, write_json
 
@@ -647,7 +647,7 @@ def session_summary(live, sdk):
              'workspace_script_calls': None, 'workspace_script_host_actions': None}
     terminal = 'turn.completed' if (count(facts.get('turns_completed')) or 0) > 0 else None
     result = {'terminal_event': terminal, 'interrupt_reason': None, 'durable_turn_settled': None,
-              'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None}
+              'settled_status': None, 'sdk_error_kind': None, 'sdk_error_detail': None, 'context_capacity': None}
     journal = session_journal(live)
     if journal is None:
         return tools, result
@@ -659,9 +659,11 @@ def session_summary(live, sdk):
     script_evidence_complete = True
     observed = {**result, 'durable_turn_settled': False}
     agent = sdk.get('agent') or 'main'
+    capacity = SessionCapacityEvidence(agent)
     provider_error_turn, provider_error_kind = None, None
     try:
         for event in session_events(journal):
+            capacity.observe(event)
             event_agent = event.get('conversation') or event.get('agent') or 'main'
             if event.get('kind') == 'tool.call':
                 calls += 1
@@ -736,7 +738,7 @@ def session_summary(live, sdk):
              'workspace_script_calls': script_calls,
              'workspace_script_host_actions': script_actions
              if script_evidence_complete and not pending_scripts and not pending_script_jobs else None}
-    return tools, observed
+    return tools, {**observed, 'context_capacity': capacity.summary()}
 
 
 def selector_summary(directory, case):

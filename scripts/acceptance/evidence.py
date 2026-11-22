@@ -17,6 +17,32 @@ EVENT_LINE_BYTES = 1024 * 1024
 EVENT_RECORD_LIMIT = 100_000
 
 
+class SessionCapacityEvidence:
+    def __init__(self, agent):
+        self.agent = agent
+        self.pending = {}
+        self.committed = 0
+        self.pages = 0
+
+    def observe(self, event):
+        if event.get("agent") != self.agent:
+            return
+        kind = event.get("kind")
+        if kind == "runtime.context_segment" and event.get("reason") == "request_byte_budget":
+            identity = event.get("id")
+            if type(identity) is int and identity > 0:
+                self.pending[identity] = event.get("output_pages_referenced")
+        segment = event.get("segment")
+        if kind == "runtime.step_prepared" and type(segment) is int and segment in self.pending:
+            self.committed += 1
+            pages = self.pending.pop(segment)
+            if self.pages is not None:
+                self.pages = self.pages + pages if type(pages) is int and pages > 0 else None
+
+    def summary(self):
+        return {"committed_rollovers": self.committed, "output_pages_referenced": self.pages}
+
+
 class FailureSummary:
     LIMIT = 16_384
     LINE_LIMIT = 4096

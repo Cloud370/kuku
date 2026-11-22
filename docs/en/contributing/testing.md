@@ -340,6 +340,8 @@ For a host deadline experiment, use `--max-command-seconds N` on a live Frontier
 
 Use `--max-request-bytes 524288` to exercise the default Session request budget in a live Frontier run. The relay and Kuku runner use the selected limit, and the selector checks the SDK report. An omitted option preserves the 4 MiB benchmark limit. Pair trials with the same byte limit.
 
+The paired report counts committed capacity rollovers and the earlier output pages replaced by range references. A rollover counts once when a prepared request references its successor segment. This distinguishes exercising capacity recovery from passing a run under the selected limit.
+
 ## Resource measurements
 
 ```bash

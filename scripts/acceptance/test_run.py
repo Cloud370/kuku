@@ -395,7 +395,7 @@ class AcceptanceTests(unittest.TestCase):
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
             "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
             "schemelike-metacircular-eval", "code-from-image", "db-wal-recovery", "adaptive-rejection-sampler",
-            "count-dataset-tokens", "multi-source-data-merger",
+            "count-dataset-tokens", "multi-source-data-merger", "query-optimize", "fix-ocaml-gc",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
         for case_id, artifact in (("db-wal-recovery", "/app/recovered.json"),
@@ -410,6 +410,12 @@ class AcceptanceTests(unittest.TestCase):
         _, merger = ACCEPTANCE.manifest_case("multi-source-data-merger", "frontier")
         self.assertEqual((merger["workspace"], merger["artifacts"], merger["timeout_sec"]),
                          ("/app", ["/app/merged_users.parquet", "/app/conflicts.json"], 900))
+        _, query = ACCEPTANCE.manifest_case("query-optimize", "frontier")
+        self.assertEqual((query["workspace"], query["artifacts"], query["timeout_sec"]),
+                         ("/app", ["/app/sol.sql"], 900))
+        _, compiler = ACCEPTANCE.manifest_case("fix-ocaml-gc", "frontier")
+        self.assertEqual((compiler["workspace"], compiler["artifacts"], compiler["timeout_sec"]),
+                         ("/app", ["/app/ocaml/runtime/major_gc.c"], 3600))
         _, package_server = ACCEPTANCE.manifest_case("pypi-server", "frontier")
         self.assertEqual((package_server["workspace"], package_server["artifacts"], package_server["timeout_sec"]),
                          ("/app", [], 900))

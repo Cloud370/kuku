@@ -220,6 +220,7 @@ def attempt(directory, harness):
         'agent_timed_out': True if sdk_deadline else runner_timeout,
         'sdk_task_deadline_elapsed': sdk_deadline,
         'sdk_error_detail': journal_result.get('sdk_error_detail'),
+        'context_capacity': journal_result.get('context_capacity'),
         'supervisor_timed_out': runner_timeout,
         'verifier_seconds': number(verification.get('seconds')),
         'original_verifier_passed': original_verifier_passed,

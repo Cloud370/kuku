@@ -61,7 +61,9 @@
         "db-wal-recovery",
         "adaptive-rejection-sampler",
         "count-dataset-tokens",
-        "multi-source-data-merger"
+        "multi-source-data-merger",
+        "query-optimize",
+        "fix-ocaml-gc"
       ],
       "additional_cases": [
         {
@@ -147,6 +149,20 @@
           "workspace": "/app",
           "artifacts": ["/app/merged_users.parquet", "/app/conflicts.json"],
           "timeout_sec": 900
+        },
+        {
+          "id": "query-optimize",
+          "role": "improve SQLite query performance while preserving its exact result",
+          "workspace": "/app",
+          "artifacts": ["/app/sol.sql"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "fix-ocaml-gc",
+          "role": "diagnose a compiler bootstrap failure and verify the repair with the basic test suite",
+          "workspace": "/app",
+          "artifacts": ["/app/ocaml/runtime/major_gc.c"],
+          "timeout_sec": 3600
         }
       ]
     }

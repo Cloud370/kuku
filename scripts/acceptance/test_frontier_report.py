@@ -183,6 +183,13 @@ class PairedReportTests(unittest.TestCase):
             journal.parent.mkdir(parents=True)
             journal.write_text(''.join(json.dumps(event) + '\n' for event in (
                 {'kind': 'tool.call', 'tool': 'read_output', 'args': {'id': SECRET}},
+                {'kind': 'runtime.context_segment', 'agent': 'main', 'id': 7,
+                 'reason': 'request_byte_budget', 'output_pages_referenced': 3},
+                {'kind': 'runtime.step_prepared', 'agent': 'main', 'segment': 7},
+                {'kind': 'runtime.step_prepared', 'agent': 'main', 'segment': 7},
+                {'kind': 'runtime.context_segment', 'agent': 'main', 'id': 8,
+                 'reason': 'request_byte_budget', 'output_pages_referenced': 90},
+                {'kind': 'runtime.step_prepared', 'agent': 'helper', 'segment': 8},
                 {'kind': 'runtime.operation', 'record': {'operation': 'turn_settled', 'address': 'main',
                  'error': SDK_REQUEST_BYTES_ERROR}},
             )))
@@ -208,6 +215,10 @@ class PairedReportTests(unittest.TestCase):
             self.assertEqual(report['attempts'][0]['workspace_script_calls'], 0)
             self.assertEqual(report['attempts'][0]['workspace_script_host_actions'], 0)
             self.assertEqual(report['attempts'][0]['sdk_error_detail'], 'request_bytes_limit')
+            self.assertEqual(report['attempts'][0]['context_capacity'], {
+                'committed_rollovers': 1, 'output_pages_referenced': 3,
+            })
+            self.assertIsNone(report['attempts'][1]['context_capacity'])
             self.assertIsNone(report['attempts'][1]['workspace_script_calls'])
             self.assertEqual(report['attempts'][0]['case_cap_rejections'], 1)
             self.assertNotIn(SECRET, json.dumps(report))
