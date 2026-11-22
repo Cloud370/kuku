@@ -6,6 +6,8 @@ fn main() {
     let version = env!("CARGO_PKG_VERSION");
     let Some(revision) = git(&["rev-parse", "--short", "HEAD"]) else {
         println!("cargo:rustc-env=KUKU_VERSION={version}");
+        let preview = !env!("CARGO_PKG_VERSION_PRE").is_empty();
+        println!("cargo:rustc-env=KUKU_BUILD_IS_PREVIEW={preview}");
         return;
     };
     watch_git_path("HEAD");
@@ -22,6 +24,10 @@ fn main() {
         "v[0-9]*",
         "HEAD",
     ]);
+    let preview = tag
+        .as_deref()
+        .is_none_or(|tag| tag.split('+').next().unwrap_or(tag).contains('-'));
+    println!("cargo:rustc-env=KUKU_BUILD_IS_PREVIEW={preview}");
     let version = tag
         .as_deref()
         .and_then(|tag| tag.strip_prefix('v'))

@@ -2,12 +2,13 @@
 
 import difflib
 import json
+import os
 import re
 import threading
 import time
 from urllib.parse import urlencode
 
-from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, eventually, json_response, run_cases
+from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, Terminal, eventually, json_response, run_cases
 from interactive_history import paginated_rewind, rewind_files
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input
@@ -107,6 +108,32 @@ def focus_action(terminal, action):
 
 def first_run_credential_repair(binary, bridge, directory):
     instance = InstalledClient(binary, bridge, directory)
+    login = directory / "login"
+    project = login / "project"
+    project.mkdir(parents=True)
+    environment = {**instance.env, "HOME": str(login)}
+    environment.pop("OPENROUTER_API_KEY", None)
+    if os.name == "nt":
+        environment["KUKU_HOME"] = str(login / ".kuku")
+    else:
+        environment.pop("KUKU_HOME")
+    for workspace in (login, project):
+        with Terminal(bridge, binary, workspace, environment) as terminal:
+            terminal.expect("New session")
+            terminal.request("resize", rows=20, cols=60)
+            terminal.expect("Set up a model", rows=20)
+            terminal.open_first_model_settings()
+            terminal.press("\r")
+            terminal.expect("Choose a provider")
+            terminal.press("\x1b[A")
+            terminal.expect("› Preset · OpenRouter")
+            terminal.press("\r\r\r")
+            terminal.expect("Paste your API key")
+            terminal.press("\x03")
+            terminal.expect("New session", also=("/model", "Set up a model"))
+            terminal.exit_cleanly()
+    assert not (login / ".kuku" / "config.toml").exists()
+
     key = "fixture-repaired-credential"
     authenticated = []
     original_dispatch = instance.provider.dispatch
@@ -131,9 +158,10 @@ def first_run_credential_repair(binary, bridge, directory):
         config.write_text(config.read_text().replace(
             'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_MISSING_KEY"'
         ))
-        workspace = client.workspace("work-first-run")
+        workspace = client.directory
         prompt = "Verify the repaired first-run settings"
         with client.terminal(workspace) as terminal:
+            terminal.open_first_model_settings()
             terminal.expect("Find and test models", also=("may cost money",))
             client.provider.assert_idle()
             terminal.press("\r")
@@ -171,6 +199,20 @@ def first_run_credential_repair(binary, bridge, directory):
             reply = terminal.expect("First reply used the repaired settings.", state="Finished")["screen"]
             terminal.exit_cleanly()
         assert authenticated == [True]
+        assert client.session(workspace)
+        with client.terminal(workspace) as terminal:
+            terminal.resume(prompt)
+            terminal.expect("First reply used the repaired settings.")
+            terminal.exit_cleanly()
+        with client.terminal(client.workspace("another-workspace")) as terminal:
+            terminal.expect("claude-sonnet-4-6", state="Ready")
+            terminal.submit("Use the configured model in another workspace")
+            shared = client.provider.next("Use the configured model in another workspace")
+            assert shared.request["model"] == call.request["model"]
+            shared.text("Same model and credential.")
+            terminal.expect("Same model and credential.", state="Finished")
+            terminal.exit_cleanly()
+        assert authenticated == [True, True]
         assert key not in config.read_text()
         credential_files = list((client.home / "credentials").iterdir())
         assert len(credential_files) == 1
@@ -208,6 +250,7 @@ def shared_model_editor(binary, bridge, directory):
         workspace = client.workspace("work-model-setup")
         with client.terminal(workspace) as terminal:
             terminal.request("resize", rows=32, cols=110)
+            terminal.open_first_model_settings()
             terminal.expect("Set up a model", also=("Esc exit",))
             terminal.press("\r")
             providers = terminal.expect("› New custom connection", also=("Esc previous step",))["screen"]
@@ -252,9 +295,10 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect("› Model tests")
             terminal.press("\x1b[A")
             terminal.expect("› Save and continue")
+            terminal.request("resize", rows=32, cols=110)
+            terminal.expect("› Save and continue", also=("└" + "─" * 108 + "┘",), rows=32)
             terminal.press("\r")
             terminal.expect("New session", state="Ready", absent=("Connected", "F2 Restart"))
-            terminal.request("resize", rows=32, cols=110)
             terminal.submit("Use the first saved default")
             first = client.provider.next("Use the first saved default")
             assert first.request["model"] == "beta"
@@ -461,6 +505,7 @@ def setup_probe_progress(binary, bridge, directory):
             endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
             config.write_text("")
             with client.terminal(client.workspace("work-probe-progress")) as terminal:
+                terminal.open_first_model_settings()
                 terminal.expect("Find and test models", also=("Edit config file", "may cost money"))
                 terminal.press("\x1b[B\r")
                 terminal.expect("Manual configuration", also=("config.toml",))

@@ -155,7 +155,13 @@ export type Entry = EntryBase &
     | { type: "question" | "permission"; text?: string | null }
     | { type: "question_reply"; request_id: string; text: string }
     | { type: "permission_reply"; request_id: string; allow: boolean }
-    | { type: "status"; status: "cancelled" | "interrupted"; text?: string | null }
+    | {
+        type: "status";
+        status: "cancelled" | "interrupted";
+        text?: string | null;
+        partial_reply?: string;
+        truncated?: boolean;
+      }
     | { type: "error"; text?: string | null; code?: string; message?: string }
   );
 

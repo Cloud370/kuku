@@ -15,7 +15,7 @@ use super::{
     TurnSummary,
 };
 
-const REPLY_PREVIEW_BYTES: usize = 64 * 1024;
+use crate::event::REPLY_PREFIX_BYTES as REPLY_PREVIEW_BYTES;
 const PEER_PREVIEW_BYTES: usize = 512;
 
 /// Observed phase and visible reply prefix of the current model request.

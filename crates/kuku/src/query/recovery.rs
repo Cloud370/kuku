@@ -165,6 +165,8 @@ async fn dispatch_recovery(
         session_id: pending.session_id.clone(),
         turn: pending.turn,
         request_id: info.to_request_id.clone(),
+        logs: pending.config.logs(),
+        mode: pending.query.provider_trace,
     });
     let provider_request = request.request();
     let handoff_active = pending.handoff_triggered;

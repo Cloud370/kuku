@@ -52,7 +52,7 @@ async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
         config: Some(config.clone()),
         ..ConnectionOptions::default()
     };
-    assert!(super::run_if_needed(&options).await.unwrap());
+    assert!(!super::required(&options).await.unwrap());
     assert!(!options
         .data_dir
         .as_ref()
@@ -65,7 +65,7 @@ async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
         data_dir: Some(directory.path().join("remote-data")),
         ..ConnectionOptions::default()
     };
-    assert!(super::run_if_needed(&remote).await.unwrap());
+    assert!(!super::required(&remote).await.unwrap());
     assert!(!remote.data_dir.as_ref().unwrap().exists());
 
     let token = ConnectionOptions {
@@ -73,7 +73,7 @@ async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
         data_dir: Some(directory.path().join("token-data")),
         ..ConnectionOptions::default()
     };
-    assert!(super::run_if_needed(&token).await.unwrap());
+    assert!(!super::required(&token).await.unwrap());
     assert!(!token.data_dir.as_ref().unwrap().exists());
 }
 

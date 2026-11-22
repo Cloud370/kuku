@@ -524,11 +524,19 @@ def recover_from_provider_failure(client):
         terminal.expect(
             "Automatic retry stopped; see transcript for details.",
             state="Interrupted",
-            also=("No automatic retry", "HTTP 400"),
+            also=("No automatic retry", "HTTP 400", "F2 Continue"),
         )
         terminal.submit(recovery)
-        eventually("recovery input to queue before explicit continuation",
-                   lambda: client.snapshot(workspace, session)["pending_inputs"] == 1)
+        try:
+            eventually("recovery input to queue before explicit continuation",
+                       lambda: client.snapshot(workspace, session)["pending_inputs"] == 1)
+        except AssertionError as error:
+            agent = client.snapshot(workspace, session)
+            screen = terminal.request("screen")["screen"]
+            raise AssertionError(
+                f"{error}\nSession status: {agent['status']}; queued inputs: {agent['pending_inputs']}"
+                f"\nLast terminal screen:\n{screen}"
+            ) from error
         client.provider.assert_idle(duration=0.2)
         terminal.press("\x1bOQ\r")
         client.provider.next(recovery).text("provider recovered")

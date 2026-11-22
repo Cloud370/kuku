@@ -1,5 +1,6 @@
 mod hub;
 mod paths;
+pub(crate) mod provider_trace;
 mod prune;
 mod store;
 mod types;

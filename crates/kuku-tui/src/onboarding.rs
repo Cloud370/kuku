@@ -2,13 +2,13 @@ use std::io;
 
 use kuku_client::ConnectionOptions;
 
-use crate::setup::{self, SetupMode};
+use crate::setup;
 
-pub(crate) async fn run_if_needed(options: &ConnectionOptions) -> io::Result<bool> {
+pub(crate) async fn required(options: &ConnectionOptions) -> io::Result<bool> {
     if options.remote.is_some() || options.token.is_some() {
-        return Ok(true);
+        return Ok(false);
     }
-    setup::run(options.clone(), SetupMode::FirstRun).await
+    setup::first_run_required(options.clone()).await
 }
 
 #[cfg(test)]

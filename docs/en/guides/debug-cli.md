@@ -25,11 +25,11 @@ kuku events SESSION_ID --kind runtime.model_usage --json |
 
 ## Inspect the provider request
 
-Enable tracing for the server when the recorded settings cannot explain a protocol or routing issue. With the managed local service idle, run the following commands:
+Check the protocol diagnostics in preview builds first. If you need the full request and SSE frames, enable full tracing while the managed local service is idle.
 
 ```bash
 KUKU_PROVIDER_TRACE=1 kuku server restart
 kuku run --no-skills "Reply with one sentence"
 ```
 
-Trace files are written under `$KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl`. They include request bodies and streamed responses. Headers containing secrets are redacted, but prompts, file contents and tool output may still be present. Share the relevant event IDs and fields. [Environment variables](../reference/environment-variables.md)
+Trace files are written under `$KUKU_HOME/logs/provider-trace/`. They include request bodies and streamed responses. Headers containing secrets are redacted, but prompts, file contents and tool output may still be present. Share the relevant event IDs and fields. [Environment variables](../reference/environment-variables.md)

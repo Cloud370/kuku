@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock};
 
-use super::prepare::invalid_request;
+use super::prepare::invalid_response;
 use super::types::ProviderFailure;
 
 const MAX_REPLAY_BYTES: usize = 512 * 1024;
@@ -17,14 +17,16 @@ pub(crate) struct ReplayBudget {
 impl ReplayBudget {
     pub(crate) fn add(&mut self, value: &Value) -> Result<(), ProviderFailure> {
         let bytes = serde_json::to_vec(value)
-            .map_err(|_| invalid_request("could not encode native replay data"))?
+            .map_err(|_| invalid_response("could not encode native replay data"))?
             .len();
         self.bytes = self
             .bytes
             .checked_add(bytes)
-            .ok_or_else(|| invalid_request("native replay data exceeds the byte limit"))?;
+            .ok_or_else(|| invalid_response("native replay data exceeds the byte limit"))?;
         if self.bytes > MAX_REPLAY_BYTES {
-            return Err(invalid_request("native replay data exceeds the byte limit"));
+            return Err(invalid_response(
+                "native replay data exceeds the byte limit",
+            ));
         }
         Ok(())
     }

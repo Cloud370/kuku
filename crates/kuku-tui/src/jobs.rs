@@ -117,6 +117,7 @@ pub(crate) enum Job {
 }
 
 pub(crate) enum Update {
+    SetupRequired,
     ModelEditorOpened(u64, Result<Box<crate::setup::ModelEditor>, String>),
     ModelEditorSaved(u64, Box<crate::setup::ModelEditor>, Result<bool, String>),
     ModelSettingSaved(Result<bool, String>),

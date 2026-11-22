@@ -124,6 +124,8 @@ pub(super) async fn dispatch_provider_step(
             session_id: pending.session_id.clone(),
             turn: pending.turn,
             request_id: request_id.clone(),
+            logs: pending.config.logs(),
+            mode: pending.query.provider_trace,
         });
 
         let outcome = dispatch_prepared(

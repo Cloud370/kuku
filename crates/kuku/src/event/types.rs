@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::json::{
@@ -6,6 +6,7 @@ use super::json::{
     optional_u64_field, string_field, u32_field, u64_field, u8_field, usize_field,
     vec_string_field,
 };
+use super::turn::PartialReply;
 use crate::context::provenance::{
     AgentRegistryProvenance, FileSource, PluginRegistryProvenance, PromptCapabilityMetadata,
     PromptRendererIdentity, SkillRegistryProvenance, ToolRegistryProvenance,
@@ -13,35 +14,13 @@ use crate::context::provenance::{
 
 pub use super::model_stop_reason::ModelStopReason;
 pub use super::stored_event::StoredEvent;
+pub use super::turn::RollbackScope;
 
 /// A single message in a frozen prelude snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMessage {
     pub role: String,
     pub content: String,
-}
-
-/// Scope of a turn rollback operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RollbackScope {
-    #[serde(rename = "messages")]
-    ConversationOnly,
-    #[serde(rename = "file_changes")]
-    FilesOnly,
-    #[serde(rename = "both")]
-    Both,
-}
-
-impl RollbackScope {
-    /// Whether this scope skips conversation events during rebuild.
-    pub fn affects_conversation(&self) -> bool {
-        matches!(self, Self::ConversationOnly | Self::Both)
-    }
-
-    /// Whether this scope triggers file revert operations.
-    pub fn affects_files(&self) -> bool {
-        matches!(self, Self::FilesOnly | Self::Both)
-    }
 }
 
 /// All fact events that can be written to and read from a session's events.jsonl.
@@ -232,6 +211,7 @@ pub enum EventPayload {
         conversation: String,
         turn: u64,
         reason: String,
+        partial_reply: Option<PartialReply>,
     },
     ConversationRollback {
         ts: String,
@@ -246,24 +226,6 @@ pub enum EventPayload {
         rollback_event_id: u64,
     },
     Unknown(Value),
-}
-
-impl Serialize for EventPayload {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Unknown(value) => value.serialize(serializer),
-            payload => {
-                let mut value = payload.to_new_json(0).map_err(serde::ser::Error::custom)?;
-                if let Some(object) = value.as_object_mut() {
-                    object.remove("id");
-                }
-                value.serialize(serializer)
-            }
-        }
-    }
 }
 
 impl EventPayload {
@@ -523,6 +485,9 @@ impl EventPayload {
                 conversation: string_field(object, "conversation")?,
                 turn: u64_field(object, "turn")?,
                 reason: string_field(object, "reason")?,
+                partial_reply: object
+                    .get("partial_reply")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok()),
             }),
             "conversation.rollback" => Some(Self::ConversationRollback {
                 ts: string_field(object, "ts")?,
@@ -983,14 +948,15 @@ impl EventPayload {
                 conversation,
                 turn,
                 reason,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "turn.interrupted",
-                "conversation": conversation,
-                "turn": turn,
-                "reason": reason,
-            })),
+                partial_reply,
+            } => super::turn::encode_interruption(
+                id,
+                ts,
+                conversation,
+                *turn,
+                reason,
+                partial_reply.as_ref(),
+            ),
             Self::ConversationRollback {
                 ts,
                 conversation,

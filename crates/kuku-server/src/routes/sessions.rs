@@ -497,6 +497,7 @@ mod retry_progress_tests {
                     ts: "2025-01-01T00:00:00Z".into(),
                     conversation: "main".into(),
                     turn: 3,
+                    partial_reply: None,
                     reason: "transport".into(),
                 })
                 .unwrap();

@@ -133,6 +133,8 @@ pub struct SessionOptions {
     pub authorizer: Arc<dyn ToolAuthorizer>,
     /// Optional host model transport; preparation and dispatch limits remain owned by the SDK.
     pub model_adapter: Option<Arc<dyn crate::ModelAdapter>>,
+    /// Provider diagnostics policy. Auto follows the build and process environment.
+    pub provider_trace: crate::ProviderTraceMode,
     /// Additional finite tool definitions captured when this runtime opens.
     pub tools: Vec<Arc<dyn crate::ToolAdapter>>,
 }
@@ -166,6 +168,7 @@ impl SessionOptions {
             workspace_host: crate::WorkspaceExecutionHost::default(),
             authorizer: Arc::new(TrustedLocal),
             model_adapter: None,
+            provider_trace: crate::ProviderTraceMode::Auto,
             tools: Vec::new(),
         }
     }

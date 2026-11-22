@@ -50,6 +50,8 @@ pub(crate) struct FrozenSegment {
     pub(crate) handoff_prelude: Option<usize>,
     #[serde(default)]
     pub(crate) workspace: String,
+    #[serde(default)]
+    pub(crate) project_instruction_sources: Vec<crate::context::FileSource>,
 }
 
 fn route_selectors_changed(segment: Option<&FrozenSegment>, config: &serde_json::Value) -> bool {

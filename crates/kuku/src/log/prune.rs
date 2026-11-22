@@ -129,17 +129,25 @@ pub fn prune_logs(
     options: PruneOptions,
 ) -> Result<PrunePlan> {
     let root = crate::log::logs_root(kuku_home);
-    let candidates = collect_candidates(&root)?;
-    let plan = select_prunable_files_with_options(limits, now, candidates, &options);
-    for path in &plan.remove {
-        if path.exists() {
-            std::fs::remove_file(path)?;
+    let prune = || {
+        let candidates = collect_candidates(&root)?;
+        let plan = select_prunable_files_with_options(limits, now, candidates, &options);
+        for path in &plan.remove {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
         }
+        Ok(plan)
+    };
+    let traces = super::provider_trace::trace_root(kuku_home);
+    if traces.is_dir() {
+        super::provider_trace::with_trace_lock(&traces, prune)
+    } else {
+        prune()
     }
-    Ok(plan)
 }
 
-fn collect_candidates(root: &Path) -> Result<Vec<PruneCandidate>> {
+pub(super) fn collect_candidates(root: &Path) -> Result<Vec<PruneCandidate>> {
     let mut candidates = Vec::new();
     if !root.exists() {
         return Ok(candidates);

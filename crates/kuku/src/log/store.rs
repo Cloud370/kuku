@@ -132,7 +132,7 @@ impl BufferedLogWriter {
     }
 }
 
-fn log_file_lock(path: &Path) -> Result<fslock::LockFile> {
+pub(super) fn log_file_lock(path: &Path) -> Result<fslock::LockFile> {
     let lock_path = path.with_extension(format!(
         "{}lock",
         path.extension()
@@ -143,7 +143,7 @@ fn log_file_lock(path: &Path) -> Result<fslock::LockFile> {
     Ok(fslock::LockFile::open(&lock_path)?)
 }
 
-fn log_write_lock(path: &Path) -> Arc<Mutex<()>> {
+pub(super) fn log_write_lock(path: &Path) -> Arc<Mutex<()>> {
     let locks = LOG_WRITE_LOCKS.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let mut locks = locks
         .lock()

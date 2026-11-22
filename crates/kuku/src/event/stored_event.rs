@@ -11,6 +11,24 @@ pub struct StoredEvent {
     pub payload: EventPayload,
 }
 
+impl Serialize for EventPayload {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Unknown(value) => value.serialize(serializer),
+            payload => {
+                let mut value = payload.to_new_json(0).map_err(serde::ser::Error::custom)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("id");
+                }
+                value.serialize(serializer)
+            }
+        }
+    }
+}
+
 impl Serialize for StoredEvent {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

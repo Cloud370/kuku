@@ -395,7 +395,8 @@ fn context_batch(
             "connection":context.segment.connection,"protocol":context.segment.protocol,"model":context.segment.model,"endpoint":context.segment.endpoint,
             "capabilities":context.segment.capabilities,"route_selectors":context.segment.route_selectors,
             "system_prompt":context.segment.system_prompt,"prelude":context.segment.prelude,"tools":context.segment.tools,"catalog":context.segment.catalog,
-            "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace})));
+            "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace,
+            "project_instruction_sources":context.segment.project_instruction_sources})));
     }
     let frozen_head = context.prefix_context_head;
     let expected_frozen_head = if context.new_segment {
@@ -520,6 +521,14 @@ fn initial_segment(
         capabilities: None,
         route_selectors: None,
         behavior: behavior.into(),
+        project_instruction_sources: assembly
+            .project_instruction_sources
+            .into_iter()
+            .map(|source| crate::context::FileSource {
+                path: source.path,
+                hash: source.hash,
+            })
+            .collect(),
         identity_slot: slot,
         handoff_prelude: None,
         workspace: pending.workspace.to_string_lossy().into_owned(),
@@ -868,6 +877,7 @@ mod snapshot_tests {
             route_selectors: Some(selectors.clone()),
             behavior: String::new(),
             identity_slot: 1,
+            project_instruction_sources: Vec::new(),
             handoff_prelude: None,
             workspace: String::new(),
         };

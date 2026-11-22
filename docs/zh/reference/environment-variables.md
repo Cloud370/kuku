@@ -12,7 +12,7 @@
 | `OPENAI_API_KEY` | `provider.openai` 常用的 API key 来源 |
 | `DEEPSEEK_API_KEY` | `provider.deepseek` 常用的 API key 来源 |
 | `OPENROUTER_API_KEY` | `provider.openrouter` 常用的 API key 来源 |
-| `KUKU_PROVIDER_TRACE` | 设为 `1` 时写入 provider 请求和响应 trace 日志 |
+| `KUKU_PROVIDER_TRACE` | `1` 启用完整 trace，`0` 关闭 provider trace |
 
 `config.toml` 也可以在字符串字段中使用 `$NAME` 引用环境变量。对于 `api_key`，`$NAME` 明确选择环境变量来源；`file:<绝对路径>` 明确选择私有文件。两种来源不会互相回退；其他字符串字段在配置加载时解析。
 
@@ -20,13 +20,11 @@
 
 ## Provider Trace 日志
 
-`KUKU_PROVIDER_TRACE=1` 会为真实 API 请求开启 provider 诊断日志。开启后，kuku 会把 JSONL trace 文件写入：
+预发布版和未打标签的开发版默认记录协议诊断，稳定版默认关闭。诊断 JSONL 记录包含 Session、轮次和请求关联信息、模型和线路、HTTP 状态、SSE 顺序和结束标记，以及失败类别。思考条目记录类型、格式、索引和请求内的 ID 别名，未知类型和格式也用请求内别名表示。诊断模式省略请求和响应正文、响应内容、头信息及不透明的思考数据。
 
-```text
-$KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
-```
+`KUKU_PROVIDER_TRACE=1` 记录完整的请求正文、头信息和原始 SSE。凭据头的值会脱敏，完整 trace 仍可能包含提示、工具结果和模型输出。嵌入式宿主可通过 `SessionOptions::provider_trace` 或 `Query::provider_trace` 显式选择模式。
 
-Provider trace 记录包含请求 header、请求 body、响应 header 和流式响应事件。`authorization`、`x-api-key`、`api-key`、cookie 和代理凭证等 secret header value 会在写入前打码。请求和响应 body 仍可能包含 prompt 文本、tool result、模型输出或其他任务数据，所以只应在调试时开启。
+Provider trace 以轮转的 JSONL 分段保存在 `$KUKU_HOME/logs/provider-trace/` 下。它们遵循[日志保留规则](config.md#logs)，写入时还会遵守 64 MiB 或配置的日志总预算中较小的上限。每段上限为 8 MiB 或 trace 预算中较小的值，较旧的分段优先清除。
 
 ## 未设置 `KUKU_HOME` 时的默认行为
 

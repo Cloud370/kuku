@@ -12,7 +12,7 @@
 | `OPENAI_API_KEY` | Common API key source for `provider.openai` |
 | `DEEPSEEK_API_KEY` | Common API key source for `provider.deepseek` |
 | `OPENROUTER_API_KEY` | Common API key source for `provider.openrouter` |
-| `KUKU_PROVIDER_TRACE` | Set to `1` to write provider request and response trace logs |
+| `KUKU_PROVIDER_TRACE` | Set to `1` for full traces or `0` to disable provider traces |
 
 `config.toml` can also reference environment variables with `$NAME` in string fields. For `api_key`, `$NAME` explicitly selects the environment source; `file:<absolute-path>` explicitly selects a private file. The sources never fall back to one another. Other string fields resolve during config load.
 
@@ -20,13 +20,11 @@ Set provider credentials and `KUKU_PROVIDER_TRACE` in the server's environment. 
 
 ## Provider Trace Logs
 
-`KUKU_PROVIDER_TRACE=1` enables provider diagnostics for real API requests. When enabled, kuku writes JSONL trace files under:
+Prerelease and untagged development binaries record protocol diagnostics by default. A stable release defaults to off. The diagnostic JSONL records contain Session, Turn and request correlation, model and route, HTTP status, SSE sequence and terminal markers, and failure kind. Reasoning details include type, format, index and request-local ID aliases. Arbitrary types and formats are also represented by request-local aliases. Diagnostic mode omits bodies, response content, headers and opaque reasoning payloads.
 
-```text
-$KUKU_HOME/logs/provider-trace/<yyyy-mm-dd>/<session-id>.jsonl
-```
+`KUKU_PROVIDER_TRACE=1` captures full request bodies, headers and raw SSE. Credential headers are redacted. The full trace can contain prompts, tool results, and model output. Embedded hosts can select an explicit policy using `SessionOptions::provider_trace` or `Query::provider_trace`.
 
-Provider trace records include request headers, request bodies, response headers, and streamed response events. Secret header values such as `authorization`, `x-api-key`, `api-key`, cookies, and proxy credentials are redacted before writing. Request and response bodies may still contain prompt text, tool results, model output, or other task data, so enable this only while debugging.
+Provider traces are stored as rotating JSONL segments under `$KUKU_HOME/logs/provider-trace/`. They share [log retention](config.md#logs) and are also limited at write time to 64 MiB or the configured total log budget, whichever is smaller. Segments are limited to 8 MiB or the trace budget, whichever is smaller. Older segments are evicted first.
 
 ## Default Behavior Without `KUKU_HOME`
 

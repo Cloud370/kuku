@@ -16,13 +16,12 @@ use kuku_client::ConnectionOptions;
 use tempfile::Builder;
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
 
-type EnvironmentLookup<'a> = &'a dyn Fn(&str) -> Result<String, VarError>;
+type EnvironmentLookup<'a> = &'a (dyn Fn(&str) -> Result<String, VarError> + Sync);
 
 pub(super) struct Settings {
     pub(super) config_path: PathBuf,
     pub(super) data_dir: PathBuf,
     pub(super) credentials_dir: PathBuf,
-    pub(super) workspace: PathBuf,
     pub(super) document: DocumentMut,
     pub(super) original_bytes: Option<Vec<u8>>,
     pub(super) original_permissions: Option<fs::Permissions>,
@@ -107,9 +106,6 @@ impl Settings {
         }
         let config_path = active_config.unwrap_or_else(|| service.config_path().to_owned());
         let data_dir = service.data_dir().to_owned();
-        let workspace = options
-            .workspace()
-            .map_err(|_| invalid_config("cannot resolve the workspace path"))?;
         let credentials_dir = data_dir.join("credentials");
         let loaded = load_document(&config_path, &data_dir, environment)?;
         let default_tier = loaded.resolved.default_tier.clone();
@@ -117,7 +113,6 @@ impl Settings {
             config_path,
             data_dir,
             credentials_dir,
-            workspace,
             document: loaded.document,
             original_bytes: loaded.original_bytes,
             original_permissions: loaded.original_permissions,
@@ -127,13 +122,9 @@ impl Settings {
             existing: loaded.existing,
             storage_error: None,
         };
-        settings.storage_error = if settings.credentials_dir.starts_with(&settings.workspace) {
-            Some("Stored keys are disabled because credentials would be inside the workspace; use a different --data-dir or Environment.")
-        } else {
-            settings.check_storage(false).err().map(|_| {
-                "Stored keys are unavailable because the credentials directory is not safe; use Environment or a different --data-dir."
-            })
-        };
+        settings.storage_error = settings.check_storage(false).err().map(|_| {
+            "Stored keys are unavailable because the credentials directory is not safe; use Environment or a different --data-dir."
+        });
         Ok(settings)
     }
 
@@ -279,14 +270,12 @@ impl Settings {
         if !self.can_store_key() {
             return false;
         }
-        let (Ok(path), Ok(credentials), Ok(workspace)) = (
-            path.canonicalize(),
-            self.credentials_dir.canonicalize(),
-            self.workspace.canonicalize(),
-        ) else {
+        let (Ok(path), Ok(credentials)) =
+            (path.canonicalize(), self.credentials_dir.canonicalize())
+        else {
             return false;
         };
-        path.parent() == Some(credentials.as_path()) && !path.starts_with(workspace)
+        path.parent() == Some(credentials.as_path())
     }
 
     pub(super) fn key_for(&self, choice: &ConnectionChoice) -> Option<&ApiKey> {
@@ -308,33 +297,17 @@ impl Settings {
     }
 
     fn check_storage(&self, create: bool) -> io::Result<()> {
-        let candidate = self.credentials_dir.as_path();
-        let canonical_data = self.data_dir.canonicalize()?;
-        let canonical_workspace = self.workspace.canonicalize()?;
-        let resolved_candidate = match fs::symlink_metadata(candidate) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(unsafe_storage());
-                }
-                candidate.canonicalize()?
-            }
+        let candidate = &self.credentials_dir;
+        match fs::symlink_metadata(candidate) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                canonical_data.join("credentials")
+                if !create {
+                    return Ok(());
+                }
             }
-            Err(_) => return Err(unsafe_storage()),
-        };
-        if resolved_candidate.starts_with(&canonical_workspace) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "credential storage must be outside the workspace",
-            ));
+            _ => return Err(unsafe_storage()),
         }
-        if create {
-            private_directory(candidate).map_err(|_| unsafe_storage())?;
-        } else if candidate.is_dir() {
-            private_directory(candidate).map_err(|_| unsafe_storage())?;
-        }
-        Ok(())
+        private_directory(candidate).map_err(|_| unsafe_storage())
     }
 }
 

@@ -129,6 +129,8 @@
 
 显式打断可以产生 `status` 为 `"interrupted"` 的 `status` 条目，包含 `execution_id`，也会提供已知的轮次标识和序号。`text` 保留最多 64 KiB 的中断回复，未保留可见正文时为 `null`。`truncated` 表示中断回复超过上限。原始日志可用 `stop_event_id` 将 `turn.cancelled` 对应到停止记录。
 
+如果 provider 流在输出文字后失败，`turn.interrupted` 历史条目会包含最多 64 KiB UTF-8 正文的 `partial_reply` 和 `truncated` 标志。将其显示为中断的回复并替换临时预览。独立的 `model.error` 条目保留 provider 诊断。
+
 已结算的轮次可以有 `turn_summary` 条目。显式打断轮次时，中断的 `status` 条目可以附带同样的摘要。`turn_summary` 对象的 `tool_calls` 是已提交的工具调用数，包括等待授权的调用。可用测量包括从接纳到结算的 `elapsed_ms`、所有模型请求均报告相应计数时的 `input_tokens` 或 `output_tokens`，以及按成对输入与缓存读取计数计算的 `cache_hit_percent`。
 
 Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个可为空的字符串分别摘录最近接纳的任务输入和仍在排队的最新任务输入，摘录长度有限。任务摘录不含问题回复。排队数量和待决事项分别读取 `pending_inputs`、`question` 和 `permission`。

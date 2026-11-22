@@ -885,3 +885,78 @@ async fn a_named_connection_change_commits_a_successor_without_native_state_tran
     assert_eq!(segments[0]["id"], segments[1]["predecessor"]);
     assert_eq!("other", segments[1]["connection"]);
 }
+
+#[tokio::test]
+async fn ambiguous_chat_stream_keeps_partial_reply_out_of_the_reopened_context() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut options, path) = options(&server, workspace.path(), data.path());
+    let partial = "PARTIAL_VISIBLE_REPLY";
+    let failure = "provider reasoning fragment matches multiple items";
+    let malformed = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"PARTIAL_VISIBLE_REPLY\",\"tool_calls\":[{\"index\":0,\"id\":\"never-dispatch\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"index\":0,\"id\":\"a\",\"type\":\"reasoning.encrypted\",\"data\":\"OPAQUE_A\"},{\"index\":0,\"id\":\"b\",\"type\":\"reasoning.encrypted\",\"data\":\"OPAQUE_B\"}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"index\":0,\"data\":\"ambiguous-fragment\"}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let first = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path);
+            then.status(200).body(malformed);
+        })
+        .await;
+    let session = Session::open(options.clone()).await.unwrap();
+    session.create_agent("create", "main", agent()).unwrap();
+    session
+        .send(Input::new("first", "main", "fail the stream"))
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while session.agent("main").unwrap().status == kuku::AgentStatus::Running {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        session.agent("main").unwrap().status,
+        kuku::AgentStatus::Interrupted
+    );
+    options.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+    first.assert_hits_async(1).await;
+    first.delete_async().await;
+
+    let reopened = Session::open(options).await.unwrap();
+    let events = reopened.events(0, 256).unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(&event.payload,
+        EventPayload::TurnInterrupted { partial_reply: Some(reply), .. } if reply.text == partial && !reply.truncated
+    )).count(), 1);
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ModelError { kind, message, .. } if kind == "invalid_response" && message == failure
+    )));
+    assert!(!events.iter().any(|event| matches!(&event.payload,
+        EventPayload::ModelResponse { .. } | EventPayload::ToolCall { .. }
+    ) || matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.provider_replay")));
+
+    let followup = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(common::capture_http_request);
+            then.status(200)
+                .body(response(json!({"content":"recovered"}), "stop"));
+        })
+        .await;
+    reopened
+        .send(Input::new("followup", "main", "continue after failure"))
+        .unwrap();
+    reopened.advance("main").unwrap();
+    idle(&reopened, "main").await;
+    followup.assert_hits_async(1).await;
+    let body = common::take_http_requests(&path).remove(0).to_string();
+    for text in [partial, "OPAQUE_A", "OPAQUE_B", "never-dispatch"] {
+        assert!(!body.contains(text), "{text}");
+    }
+    reopened.close().await.unwrap();
+}

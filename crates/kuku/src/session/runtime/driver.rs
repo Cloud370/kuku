@@ -380,6 +380,7 @@ impl Session {
         query.service_tier = config.service_tier.clone();
         query.authorizer = Some(self.inner.options.authorizer.clone());
         query.model_adapter = self.inner.options.model_adapter.clone();
+        query.provider_trace = self.inner.options.provider_trace;
         query.tool_adapters = self.inner.tool_adapters.clone();
         query.runtime_limits = self.inner.options.limits.clone();
         query.model_capacity = Some(self.inner.model_capacity.clone());
@@ -557,6 +558,7 @@ impl Session {
                 ts: timestamp()?,
                 conversation: address.into(),
                 turn,
+                partial_reply: None,
                 reason: reason.into(),
             })?;
         }

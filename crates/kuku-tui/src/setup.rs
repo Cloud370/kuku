@@ -10,7 +10,7 @@ mod repair_backend;
 mod state;
 mod ui;
 
-use std::io::{self, IsTerminal};
+use std::io;
 
 use kuku::config::{ProviderFormat, ProviderProfile};
 use kuku_client::ConnectionOptions;
@@ -138,47 +138,24 @@ pub(crate) enum ConnectionChoice {
     Custom,
 }
 
-pub(crate) async fn run(options: ConnectionOptions, mode: SetupMode) -> io::Result<bool> {
-    let settings = match mode {
-        SetupMode::Session => unreachable!("in-session setup uses the active terminal"),
-        SetupMode::Init => {
-            validate_entry(
-                &options,
-                io::stdin().is_terminal() && io::stdout().is_terminal(),
-                "Interactive settings require a terminal; edit config.toml or use `kuku config set`.",
-            )?;
-            config::Settings::load(options.clone()).await?
-        }
-        SetupMode::FirstRun => {
-            let Some(settings) = config::Settings::load_for_first_run(options.clone()).await?
-            else {
-                return Ok(true);
-            };
-            validate_entry(
-                &options,
-                io::stdin().is_terminal() && io::stdout().is_terminal(),
-                "Interactive settings require a terminal; edit config.toml or use `kuku config set`.",
-            )?;
-            settings
-        }
-    };
+pub(crate) async fn first_run_required(options: ConnectionOptions) -> io::Result<bool> {
+    Ok(config::Settings::load_for_first_run(options)
+        .await?
+        .is_some())
+}
+
+pub(crate) async fn run(options: ConnectionOptions) -> io::Result<bool> {
+    let settings = config::Settings::load(options).await?;
     let mut state = state::SetupState::new(&settings);
     let finish = loop {
-        let finish = ui::run(&settings, &mut state, mode).await?;
+        let finish = ui::run(&settings, &mut state, SetupMode::Init).await?;
         if finish == Finish::Cancel {
             println!("Setup canceled. No files were changed.");
             return Ok(false);
         }
-        if mode == SetupMode::FirstRun && !first_run_service_is_idle(&options).await {
-            state.problem = Some(
-                "Local service is active or unavailable. Open /model in the service's terminal."
-                    .into(),
-            );
-        } else {
-            match config::save(&settings, &state) {
-                Ok(_) => break finish,
-                Err(error) => state.problem = Some(error.to_string()),
-            }
+        match config::save(&settings, &state) {
+            Ok(_) => break finish,
+            Err(error) => state.problem = Some(error.to_string()),
         }
         state.finish = None;
     };

@@ -346,6 +346,7 @@ pub(crate) struct App {
     pub(crate) credential_repair: Option<Box<crate::setup::CredentialRepair>>,
     pub(crate) connection_problem: Option<String>,
     pub(crate) connecting: bool,
+    pub(crate) setup_required: bool,
     pub(crate) restarting: bool,
     pub(crate) notice: Option<Notice>,
     pub(crate) alias_hint: Option<Notice>,
@@ -419,6 +420,7 @@ impl App {
             endpoint,
             connection_problem: None,
             connecting: true,
+            setup_required: false,
             restarting: false,
             notice: None,
             alias_hint: None,
@@ -472,7 +474,7 @@ impl App {
     }
 
     pub(crate) fn available(&self) -> bool {
-        !self.connecting && self.connection_problem.is_none()
+        !self.connecting && !self.setup_required && self.connection_problem.is_none()
     }
 
     pub(crate) fn resolved_workspace(&self) -> Option<&Path> {
@@ -509,6 +511,8 @@ impl App {
         } else {
             self.problem(if self.connecting {
                 "Connecting to the kuku service…"
+            } else if self.setup_required {
+                "Use /model to set up a model · draft kept"
             } else {
                 "kuku service unavailable · Ctrl+R or /server"
             });
@@ -583,6 +587,7 @@ impl App {
             return;
         }
         self.connecting = true;
+        self.setup_required = false;
         self.connection_problem = None;
         self.notice = None;
         self.related_agents.invalidate(self.pane().last_event);
@@ -626,6 +631,7 @@ impl App {
 
     pub(crate) fn update(&mut self, update: Update) {
         match update {
+            Update::SetupRequired => self.need_model_setup(),
             Update::Connected {
                 endpoint,
                 workspace,

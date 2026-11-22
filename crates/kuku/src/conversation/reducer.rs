@@ -358,6 +358,7 @@ mod tests {
                 ts: "t".into(),
                 conversation: conversation.into(),
                 turn,
+                partial_reply: None,
                 reason: "interrupted".into(),
             },
         )

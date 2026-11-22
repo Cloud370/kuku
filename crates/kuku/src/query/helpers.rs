@@ -373,6 +373,7 @@ pub(super) fn append_turn_interrupted(
             ts: now_timestamp()?,
             conversation: conversation.as_str().to_string(),
             turn,
+            partial_reply: None,
             reason: reason.to_string(),
         },
     )
@@ -443,19 +444,25 @@ pub(super) fn now_timestamp() -> Result<String> {
 pub(super) fn load_project_instruction_sources(
     workspace: &std::path::Path,
 ) -> Result<Vec<InstructionSource>> {
-    let mut sources = Vec::new();
-    for (name, kind) in [("AGENTS.md", "agents"), ("CLAUDE.md", "claude")] {
+    let load = |name, kind: &str| {
         let path = workspace.join(name);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            sources.push(InstructionSource {
-                path: path.display().to_string(),
-                kind: kind.to_string(),
-                hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
-                content,
-            });
-        }
+        let content = std::fs::read_to_string(&path).ok()?;
+        Some(InstructionSource {
+            path: path.display().to_string(),
+            kind: kind.to_owned(),
+            hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
+            content,
+        })
+    };
+    if let Some(source) =
+        load("AGENTS.override.md", "agents").filter(|source| !source.content.trim().is_empty())
+    {
+        return Ok(vec![source]);
     }
-    Ok(sources)
+    Ok([load("AGENTS.md", "agents"), load("CLAUDE.md", "claude")]
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 pub(super) fn load_memory_sources(
@@ -528,6 +535,29 @@ pub(super) fn extract_input_tokens(kind: &ProviderKind, usage: &serde_json::Valu
 mod tests {
     use super::extract_input_tokens;
     use crate::provider::types::ProviderKind;
+
+    #[test]
+    fn missing_blank_or_unreadable_override_restores_base_files() {
+        let workspace = tempfile::tempdir().unwrap();
+        let agents = workspace.path().join("AGENTS.md");
+        let claude = workspace.path().join("CLAUDE.md");
+        let override_path = workspace.path().join("AGENTS.override.md");
+        std::fs::write(agents, "agents baseline").unwrap();
+        std::fs::write(claude, "claude baseline").unwrap();
+        for override_body in [None, Some(b" \n".as_slice()), Some(b"\xff".as_slice())] {
+            if let Some(body) = override_body {
+                std::fs::write(&override_path, body).unwrap();
+            }
+            let sources = super::load_project_instruction_sources(workspace.path()).unwrap();
+            assert_eq!(
+                sources
+                    .iter()
+                    .map(|source| source.content.as_str())
+                    .collect::<Vec<_>>(),
+                ["agents baseline", "claude baseline"]
+            );
+        }
+    }
 
     #[test]
     fn extract_input_tokens_sums_anthropic_cache_fields() {

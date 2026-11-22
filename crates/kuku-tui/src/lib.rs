@@ -37,9 +37,6 @@ pub async fn run(options: ConnectionOptions, build: &'static str) -> io::Result<
             "Interactive kuku needs a terminal. Use `kuku run` for scripts.",
         ));
     }
-    if !onboarding::run_if_needed(&options).await? {
-        return Ok(());
-    }
     terminal::run(options, build).await
 }
 
@@ -61,9 +58,7 @@ pub async fn setup(options: ConnectionOptions) -> io::Result<()> {
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         &guidance,
     )?;
-    setup::run(options, setup::SetupMode::Init)
-        .await
-        .map(|_| ())
+    setup::run(options).await.map(|_| ())
 }
 
 /// Open an HTTP or HTTPS URL in the user's browser.

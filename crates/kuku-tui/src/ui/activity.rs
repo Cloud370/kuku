@@ -32,6 +32,9 @@ enum ObservedActivity {
 
 impl ObservedActivity {
     fn of(app: &App) -> Self {
+        if app.setup_required {
+            return Self::Agent(Activity::Configuration);
+        }
         let service = app.service_status();
         if service == ServiceStatus::Connected {
             let activity = app.pane().composer_activity();

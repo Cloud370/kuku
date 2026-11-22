@@ -110,7 +110,9 @@ def open_focused_results(terminal):
     terminal.expect("Save setup")
 
 
-def start_custom(terminal, address, key):
+def start_custom(terminal, address, key, *, from_welcome=True):
+    if from_welcome:
+        terminal.open_first_model_settings()
     terminal.expect("Find and test models")
     terminal.press("\r")
     choose(terminal, 0, "New custom connection")
@@ -150,7 +152,7 @@ def save_early(binary, bridge, directory):
         with instance as client:
             endpoint = setup_address(client)
             with client.terminal(client.workspace("save-early"), "init") as terminal:
-                start_custom(terminal, f"{endpoint}/v1/chat/completions", "fixture-save-early-key")
+                start_custom(terminal, f"{endpoint}/v1/chat/completions", "fixture-save-early-key", from_welcome=False)
                 terminal.expect("Choose models", also=("fixture-model",))
                 terminal.press("\r")
                 terminal.expect("› View requests", also=("Save early", "50%", "Try low"))
@@ -275,4 +277,6 @@ def repair_connection(binary, bridge, directory, issue):
                 terminal.press("\r")
             terminal.expect("Save setup", also=("Save and continue", "fixture-model", "Ready"), absent=("Fix failed models",))
             assert ("/v1/chat/completions", "Bearer fixture-repair-key") in requests
-            terminal.exit_cleanly("\x03")
+            terminal.press("\x03")
+            terminal.expect("New session", also=("/model", "Set up a model"))
+            terminal.exit_cleanly()

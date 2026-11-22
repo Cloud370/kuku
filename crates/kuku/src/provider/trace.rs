@@ -1,155 +1,312 @@
-use std::path::{Path, PathBuf};
+use std::collections::hash_map::RandomState;
+use std::collections::HashMap;
+use std::hash::BuildHasher;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use wreq::header::HeaderMap;
 
+use crate::config::LogsConfig;
+use crate::log::provider_trace::{append, segment_limit, trace_root};
+
+use super::sse::parse_sse_frame;
+use super::types::ProviderFailureKind;
+
 const PROVIDER_TRACE_ENV: &str = "KUKU_PROVIDER_TRACE";
 const REDACTED: &str = "<redacted>";
+const BATCH_BYTES: usize = 32 * 1024;
+const MAX_ALIASES: usize = 512;
+const MAX_DETAILS_PER_FRAME: usize = 64;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ProviderTraceMetadata {
     pub(crate) kuku_home: PathBuf,
     pub(crate) session_id: String,
     pub(crate) turn: u64,
     pub(crate) request_id: String,
+    pub(crate) logs: LogsConfig,
+    pub(crate) mode: ProviderTraceMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EnvTraceSetting {
-    Enabled,
-    Disabled,
+/// Policy for recording built-in provider HTTP and streaming diagnostics.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderTraceMode {
+    /// Follow the process environment and the binary's build provenance.
+    #[default]
+    Auto,
+    Off,
+    /// Record protocol structure without request bodies or provider content.
+    Diagnostic,
+    /// Record request bodies and raw SSE with credential headers redacted.
+    Full,
 }
 
-impl EnvTraceSetting {
-    pub(crate) fn current() -> Self {
-        if std::env::var(PROVIDER_TRACE_ENV).as_deref() == Ok("1") {
-            Self::Enabled
+impl ProviderTraceMode {
+    fn resolve(self) -> Self {
+        if self == Self::Auto {
+            Self::from_build_and_env(
+                env!("KUKU_BUILD_IS_PREVIEW") == "true",
+                std::env::var(PROVIDER_TRACE_ENV).ok().as_deref(),
+            )
         } else {
-            Self::Disabled
+            self
+        }
+    }
+
+    fn from_build_and_env(preview: bool, setting: Option<&str>) -> Self {
+        match setting {
+            Some("1") => Self::Full,
+            Some("0") => Self::Off,
+            _ if preview => Self::Diagnostic,
+            _ => Self::Off,
         }
     }
 }
 
-#[derive(Debug, Clone)]
 pub(crate) struct ProviderTrace {
-    path: PathBuf,
-    session_id: String,
-    turn: u64,
-    request_id: String,
+    root: PathBuf,
+    metadata: ProviderTraceMetadata,
     provider: String,
     model: String,
+    state: Mutex<TraceState>,
+}
+
+#[derive(Default)]
+struct TraceState {
+    bytes: Vec<u8>,
+    frame: u64,
+    fingerprints: RandomState,
+    aliases: HashMap<(&'static str, u64), usize>,
+}
+
+impl TraceState {
+    fn alias(&mut self, key: &'static str, value: &Value) -> Option<usize> {
+        let text = value.as_str().filter(|text| !text.is_empty())?;
+        let key = (key, self.fingerprints.hash_one(text));
+        let count = self.aliases.len();
+        if count >= MAX_ALIASES {
+            return self.aliases.get(&key).copied();
+        }
+        Some(*self.aliases.entry(key).or_insert(count + 1))
+    }
+
+    fn reasoning_metadata(&mut self, detail: &Value) -> Value {
+        json!({
+            "id_alias": self.alias("id", &detail["id"]),
+            "type": match detail["type"].as_str() {
+                Some(kind @ ("reasoning.text" | "reasoning.summary" | "reasoning.encrypted")) => json!(kind),
+                _ => json!(self.alias("type", &detail["type"])),
+            },
+            "format": match detail["format"].as_str() {
+                Some(format @ ("google-gemini-v1" | "anthropic-claude-v1" | "openai-responses-v1" | "xai-responses-v1" | "unknown")) => json!(format),
+                _ => json!(self.alias("format", &detail["format"])),
+            },
+            "index": detail["index"].as_u64(),
+        })
+    }
+
+    fn frame_metadata(&mut self, raw: &str) -> (Value, bool) {
+        let mut record = json!({"sequence": self.frame, "bytes": raw.len()});
+        let Some(frame) = parse_sse_frame(raw) else {
+            record["event"] = json!("comment_or_empty");
+            return (record, false);
+        };
+        if frame.data.trim() == "[DONE]" {
+            record["terminal"] = json!("done");
+            return (record, true);
+        }
+        let Ok(data) = serde_json::from_str::<Value>(&frame.data) else {
+            record["event"] = json!("malformed_json");
+            return (record, false);
+        };
+        let event = frame.event.as_deref().or_else(|| data["type"].as_str());
+        let terminal = match event {
+            Some("message_stop") => Some("message_stop"),
+            Some("response.completed") => Some("response.completed"),
+            Some("response.incomplete") => Some("response.incomplete"),
+            Some("response.failed") => Some("response.failed"),
+            Some("error") => Some("error"),
+            _ if data.get("error").is_some() => Some("error"),
+            _ => None,
+        };
+        if let Some(event) = event {
+            record["event"] = match event {
+                "message_start"
+                | "message_delta"
+                | "message_stop"
+                | "content_block_start"
+                | "content_block_delta"
+                | "content_block_stop"
+                | "response.created"
+                | "response.output_text.delta"
+                | "response.output_item.added"
+                | "response.output_item.done"
+                | "response.completed"
+                | "response.failed"
+                | "response.incomplete"
+                | "error"
+                | "ping" => json!(event),
+                _ => json!("other"),
+            };
+        }
+        let choice = data.pointer("/choices/0");
+        if let Some(choice) = choice {
+            if let Some(reason) = choice["finish_reason"].as_str() {
+                record["finish_reason"] = match reason {
+                    "stop" | "length" | "tool_calls" | "content_filter" | "function_call" => {
+                        json!(reason)
+                    }
+                    _ => json!("other"),
+                };
+            }
+            if let Some(details) = choice
+                .pointer("/delta/reasoning_details")
+                .and_then(Value::as_array)
+            {
+                record["reasoning_details"] = json!(details
+                    .iter()
+                    .take(MAX_DETAILS_PER_FRAME)
+                    .map(|item| self.reasoning_metadata(item))
+                    .collect::<Vec<_>>());
+                if details.len() > MAX_DETAILS_PER_FRAME {
+                    record["reasoning_details_truncated"] = json!(true);
+                }
+            }
+        }
+        if let Some(terminal) = terminal {
+            record["terminal"] = json!(terminal);
+        }
+        let flush = terminal.is_some() || record.get("finish_reason").is_some();
+        (record, flush)
+    }
 }
 
 impl ProviderTrace {
     pub(crate) fn from_request(
-        metadata: Option<&ProviderTraceMetadata>,
-        provider: impl Into<String>,
-        model: impl Into<String>,
-    ) -> Option<Self> {
-        let metadata = metadata?.clone();
-        Self::new(
-            metadata,
-            provider.into(),
-            model.into(),
-            EnvTraceSetting::current(),
-        )
-    }
-
-    pub(crate) fn new(
-        metadata: ProviderTraceMetadata,
+        metadata: Option<ProviderTraceMetadata>,
         provider: String,
         model: String,
-        setting: EnvTraceSetting,
     ) -> Option<Self> {
-        if setting != EnvTraceSetting::Enabled {
+        let mut metadata = metadata?;
+        metadata.mode = metadata.mode.resolve();
+        if metadata.mode == ProviderTraceMode::Off || segment_limit(&metadata.logs) == 0 {
             return None;
         }
-
-        provider_trace_path(&metadata.kuku_home, &metadata.session_id)
-            .ok()
-            .map(|path| Self {
-                path,
-                session_id: metadata.session_id,
-                turn: metadata.turn,
-                request_id: metadata.request_id,
-                provider,
-                model,
-            })
+        Some(Self {
+            root: trace_root(&metadata.kuku_home),
+            metadata,
+            provider,
+            model,
+            state: Mutex::new(TraceState::default()),
+        })
     }
 
-    #[cfg(test)]
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
+    pub(crate) fn full(&self) -> bool {
+        self.metadata.mode == ProviderTraceMode::Full
     }
 
-    pub(crate) fn record(
-        &self,
-        direction: ProviderTraceDirection,
-        url: Option<&str>,
-        headers: Option<&HeaderMap>,
-        payload: Value,
-    ) {
-        let _ = self.record_result(direction, url, headers, payload);
+    pub(crate) fn request(&self, url: &str, headers: &HeaderMap, body: Option<Value>) {
+        let value = if self.full() {
+            json!({"url":url,"headers":redact_headers(headers),"body":body})
+        } else {
+            json!({})
+        };
+        self.record(&mut self.state.lock().unwrap(), "request", value, false);
     }
 
-    fn record_result(
-        &self,
-        direction: ProviderTraceDirection,
-        url: Option<&str>,
-        headers: Option<&HeaderMap>,
-        payload: Value,
-    ) -> std::io::Result<()> {
+    pub(crate) fn response(&self, url: &str, status: u16, headers: &HeaderMap) {
+        let value = if self.full() {
+            json!({"url":url,"status":status,"headers":redact_headers(headers)})
+        } else {
+            json!({"status":status})
+        };
+        self.record(&mut self.state.lock().unwrap(), "response", value, false);
+    }
+
+    pub(crate) fn frame(&self, frame: &str) {
+        let mut state = self.state.lock().unwrap();
+        state.frame += 1;
+        let (mut value, terminal) = state.frame_metadata(frame);
+        if self.full() {
+            value["frame"] = json!(frame);
+        }
+        self.record(&mut state, "event", value, terminal);
+    }
+
+    pub(crate) fn failure(&self, kind: ProviderFailureKind) {
+        let mut state = self.state.lock().unwrap();
+        let last_frame = state.frame;
+        self.record(
+            &mut state,
+            "error",
+            json!({
+                "failure_kind": kind.as_event_kind(),
+                "after_sequence": last_frame,
+            }),
+            true,
+        );
+    }
+
+    pub(crate) fn flush(&self) {
+        self.flush_batch(&mut self.state.lock().unwrap(), OffsetDateTime::now_utc());
+    }
+
+    fn record(&self, state: &mut TraceState, direction: &str, value: Value, flush: bool) {
+        let now = OffsetDateTime::now_utc();
         let mut record = json!({
-            "ts": now_timestamp(),
-            "direction": direction.as_str(),
-            "session_id": self.session_id,
-            "turn": self.turn,
-            "request_id": self.request_id,
+            "ts": now.format(&Rfc3339).unwrap_or_default(),
+            "direction": direction,
+            "session_id": self.metadata.session_id,
+            "turn": self.metadata.turn,
+            "request_id": self.metadata.request_id,
             "provider": self.provider,
             "model": self.model,
         });
-        if let Some(url) = url {
-            record["url"] = json!(url);
+        let fields = record.as_object_mut().expect("trace metadata is an object");
+        if let Value::Object(value) = value {
+            fields.extend(value);
         }
-        if let Some(headers) = headers {
-            record["headers"] = json!(redact_headers(headers));
+        let limit = segment_limit(&self.metadata.logs) as usize;
+        let Ok(mut line) = serde_json::to_vec(&record) else {
+            return;
+        };
+        if line.len() >= limit {
+            let object = record.as_object_mut().expect("trace metadata is an object");
+            object.retain(|key, _| {
+                matches!(
+                    key.as_str(),
+                    "ts" | "direction"
+                        | "session_id"
+                        | "turn"
+                        | "request_id"
+                        | "provider"
+                        | "model"
+                        | "sequence"
+                )
+            });
+            object.insert("truncated".into(), json!(true));
+            object.insert("bytes".into(), json!(line.len()));
+            line = serde_json::to_vec(&record).unwrap_or_default();
         }
-        merge_payload(&mut record, payload);
-
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
+        if line.len() >= limit || line.is_empty() {
+            return;
         }
-        let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
-        line.push(b'\n');
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        file.write_all(&line)?;
-        file.flush()?;
-        Ok(())
+        if state.bytes.len() + line.len() + 1 > BATCH_BYTES.min(limit) {
+            self.flush_batch(state, now);
+        }
+        state.bytes.extend(line);
+        state.bytes.push(b'\n');
+        if flush || state.bytes.len() >= BATCH_BYTES.min(limit) {
+            self.flush_batch(state, now);
+        }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProviderTraceDirection {
-    Request,
-    Response,
-    Event,
-    Error,
-}
-
-impl ProviderTraceDirection {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Request => "request",
-            Self::Response => "response",
-            Self::Event => "event",
-            Self::Error => "error",
-        }
+    fn flush_batch(&self, state: &mut TraceState, now: OffsetDateTime) {
+        let _ = append(&self.root, &self.metadata.logs, now.date(), &state.bytes);
+        state.bytes.clear();
     }
 }
 
@@ -168,52 +325,6 @@ pub(crate) fn redact_headers(headers: &HeaderMap) -> serde_json::Map<String, Val
         .collect()
 }
 
-fn provider_trace_path(kuku_home: &Path, session_id: &str) -> std::io::Result<PathBuf> {
-    validate_session_id(session_id)?;
-    Ok(kuku_home
-        .join("logs")
-        .join("provider-trace")
-        .join(current_day())
-        .join(format!("{session_id}.jsonl")))
-}
-
-fn current_day() -> String {
-    OffsetDateTime::now_utc().date().to_string()
-}
-
-fn now_timestamp() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string())
-}
-
-fn validate_session_id(session_id: &str) -> std::io::Result<()> {
-    let invalid = session_id.is_empty()
-        || session_id == "."
-        || session_id == ".."
-        || session_id.contains("..")
-        || session_id.ends_with('.')
-        || session_id.ends_with(' ')
-        || session_id.contains('/')
-        || session_id.contains('\\')
-        || session_id.contains('\0')
-        || session_id.contains('<')
-        || session_id.contains('>')
-        || session_id.contains(':')
-        || session_id.contains('"')
-        || session_id.contains('|')
-        || session_id.contains('?')
-        || session_id.contains('*');
-    if invalid {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("invalid session id: {session_id}"),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 fn is_secret_header(name: &str) -> bool {
     matches!(
         name,
@@ -227,107 +338,64 @@ fn is_secret_header(name: &str) -> bool {
     )
 }
 
-fn merge_payload(record: &mut Value, payload: Value) {
-    let Value::Object(record) = record else {
-        return;
-    };
-    match payload {
-        Value::Object(payload) => record.extend(payload),
-        value => {
-            record.insert("data".to_string(), value);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use std::sync::Mutex;
+    use crate::config::LogsConfig;
 
-    use wreq::header::{HeaderMap, HeaderValue};
-
-    use super::*;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use super::{ProviderTrace, ProviderTraceMetadata, ProviderTraceMode};
 
     #[test]
-    fn env_setting_requires_one() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let previous = std::env::var(PROVIDER_TRACE_ENV).ok();
-
-        std::env::remove_var(PROVIDER_TRACE_ENV);
-        assert_eq!(EnvTraceSetting::current(), EnvTraceSetting::Disabled);
-
-        std::env::set_var(PROVIDER_TRACE_ENV, "0");
-        assert_eq!(EnvTraceSetting::current(), EnvTraceSetting::Disabled);
-
-        std::env::set_var(PROVIDER_TRACE_ENV, "1");
-        assert_eq!(EnvTraceSetting::current(), EnvTraceSetting::Enabled);
-
-        if let Some(previous) = previous {
-            std::env::set_var(PROVIDER_TRACE_ENV, previous);
-        } else {
-            std::env::remove_var(PROVIDER_TRACE_ENV);
-        }
-    }
-
-    #[test]
-    fn disabled_env_does_not_create_writer() {
-        let trace = ProviderTrace::new(
-            ProviderTraceMetadata {
-                kuku_home: Path::new("/tmp/kuku-home").to_path_buf(),
-                session_id: "s_test".to_string(),
-                turn: 2,
-                request_id: "req_1".to_string(),
-            },
-            "anthropic".to_string(),
-            "claude-test".to_string(),
-            EnvTraceSetting::Disabled,
-        );
-
-        assert!(trace.is_none());
-    }
-
-    #[test]
-    fn enabled_env_creates_provider_trace_day_path() {
-        let trace = ProviderTrace::new(
-            ProviderTraceMetadata {
-                kuku_home: Path::new("/tmp/kuku-home").to_path_buf(),
-                session_id: "s_test".to_string(),
-                turn: 2,
-                request_id: "req_1".to_string(),
-            },
-            "anthropic".to_string(),
-            "claude-test".to_string(),
-            EnvTraceSetting::Enabled,
+    fn full_trace_keeps_correlation_on_oversized_frame() {
+        let home = tempfile::tempdir().unwrap();
+        let trace = ProviderTrace::from_request(
+            Some(ProviderTraceMetadata {
+                kuku_home: home.path().into(),
+                session_id: "large-frame".into(),
+                turn: 7,
+                request_id: "req_1".into(),
+                logs: LogsConfig {
+                    max_total_size_mb: 1,
+                    ..LogsConfig::default()
+                },
+                mode: ProviderTraceMode::Full,
+            }),
+            "fixture".into(),
+            "model-fixture".into(),
         )
-        .expect("trace should be enabled");
-
-        assert!(trace
-            .path()
-            .starts_with("/tmp/kuku-home/logs/provider-trace/"));
-        assert_eq!(trace.path().file_name().unwrap(), "s_test.jsonl");
+        .unwrap();
+        trace.frame(&format!("data: {}", "OVERSIZED".repeat(128 * 1024)));
+        trace.flush();
+        let root = super::trace_root(home.path());
+        let path = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .unwrap();
+        let contents = std::fs::read_to_string(path).unwrap();
+        let record: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(record["truncated"], true);
+        assert_eq!(record["sequence"], 1);
+        assert_eq!(record["session_id"], "large-frame");
+        assert_eq!(record["request_id"], "req_1");
+        assert!(!contents.contains("OVERSIZED"));
     }
 
     #[test]
-    fn redacts_secret_headers_case_insensitively() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "Authorization",
-            HeaderValue::from_static("Bearer sk-secret"),
-        );
-        headers.insert("x-api-key", HeaderValue::from_static("api-secret"));
-        headers.insert(
-            "ANTHROPIC-API-KEY",
-            HeaderValue::from_static("anthropic-secret"),
-        );
-        headers.insert("content-type", HeaderValue::from_static("application/json"));
-
-        let redacted = redact_headers(&headers);
-
-        assert_eq!(redacted["authorization"], "<redacted>");
-        assert_eq!(redacted["x-api-key"], "<redacted>");
-        assert_eq!(redacted["anthropic-api-key"], "<redacted>");
-        assert_eq!(redacted["content-type"], "application/json");
+    fn mode_follows_build_and_explicit_overrides() {
+        use ProviderTraceMode::{Diagnostic, Full, Off};
+        for (preview, default) in [(true, Diagnostic), (false, Off)] {
+            assert_eq!(
+                default,
+                ProviderTraceMode::from_build_and_env(preview, None)
+            );
+            assert_eq!(
+                Off,
+                ProviderTraceMode::from_build_and_env(preview, Some("0"))
+            );
+            assert_eq!(
+                Full,
+                ProviderTraceMode::from_build_and_env(preview, Some("1"))
+            );
+        }
     }
 }
