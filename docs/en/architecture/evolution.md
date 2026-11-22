@@ -85,6 +85,8 @@ Sessions keep one authoritative journal. On eligible clean closes, the same file
 
 Read-only journal scans use a pinned file and a fixed committed boundary. Acquiring that boundary may coordinate with the writer. Reading or projecting the prefix must allow the writer to open and continue committing. Writer recovery for one Session must allow access to other Sessions.
 
+History readers share immutable turn ownership and message previews from the committed index. Queries copy the requested evidence while commits update only the affected index entries.
+
 After replaying an unusable inline checkpoint, a normal close can replace that checkpoint independently of the journal compression threshold. The replacement is published atomically from the committed facts and remains subject to the checkpoint size limit.
 
 The Session list can use the summary and Agent status from a sealed journal independently of the execution and history indexes. It reads committed events when the listing data is missing or unusable.

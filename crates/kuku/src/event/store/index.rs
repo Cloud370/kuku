@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
+use rpds::HashTrieMapSync;
 use serde::{Deserialize, Serialize};
 
+use super::message_index::MessageIndex;
 use super::{EventOffset, EventPayload, StoredEvent};
 use crate::event::history::{hidden_history, hidden_range};
 use crate::{Error, Result};
@@ -50,25 +52,9 @@ pub(super) struct FileFact {
 pub(crate) struct HistoryMarks {
     pub(crate) cursor: u64,
     pub(crate) controls: Vec<StoredEvent>,
-    pub(crate) turn_owners: HashMap<u64, TurnOwners>,
+    pub(crate) turn_owners: TurnOwnerIndex,
     pub(crate) message_rewinds: Vec<MessageRewind>,
-    pub(crate) editable: HashMap<String, HashMap<u64, Vec<UserMessagePreview>>>,
-}
-
-/// A user message that can be reopened as a draft.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserMessagePreview {
-    /// Exact committed message event identity.
-    pub event_id: u64,
-    /// Bounded message preview.
-    pub text: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct MessageMark {
-    id: u64,
-    turn: u64,
-    preview: Option<String>,
+    pub(crate) editable: HashMap<String, super::MessagePreviews>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +69,8 @@ pub(crate) struct TurnOwners {
     pub(crate) first: String,
     pub(crate) last: String,
 }
+
+pub(crate) type TurnOwnerIndex = HashTrieMapSync<u64, TurnOwners>;
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub(crate) struct JournalSummary {
@@ -137,14 +125,14 @@ pub(super) struct JournalIndex {
     pub(super) summary: JournalSummary,
     agents: HashMap<String, AgentFacts>,
     rewinds: Vec<StoredEvent>,
-    turn_owners: HashMap<u64, TurnOwners>,
+    turn_owners: TurnOwnerIndex,
     pub(super) files: Vec<FileFact>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct AgentFacts {
     turns: HashMap<u64, (bool, Option<u64>)>,
-    messages: Vec<MessageMark>,
+    messages: MessageIndex,
     admissions: Vec<u64>,
     turn: Option<u64>,
     #[serde(with = "crate::event::checkpoint_map")]
@@ -187,17 +175,26 @@ impl JournalIndex {
             event_turn(&event.payload),
             event_conversation(&event.payload),
         ) {
-            self.turn_owners
-                .entry(turn)
-                .and_modify(|owners| {
-                    if owners.last != owner {
-                        owners.last = owner.into();
-                    }
-                })
-                .or_insert_with(|| TurnOwners {
-                    first: owner.into(),
-                    last: owner.into(),
-                });
+            match self.turn_owners.get(&turn) {
+                Some(owners) if owners.last == owner => {}
+                Some(owners) => {
+                    let first = owners.first.clone();
+                    self.turn_owners.insert_mut(
+                        turn,
+                        TurnOwners {
+                            first,
+                            last: owner.into(),
+                        },
+                    );
+                }
+                None => self.turn_owners.insert_mut(
+                    turn,
+                    TurnOwners {
+                        first: owner.into(),
+                        last: owner.into(),
+                    },
+                ),
+            }
         }
         match &event.payload {
             EventPayload::TurnStarted {
@@ -223,11 +220,10 @@ impl JournalIndex {
                 job_delivery,
                 ..
             } => {
-                self.agent(conversation).messages.push(MessageMark {
-                    id: event.id,
-                    turn: *turn,
-                    preview: (!job_delivery).then(|| text.chars().take(160).collect()),
-                });
+                let preview = (!job_delivery).then(|| text.chars().take(160).collect());
+                self.agent(conversation)
+                    .messages
+                    .push(event.id, *turn, preview);
             }
             EventPayload::ConversationRollback { .. }
             | EventPayload::ConversationRollbackUndone { .. } => self.rewinds.push(event.clone()),
@@ -250,7 +246,7 @@ impl JournalIndex {
             turn_owners: if include_owners || !self.rewinds.is_empty() {
                 self.turn_owners.clone()
             } else {
-                HashMap::new()
+                TurnOwnerIndex::default()
             },
             message_rewinds: self
                 .rewinds
@@ -266,12 +262,7 @@ impl JournalIndex {
                     let agent = record["address"].as_str()?;
                     let target_event_id = record["target_event_id"].as_u64()?;
                     (target_event_id < event.id
-                        && self
-                            .agents
-                            .get(agent)?
-                            .messages
-                            .binary_search_by_key(&target_event_id, |message| message.id)
-                            .is_ok())
+                        && self.agents.get(agent)?.messages.contains(target_event_id))
                     .then(|| MessageRewind {
                         event_id: event.id,
                         target_event_id,
@@ -282,21 +273,7 @@ impl JournalIndex {
             editable: self
                 .agents
                 .iter()
-                .map(|(address, facts)| {
-                    let mut turns = HashMap::<u64, Vec<UserMessagePreview>>::new();
-                    for message in &facts.messages {
-                        if let Some(text) = &message.preview {
-                            turns
-                                .entry(message.turn)
-                                .or_default()
-                                .push(UserMessagePreview {
-                                    event_id: message.id,
-                                    text: text.clone(),
-                                });
-                        }
-                    }
-                    (address.clone(), turns)
-                })
+                .map(|(address, facts)| (address.clone(), facts.messages.previews.clone()))
                 .collect(),
         }
     }
@@ -310,16 +287,11 @@ impl JournalIndex {
                 .last()
                 .copied()
         };
-        agent.messages[..agent
-            .messages
-            .partition_point(|message| message.id < target)]
-            .last()
-            .map_or(0, |message| message.id)
-            .max(
-                last_before(&agent.admissions)
-                    .unwrap_or_default()
-                    .saturating_sub(1),
-            )
+        agent.messages.latest_before(target).max(
+            last_before(&agent.admissions)
+                .unwrap_or_default()
+                .saturating_sub(1),
+        )
     }
 
     pub(super) fn rewind_controls(&self) -> Vec<StoredEvent> {
@@ -488,5 +460,60 @@ impl AgentFacts {
         if self.candidate.is_some_and(|segment| segment.id >= target) {
             self.candidate = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{JournalIndex, StoredEvent};
+
+    fn message(id: u64, turn: u64, agent: &str, text: &str, job_delivery: bool) -> StoredEvent {
+        serde_json::from_value(json!({
+            "id":id,"kind":"message.user","ts":"","conversation":agent,
+            "turn":turn,"text":text,"job_delivery":job_delivery
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn history_views_share_index_entries_across_reads_and_committed_updates() {
+        let mut index = JournalIndex::default();
+        index.observe(&message(1, 1, "main", "First message", false));
+        index.observe(&message(2, 2, "main", "Second message", false));
+        index.observe(&message(3, 2, "main", "Job output", true));
+        let old = index.history_marks(true, 3);
+        let same = index.history_marks(true, 3);
+        assert!(old.turn_owners.ptr_eq(&same.turn_owners));
+        assert!(old.editable["main"].ptr_eq(&same.editable["main"]));
+
+        index.observe(&message(4, 2, "main", "Follow-up", false));
+        index.observe(&message(5, 2, "peer", "Peer message", false));
+        let current = index.history_marks(true, 5);
+        assert_eq!("main", old.turn_owners[&2].last);
+        assert_eq!("main", current.turn_owners[&2].first);
+        assert_eq!("peer", current.turn_owners[&2].last);
+        assert_eq!(1, old.editable["main"][&2].len());
+        assert_eq!(2, current.editable["main"][&2].len());
+        assert!(std::ptr::eq(
+            &old.editable["main"][&1][0],
+            &current.editable["main"][&1][0]
+        ));
+
+        let saved = serde_json::to_value(&index).unwrap();
+        assert_eq!(
+            json!([
+                {"id":1,"turn":1,"preview":"First message"},
+                {"id":2,"turn":2,"preview":"Second message"},
+                {"id":3,"turn":2,"preview":null},
+                {"id":4,"turn":2,"preview":"Follow-up"}
+            ]),
+            saved["agents"]["main"]["messages"]
+        );
+        let restored: JournalIndex = serde_json::from_value(saved).unwrap();
+        let history = restored.history_marks(true, 5);
+        assert_eq!("Follow-up", history.editable["main"][&2][1].text);
+        assert!(restored.agents["main"].messages.contains(3));
     }
 }

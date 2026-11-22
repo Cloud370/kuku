@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::context::revert::{
     apply_verified_file_rewind, event_owner_with, plan_file_rewind, RewindVisibility,
 };
-use crate::event::store::{HistoryMarks, TurnOwners};
+use crate::event::store::{HistoryMarks, MessagePreviews, TurnOwnerIndex};
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
@@ -143,9 +143,9 @@ pub struct SessionHistory {
     path: PathBuf,
     cursor: u64,
     rewinds: Vec<MessageRewind>,
-    owners: HashMap<u64, TurnOwners>,
+    owners: TurnOwnerIndex,
     visibility: RewindVisibility,
-    editable: HashMap<String, HashMap<u64, Vec<UserMessagePreview>>>,
+    editable: HashMap<String, MessagePreviews>,
 }
 
 impl SessionHistory {
@@ -190,8 +190,8 @@ impl SessionHistory {
         self.editable
             .get(agent)
             .and_then(|turns| turns.get(&turn))
-            .into_iter()
-            .flatten()
+            .iter()
+            .flat_map(|messages| messages.iter())
             .filter(|message| self.includes_cursor(agent, message.event_id))
             .cloned()
             .collect()

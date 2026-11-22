@@ -19,6 +19,7 @@ mod archive;
 mod codec;
 mod file_history;
 mod index;
+mod message_index;
 mod packing;
 mod reader;
 mod recovery;
@@ -28,8 +29,12 @@ mod snapshot;
 use archive::Layout;
 use codec::serialize_record;
 use index::JournalIndex;
-pub(crate) use index::{ContextMarks, HistoryMarks, JournalSummary, RouteSelectors, TurnOwners};
-pub use index::{MessageRewind, UserMessagePreview};
+pub use index::MessageRewind;
+pub(crate) use index::{
+    ContextMarks, HistoryMarks, JournalSummary, RouteSelectors, TurnOwnerIndex,
+};
+pub(crate) use message_index::MessagePreviews;
+pub use message_index::UserMessagePreview;
 use reader::EventReader;
 pub(crate) use recovery::Replay;
 use recovery::{Checkpoint, ReplayVisitor};
