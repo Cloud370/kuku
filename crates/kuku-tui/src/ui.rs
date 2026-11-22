@@ -75,7 +75,7 @@ pub(crate) fn render_at(
     let width = usize::from(area.width);
     let footer = app.displayed_statusline().render_rows(
         app,
-        usize::from(outer.width - 2 * crate::theme::horizontal_gutter(outer.width)),
+        width,
         area.height,
         activity_frame.agent_activity(app),
     );
@@ -175,11 +175,6 @@ pub(crate) fn render_at(
             Constraint::Length(status_height),
         ])
         .areas(area);
-    let footer_width = footer.iter().map(Line::width).max().unwrap_or(0) as u16;
-    let status = crate::theme::centered_width(
-        Rect::new(outer.x, status.y, outer.width, status.height),
-        status.width.max(footer_width),
-    );
     let (transcript_body, row_insets) = render_transcript(
         frame,
         transcript,

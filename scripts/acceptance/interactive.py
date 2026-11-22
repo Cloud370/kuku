@@ -12,16 +12,16 @@ from urllib.parse import urlencode, urlsplit
 
 from interactive_composer import agent_setup, composer_actions, startup_info
 from interactive_stream import profile_markdown_stream
+from interactive_review import dense_transcript, release_review, replay_release_review, write_renderings
 from interactive_lifecycle import first_run_credential_repair, lifecycle_checks, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
     named_output_cards,
     operate_on_assistant,
-    page_up_after_rendered_resize,
     rendering_cases,
 )
 from interactive_fixture import (
-    DenseTranscript, InstalledClient, MarkdownDocument, TOOL_OUTPUT, TOOL_PROGRAM, eventually, http_fixture, install,
+    InstalledClient, MarkdownDocument, TOOL_OUTPUT, TOOL_PROGRAM, eventually, http_fixture, install,
     delegate_reviewer, json_response, local_request, run_cases,
 )
 
@@ -704,159 +704,6 @@ def delegated_agent_cards(client):
         print(f"{caption}\n{screen.rstrip()}")
 
 
-def dense_transcript(client, reference=False):
-    workspace = client.workspace("dense-transcript")
-    scenario = DenseTranscript(client, workspace)
-    screens = []
-    tool_state = "Running tools"
-    reply_state = "Streaming reply" if reference else "Reply"
-    tool_heading = re.compile(
-        r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
-        r"Write file|Edit file|Run command|Tool [a-z_]+)"
-        r"(?: ×\d+)? · (?:ok|error|running)\b"
-        r"|^\s*(?:(?:│|╭─)\s*)?(?:\d+ file reads|Wrote\s+|Edited\s+)"
-        rf"|^\s*╭─ {re.escape(TOOL_PROGRAM)}\b.* · running\b"
-    )
-
-    def row_of(screen, text):
-        return next(row for row, line in enumerate(screen.splitlines(), 1) if text in line)
-
-    def read_while(terminal, predicate, description):
-        screen = ""
-
-        def read():
-            nonlocal screen
-            screen = terminal.request("screen")["screen"]
-            return screen if predicate(screen) else None
-
-        try:
-            return eventually(description, read)
-        except AssertionError as error:
-            raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
-
-    def running_view(screen, height):
-        rows = screen.split("\n")
-        return len(rows) == height and any(tool_state in row for row in rows[-8:])
-
-    def measure_tools(terminal):
-        height = 144
-        terminal.request("resize", rows=height, cols=140)
-        screen = read_while(terminal, lambda value: running_view(value, height) and scenario.draft in value,
-                            "the full tool transcript in a tall terminal")
-        lines = screen.splitlines()
-        headings = [index for index, line in enumerate(lines) if tool_heading.search(line)]
-        last = next(index for index, line in enumerate(lines) if TOOL_PROGRAM in line)
-        if reference:
-            assert len(headings) == 21, screen
-        else:
-            first = next(index for index, line in enumerate(lines) if scenario.activity_group in line)
-            assert lines[first].lstrip().startswith(f"╭─ {scenario.activity_group}"), screen
-            assert all(not row.lstrip().startswith("╭─") for row in lines[first + 1:last + 1]), screen
-        assert last >= headings[-1], screen
-        return {"summary_rows": len(headings), "tool_rows": last - headings[0] + 1}
-
-    def inspect_tools(terminal, before_resize):
-        rows = 18
-        terminal.request("resize", rows=rows, cols=140)
-        try:
-            before_page_up = page_up_after_rendered_resize(terminal, read_while, rows, (scenario.draft,))
-        except AssertionError as error:
-            raise AssertionError(
-                f"{error}\nWide running-tools screen before resize to {rows}:\n{before_resize}"
-            ) from error
-        screens.append((f"{rows}-row running-tools screen before PageUp", before_page_up))
-        try:
-            collapsed = read_while(terminal, lambda value: running_view(value, rows)
-                                   and scenario.activity_group in value and "Reading history" in value,
-                                   "the original reading position before opening the group")
-        except AssertionError as error:
-            raise AssertionError(
-                f"{error}\n{rows}-row running-tools screen before PageUp:\n{before_page_up}"
-            ) from error
-        screens.append((f"{rows}-row reading-history screen after PageUp", collapsed))
-        assert scenario.read_target not in collapsed and scenario.draft in collapsed, (
-            f"{collapsed}\n{rows}-row running-tools screen before PageUp:\n{before_page_up}"
-        )
-        anchor = row_of(collapsed, scenario.activity_group)
-        terminal.click_text(collapsed, scenario.activity_group)
-        anchored = terminal.expect("Read samples/read-01.txt", state=scenario.draft)["screen"]
-        assert row_of(anchored, scenario.activity_group) == anchor
-        terminal.request("resize", rows=38, cols=140)
-        opened = terminal.expect(scenario.read_target, state="Search text · sample-marker in samples", also=(scenario.draft,))["screen"]
-        assert row_of(opened, scenario.activity_group) == anchor and "sample-marker 12" not in opened, opened
-        assert all(f"samples/read-{index:02d}.txt" in opened for index in range(1, 13)), opened
-        assert "Find files · read-0*.txt in samples" in opened and "Search text · sample-marker in samples" in opened, opened
-        screens.append(("Expanded read-only activity with file, find, and search targets", opened))
-        terminal.click_text(opened, scenario.read_target)
-        details = terminal.expect("sample-marker 12")["screen"]
-        assert "Requested arguments" in details and scenario.read_target in details and scenario.draft in details, details
-        screens.append(("One file's requested arguments and result from its detail row", details))
-        terminal.click_text(details, "sample-marker 12")
-        closed = read_while(terminal, lambda value: scenario.read_target in value and "sample-marker 12" not in value,
-                            "the single file details to close")
-        terminal.click_text(closed, scenario.activity_group)
-        restored = read_while(terminal, lambda value: scenario.activity_group in value and scenario.read_target not in value,
-                              "the group to return to the same reading position")
-        assert row_of(restored, scenario.activity_group) == anchor and scenario.draft in restored, restored
-
-        terminal.click_text(restored, scenario.missing)
-        terminal.expect("Requested arguments")
-        terminal.request("resize", rows=44, cols=140)
-        error = terminal.expect(f"path does not exist: {scenario.missing}",
-                                also=("Requested arguments", tool_state, scenario.draft), rows=44)["screen"]
-        screens.append(("Grouped failed call with its exact error", error))
-        terminal.click_text(error, "Read file · error")
-        terminal.press("\x1b[1;5F")
-
-    with client.terminal(workspace) as terminal:
-        terminal.expect("New session", state="Ready")
-        terminal.request("resize", rows=32, cols=140)
-        terminal.submit(scenario.prompt)
-        with scenario.running_tool():
-            terminal.expect(tool_state)
-            terminal.type(scenario.draft)
-            measurements = measure_tools(terminal)
-            overview_height = 36 if reference else 48
-            terminal.request("resize", rows=overview_height, cols=140)
-            wide = read_while(terminal, lambda value: running_view(value, overview_height)
-                              and scenario.missing in value and scenario.draft in value,
-                              "the wide tool turn")
-            screens.append(("Dense tool turn with a running command and local draft", wide))
-            if not reference:
-                assert all(text in wide for text in (scenario.activity_group, *scenario.file_cards)), wide
-                inspect_tools(terminal, wide)
-            terminal.request("resize", rows=26, cols=74)
-            running_card = "Run command · running" if reference else TOOL_PROGRAM
-            narrow = read_while(terminal, lambda value: running_view(value, 26) and scenario.missing in value
-                                and scenario.draft in value
-                                and any(running_card in line and "running" in line for line in value.splitlines()),
-                                "the narrow tool turn")
-            screens.append(("Narrow tool turn with the same draft", narrow))
-            terminal.request("resize", rows=32, cols=140)
-        with scenario.streaming_reply():
-            wide = terminal.expect(scenario.source, state=reply_state, also=(scenario.draft, scenario.heading), rows=32)["screen"]
-            assert scenario.heading in wide and scenario.draft in wide and scenario.end not in wide and "rust" in wide, wide
-            screens.append(("Wide Chinese report while the Rust fence is open", wide))
-            terminal.request("resize", rows=26, cols=74)
-            narrow = terminal.expect(scenario.source, state=reply_state, also=(scenario.draft,), rows=26)["screen"]
-            assert scenario.draft in narrow and scenario.end not in narrow, narrow
-            screens.append(("Narrow Chinese report while the Rust fence is open", narrow))
-        if not reference:
-            terminal.request("resize", rows=32, cols=74)
-        complete = terminal.expect(scenario.end, state="Finished", also=(scenario.draft,),
-                                   rows=26 if reference else 32)["screen"]
-        assert all(text in complete for text in (scenario.draft, "验证项目", "十二项通过", "dense-literal verification saved")), complete
-        screens.append(("Complete report and unchanged draft", complete))
-        verification = scenario.verify()
-        terminal.press("\x03")
-        terminal.exit_cleanly()
-    for label, screen in screens:
-        print(label + "\n" + "\n".join(line.rstrip() for line in screen.splitlines()).rstrip())
-    verification.update(measurements)
-    print("Dense transcript: " + json.dumps(verification, ensure_ascii=False))
-    return verification
-
-
 def markdown_document(client, document=None, reference=False):
     document = MarkdownDocument() if document is None else document
     workspace = client.workspace("markdown-document")
@@ -944,7 +791,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--bridge", required=True, type=Path)
-    parser.add_argument("--directory", required=True, type=Path)
+    directory = parser.add_mutually_exclusive_group(required=True)
+    directory.add_argument("--directory", type=Path)
+    directory.add_argument("--replay-review", type=Path, help="inspect a saved release-review case directory")
+    parser.add_argument("--renderings", type=Path, help="write replay frames to this file")
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--cases", help="run only the comma-separated installed scenarios")
     parser.add_argument("--native-smoke", action="store_true")
@@ -959,6 +809,23 @@ def main():
         parser.error("--native-smoke cannot be combined with other scenarios")
     options.binary = options.binary.resolve()
     options.bridge = options.bridge.resolve()
+    if options.renderings is not None and options.replay_review is None:
+        parser.error("--renderings requires --replay-review")
+    if options.replay_review is not None:
+        if any((options.cases, options.native_smoke, options.browser, options.upgrade,
+                options.named_output, options.stream_profile)):
+            parser.error("--replay-review selects its own saved Session")
+        client = InstalledClient(options.binary, options.bridge, options.replay_review.resolve(), reopen=True)
+        existing_service = client.discovery.is_file()
+        try:
+            frames = replay_release_review(client)
+        finally:
+            if not existing_service:
+                client.stop()
+        output = options.renderings or client.directory / "renderings.json"
+        write_renderings(output, frames)
+        print(f"Reopened the saved review at {', '.join(frames)} columns. Wrote {output}.")
+        return
     options.directory = options.directory.resolve()
     def native(name, operation):
         with InstalledClient(options.binary, options.bridge, options.directory / name) as client:
@@ -998,6 +865,7 @@ def main():
                  ("lost-receipt", lost_first_receipt),
                  ("agent-cards", delegated_agent_cards),
                  ("dense-transcript", dense_transcript),
+                 ("release-review", release_review),
                  ("markdown", markdown_document),
              )]
     lifecycle = lifecycle_checks(options.binary, options.bridge, options.directory)

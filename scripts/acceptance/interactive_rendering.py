@@ -9,28 +9,11 @@ import sys
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from interactive_fixture import InstalledClient, Response, StreamPause, eventually, is_composer_heading, run_cases
+from interactive_fixture import (
+    InstalledClient, Response, StreamPause, eventually, has_standalone_assistant_rail,
+    is_composer_heading, run_cases,
+)
 from interactive_responses import responses_reasoning
-
-
-def rendered_running_transcript(screen, height, markers):
-    rows = screen.splitlines()
-    return (
-        len(rows) == height
-        and any(is_composer_heading(row) and any(label in row for label in ("Tools", "Running"))
-                for row in rows[-6:-3])
-        and all(marker in screen for marker in markers)
-    )
-
-
-def page_up_after_rendered_resize(terminal, read_while, height, markers):
-    screen = read_while(
-        terminal,
-        lambda value: rendered_running_transcript(value, height, markers),
-        f"the rendered {height}-row running transcript before PageUp",
-    )
-    terminal.press("\x1b[5~")
-    return screen
 
 
 def select_message_action(terminal, screen, action):
@@ -101,16 +84,6 @@ def select_message_action(terminal, screen, action):
             else None
         ),
     )
-
-
-def has_standalone_assistant_rail(frame):
-    assistant_row = next(
-        (index for index, line in enumerate(frame)
-         if line.strip() == "Assistant" or line.lstrip().startswith("╭─ Assistant ")),
-        None,
-    )
-    start = assistant_row + 1 if assistant_row is not None else 0
-    return any(line.strip() in {"│", "┃"} for line in frame[start:])
 
 
 def queued_input_click_position(screen, text):
@@ -292,8 +265,7 @@ def targeted_delegation(client):
                 if not agent or not code:
                     return False
                 gutter = 1 if columns < 72 else 2 if columns < 110 else 3
-                transcript_width = min(120, columns - 2 * gutter)
-                gutter = (columns - transcript_width) // 2
+                transcript_width = columns - 2 * gutter
                 return (agent.index("╭") == gutter
                         and agent.index("→") == gutter + transcript_width - 3
                         and code.index("╭") == gutter + 2

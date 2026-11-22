@@ -96,11 +96,13 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
 fn spacious_composer_and_picker_use_responsive_insets() {
     let mut app = app();
     app.pane_mut().draft.insert("甲");
-    let mut wide = Terminal::new(TestBackend::new(128, 32)).unwrap();
+    let mut wide = Terminal::new(TestBackend::new(224, 32)).unwrap();
     let mut compact = Terminal::new(TestBackend::new(44, 12)).unwrap();
     let wide_frame = wide.draw(|frame| render(frame, &mut app)).unwrap();
     let (wide_x, wide_y) = cell(wide_frame.buffer, "甲");
-    assert_eq!(wide_x, 7);
+    assert_eq!(wide_x, 6);
+    assert_eq!("│", wide_frame.buffer[(3, wide_y)].symbol());
+    assert_eq!(crate::theme::SURFACE, wide_frame.buffer[(220, wide_y)].bg);
     assert_eq!(
         wide_frame.buffer[(wide_x, wide_y + 1)].bg,
         crate::theme::SURFACE

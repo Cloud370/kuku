@@ -102,6 +102,9 @@ rows share these roles with the Turn statistics and host actions inside `run_js`
 - Keep a script’s operation label and title in the same positions when it opens.
   Place status and diagnostics below the title, followed by source, host actions,
   and the return value. Host actions and return previews use their own inner rules.
+- End a settled Turn with its statistics. Keep them in the reply footer when
+  the reply is the last card. Show them after any later answer or compaction
+  attached to that Turn.
 - Put recorded card timestamps and available elapsed times in the existing gaps.
   Show timestamps in UTC. For a group of calls, show the elapsed interval from
   the first request to the last result when all calls have both timestamps.

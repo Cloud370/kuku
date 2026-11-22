@@ -41,7 +41,6 @@ pub(crate) const PICKER_WIDTH: u16 = 88;
 pub(crate) const PICKER_HEIGHT: u16 = 25;
 pub(crate) const SHORT_PROMPT_HEIGHT: u16 = 13;
 pub(crate) const STATUS_EDITOR_HEIGHT: u16 = 19;
-const SESSION_WIDTH: u16 = 120;
 const PANEL: Color = Color::Rgb(28, 35, 44);
 const FOCUS: Color = Color::Rgb(53, 73, 85);
 
@@ -68,18 +67,10 @@ pub(crate) fn horizontal_gutter(width: u16) -> u16 {
 
 pub(crate) fn session_area(outer: Rect) -> Rect {
     let gutter = horizontal_gutter(outer.width);
-    centered_width(
-        outer,
-        outer.width.saturating_sub(2 * gutter).min(SESSION_WIDTH),
-    )
-}
-
-pub(crate) fn centered_width(outer: Rect, width: u16) -> Rect {
-    let width = width.min(outer.width);
     Rect::new(
-        outer.x + (outer.width - width) / 2,
+        outer.x + gutter,
         outer.y,
-        width,
+        outer.width.saturating_sub(2 * gutter),
         outer.height,
     )
 }

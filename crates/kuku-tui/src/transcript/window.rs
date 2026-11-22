@@ -355,20 +355,20 @@ impl Window {
             .collect::<Vec<_>>()
             .into_iter();
         let mut current = spans.next();
-        let mut records = window_records
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, record)| record.visible())
+        let mut records = super::turn_summary::records_in_display_order(window_records)
+            .into_iter()
             .peekable();
         let mut previous_turn = None;
         let mut retry_turn = None;
         let mut follows_reply = false;
         let mut reply_timing = CardTiming::default();
         let mut blocks = std::iter::from_fn(move || {
-            let (index, record) = records.next()?;
+            let (index, position, record) = records.next()?;
             let footer_summary = record.turn_summary.as_ref().filter(|_| follows_reply);
             let timing = if footer_summary.is_some() {
                 reply_timing
+            } else if matches!(record.body, Body::TurnSummary) {
+                CardTiming::default()
             } else {
                 record.timing
             };
@@ -376,17 +376,16 @@ impl Window {
             follows_reply = group_frame.bordered()
                 && record.has_reply()
                 && record.turn_summary.is_none()
-                && records.peek().is_some_and(|(_, next)| {
+                && records.peek().is_some_and(|(_, _, next)| {
                     record.turn.is_some()
                         && next.turn == record.turn
                         && matches!(next.body, Body::TurnSummary)
                         && next.turn_summary.is_some()
                 });
-            let position = record.before_event.or(record.position).unwrap_or(u64::MAX);
             let retry = matches!(&record.body, Body::Retry { .. });
             let retry_heading = retry && retry_turn != Some(record.turn);
             let retry_end = retry
-                && !records.peek().is_some_and(|(_, next)| {
+                && !records.peek().is_some_and(|(_, _, next)| {
                     next.turn == record.turn && matches!(&next.body, Body::Retry { .. })
                 });
             retry_turn = retry.then_some(record.turn);

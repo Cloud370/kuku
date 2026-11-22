@@ -6,14 +6,14 @@ from unittest.mock import MagicMock, Mock, patch
 
 from interactive import wait_restart_and_recover_crash
 from interactive_fixture import InstalledClient, ProviderCall, Terminal, TOOL_OUTPUT, run_cases
+from interactive_fixture import (
+    has_standalone_assistant_rail, page_up_after_rendered_resize, rendered_running_transcript,
+)
 from interactive_rendering import (
     click_queued_input,
     has_selected_queued_input,
-    has_standalone_assistant_rail,
-    page_up_after_rendered_resize,
     queued_input_click_context,
     queued_input_click_position,
-    rendered_running_transcript,
     select_message_action,
 )
 

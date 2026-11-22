@@ -83,6 +83,17 @@ python3 scripts/acceptance/run.py interactive --desktop --archive PATH_TO_WINDOW
 
 对照终端布局时，为两个版本使用同一套固定输入和窗口网格尺寸。安装场景检查 `/statusline` 的预览、保存、重开和恢复默认，并验证带着未发送草稿在多个工作中的 Agent 之间切换。工具密集对话在同一轮至少执行 20 次调用，包括成功操作、缺失文件和等待释放的命令。场景在工具运行和代码围栏未闭合时分别捕获宽窄终端画面，再核对完成的中文报告、保留的工具事实和未发送草稿。有界 `installed-interactive.log` 保存终端画面和检查结果。[终端场景](../../../scripts/acceptance/interactive.py)
 
+结算复核场景生成一个多轮 Session，包含文件变动、命令和脚本结果、子 Agent 复核、问答及压缩。直接运行时，指定目录会保留工作区和 Session。切换二进制后可用同一份记录在 174 列和 76 列抓取正文及 ANSI 样式，重放无需模型请求。[结算复核场景](../../../scripts/acceptance/interactive_review.py)
+
+```bash
+python3 scripts/acceptance/interactive.py --binary PATH_TO_BINARY --bridge PATH_TO_PTY_HELPER \
+  --directory REVIEW_RUN --cases release-review
+python3 scripts/acceptance/interactive.py --binary PATH_TO_OTHER_BINARY --bridge PATH_TO_PTY_HELPER \
+  --replay-review REVIEW_RUN/release-review --renderings comparison.json
+```
+
+使用 `--intent deepseek --intent-case release-review` 时，真实模型使用相同的初始工作区和验收条件。验收使用 `--intent-max-requests 48 --intent-max-output-tokens 4096`。要保留生成的 Session，直接调用[原生意图验收入口](../../../scripts/acceptance/interactive_intent.py)，加上 `--case release-review --keep-session --scratch-base PATH_OUTSIDE_CHECKOUT` 及对应的 `--max-requests 48 --max-output-tokens 4096`，再用结果中的 `scratch_path` 重放。
+
 本地对比流式表现时，用同一回放运行两个原生发行版二进制，每次使用不同临时目录。回放记录原文哈希、首段文字出现时间、突发输出期间的按键回显，以及 60 和 120 列下后段数据的绘制样本。绘制计时从本地固定端点刷新数据开始。Rust 测量直接记录 Markdown 排版耗时，并报告复用的字节数和行数。[原生回放](../../../scripts/acceptance/interactive_stream.py)
 
 ```bash

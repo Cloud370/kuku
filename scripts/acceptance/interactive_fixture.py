@@ -52,7 +52,7 @@ def cleanup_path(path):
 
 
 @contextlib.contextmanager
-def scratch_directory(base, report, *, prefix):
+def scratch_directory(base, report, *, prefix, retain=False):
     scratch = Path(tempfile.mkdtemp(prefix=prefix, dir=base)).resolve()
     failed = False
     try:
@@ -61,13 +61,16 @@ def scratch_directory(base, report, *, prefix):
         failed = True
         raise
     finally:
-        try:
-            shutil.rmtree(cleanup_path(scratch))
-        except OSError as error:
-            report["scratch_cleanup_error"] = f"{error.__class__.__name__}: {error}"
+        if retain:
             report["scratch_path"] = str(scratch)
-            if not failed:
-                raise
+        else:
+            try:
+                shutil.rmtree(cleanup_path(scratch))
+            except OSError as error:
+                report["scratch_cleanup_error"] = f"{error.__class__.__name__}: {error}"
+                report["scratch_path"] = str(scratch)
+                if not failed:
+                    raise
 
 
 def eventually(description, probe, timeout=TIMEOUT):
@@ -120,6 +123,36 @@ class Response:
     def as_json(self, status=200):
         assert self.status == status, f"Expected HTTP {status}, got {self.status}"
         return json.loads(self.body)
+
+
+def rendered_running_transcript(screen, height, markers):
+    rows = screen.splitlines()
+    return (
+        len(rows) == height
+        and any(is_composer_heading(row) and any(label in row for label in ("Tools", "Running"))
+                for row in rows[-6:-3])
+        and all(marker in screen for marker in markers)
+    )
+
+
+def page_up_after_rendered_resize(terminal, read_while, height, markers):
+    screen = read_while(
+        terminal,
+        lambda value: rendered_running_transcript(value, height, markers),
+        f"the rendered {height}-row running transcript before PageUp",
+    )
+    terminal.press("\x1b[5~")
+    return screen
+
+
+def has_standalone_assistant_rail(frame):
+    assistant_row = next(
+        (index for index, line in enumerate(frame)
+         if line.strip() == "Assistant" or line.lstrip().startswith("╭─ Assistant ")),
+        None,
+    )
+    start = assistant_row + 1 if assistant_row is not None else 0
+    return any(line.strip() in {"│", "┃"} for line in frame[start:])
 
 
 def json_response(value, status=200):
@@ -675,12 +708,16 @@ class Terminal:
 
 
 class InstalledClient:
-    def __init__(self, binary, bridge, directory):
+    def __init__(self, binary, bridge, directory, *, reopen=False):
         self.binary = binary
         self.bridge = bridge
         self.directory = directory
         self.home = directory / "data"
-        self.home.mkdir(parents=True)
+        if reopen:
+            if not (self.home / "config.toml").is_file():
+                raise ValueError(f"No saved acceptance Session data in {directory}")
+        else:
+            self.home.mkdir(parents=True)
         self.discovery = self.home / "service" / "connection.json"
         self.tool_workspaces = []
         self.provider = Provider(bridge)
@@ -722,8 +759,12 @@ class InstalledClient:
         workspace.mkdir()
         return workspace
 
-    def terminal(self, workspace, *args):
-        return Terminal(self.bridge, self.binary, workspace, self.env, args)
+    def terminal(self, workspace, *args, color=False):
+        env = self.env
+        if color:
+            env = {key: value for key, value in self.env.items() if key not in ("NO_COLOR", "CLICOLOR")}
+            env["COLORTERM"] = "truecolor"
+        return Terminal(self.bridge, self.binary, workspace, env, args)
 
     @contextlib.contextmanager
     def command(self, workspace, *args, token=None):

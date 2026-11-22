@@ -83,6 +83,17 @@ The native smoke scenario checks composer actions at 60 and 120 columns, includi
 
 For terminal layout comparisons, use the same fixture inputs and grid sizes for both builds. The installed scenario checks `/statusline` preview, saving, reopening and defaults, and exercises navigation among working Agents with unsent drafts. The dense transcript fixture uses at least 20 calls in one Turn, including successful operations, a missing file and a gated command. It captures wide and narrow terminal grids during tool execution and an open code fence, then verifies the completed Chinese report, retained tool facts and the unsent draft. Read the bounded `installed-interactive.log` for the terminal frames and checks. [Terminal scenarios](../../../scripts/acceptance/interactive.py)
 
+The settlement review creates one multi-Turn Session containing file changes, command and script results, independent Agent review, a question and compaction. Running the scenario directly keeps its workspace and Session under the selected directory. Use the saved case as input for another binary to compare text and ANSI styles at 174 and 76 columns without sending a model request. [Settlement review scenario](../../../scripts/acceptance/interactive_review.py)
+
+```bash
+python3 scripts/acceptance/interactive.py --binary PATH_TO_BINARY --bridge PATH_TO_PTY_HELPER \
+  --directory REVIEW_RUN --cases release-review
+python3 scripts/acceptance/interactive.py --binary PATH_TO_OTHER_BINARY --bridge PATH_TO_PTY_HELPER \
+  --replay-review REVIEW_RUN/release-review --renderings comparison.json
+```
+
+With `--intent deepseek --intent-case release-review`, the real model uses the same seeded workspace and acceptance checks. The review run uses `--intent-max-requests 48 --intent-max-output-tokens 4096`. To keep that Session for replay, invoke [the native intent runner](../../../scripts/acceptance/interactive_intent.py) directly with `--case release-review --keep-session --scratch-base PATH_OUTSIDE_CHECKOUT` and the corresponding `--max-requests 48 --max-output-tokens 4096` and use the resulting `scratch_path` as the saved case directory.
+
 For a local streaming comparison, run the same replay against both native release binaries with a different scratch directory for each run. The profile records the source hash, first visible text and burst input echo, and late-chunk paint samples at 60 and 120 columns. The paint measurements begin at the local fixture's flush. The Rust profile measures Markdown layout directly and reports how many bytes and rows the renderer reused. [Native replay](../../../scripts/acceptance/interactive_stream.py)
 
 ```bash

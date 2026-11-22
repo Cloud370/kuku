@@ -796,7 +796,7 @@ def parser():
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
     scenario.add_argument("--intent", choices=("deepseek", "openrouter"), help="run budgeted native reply, edit, and first-delegation checks")
-    interactive.add_argument("--intent-case", choices=("all", "delivery", "delegation"), default="all")
+    interactive.add_argument("--intent-case", choices=("all", "delivery", "delegation", "release-review"), default="all")
     interactive.add_argument("--intent-bridge", type=Path, help="reuse a built native PTY helper with --intent")
     interactive.add_argument("--intent-model", help="selected provider model for --intent")
     interactive.add_argument("--intent-effort", help="explicit native reasoning effort for --intent (default: low)")

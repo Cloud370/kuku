@@ -8,7 +8,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::text::{compact_token_count, format_elapsed};
 use crate::theme::{emphasis, CardFrame, TranscriptTone, MUTED, TURN_CARD, USAGE};
 
-use super::Transcript;
+use super::{Body, Record, Transcript};
 use crate::text::shorten;
 
 impl Transcript {
@@ -57,6 +57,37 @@ impl Transcript {
         }
         Some(line)
     }
+}
+
+pub(super) fn records_in_display_order(records: &mut [Record]) -> Vec<(usize, u64, &mut Record)> {
+    let mut output = Vec::with_capacity(records.len());
+    let mut summaries = Vec::new();
+    let mut records = records
+        .iter_mut()
+        .enumerate()
+        .filter(|(_, record)| record.visible())
+        .peekable();
+    let mut turn = None;
+    while let Some((index, record)) = records.next() {
+        turn = record.turn.or(turn);
+        let position = record.before_event.or(record.position).unwrap_or(u64::MAX);
+        if matches!(record.body, Body::TurnSummary) && record.turn.is_some() {
+            summaries.push((index, position, record));
+        } else {
+            output.push((index, position, record));
+        }
+        if records
+            .peek()
+            .is_none_or(|(_, next)| next.turn.is_some() && next.turn != turn)
+        {
+            output.extend(
+                summaries
+                    .drain(..)
+                    .map(|(index, settled, summary)| (index, position.max(settled), summary)),
+            );
+        }
+    }
+    output
 }
 
 pub(super) fn inline(summary: &TurnSummary, number: Option<u64>, width: usize) -> super::Row {
@@ -169,6 +200,43 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    #[test]
+    fn settled_metrics_close_the_turn_after_late_answers_and_compactions() {
+        for width in [48, 128] {
+            let mut transcript = Transcript::default();
+            let events = [
+                entry(2, 1, json!({"type":"question","text":"Confirm the release?"})),
+                entry(3, 1, json!({"type":"turn_summary","turn_summary":{"tool_calls":1}})),
+                serde_json::from_value(json!({"id":4,"agent":"main","type":"question_reply","text":"Release confirmed."})).unwrap(),
+                entry(5, 2, json!({"type":"user","text":"Prepare the release."})),
+                entry(6, 2, json!({"type":"assistant","text":"Ready for review."})),
+                entry(7, 2, json!({"type":"turn_summary","turn_summary":{"tool_calls":3}})),
+                entry(8, 2, json!({"type":"compaction","request_id":"summary","status":"completed","ts":"2026-11-23T01:02:00Z"})),
+                entry(9, 3, json!({"type":"user","text":"Next task."})),
+            ];
+            for event in events {
+                transcript.apply(event, None);
+            }
+            let lines = transcript
+                .project(width, 50)
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            let row = |marker| lines.iter().position(|line| line.contains(marker)).unwrap();
+            assert!(row("Release confirmed.") < row("1 tool"));
+            assert!(row("1 tool") < row("Prepare the release."));
+            assert!(row("Ready for review.") < row("Context compacted"));
+            assert!(row("Context compacted") < row("01:02:00Z"));
+            assert!(row("01:02:00Z") < row("3 tools"));
+            assert!(row("3 tools") < row("Next task."));
+            assert_eq!(
+                1,
+                lines.iter().filter(|line| line.contains("3 tools")).count()
+            );
+        }
     }
 
     #[test]
