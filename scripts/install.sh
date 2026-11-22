@@ -31,9 +31,54 @@ case "${OS}-${ARCH}" in
     ;;
 esac
 
-BIN_DIR="${KUKU_HOME}/bin"
-CACHE_DIR="${KUKU_HOME}/cache"
+case "$KUKU_HOME" in
+  /*) ;;
+  *) KUKU_HOME="$PWD/$KUKU_HOME" ;;
+esac
+BIN_DIR="$KUKU_HOME/bin"
+CACHE_DIR="$KUKU_HOME/cache"
 mkdir -p "$BIN_DIR" "$CACHE_DIR"
+
+configure_path() {
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) return ;;
+  esac
+
+  case "${SHELL:-}" in
+    */zsh) PROFILE="$HOME/.zshrc" ;;
+    */bash)
+      if [ -f "$HOME/.bashrc" ]; then
+        PROFILE="$HOME/.bashrc"
+      elif [ -f "$HOME/.bash_profile" ]; then
+        PROFILE="$HOME/.bash_profile"
+      else
+        PROFILE="$HOME/.profile"
+      fi
+      ;;
+    */fish) PROFILE="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+    *) PROFILE="$HOME/.profile" ;;
+  esac
+
+  case "${SHELL:-}" in
+    */fish)
+      QUOTED_BIN_DIR=$(printf '%s' "$BIN_DIR" | sed "s/['\\\\]/\\\\&/g")
+      PATH_LINE="set -gx PATH '$QUOTED_BIN_DIR' \$PATH"
+      ;;
+    *)
+      QUOTED_BIN_DIR=$(printf '%s' "$BIN_DIR" | sed "s/'/'\\\\''/g")
+      PATH_LINE="export PATH='$QUOTED_BIN_DIR':\"\$PATH\""
+      ;;
+  esac
+
+  if [ -f "$PROFILE" ] && grep -qxF -- "$PATH_LINE" "$PROFILE"; then
+    printf 'PATH entry already exists in %s\n' "$PROFILE"
+  elif (mkdir -p "${PROFILE%/*}" && printf '\n# kuku\n%s\n' "$PATH_LINE" >> "$PROFILE") 2>/dev/null; then
+    printf 'Added kuku to PATH in %s\n' "$PROFILE"
+  else
+    printf 'Could not update PATH in %s\n' "$PROFILE" >&2
+  fi
+  printf '\nTo use kuku in this terminal, run:\n  %s\n' "$PATH_LINE"
+}
 
 download() {
   if [ -t 2 ]; then
@@ -65,6 +110,7 @@ if [ -x "$BIN_DIR/kuku" ] && [ "$FORCE" -eq 0 ]; then
   CURRENT=$("$BIN_DIR/kuku" --version 2>/dev/null | awk '{print $2}') || CURRENT=""
   if [ "$CURRENT" = "$MANIFEST_VERSION" ]; then
     echo "kuku $CURRENT is already the latest version."
+    configure_path
     exit 0
   fi
   echo "Updating kuku $CURRENT -> $MANIFEST_VERSION"
@@ -146,46 +192,9 @@ if [ "$CACHED_PACKAGE" -eq 0 ]; then
   mv -f "$CACHE_FILE" "$CACHED"
 fi
 
-# ── PATH check ──
-case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *)
-    # Detect shell profile
-    PROFILE=""
-    case "$SHELL" in
-      */zsh)  PROFILE="$HOME/.zshrc" ;;
-      */bash)
-        if [ -f "$HOME/.bashrc" ]; then
-          PROFILE="$HOME/.bashrc"
-        elif [ -f "$HOME/.bash_profile" ]; then
-          PROFILE="$HOME/.bash_profile"
-        else
-          PROFILE="$HOME/.profile"
-        fi
-        ;;
-      */fish) PROFILE="$HOME/.config/fish/config.fish" ;;
-      *)      PROFILE="$HOME/.profile" ;;
-    esac
-
-    PATH_LINE="export PATH=\"$BIN_DIR:\$PATH\""
-
-    # Avoid duplicate entries
-    if [ -f "$PROFILE" ] && grep -qF "$BIN_DIR" "$PROFILE" 2>/dev/null; then
-      echo "PATH entry already exists in $PROFILE"
-    else
-      echo "" >> "$PROFILE"
-      echo "# kuku" >> "$PROFILE"
-      echo "$PATH_LINE" >> "$PROFILE"
-      echo "Added kuku to PATH in $PROFILE"
-    fi
-
-    # Export for current session
-    export PATH="$BIN_DIR:$PATH"
-    ;;
-esac
-
 echo ""
 echo "kuku $MANIFEST_VERSION installed successfully."
+configure_path
 echo ""
 echo "  kuku --help          Show usage"
 echo "  kuku --version       Show version"
