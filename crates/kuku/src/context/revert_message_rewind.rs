@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::event::{EventPayload, StoredEvent};
 
-use super::{resolve_revert_path, FileStateAt, REVERTABLE_KINDS};
+use super::{resolve_revert_path, REVERTABLE_KINDS};
 
 pub(super) fn event_turn_owners(events: &[StoredEvent]) -> HashMap<u64, String> {
     let mut owners = HashMap::new();
@@ -59,45 +59,33 @@ pub(super) fn is_created_file_write(event: &StoredEvent) -> bool {
     )
 }
 
-pub(super) fn file_state_at(
-    events: &[StoredEvent],
-    target_path: &Path,
+pub(super) fn file_snapshot<'a>(
+    event: &'a StoredEvent,
     workspace: &Path,
-) -> FileStateAt {
-    for event in events.iter().rev() {
-        let EventPayload::ToolResult {
-            structured: Some(value),
-            ..
-        } = &event.payload
-        else {
-            continue;
-        };
-        let Some(path) = value["canonical_path"]
-            .as_str()
-            .or_else(|| value["path"].as_str())
-        else {
-            continue;
-        };
-        if !Path::new(path).is_absolute() {
-            continue;
-        }
-        let path_matches = resolve_revert_path(workspace, path).as_deref() == Some(target_path);
-        if !path_matches {
-            continue;
-        }
-        if value["kind"] == "file_content"
-            && value["cached"] == false
-            && value["is_full_file_snapshot"].as_bool().unwrap_or(false)
-        {
-            if let Some(content) = value["raw_text"].as_str() {
-                return FileStateAt::Exists(content.to_owned());
-            }
-        }
-        if REVERTABLE_KINDS.contains(&value["kind"].as_str().unwrap_or_default()) {
-            if let Some(content) = value["raw_text_after"].as_str() {
-                return FileStateAt::Exists(content.to_owned());
-            }
-        }
+) -> Option<(PathBuf, &'a str)> {
+    let EventPayload::ToolResult {
+        structured: Some(value),
+        ..
+    } = &event.payload
+    else {
+        return None;
+    };
+    let kind = value["kind"].as_str()?;
+    let content = if kind == "file_content"
+        && value["cached"] == false
+        && value["is_full_file_snapshot"] == true
+    {
+        value["raw_text"].as_str()?
+    } else if REVERTABLE_KINDS.contains(&kind) {
+        value["raw_text_after"].as_str()?
+    } else {
+        return None;
+    };
+    let path = value["canonical_path"]
+        .as_str()
+        .or_else(|| value["path"].as_str())?;
+    if !Path::new(path).is_absolute() {
+        return None;
     }
-    FileStateAt::Unrecoverable
+    Some((resolve_revert_path(workspace, path)?, content))
 }

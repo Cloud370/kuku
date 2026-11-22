@@ -63,6 +63,7 @@ pub(crate) struct SessionInner {
     events_path: PathBuf,
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,
+    startup: Mutex<crate::context::runtime::StartupCache>,
     value_writes: tokio::sync::Mutex<()>,
     workers: Mutex<HashMap<u64, Worker>>,
     worker_outcomes: Mutex<HashMap<String, (u64, WorkerOutcome)>>,
@@ -152,14 +153,18 @@ impl Session {
             }
         }
         let lease = SessionLease::acquire(events_path.clone())?;
-        let mut writer = EventStore::open(&events_path)?;
         let output_dir = retention::output_dir(&events_path)?;
         let mut state = State {
             outputs: retention::OutputStore::recover(&output_dir)?,
             ..State::default()
         };
         let mut job_replay = jobs::JobReplay::default();
-        writer.visit(|event| reduce_event(&mut state, &mut job_replay, event))?;
+        let mut startup =
+            crate::context::runtime::StartupCache::new(options.limits.max_request_bytes);
+        let mut writer = EventStore::open_replaying(&events_path, |event| {
+            startup.observe(&event);
+            reduce_event(&mut state, &mut job_replay, event)
+        })?;
         creation::prepare_journal(
             &mut writer,
             &mut state,
@@ -190,6 +195,7 @@ impl Session {
                 events_path,
                 writer: Mutex::new(Some(writer)),
                 state: Mutex::new(state),
+                startup: Mutex::new(startup),
                 value_writes: tokio::sync::Mutex::new(()),
                 workers: Mutex::new(HashMap::new()),
                 worker_outcomes: Mutex::new(HashMap::new()),
@@ -205,6 +211,14 @@ impl Session {
         };
         session.recover_jobs()?;
         Ok(session)
+    }
+
+    pub(crate) fn read_agent_events(&self, address: &str) -> Result<Vec<StoredEvent>> {
+        self.inner
+            .startup
+            .lock()
+            .unwrap()
+            .read(self.events_path(), address)
     }
 
     pub(crate) fn workspace_execution_host(&self) -> WorkspaceExecutionHost {
@@ -805,6 +819,7 @@ impl Session {
             state.closed_cursor = writer.last_id();
             writer.changed().notify_waiters();
         }
+        self.inner.startup.lock().unwrap().clear();
         self.inner.lease.lock().unwrap().take();
         match (
             self.inner.settlement_failure.get(),

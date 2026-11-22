@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::context::revert::RewindVisibility;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
@@ -43,10 +44,42 @@ impl Session {
                     .unwrap_or_default(),
             ));
         }
-        let events = EventStore::replay(&self.inner.events_path)?;
-        let agent = state.agent(address)?;
-        let removed_input_ids = rewind_input_ids(&events, address, target_event_id);
-        if rewind_blocked_except(agent, &removed_input_ids) {
+        let store = EventStore::open(self.events_path())?;
+        let (after, controls) = store.rewind_facts(address, target_event_id)?;
+        let visibility = RewindVisibility::new(&controls);
+        let target = store
+            .read_after(target_event_id.saturating_sub(1), 1)?
+            .into_iter()
+            .find(|event| event.id == target_event_id)
+            .ok_or_else(|| Error::InvalidArgument("rewind target is no longer available".into()))?;
+        let EventPayload::MessageUser {
+            conversation,
+            turn,
+            text,
+            job_delivery: false,
+            ..
+        } = &target.payload
+        else {
+            return Err(Error::InvalidArgument(
+                "rewind target is not a committed user message".into(),
+            ));
+        };
+        if conversation != address
+            || text != expected_text
+            || !visibility.includes(&target, Some(address))
+        {
+            return Err(Error::InvalidArgument(
+                "rewind target belongs to another Agent or is no longer visible".into(),
+            ));
+        }
+
+        let mut inputs = RewindInputs::default();
+        EventStore::visit_after_path(self.events_path(), after, |event| {
+            inputs.observe(&event, address, target_event_id, &visibility);
+            Ok(())
+        })?;
+        let removed_input_ids = inputs.removed;
+        if rewind_blocked_except(state.agent(address)?, &removed_input_ids) {
             return Err(Error::InvalidArgument(
                 "cannot rewind while this Agent is executing or has pending input".into(),
             ));
@@ -64,37 +97,12 @@ impl Session {
                 "cannot restore files while any Session Agent is active".into(),
             ));
         }
-        let target = events
-            .iter()
-            .find(|event| event.id == target_event_id)
-            .ok_or_else(|| Error::InvalidArgument("rewind target is no longer available".into()))?;
-        let EventPayload::MessageUser {
-            conversation,
-            turn,
-            text,
-            job_delivery: false,
-            ..
-        } = &target.payload
-        else {
-            return Err(Error::InvalidArgument(
-                "rewind target is not a committed user message".into(),
-            ));
-        };
-        if conversation != address
-            || text != expected_text
-            || !crate::context::revert::filter_rolled_back_events(&events)
-                .iter()
-                .any(|event| event.id == target_event_id)
-        {
-            return Err(Error::InvalidArgument(
-                "rewind target belongs to another Agent or is no longer visible".into(),
-            ));
-        }
         let mut warnings = Vec::new();
         let mut file_revert = None;
         if restore_files {
-            let plan = crate::context::revert::compute_message_rewind_plan(
-                &events,
+            let plan = crate::context::revert::plan_journal_rewind(
+                &store,
+                &visibility,
                 address,
                 target_event_id,
                 &self.inner.options.workspace,
@@ -112,7 +120,7 @@ impl Session {
             let session_dir = self.inner.events_path.parent().ok_or_else(|| {
                 Error::InvalidArgument("events path has no session directory".into())
             })?;
-            let rollback_event_id = events.last().map_or(1, |event| event.id.saturating_add(1));
+            let rollback_event_id = store.last_id().saturating_add(1);
             let (transaction, restore_warnings) =
                 crate::context::revert::apply_message_rewind_files(
                     &plan,
@@ -569,55 +577,45 @@ fn rewind_blocked(agent: &AgentState) -> bool {
     rewind_blocked_except(agent, &BTreeSet::new())
 }
 
-fn rewind_input_ids(
-    events: &[StoredEvent],
-    address: &str,
-    target_event_id: u64,
-) -> BTreeSet<String> {
-    let hidden_messages: Vec<_> = crate::context::revert::filter_rolled_back_events(events)
-        .into_iter()
-        .filter(|event| event.id >= target_event_id)
-        .filter_map(|event| match &event.payload {
+#[derive(Default)]
+struct RewindInputs {
+    last_accepted: BTreeSet<String>,
+    removed: BTreeSet<String>,
+}
+
+impl RewindInputs {
+    fn observe(
+        &mut self,
+        event: &StoredEvent,
+        address: &str,
+        target: u64,
+        visibility: &RewindVisibility<'_>,
+    ) {
+        match &event.payload {
             EventPayload::MessageUser { conversation, .. } if conversation == address => {
-                Some(event.id)
-            }
-            _ => None,
-        })
-        .collect();
-    let mut input_ids = BTreeSet::new();
-    for message_id in hidden_messages {
-        let previous_message_id = events
-            .iter()
-            .filter(|event| event.id < message_id)
-            .filter_map(|event| match &event.payload {
-                EventPayload::MessageUser { conversation, .. } if conversation == address => {
-                    Some(event.id)
+                if event.id >= target && visibility.includes(event, Some(address)) {
+                    self.removed.append(&mut self.last_accepted);
+                } else {
+                    self.last_accepted.clear();
                 }
-                _ => None,
-            })
-            .max()
-            .unwrap_or_default();
-        let accepted = events.iter().rev().find(|event| {
-            if event.id <= previous_message_id || event.id >= message_id {
-                return false;
             }
-            let EventPayload::Unknown(value) = &event.payload else {
-                return false;
-            };
-            value["kind"] == "runtime.operation"
-                && value["record"]["operation"] == "inputs_accepted"
-                && value["record"]["address"] == address
-        });
-        if let Some(accepted) = accepted {
-            let EventPayload::Unknown(value) = &accepted.payload else {
-                unreachable!();
-            };
-            if let Some(ids) = value["record"]["input_ids"].as_array() {
-                input_ids.extend(ids.iter().filter_map(|id| id.as_str().map(str::to_owned)));
+            EventPayload::Unknown(value) => {
+                let record = &value["record"];
+                if value["kind"] == "runtime.operation"
+                    && record["operation"] == "inputs_accepted"
+                    && record["address"] == address
+                {
+                    self.last_accepted = record["input_ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect();
+                }
             }
+            _ => {}
         }
     }
-    input_ids
 }
 
 fn rewind_blocked_except(agent: &AgentState, allowed_input_ids: &BTreeSet<String>) -> bool {
@@ -887,7 +885,12 @@ mod rewind_guard_tests {
                 },
             },
         ];
-        let removed = rewind_input_ids(&events, "main", 2);
+        let mut inputs = RewindInputs::default();
+        let visibility = RewindVisibility::new(&events);
+        for event in &events {
+            inputs.observe(event, "main", 2, &visibility);
+        }
+        let removed = inputs.removed;
         assert_eq!(BTreeSet::from(["rewound".into()]), removed);
 
         let make_delivery = |id: &str, accepted_turn: Option<u64>| QueuedDelivery {

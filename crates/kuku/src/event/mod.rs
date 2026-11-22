@@ -1,3 +1,4 @@
+pub(crate) mod history;
 mod json;
 mod model_stop_reason;
 pub(crate) mod scan;

@@ -218,9 +218,18 @@ impl Session {
         execution: u64,
         payloads: impl IntoIterator<Item = EventPayload>,
     ) -> Result<()> {
+        self.commit_model_batch(address, execution, |_| Ok(payloads.into_iter().collect()))
+    }
+
+    pub(crate) fn commit_model_batch(
+        &self,
+        address: &str,
+        execution: u64,
+        build: impl FnOnce(u64) -> Result<Vec<EventPayload>>,
+    ) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
         self.executing_agent(&state, address, execution)?;
-        self.append_model_facts(&mut state, address, payloads)
+        self.append_model_facts(&mut state, address, build)
     }
 
     pub(crate) fn commit_compaction_accounting(
@@ -234,7 +243,7 @@ impl Session {
         if agent.active_epoch.is_none() || agent.snapshot.execution_id != Some(execution) {
             return Err(Error::ExecutionNotActive(execution));
         }
-        self.append_model_facts(&mut state, address, [payload])
+        self.append_model_facts(&mut state, address, |_| Ok(vec![payload]))
     }
 
     pub(super) fn settle_open_summary(
@@ -245,7 +254,7 @@ impl Session {
     ) -> Result<()> {
         if let Some(summary) = state.agent(address)?.summary_request.as_ref() {
             let terminal = summary.terminal(address, end)?;
-            self.append_model_facts(state, address, [terminal])?;
+            self.append_model_facts(state, address, |_| Ok(vec![terminal]))?;
         }
         Ok(())
     }
@@ -254,14 +263,13 @@ impl Session {
         &self,
         state: &mut State,
         address: &str,
-        payloads: impl IntoIterator<Item = EventPayload>,
+        build: impl FnOnce(u64) -> Result<Vec<EventPayload>>,
     ) -> Result<()> {
         let mut writer = self.inner.writer.lock().unwrap();
         let writer = writer
             .as_mut()
             .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
-        for payload in payloads {
-            let event = writer.append(payload)?;
+        for event in writer.append_batch(build)? {
             state.turns.observe(&event, None);
             if matches!(
                 event.payload.kind_name(),

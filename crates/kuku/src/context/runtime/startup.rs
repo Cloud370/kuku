@@ -1,26 +1,198 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::event::{EventPayload, StoredEvent};
+use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
-use super::{belongs, scan, SnapshotCache, MAX_SELECTION_BYTES_FACTOR};
+use super::{belongs, SnapshotCache, MAX_SELECTION_BYTES_FACTOR};
 
-pub(crate) fn read_agent_events(
-    path: &Path,
-    agent: &str,
-    max_bytes: usize,
-) -> Result<Vec<StoredEvent>> {
-    let mut latest_turn = None;
-    let mut metadata = BTreeMap::<String, StoredEvent>::new();
-    let mut current = Vec::<StoredEvent>::new();
-    let mut skills = Vec::<StoredEvent>::new();
-    let mut snapshots = SnapshotCache::default();
-    let mut metadata_bytes = 2;
-    let mut current_bytes = 2;
-    let mut skills_bytes = 2;
-    let budget = max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR);
-    scan(path, 0, |mut event| {
+pub(crate) struct StartupCache {
+    after: u64,
+    budget: usize,
+    session: Option<StoredEvent>,
+    agents: BTreeMap<String, AgentStartup>,
+}
+
+struct AgentStartup {
+    selection: Selection,
+    failure: Option<String>,
+}
+
+impl StartupCache {
+    pub(crate) fn new(max_bytes: usize) -> Self {
+        Self {
+            after: 0,
+            budget: max_bytes.saturating_mul(MAX_SELECTION_BYTES_FACTOR),
+            session: None,
+            agents: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.session = None;
+        self.agents.clear();
+    }
+
+    pub(crate) fn observe(&mut self, event: &StoredEvent) {
+        self.after = event.id;
+        if matches!(&event.payload, EventPayload::SessionCreated { .. }) {
+            self.session = Some(event.clone());
+            for (address, startup) in &mut self.agents {
+                startup.observe(event, address);
+            }
+            return;
+        }
+        match startup_owner(&event.payload) {
+            Some(StartupOwner::Agent(address)) => {
+                let startup = self.agents.entry(address.into()).or_insert_with(|| {
+                    let mut startup = AgentStartup::new(self.budget);
+                    if let Some(session) = &self.session {
+                        startup.observe(session, address);
+                    }
+                    startup
+                });
+                startup.observe(event, address);
+            }
+            Some(StartupOwner::Turn(turn)) => {
+                for (address, startup) in &mut self.agents {
+                    if startup.selection.latest_turn == Some(turn) {
+                        startup.observe(event, address);
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub(crate) fn read(&mut self, path: &Path, agent: &str) -> Result<Vec<StoredEvent>> {
+        EventStore::visit_after_path(path, self.after, |event| {
+            self.observe(&event);
+            Ok(())
+        })?;
+        if let Some(startup) = self.agents.get_mut(agent) {
+            if let Some(failure) = &startup.failure {
+                return Err(Error::InvalidArgument(failure.clone()));
+            }
+            return startup.selection.events();
+        }
+        Ok(self.session.iter().cloned().collect())
+    }
+}
+
+impl AgentStartup {
+    fn new(budget: usize) -> Self {
+        Self {
+            selection: Selection::new(budget),
+            failure: None,
+        }
+    }
+
+    fn observe(&mut self, event: &StoredEvent, address: &str) {
+        if self.failure.is_none() {
+            if let Err(error) = self.selection.observe(event.clone(), address) {
+                self.failure = Some(match error {
+                    Error::InvalidArgument(message) => message,
+                    error => error.to_string(),
+                });
+                self.selection = Selection::new(self.selection.budget);
+            }
+        }
+    }
+}
+
+enum StartupOwner<'a> {
+    Agent(&'a str),
+    Turn(u64),
+}
+
+fn startup_owner(payload: &EventPayload) -> Option<StartupOwner<'_>> {
+    match payload {
+        EventPayload::ConversationOpened { conversation, .. }
+        | EventPayload::ConversationBound { conversation, .. }
+        | EventPayload::PromptSnapshot { conversation, .. }
+        | EventPayload::ContextSkills { conversation, .. }
+        | EventPayload::MessageUser { conversation, .. }
+        | EventPayload::TurnStarted { conversation, .. }
+        | EventPayload::TurnCompleted { conversation, .. }
+        | EventPayload::TurnCancelled { conversation, .. }
+        | EventPayload::TurnInterrupted { conversation, .. }
+        | EventPayload::ModelRecovery { conversation, .. } => {
+            Some(StartupOwner::Agent(conversation))
+        }
+        EventPayload::ModelResponse {
+            turn, conversation, ..
+        }
+        | EventPayload::ModelError {
+            turn, conversation, ..
+        }
+        | EventPayload::ToolCall {
+            turn, conversation, ..
+        }
+        | EventPayload::ToolResult {
+            turn, conversation, ..
+        } => Some(
+            conversation
+                .as_deref()
+                .map_or(StartupOwner::Turn(*turn), StartupOwner::Agent),
+        ),
+        EventPayload::PermissionRequested { turn, .. }
+        | EventPayload::PermissionAllow { turn, .. }
+        | EventPayload::PermissionDeny { turn, .. } => Some(StartupOwner::Turn(*turn)),
+        EventPayload::Unknown(value) => {
+            let record = &value["record"];
+            match value["kind"].as_str() {
+                Some("runtime.operation")
+                    if matches!(
+                        record["operation"].as_str(),
+                        Some("agent_created" | "agent_configured")
+                    ) =>
+                {
+                    record["address"].as_str().map(StartupOwner::Agent)
+                }
+                Some(
+                    "runtime.context_admitted"
+                    | "runtime.step_prepared"
+                    | "runtime.tool_prepared"
+                    | "runtime.tool_dispatched"
+                    | "runtime.model_rejected"
+                    | "runtime.compaction_started"
+                    | "runtime.model_retry",
+                ) => value["agent"].as_str().map(StartupOwner::Agent),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+struct Selection {
+    latest_turn: Option<u64>,
+    metadata: BTreeMap<String, StoredEvent>,
+    current: Vec<StoredEvent>,
+    skills: Vec<StoredEvent>,
+    snapshots: SnapshotCache,
+    metadata_bytes: usize,
+    current_bytes: usize,
+    skills_bytes: usize,
+    budget: usize,
+}
+
+impl Selection {
+    fn new(budget: usize) -> Self {
+        Self {
+            latest_turn: None,
+            metadata: BTreeMap::new(),
+            current: Vec::new(),
+            skills: Vec::new(),
+            snapshots: SnapshotCache::default(),
+            metadata_bytes: 2,
+            current_bytes: 2,
+            skills_bytes: 2,
+            budget,
+        }
+    }
+
+    fn observe(&mut self, mut event: StoredEvent, agent: &str) -> Result<()> {
         let mut changed = false;
         let key = match &event.payload {
             EventPayload::SessionCreated { .. } => Some("session".into()),
@@ -46,17 +218,17 @@ pub(crate) fn read_agent_events(
             _ => None,
         };
         if let Some(key) = key {
-            metadata.insert(key, event);
-            metadata_bytes = serde_json::to_vec(&metadata)?.len();
+            self.metadata.insert(key, event);
+            self.metadata_bytes = serde_json::to_vec(&self.metadata)?.len();
             return Ok(());
         }
         if let EventPayload::ContextSkills { conversation, .. } = &event.payload {
             if conversation == agent {
-                if skills.len() == 2 {
-                    skills.remove(0);
+                if self.skills.len() == 2 {
+                    self.skills.remove(0);
                 }
-                skills.push(event);
-                skills_bytes = serde_json::to_vec(&skills)?.len();
+                self.skills.push(event);
+                self.skills_bytes = serde_json::to_vec(&self.skills)?.len();
             }
             return Ok(());
         }
@@ -65,19 +237,21 @@ pub(crate) fn read_agent_events(
         } = &event.payload
         {
             if conversation == agent {
-                latest_turn = Some(*turn);
-                current.clear();
-                current_bytes = json_array_bytes(1, serde_json::to_vec(&event)?.len());
-                current.push(event);
+                self.latest_turn = Some(*turn);
+                self.current.clear();
+                self.current_bytes = json_array_bytes(1, serde_json::to_vec(&event)?.len());
+                self.current.push(event);
             }
             return Ok(());
         }
         if let EventPayload::Unknown(value) = &event.payload {
             if value["agent"] == agent {
-                snapshots.observe_context(value);
+                self.snapshots.observe_context(value);
             }
         }
-        changed |= snapshots.observe_result(&mut event, agent, latest_turn)?;
+        changed |= self
+            .snapshots
+            .observe_result(&mut event, agent, self.latest_turn)?;
         let turn = match &event.payload {
             EventPayload::ModelResponse {
                 turn, conversation, ..
@@ -90,7 +264,7 @@ pub(crate) fn read_agent_events(
             }
             | EventPayload::ToolResult {
                 turn, conversation, ..
-            } if belongs(conversation.as_deref(), *turn, agent, latest_turn) => Some(*turn),
+            } if belongs(conversation.as_deref(), *turn, agent, self.latest_turn) => Some(*turn),
             EventPayload::PermissionRequested { turn, .. }
             | EventPayload::PermissionAllow { turn, .. }
             | EventPayload::PermissionDeny { turn, .. } => Some(*turn),
@@ -132,7 +306,7 @@ pub(crate) fn read_agent_events(
             }
             _ => None,
         };
-        if turn.is_some() && turn == latest_turn {
+        if turn.is_some() && turn == self.latest_turn {
             match &mut event.payload {
                 EventPayload::ModelResponse {
                     conversation,
@@ -177,39 +351,62 @@ pub(crate) fn read_agent_events(
                 commands_run.clear();
                 *memory_changed = None;
             }
-            current_bytes += serde_json::to_vec(&event)?.len() + usize::from(!current.is_empty());
-            current.push(event);
+            self.current_bytes +=
+                serde_json::to_vec(&event)?.len() + usize::from(!self.current.is_empty());
+            self.current.push(event);
             changed = true;
         }
         if !changed {
             return Ok(());
         }
         trim_snapshot_cache(
-            metadata_bytes + current_bytes + skills_bytes,
-            &mut snapshots,
-            budget,
+            self.metadata_bytes + self.current_bytes + self.skills_bytes,
+            &mut self.snapshots,
+            self.budget,
         )?;
         Ok(())
-    })?;
-    trim_snapshot_cache(
-        metadata_bytes + current_bytes + skills_bytes,
-        &mut snapshots,
-        budget,
-    )?;
-    let selected = metadata
-        .into_values()
-        .chain(current)
-        .chain(skills)
-        .chain(snapshots.into_events())
-        .map(|event| (event.id, event))
-        .collect::<BTreeMap<_, _>>();
-    let result = selected.into_values().collect::<Vec<_>>();
-    if serde_json::to_vec(&result)?.len() > budget {
-        return Err(Error::InvalidArgument(
-            "agent startup facts exceed the context selection byte limit".into(),
-        ));
     }
-    Ok(result)
+
+    fn events(&mut self) -> Result<Vec<StoredEvent>> {
+        trim_snapshot_cache(
+            self.metadata_bytes + self.current_bytes + self.skills_bytes,
+            &mut self.snapshots,
+            self.budget,
+        )?;
+        let selected = self
+            .metadata
+            .values()
+            .chain(&self.current)
+            .chain(&self.skills)
+            .chain(
+                self.snapshots
+                    .entries
+                    .iter()
+                    .filter(|(key, snapshot)| {
+                        matches!(key, super::SnapshotKey::Read(..))
+                            || self.snapshots.visible_writes.contains(&snapshot.event.id)
+                    })
+                    .map(|(_, snapshot)| &snapshot.event),
+            )
+            .map(|event| (event.id, event))
+            .collect::<BTreeMap<_, _>>();
+        let result = selected.into_values().cloned().collect::<Vec<_>>();
+        if serde_json::to_vec(&result)?.len() > self.budget {
+            return Err(Error::InvalidArgument(
+                "agent startup facts exceed the context selection byte limit".into(),
+            ));
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+pub(super) fn read_agent_events(
+    path: &Path,
+    agent: &str,
+    max_bytes: usize,
+) -> Result<Vec<StoredEvent>> {
+    StartupCache::new(max_bytes).read(path, agent)
 }
 
 fn trim_snapshot_cache(

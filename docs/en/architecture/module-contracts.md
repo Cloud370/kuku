@@ -41,13 +41,13 @@ Each module should have one clear job. Dependency rules keep the ledger model un
 
 ### `event/`
 
-`event/` is the only module that writes to `events.jsonl`. This is one of the main integrity boundaries in the SDK.
+`event/` is the only module that writes to `events.jsonl`. Related records can share one durability barrier when recovery can interpret a partially written prefix. Context admissions take effect only after their matching prepared Step or successful compaction record.
 
 ### `context/` and `prompt/`
 
 `prompt/` renders assets. `context/` assembles requests and replays conversation history. Keeping those separate avoids mixing text templates with runtime state decisions.
 
-The Session runtime selects context through bounded event pages. Its active cursor retains the current Agent's prepared segment and only incrementally reads later facts; idle Agent state contains no transcript cache. Original Prompt assets and rendered static material are committed with the segment before model dispatch, so reopening does not depend on today's templates, instructions, or memory files. Newly selected inputs and exact tool-result views are admitted once, while each Step records segment/message boundaries, source heads, effective caps, and a wire hash. An unconfirmed segment never selects frozen assets, and each admission suffix is confirmed only by a matching prepared Step's source watermark and contiguous ordinal boundary; retries may replace unconfirmed candidates. Handoff and incompatible route changes create successor segments with complete selected Turns; protocol-native replay state is removed when crossing connections, protocols, models, or endpoints.
+The Session writer rebuilds event offsets and committed segment anchors in the same streaming pass as Session recovery. The context cursor reads the latest committed segment and its suffix. The Session keeps a bounded projection of file snapshots and recent execution metadata, updated from new journal records. Agent transcripts and file restore data come from the journal. Original Prompt assets and rendered static material are committed with the segment before model dispatch, so reopening does not depend on today's templates, instructions, or memory files. Newly selected inputs and exact tool-result views are admitted once, while each Step records segment/message boundaries, source heads, effective caps, and a wire hash. An unconfirmed segment never selects frozen assets, and each admission suffix is confirmed only by a matching prepared Step's source watermark and contiguous ordinal boundary; retries may replace unconfirmed candidates. Handoff and incompatible route changes create successor segments with complete selected Turns; protocol-native replay state is removed when crossing connections, protocols, models, or endpoints.
 
 An admitted tool-result view preserves its call ID, exact `model_content` (including an empty string), and status for Messages `is_error`; `structured` data and file/command/memory diagnostics remain in the durable result and are omitted from context because the built-in adapters never encode them or use them as a content fallback.
 

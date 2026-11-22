@@ -86,11 +86,8 @@ pub(crate) fn write_tool_result(
 
 fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
     if pending.query.runtime.is_some() {
-        crate::context::runtime::read_agent_events(
-            &pending.events_path,
-            pending.conversation.as_str(),
-            pending.query.runtime_limits.max_request_bytes,
-        )
+        super::runtime_tools::runtime_session(pending)?
+            .read_agent_events(pending.conversation.as_str())
     } else {
         EventStore::replay(&pending.events_path)
     }

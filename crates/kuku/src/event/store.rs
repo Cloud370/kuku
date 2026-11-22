@@ -15,16 +15,20 @@ use crate::util::fs_sync;
 use super::types::{EventPayload, StoredEvent};
 
 mod codec;
+mod index;
 mod reader;
 mod reverse;
 
 use codec::serialize_record;
+use index::JournalIndex;
+pub(crate) use index::{ContextMarks, HistoryMarks, RouteSelectors};
 use reader::EventReader;
 
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 1024 * 1024;
 const MAX_PAGE_RECORDS: usize = 256;
 const INDEX_STRIDE: usize = 128;
+const SCAN_BUFFER_BYTES: usize = 128 * 1024;
 
 type StoreRegistry = Mutex<HashMap<PathBuf, StoreEntry>>;
 
@@ -87,6 +91,7 @@ struct Writer {
     file_lock: Option<fslock::LockFile>,
     index: Vec<EventOffset>,
     event_count: usize,
+    facts: JournalIndex,
     committed_len: u64,
     last_id: u64,
     poison: Option<String>,
@@ -119,10 +124,19 @@ impl Drop for LockedJournal {
 }
 
 impl Writer {
-    fn open(path: &Path, file: File) -> Result<Self> {
+    fn open(
+        path: &Path,
+        file: File,
+        visit: &mut impl FnMut(StoredEvent) -> Result<()>,
+    ) -> Result<Self> {
         let file_lock = acquire_file_lock(path)?;
         let journal = LockedJournal::writer(file, path)?;
-        let mut reader = EventReader::new(BufReader::new(&journal.file), path, 0);
+        let mut reader = EventReader::new(
+            BufReader::with_capacity(SCAN_BUFFER_BYTES, &journal.file),
+            path,
+            0,
+        );
+        let mut facts = JournalIndex::default();
         let mut index = Vec::new();
         let mut event_count = 0_usize;
         let mut last_id = 0;
@@ -135,6 +149,8 @@ impl Writer {
             }
             event_count += 1;
             last_id = record.event.id;
+            facts.observe_location(&record.event, record.offset, record.bytes);
+            visit(record.event)?;
         }
         let committed_len = reader.committed_len();
         let incomplete_tail = reader.incomplete_tail();
@@ -150,6 +166,7 @@ impl Writer {
             file_lock: Some(file_lock),
             index,
             event_count,
+            facts,
             committed_len,
             last_id,
             poison: None,
@@ -169,7 +186,7 @@ impl Writer {
         Ok(())
     }
 
-    fn commit(&mut self, path: &Path, event_id: u64, record: &[u8]) -> Result<()> {
+    fn write(&mut self, path: &Path, event_id: u64, records: &[u8]) -> Result<()> {
         #[cfg(test)]
         let injected_failure = if self.fail_next_write {
             self.fail_next_write = false;
@@ -183,7 +200,7 @@ impl Writer {
         let result = injected_failure.map_or_else(
             || {
                 file.seek(SeekFrom::Start(self.committed_len))
-                    .and_then(|_| file.write_all(record))
+                    .and_then(|_| file.write_all(records))
                     .and_then(|()| fs_sync::sync_file(file))
             },
             Err,
@@ -199,16 +216,21 @@ impl Writer {
             )
             .into());
         }
+        Ok(())
+    }
+
+    fn advance(&mut self, event: &StoredEvent, bytes: usize) {
         if self.event_count.is_multiple_of(INDEX_STRIDE) {
             self.index.push(EventOffset {
-                id: event_id,
+                id: event.id,
                 offset: self.committed_len,
             });
         }
+        self.facts
+            .observe_location(event, self.committed_len, bytes);
         self.event_count += 1;
-        self.committed_len += record.len() as u64;
-        self.last_id = event_id;
-        Ok(())
+        self.committed_len += bytes as u64;
+        self.last_id = event.id;
     }
 
     fn replay(&mut self, path: &Path) -> Result<Vec<StoredEvent>> {
@@ -241,16 +263,20 @@ impl Writer {
         Ok(result?)
     }
 
+    fn offset_at(&self, after: u64) -> u64 {
+        let checkpoint = self
+            .index
+            .partition_point(|entry| entry.id <= after)
+            .saturating_sub(1);
+        self.index.get(checkpoint).map_or(0, |entry| entry.offset)
+    }
+
     fn read_after(&mut self, path: &Path, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
         self.ensure_healthy(path)?;
         if limit == 0 || after >= self.last_id {
             return Ok(Vec::new());
         }
-        let checkpoint = self
-            .index
-            .partition_point(|entry| entry.id <= after)
-            .saturating_sub(1);
-        let start = self.index[checkpoint].offset;
+        let start = self.offset_at(after);
         let file = &mut self.journal.as_mut().unwrap().file;
         file.seek(SeekFrom::Start(start))?;
         let file = file.take(self.committed_len - start);
@@ -278,11 +304,26 @@ impl Writer {
         )
     }
 
-    fn visit(&mut self, path: &Path, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {
+    fn visit_after(
+        &mut self,
+        path: &Path,
+        after: u64,
+        visit: impl FnMut(StoredEvent) -> Result<()>,
+    ) -> Result<u64> {
         self.ensure_healthy(path)?;
+        if after >= self.last_id {
+            return Ok(after);
+        }
+        let start = self.offset_at(after);
         let file = &mut self.journal.as_mut().unwrap().file;
-        file.seek(SeekFrom::Start(0))?;
-        visit_events(file.take(self.committed_len), path, visit)
+        file.seek(SeekFrom::Start(start))?;
+        visit_events(
+            file.take(self.committed_len - start),
+            path,
+            start,
+            after,
+            visit,
+        )
     }
 }
 
@@ -295,11 +336,28 @@ pub struct EventStore {
 impl EventStore {
     /// Open a shared writer, repairing only an incomplete final record.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
+        Self::open_inner(path.as_ref(), None)
+    }
+
+    pub(crate) fn open_replaying(
+        path: &Path,
+        mut visit: impl FnMut(StoredEvent) -> Result<()>,
+    ) -> Result<Self> {
+        Self::open_inner(path, Some(&mut visit))
+    }
+
+    fn open_inner(
+        path: &Path,
+        mut visit: Option<&mut dyn FnMut(StoredEvent) -> Result<()>>,
+    ) -> Result<Self> {
         let absolute = std::env::current_dir()?.join(path);
         let mut stores = registry().lock().unwrap();
         if let Ok(key) = fs::canonicalize(&absolute) {
             if let Some(inner) = find_active_store(&stores, &key) {
+                drop(stores);
+                if let Some(visit) = visit {
+                    inner.writer.lock().unwrap().visit_after(&key, 0, visit)?;
+                }
                 return Ok(Self { inner });
             }
         }
@@ -308,6 +366,10 @@ impl EventStore {
         }
         let key = canonical_store_path(&absolute)?;
         if let Some(inner) = find_active_store(&stores, &key) {
+            drop(stores);
+            if let Some(visit) = visit {
+                inner.writer.lock().unwrap().visit_after(&key, 0, visit)?;
+            }
             return Ok(Self { inner });
         }
         let file = fs_sync::write_options()
@@ -317,9 +379,16 @@ impl EventStore {
             .open(&key)?;
         let path = fs::canonicalize(key)?;
         if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            if let Some(visit) = visit {
+                inner.writer.lock().unwrap().visit_after(&path, 0, visit)?;
+            }
             return Ok(Self { inner });
         }
-        let writer = Writer::open(&path, file)?;
+        let writer = Writer::open(&path, file, &mut |event| match visit.as_mut() {
+            Some(visit) => visit(event),
+            None => Ok(()),
+        })?;
         let release = Arc::new(WriterRelease::default());
         let inner = Arc::new(StoreInner {
             path: path.clone(),
@@ -342,17 +411,51 @@ impl EventStore {
     pub fn append(&mut self, mut payload: EventPayload) -> Result<StoredEvent> {
         let mut writer = self.inner.writer.lock().unwrap();
         writer.ensure_healthy(&self.inner.path)?;
-        let id = writer
-            .last_id
-            .checked_add(1)
-            .ok_or_else(|| Error::InvalidEventStream("event IDs exhausted".to_string()))?;
+        let id = writer.last_id.checked_add(1).ok_or_else(ids_exhausted)?;
         patch_event_id(&mut payload, id)?;
         let event = StoredEvent { id, payload };
         let record = serialize_record(&event)?;
-        writer.commit(&self.inner.path, id, &record)?;
+        writer.write(&self.inner.path, id, &record)?;
+        writer.advance(&event, record.len());
         drop(writer);
         self.changed().notify_waiters();
         Ok(event)
+    }
+
+    pub(crate) fn append_batch(
+        &mut self,
+        build: impl FnOnce(u64) -> Result<Vec<EventPayload>>,
+    ) -> Result<Vec<StoredEvent>> {
+        let path = &self.inner.path;
+        let mut writer = self.inner.writer.lock().unwrap();
+        writer.ensure_healthy(path)?;
+        let first = writer.last_id.checked_add(1).ok_or_else(ids_exhausted)?;
+        let payloads = build(first)?;
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut records = Vec::new();
+        let mut events = Vec::with_capacity(payloads.len());
+        for (index, mut payload) in payloads.into_iter().enumerate() {
+            let id = first.checked_add(index as u64).ok_or_else(ids_exhausted)?;
+            patch_event_id(&mut payload, id)?;
+            let event = StoredEvent { id, payload };
+            let record = serialize_record(&event)?;
+            let length = record.len();
+            records.extend(record);
+            events.push((event, length));
+        }
+        writer.write(path, first, &records)?;
+        let events = events
+            .into_iter()
+            .map(|(event, bytes)| {
+                writer.advance(&event, bytes);
+                event
+            })
+            .collect();
+        drop(writer);
+        self.changed().notify_waiters();
+        Ok(events)
     }
 
     #[cfg(test)]
@@ -463,29 +566,108 @@ impl EventStore {
         writer.committed_bytes(&path)
     }
 
-    pub(crate) fn visit(&self, visit: impl FnMut(StoredEvent) -> Result<()>) -> Result<u64> {
-        self.inner
-            .writer
-            .lock()
-            .unwrap()
-            .visit(&self.inner.path, visit)
-    }
-
     pub(crate) fn visit_path(
         path: &Path,
         visit: impl FnMut(StoredEvent) -> Result<()>,
     ) -> Result<u64> {
+        Self::visit_after_path(path, 0, visit)
+    }
+
+    pub(crate) fn visit_after_path(
+        path: &Path,
+        after: u64,
+        visit: impl FnMut(StoredEvent) -> Result<()>,
+    ) -> Result<u64> {
         let Some(path) = existing_path(path)? else {
-            return Ok(0);
+            return Ok(after);
         };
         let stores = registry().lock().unwrap();
         if let Some(inner) = find_active_store(&stores, &path) {
             drop(stores);
-            return inner.writer.lock().unwrap().visit(&path, visit);
+            return inner
+                .writer
+                .lock()
+                .unwrap()
+                .visit_after(&path, after, visit);
         }
         let _file_lock = acquire_file_lock(&path)?;
         let journal = LockedJournal::reader(&path)?;
-        visit_events(&journal.file, &path, visit)
+        visit_events(&journal.file, &path, 0, after, visit)
+    }
+
+    pub(crate) fn context_marks(path: &Path, address: &str) -> Result<ContextMarks> {
+        Self::with_index(path, |facts| facts.context_marks(address))
+    }
+
+    pub(crate) fn history_marks(path: &Path, include_owners: bool) -> Result<HistoryMarks> {
+        Self::with_index(path, |facts| Ok(facts.history_marks(include_owners)))
+    }
+
+    fn with_index<T>(path: &Path, select: impl FnOnce(&JournalIndex) -> Result<T>) -> Result<T> {
+        let Some(path) = existing_path(path)? else {
+            return select(&JournalIndex::default());
+        };
+        let stores = registry().lock().unwrap();
+        if let Some(inner) = find_active_store(&stores, &path) {
+            drop(stores);
+            let writer = inner.writer.lock().unwrap();
+            writer.ensure_healthy(&path)?;
+            return select(&writer.facts);
+        }
+        let _file_lock = acquire_file_lock(&path)?;
+        let journal = LockedJournal::reader(&path)?;
+        let mut facts = JournalIndex::default();
+        visit_events(&journal.file, &path, 0, 0, |event| {
+            facts.observe(&event);
+            Ok(())
+        })?;
+        select(&facts)
+    }
+
+    pub(crate) fn rewind_facts(
+        &self,
+        address: &str,
+        target: u64,
+    ) -> Result<(u64, Vec<StoredEvent>)> {
+        let writer = self.inner.writer.lock().unwrap();
+        writer.ensure_healthy(&self.inner.path)?;
+        Ok((
+            writer.facts.rewind_start(address, target),
+            writer.facts.rewind_controls(),
+        ))
+    }
+
+    pub(crate) fn visit_file_results(
+        &self,
+        after: u64,
+        before: u64,
+        mut visit: impl FnMut(StoredEvent) -> Result<()>,
+    ) -> Result<()> {
+        let mut writer = self.inner.writer.lock().unwrap();
+        writer.ensure_healthy(&self.inner.path)?;
+        let writer = &mut *writer;
+        let facts = &writer.facts.files;
+        let start = facts.partition_point(|fact| fact.location.id <= after);
+        let end = facts.partition_point(|fact| fact.location.id < before);
+        let file = &mut writer.journal.as_mut().unwrap().file;
+        let mut buffer = Vec::new();
+        for fact in &facts[start..end.max(start)] {
+            file.seek(SeekFrom::Start(fact.location.offset))?;
+            buffer.resize(fact.bytes, 0);
+            file.read_exact(&mut buffer)?;
+            visit(serde_json::from_slice(&buffer)?)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn last_turn_owners(&self) -> HashMap<u64, String> {
+        self.inner.writer.lock().unwrap().facts.last_turn_owners()
+    }
+
+    pub(crate) fn turn_terminal(&self, address: &str, turn: u64) -> Result<(bool, Option<u64>)> {
+        let writer = self.inner.writer.lock().unwrap();
+        writer.ensure_healthy(&self.inner.path)?;
+        Ok(writer.facts.turn_terminal(address, turn))
     }
 
     pub(crate) fn next_id(&self) -> u64 {
@@ -551,6 +733,10 @@ fn acquire_file_lock(path: &Path) -> Result<fslock::LockFile> {
     Ok(lock)
 }
 
+fn ids_exhausted() -> Error {
+    Error::InvalidEventStream("event IDs exhausted".into())
+}
+
 fn patch_event_id(payload: &mut EventPayload, event_id: u64) -> Result<()> {
     if let EventPayload::Unknown(value) = payload {
         let object = value.as_object_mut().ok_or_else(|| {
@@ -584,13 +770,21 @@ fn read_all(file: impl Read, path: &Path) -> Result<Vec<StoredEvent>> {
 fn visit_events(
     file: impl Read,
     path: &Path,
+    offset: u64,
+    after: u64,
     mut visit: impl FnMut(StoredEvent) -> Result<()>,
 ) -> Result<u64> {
-    let mut reader = EventReader::new(BufReader::new(file), path, 0);
-    let mut head = 0;
+    let mut reader = EventReader::new(
+        BufReader::with_capacity(SCAN_BUFFER_BYTES, file),
+        path,
+        offset,
+    );
+    let mut head = after;
     while let Some(record) = reader.next()? {
-        head = record.event.id;
-        visit(record.event)?;
+        if record.event.id > after {
+            head = record.event.id;
+            visit(record.event)?;
+        }
     }
     Ok(head)
 }

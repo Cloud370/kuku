@@ -257,24 +257,22 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         let admitted_at = if input_is_present {
             0
         } else {
-            EventStore::replay(&pending.events_path)?
-                .into_iter()
-                .find_map(|event| {
-                    let EventPayload::MessageUser {
-                        turn,
-                        conversation,
-                        text,
-                        ..
-                    } = &event.payload
-                    else {
-                        return None;
-                    };
-                    (*turn == source_turn
-                        && conversation == pending.conversation.as_str()
-                        && text == &pending.query.prompt)
-                        .then_some(event.id)
-                })
-                .unwrap_or(cursor.after)
+            let mut admitted_at = None;
+            EventStore::visit_after_path(
+                &pending.events_path,
+                source_turn.saturating_sub(1),
+                |event| {
+                    if admitted_at.is_none()
+                        && matches!(&event.payload, EventPayload::MessageUser { turn, conversation, text, .. }
+                            if *turn == source_turn && conversation == pending.conversation.as_str()
+                                && text == &pending.query.prompt)
+                    {
+                        admitted_at = Some(event.id);
+                    }
+                    Ok(())
+                },
+            )?;
+            admitted_at.unwrap_or(cursor.after)
         };
         resumed_current_input(
             &mut messages,
@@ -354,10 +352,9 @@ pub(super) fn record_prepared(
     pending: &mut PendingRun,
     request_id: &str,
     prepared: &PreparedProviderRequest,
-    mut context: ContextCommit,
+    context: ContextCommit,
     request_prepare_us: u64,
 ) -> Result<()> {
-    stage_context(pending, &mut context)?;
     let body = prepared.body.as_json();
     let wire = prepared.body.as_bytes();
     let body_hash = format!("{:x}", Sha256::digest(wire));
@@ -367,33 +364,38 @@ pub(super) fn record_prepared(
         .as_ref()
         .expect("runtime context cursor exists")
         .history_prefix_hash(context.prefix_context_head);
-    let payload = EventPayload::Unknown(
-        json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
+    let payload = json!({"kind":"runtime.step_prepared","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"turn":pending.turn,"request_id":request_id,
         "segment":context.segment.id,"context_head":context.messages.len(),"current_input":context.current_input,"source_head":context.source_head,
         "connection":prepared.connection_name,"protocol":context.segment.protocol,"model":prepared.model,"url":prepared.url,"settings":prepared.settings,"correlation_id":prepared.correlation_id,
         "max_output_tokens":body.get("max_output_tokens").or_else(|| body.get("max_tokens")).or_else(|| body.get("max_completion_tokens")),"temperature":body.get("temperature"),
         "context_window_tokens":pending.resolved.as_ref().map(|runtime| runtime.config.max_context_tokens),"max_request_bytes":pending.query.runtime_limits.max_request_bytes,"request_bytes":wire.len(),
         "body_hash":body_hash,"prefix_context_head":context.prefix_context_head,"prefix_hash":prefix_hash,"history_prefix_hash":history_prefix_hash,
         "context_prepare_us":context.context_prepare_us,"request_prepare_us":request_prepare_us,"context_events_read":context.events_read,
-        "input_skills":context.input_skills}),
-    );
-    commit_context(pending, context, payload)
+        "input_skills":context.input_skills});
+    commit_context(pending, context, payload)?;
+    Ok(())
 }
 
-fn stage_context(pending: &PendingRun, context: &mut ContextCommit) -> Result<()> {
+fn context_batch(
+    pending: &PendingRun,
+    context: &mut ContextCommit,
+    mut confirmation: serde_json::Value,
+    first_id: u64,
+) -> Result<Vec<EventPayload>> {
     let cursor = pending
         .context_cursor
         .as_ref()
         .expect("runtime context cursor exists");
-    let mut writer = EventStore::open(&pending.events_path)?;
+    let mut facts = Vec::new();
     let predecessor = cursor.segment.as_ref().map(|segment| segment.id);
     if context.new_segment {
-        context.segment.id = writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":pending.conversation.as_str(),
+        context.segment.id = first_id;
+        facts.push(EventPayload::Unknown(json!({"kind":"runtime.context_segment","ts":now_timestamp()?,"agent":pending.conversation.as_str(),
             "signature":context.segment.signature,"predecessor":predecessor,"configuration":context.segment.configuration,"handoff":context.segment.handoff,"reason":context.reason,"checkpointed_messages":context.checkpointed_messages,
             "connection":context.segment.connection,"protocol":context.segment.protocol,"model":context.segment.model,"endpoint":context.segment.endpoint,
             "capabilities":context.segment.capabilities,"route_selectors":context.segment.route_selectors,
             "system_prompt":context.segment.system_prompt,"prelude":context.segment.prelude,"tools":context.segment.tools,"catalog":context.segment.catalog,
-            "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace})))?.id;
+            "behavior":context.segment.behavior,"identity_slot":context.segment.identity_slot,"handoff_prelude":context.segment.handoff_prelude,"workspace":context.segment.workspace})));
     }
     let frozen_head = context.prefix_context_head;
     let expected_frozen_head = if context.new_segment {
@@ -419,28 +421,36 @@ fn stage_context(pending: &PendingRun, context: &mut ContextCommit) -> Result<()
         ));
     }
     for (ordinal, admitted) in context.messages.iter().enumerate().skip(frozen_head) {
-        writer.append(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"segment":context.segment.id,
-            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"admitted_at":admitted.admitted_at,"message":admitted.message})))?;
+        facts.push(EventPayload::Unknown(json!({"kind":"runtime.context_admitted","ts":now_timestamp()?,"agent":pending.conversation.as_str(),"segment":context.segment.id,
+            "ordinal":ordinal,"turn":admitted.turn,"origin":admitted.origin,"source_head":context.source_head,"admitted_at":admitted.admitted_at,"message":admitted.message})));
     }
-    Ok(())
+    confirmation["segment"] = context.segment.id.into();
+    confirmation["context_head"] = context.messages.len().into();
+    confirmation["source_head"] = context.source_head.into();
+    facts.push(EventPayload::Unknown(confirmation));
+    Ok(facts)
 }
 
 fn commit_context(
     pending: &mut PendingRun,
-    context: ContextCommit,
-    payload: EventPayload,
-) -> Result<()> {
+    mut context: ContextCommit,
+    confirmation: serde_json::Value,
+) -> Result<u64> {
     let execution = pending
         .query
         .runtime_execution
         .expect("context belongs to a session execution");
     let session = super::provider::runtime_session(pending, execution)?;
-    session.commit_model_facts(pending.conversation.as_str(), execution, [payload])?;
+    session.commit_model_batch(pending.conversation.as_str(), execution, |first| {
+        context_batch(pending, &mut context, confirmation, first)
+    })?;
+    let segment_id = context.segment.id;
     pending
         .context_cursor
         .as_mut()
         .expect("runtime context cursor exists")
-        .commit(context.segment, context.messages, context.source_head)
+        .commit(context.segment, context.messages, context.source_head)?;
+    Ok(segment_id)
 }
 
 fn initial_segment(

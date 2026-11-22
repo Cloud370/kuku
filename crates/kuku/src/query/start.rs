@@ -154,12 +154,13 @@ impl Query {
             None => session_events_path(&kuku_home, &workspace, &session_id)?,
         };
         let policy_path = project_policy_path(&kuku_home, &workspace)?;
-        let existing_events = if self.runtime.is_some() {
-            crate::context::runtime::read_agent_events(
-                &events_path,
-                self.conversation.as_str(),
-                self.runtime_limits.max_request_bytes,
-            )?
+        let existing_events = if let Some(runtime) = &self.runtime {
+            crate::Session {
+                inner: runtime
+                    .upgrade()
+                    .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?,
+            }
+            .read_agent_events(self.conversation.as_str())?
         } else {
             EventStore::replay(&events_path)?
         };

@@ -315,34 +315,7 @@ fn turn_terminal_facts(
     conversation: &ConversationAddress,
     turn: u64,
 ) -> Result<(bool, Option<u64>)> {
-    let mut stop_event_id = None;
-    for event in EventStore::replay(events_path)? {
-        if event.payload.is_explicit_stop(conversation.as_str(), turn) {
-            stop_event_id = Some(event.id);
-        }
-        let terminal = match &event.payload {
-            EventPayload::TurnCompleted {
-                conversation: event_conversation,
-                turn: event_turn,
-                ..
-            }
-            | EventPayload::TurnCancelled {
-                conversation: event_conversation,
-                turn: event_turn,
-                ..
-            }
-            | EventPayload::TurnInterrupted {
-                conversation: event_conversation,
-                turn: event_turn,
-                ..
-            } => *event_turn == turn && event_conversation == conversation.as_str(),
-            _ => false,
-        };
-        if terminal {
-            return Ok((true, stop_event_id));
-        }
-    }
-    Ok((false, stop_event_id))
+    EventStore::open(events_path)?.turn_terminal(conversation.as_str(), turn)
 }
 
 pub(super) fn append_turn_completed(

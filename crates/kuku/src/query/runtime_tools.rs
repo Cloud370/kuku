@@ -260,11 +260,7 @@ pub(super) async fn dispatch(
         return start_slot(pending, queued, slot);
     }
     let prior_events = if crate::tool::dispatch::uses_prior_events(&queued.tool_call.name) {
-        crate::context::runtime::read_agent_events(
-            &pending.events_path,
-            pending.conversation.as_str(),
-            pending.query.runtime_limits.max_request_bytes,
-        )?
+        runtime_session(&pending)?.read_agent_events(pending.conversation.as_str())?
     } else {
         Vec::new()
     };

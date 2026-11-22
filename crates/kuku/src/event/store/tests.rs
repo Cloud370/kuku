@@ -157,7 +157,9 @@ async fn sync_failure_does_not_publish_or_allow_later_commits() {
             .unwrap(),
     );
 
-    let error = store.append(payload()).unwrap_err();
+    let error = store
+        .append_batch(|_| Ok(vec![payload(), payload()]))
+        .unwrap_err();
     assert!(error.to_string().contains("cannot commit event 1"));
     assert_eq!(0, store.last_id());
     assert!(shared.read_after(0, 1).is_err());
@@ -181,6 +183,31 @@ async fn sync_failure_does_not_publish_or_allow_later_commits() {
     drop(shared);
     let mut reopened = EventStore::open(&path).unwrap();
     assert_eq!(1, reopened.append(payload()).unwrap().id);
+}
+
+#[test]
+fn invalid_batch_publishes_no_prefix_and_preserves_the_next_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.jsonl");
+    let mut store = EventStore::open(&path).unwrap();
+    assert!(store
+        .append_batch(|_| Ok(vec![
+            payload(),
+            EventPayload::Unknown(serde_json::json!([]))
+        ]))
+        .is_err());
+    assert!(std::fs::read(&path).unwrap().is_empty());
+    let batch = store
+        .append_batch(|first| {
+            assert_eq!(1, first);
+            Ok(vec![payload(), payload()])
+        })
+        .unwrap();
+    assert_eq!(
+        vec![1, 2],
+        batch.iter().map(|event| event.id).collect::<Vec<_>>()
+    );
+    assert_eq!(batch, store.read_after(0, 2).unwrap());
 }
 
 #[test]

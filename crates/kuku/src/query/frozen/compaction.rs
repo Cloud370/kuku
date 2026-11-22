@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use super::{model_history, ContextCommit, MessageOrigin, OwnedRequestBase};
 use crate::context::runtime::AdmittedMessage;
 use crate::context::{CanonicalMessage, MessageBlock};
-use crate::event::EventPayload;
 use crate::query::types::PendingRun;
 use crate::Result;
 
@@ -19,13 +18,9 @@ impl ContextCommit {
     pub(in crate::query) fn record_checkpoint(
         &mut self,
         pending: &mut PendingRun,
-        mut completion: serde_json::Value,
+        completion: serde_json::Value,
     ) -> Result<()> {
-        super::stage_context(pending, self)?;
-        completion["segment"] = self.segment.id.into();
-        completion["context_head"] = self.messages.len().into();
-        completion["source_head"] = self.source_head.into();
-        super::commit_context(pending, self.clone(), EventPayload::Unknown(completion))?;
+        self.segment.id = super::commit_context(pending, self.clone(), completion)?;
         self.new_segment = false;
         self.prefix_context_head = self.messages.len();
         Ok(())

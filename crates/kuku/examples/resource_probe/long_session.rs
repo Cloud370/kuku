@@ -26,6 +26,8 @@ const BASELINE: &str = "Inspect command output and retain this rewind marker";
 const REOPEN: &str = "Check the persisted workspace after reopen";
 const AFTER_UNDO: &str = "Check the preceding checkpoint";
 const AFTER_REWIND: &str = "Check the workspace after message rewind";
+const HISTORY_SETUP: &str = "Prepare the history lookup tool";
+const QUERY_HISTORY: &str = "Recall the most recent verified workspace message";
 const FILE_MARKER: &str = "fixture_ingestion_boundary";
 
 #[derive(Debug, Default)]
@@ -60,22 +62,33 @@ impl ModelAdapter for FixtureModel {
                 });
                 ModelStopReason::EndTurn
             } else if self.inspect_only {
+                let query_history = messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "user")
+                    .is_some_and(|message| message["content"] == QUERY_HISTORY);
                 if last["role"] == "tool" {
+                    let expected = if query_history {
+                        HISTORY_SETUP
+                    } else {
+                        FILE_MARKER
+                    };
                     assert!(
-                        prompt.contains(FILE_MARKER),
-                        "file content missing from the resumed request"
+                        prompt.contains(expected),
+                        "result lacks {expected}: {prompt}"
                     );
                     *self.probe_messages.lock().unwrap() = Some(messages.clone());
                     answer(&mut events)
                 } else {
-                    call(
-                        &mut events,
-                        request.turn,
-                        step,
-                        0,
-                        "read_file",
-                        json!({"path":"report.log","offset":1,"limit":4}),
-                    );
+                    let (tool, arguments) = if query_history {
+                        ("query_session", json!({"kind":"message.user","limit":2}))
+                    } else {
+                        (
+                            "read_file",
+                            json!({"path":"report.log","offset":1,"limit":4}),
+                        )
+                    };
+                    call(&mut events, request.turn, step, 0, tool, arguments);
                     ModelStopReason::ToolUse
                 }
             } else if messages
@@ -549,6 +562,24 @@ pub(super) async fn measure(args: &BTreeMap<String, String>) -> Result<Value, An
         .iter()
         .map(|entry| entry["wall_us"].as_u64().unwrap())
         .collect();
+    let mut config = session.agent("main")?.config;
+    config
+        .tools
+        .get_or_insert_with(Vec::new)
+        .push("query_session".into());
+    session.configure_agent("enable-history-probe", "main", config)?;
+    phase(phase_file, "history_query_setup")?;
+    send(&session, HISTORY_SETUP, HISTORY_SETUP).await?;
+    let history_query_turn = sampled_turn(
+        &session,
+        phase_file,
+        &model,
+        "history_query",
+        QUERY_HISTORY,
+        HISTORY_SETUP,
+        Some(BASELINE),
+    )
+    .await?;
     let (start, resources) = begin(phase_file, "close")?;
     session.close().await?;
     timings.insert("close", measurement(start, resources));
@@ -559,7 +590,7 @@ pub(super) async fn measure(args: &BTreeMap<String, String>) -> Result<Value, An
         "filesystem_cache":"fresh process; operating system page cache not flushed",
         "fixture":fixture,"timings":timings,"first_turn":first,
         "steady_turns":steady,"steady_turn_wall_us":statistics(&steady_us),
-        "after_undo":after_undo,"after_rewind":after_rewind,
+        "after_undo":after_undo,"after_rewind":after_rewind,"history_query_turn":history_query_turn,
         "retained_output_read":{"pages":pages,"bytes":output_bytes},
         "prepared_steps":prepared
     }))

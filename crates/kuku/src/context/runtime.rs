@@ -5,15 +5,17 @@ use sha2::{Digest, Sha256};
 
 use crate::context::{CanonicalMessage, MessageBlock, Role, ToolSchema};
 use crate::conversation::address::ConversationAddress;
+pub(crate) use crate::event::store::RouteSelectors;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::prompt::PromptCatalog;
 use crate::provider::types::ProviderCapabilities;
 use crate::{Error, Result};
 
 mod startup;
-pub(crate) use startup::read_agent_events;
+#[cfg(test)]
+use startup::read_agent_events;
+pub(crate) use startup::StartupCache;
 
-const PAGE_RECORDS: usize = 256;
 const MAX_SELECTION_BYTES_FACTOR: usize = 4;
 const MAX_CACHED_FILE_SNAPSHOTS: usize = 128;
 
@@ -50,23 +52,11 @@ pub(crate) struct FrozenSegment {
     pub(crate) workspace: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct RouteSelectors {
-    pub(crate) query_connection: Option<String>,
-    pub(crate) query_model: Option<String>,
-    pub(crate) query_tier: Option<String>,
-}
-
 fn route_selectors_changed(segment: Option<&FrozenSegment>, config: &serde_json::Value) -> bool {
     let Some(recorded) = segment.and_then(|segment| segment.route_selectors.as_ref()) else {
         return false;
     };
-    let selectors = RouteSelectors {
-        query_connection: config["connection"].as_str().map(str::to_owned),
-        query_model: config["model"].as_str().map(str::to_owned),
-        query_tier: config["tier"].as_str().map(str::to_owned),
-    };
-    recorded != &selectors
+    recorded != &RouteSelectors::from_agent_config(config)
 }
 
 fn identity_slot() -> usize {
@@ -164,14 +154,8 @@ pub(crate) struct ContextCursor {
 impl ContextCursor {
     fn observe_configuration(&mut self, event_id: u64, config: &serde_json::Value) {
         self.configuration = event_id;
-        self.configurations.insert(
-            event_id,
-            RouteSelectors {
-                query_connection: config["connection"].as_str().map(str::to_owned),
-                query_model: config["model"].as_str().map(str::to_owned),
-                query_tier: config["tier"].as_str().map(str::to_owned),
-            },
-        );
+        self.configurations
+            .insert(event_id, RouteSelectors::from_agent_config(config));
     }
 
     pub(crate) fn select_configuration(&mut self, selectors: &RouteSelectors) {
@@ -194,54 +178,24 @@ impl ContextCursor {
         }
     }
 
-    fn read_assets(&mut self, path: &Path, agent: &str) -> Result<()> {
-        if let Some(segment) = committed_segments(path, agent, |_| {})?.0.last() {
-            let event = read_segment(path, segment.id)?;
-            if let EventPayload::Unknown(value) = event.payload {
-                self.catalog = value
-                    .get("catalog")
-                    .filter(|catalog| !catalog.is_null())
-                    .map(|catalog| serde_json::from_value(catalog.clone()))
-                    .transpose()?;
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn refresh(&mut self, path: &Path, agent: &str, max_bytes: usize) -> Result<()> {
         if self.after == 0 {
-            let (committed, seen) = committed_segments(path, agent, |event| {
-                if let EventPayload::Unknown(value) = &event.payload {
-                    let record = &value["record"];
-                    if value["kind"] != "runtime.operation" {
-                        return;
-                    }
-                    match record["operation"].as_str() {
-                        Some("agent_created" | "agent_configured")
-                            if record["address"] == agent =>
-                        {
-                            self.observe_configuration(event.id, &record["config"]);
-                        }
-                        Some("input_delivered")
-                            if record["input"]["target"] == agent
-                                && record["config"].is_object() =>
-                        {
-                            self.observe_configuration(event.id, &record["config"]);
-                        }
-                        _ => {}
-                    }
-                }
-            })?;
-            self.events_read += seen;
-            if let Some(segment) = committed.last() {
+            let marks = EventStore::context_marks(path, agent)?;
+            self.configuration = marks
+                .configurations
+                .last_key_value()
+                .map_or(0, |(id, _)| *id);
+            self.configurations = marks.configurations;
+            if let Some(segment) = marks.segment {
                 self.after = segment.id;
                 self.approved_segment = segment.id;
                 self.latest_turn = segment.turn;
-                self.observe(read_segment(path, segment.id)?, agent, max_bytes)?;
+                self.observe(read_indexed_event(path, segment.id)?, agent, max_bytes)?;
+                self.events_read += 1;
             }
         }
         let mut seen = 0;
-        self.after = scan(path, self.after, |event| {
+        self.after = EventStore::visit_after_path(path, self.after, |event| {
             seen += 1;
             self.observe(event, agent, max_bytes)
         })?;
@@ -595,88 +549,15 @@ fn encoded_events_size(events: &[StoredEvent]) -> Result<usize> {
     })
 }
 
-struct SegmentCommit {
-    id: u64,
-    turn: Option<u64>,
-    checkpoint: bool,
-}
-
 pub(crate) fn latest_checkpoint_segment(path: &Path, agent: &str) -> Result<Option<u64>> {
-    let (segments, _) = committed_segments(path, agent, |_| {})?;
-    Ok(segments
-        .iter()
-        .rev()
-        .find(|segment| segment.checkpoint)
-        .map(|segment| segment.id))
+    Ok(EventStore::context_marks(path, agent)?.checkpoint)
 }
 
-fn read_segment(path: &Path, id: u64) -> Result<StoredEvent> {
+fn read_indexed_event(path: &Path, id: u64) -> Result<StoredEvent> {
     EventStore::read_page(path, id - 1, 1)?
         .pop()
         .filter(|event| event.id == id)
-        .ok_or_else(|| Error::InvalidEventStream("committed context segment is missing".into()))
-}
-
-fn committed_segments(
-    path: &Path,
-    agent: &str,
-    mut visit: impl FnMut(&StoredEvent),
-) -> Result<(Vec<SegmentCommit>, u64)> {
-    let mut committed: Vec<SegmentCommit> = Vec::new();
-    let mut candidate = None;
-    let mut latest_turn = None;
-    let mut seen = 0;
-    scan(path, 0, |event| {
-        seen += 1;
-        visit(&event);
-        match &event.payload {
-            EventPayload::TurnStarted {
-                turn, conversation, ..
-            } if conversation == agent => {
-                latest_turn = Some(*turn);
-            }
-            EventPayload::Unknown(value) => {
-                let record = &value["record"];
-                if value["kind"] == "runtime.operation" && record["address"] == agent {
-                    let target = match record["operation"].as_str() {
-                        Some("message_rewind") => Some(rewind_target(record)?),
-                        Some("compaction_reverted") => {
-                            Some(record["segment"].as_u64().ok_or_else(|| {
-                                Error::InvalidEventStream("compaction rewind has no segment".into())
-                            })?)
-                        }
-                        _ => None,
-                    };
-                    if let Some(target) = target {
-                        committed.retain(|entry| entry.id < target);
-                        if candidate.is_some_and(|(id, _)| id >= target) {
-                            candidate = None;
-                        }
-                    }
-                }
-                if value["agent"] == agent {
-                    if value["kind"] == "runtime.context_segment" {
-                        candidate = Some((event.id, latest_turn));
-                    }
-                    if context_confirmation(value) {
-                        if let Some((id, turn)) =
-                            candidate.filter(|(id, _)| value["segment"] == *id)
-                        {
-                            committed.push(SegmentCommit {
-                                id,
-                                turn,
-                                checkpoint: value["kind"] == "runtime.compaction_finished",
-                            });
-                            candidate = None;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    })?;
-    Ok((committed, seen))
+        .ok_or_else(|| Error::InvalidEventStream(format!("indexed context event {id} is missing")))
 }
 
 fn context_confirmation(value: &serde_json::Value) -> bool {
@@ -688,23 +569,6 @@ fn rewind_target(record: &serde_json::Value) -> Result<u64> {
     record["target_event_id"]
         .as_u64()
         .ok_or_else(|| Error::InvalidEventStream("message rewind has no target event".into()))
-}
-
-fn scan(
-    path: &Path,
-    mut after: u64,
-    mut visit: impl FnMut(StoredEvent) -> Result<()>,
-) -> Result<u64> {
-    loop {
-        let page = EventStore::read_page(path, after, PAGE_RECORDS)?;
-        if page.is_empty() {
-            return Ok(after);
-        }
-        for event in page {
-            after = event.id;
-            visit(event)?;
-        }
-    }
 }
 
 fn belongs(conversation: Option<&str>, turn: u64, agent: &str, latest_turn: Option<u64>) -> bool {
@@ -784,9 +648,17 @@ fn project_source(
 }
 
 pub(crate) fn read_frozen_catalog(path: &Path, agent: &str) -> Result<Option<PromptCatalog>> {
-    let mut cursor = ContextCursor::default();
-    cursor.read_assets(path, agent)?;
-    Ok(cursor.catalog)
+    let Some(segment) = EventStore::context_marks(path, agent)?.segment else {
+        return Ok(None);
+    };
+    let EventPayload::Unknown(value) = read_indexed_event(path, segment.id)?.payload else {
+        return Ok(None);
+    };
+    value
+        .get("catalog")
+        .filter(|catalog| !catalog.is_null())
+        .map(|catalog| serde_json::from_value(catalog.clone()).map_err(Error::from))
+        .transpose()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -962,14 +834,6 @@ impl SnapshotCache {
             batch.receipts.remove(&snapshot.event.id);
         }
         true
-    }
-
-    fn into_events(self) -> impl Iterator<Item = StoredEvent> {
-        self.entries.into_iter().filter_map(move |(key, snapshot)| {
-            (matches!(key, SnapshotKey::Read(..))
-                || self.visible_writes.contains(&snapshot.event.id))
-            .then_some(snapshot.event)
-        })
     }
 }
 
