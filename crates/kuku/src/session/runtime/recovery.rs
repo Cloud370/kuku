@@ -1,6 +1,8 @@
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use crate::context::runtime::StartupCache;
 use crate::event::store::{JournalSummary, Replay};
@@ -8,8 +10,8 @@ use crate::event::EventStore;
 use crate::Result;
 
 use super::jobs::JobReplay;
-use super::record::State;
-use super::{reduce_event, retention};
+use super::record::{AgentState, State};
+use super::{reduce_event, retention, InputStatus};
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct Projection {
@@ -110,7 +112,32 @@ pub(super) fn read_state(events: &Path, state: State) -> Result<(State, u64)> {
 }
 
 pub(super) fn read_listing(events: &Path) -> Result<(State, JournalSummary)> {
+    if let Some(listing) = EventStore::read_sealed_summary(events, decode_listing)? {
+        return Ok(listing);
+    }
     recover_state(events, State::default(), true).map(|(state, _, summary)| (state, summary))
+}
+
+fn decode_listing(summary: JournalSummary, runtime: &RawValue) -> Option<(State, JournalSummary)> {
+    #[derive(Deserialize)]
+    struct ListingCheckpoint {
+        state: ListingState,
+    }
+
+    #[derive(Deserialize)]
+    struct ListingState {
+        agents: BTreeMap<String, AgentState>,
+        deliveries: HashMap<String, InputStatus>,
+    }
+
+    let saved = serde_json::from_str::<ListingCheckpoint>(runtime.get()).ok()?;
+    let mut state = State {
+        agents: saved.state.agents,
+        deliveries: saved.state.deliveries,
+        ..State::default()
+    };
+    state.mark_interrupted();
+    Some((state, summary))
 }
 
 fn recover_state(
@@ -153,6 +180,22 @@ mod tests {
     use crate::event::EventPayload;
     use crate::session::runtime::record::Record;
     use crate::AgentConfig;
+
+    #[test]
+    fn sealed_listing_reads_only_the_state_it_projects() {
+        let runtime = serde_json::value::to_raw_value(&serde_json::json!({
+            "state": {"agents": {}, "deliveries": {}, "turns": "unreadable"},
+            "jobs": "unreadable",
+        }))
+        .unwrap();
+        let summary = super::JournalSummary {
+            title: Some("Saved title".into()),
+            ..Default::default()
+        };
+        let (state, summary) = super::decode_listing(summary, &runtime).unwrap();
+        assert!(state.snapshots().is_empty());
+        assert_eq!(Some("Saved title"), summary.title.as_deref());
+    }
 
     #[test]
     fn changing_request_limit_keeps_committed_state_and_rebuilds_startup_facts() {

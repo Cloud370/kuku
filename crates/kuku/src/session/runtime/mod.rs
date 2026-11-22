@@ -135,12 +135,21 @@ impl std::fmt::Debug for Session {
 impl Session {
     /// Acquire the session writer and reconstruct committed facts without automatically running agents.
     pub async fn open(options: SessionOptions) -> Result<Self> {
-        Self::open_runtime(options, None)
+        Self::open_in_background(options, None).await
+    }
+
+    async fn open_in_background(
+        options: SessionOptions,
+        creation: Option<(Command, AgentConfig)>,
+    ) -> Result<Self> {
+        tokio::task::spawn_blocking(move || Self::open_runtime(options, creation))
+            .await
+            .map_err(std::io::Error::other)?
     }
 
     fn open_runtime(
         mut options: SessionOptions,
-        creation: Option<(Command, &AgentConfig)>,
+        creation: Option<(Command, AgentConfig)>,
     ) -> Result<Self> {
         validate_limits(&options.limits)?;
         let tool_adapters = Arc::new(selection::register_tools(&options)?);

@@ -7,7 +7,10 @@ use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use super::{archive::MAX_CHECKPOINT, reverse, EventOffset, JournalIndex, Layout, StoredEvent};
+use super::{
+    archive::MAX_CHECKPOINT, reverse, EventOffset, JournalIndex, JournalSummary, Layout,
+    StoredEvent,
+};
 use crate::Result;
 
 #[expect(
@@ -29,6 +32,11 @@ pub(super) struct Checkpoint<I = Vec<EventOffset>, F = JournalIndex, R = Box<Raw
     pub(super) index: I,
     pub(super) facts: F,
     pub(super) runtime: R,
+}
+
+#[derive(Deserialize)]
+struct SummaryFacts {
+    summary: JournalSummary,
 }
 
 impl Checkpoint {
@@ -63,10 +71,7 @@ pub(super) fn offer(
 pub(super) fn load(layout: &Layout, file: &File, path: &Path) -> Option<Checkpoint> {
     let encoded = layout.checkpoint(file).ok()??;
     let checkpoint: Checkpoint = serde_json::from_slice(&encoded).ok()?;
-    if checkpoint.bytes != layout.prefix_bytes
-        || checkpoint.head != layout.prefix_head
-        || checkpoint.event_count == 0
-        || checkpoint.index.len() != checkpoint.event_count.div_ceil(super::INDEX_STRIDE)
+    if checkpoint.index.len() != checkpoint.event_count.div_ceil(super::INDEX_STRIDE)
         || checkpoint
             .index
             .last()
@@ -74,12 +79,41 @@ pub(super) fn load(layout: &Layout, file: &File, path: &Path) -> Option<Checkpoi
     {
         return None;
     }
-    let end = layout.prefix_bytes;
-    let last = reverse::read_before(&mut layout.reader(file, end, 0), path, end, None, 1).ok()?;
-    if last.first()?.id != checkpoint.head {
+    valid_head(layout, file, path, &checkpoint).then_some(checkpoint)
+}
+
+pub(super) fn load_summary<T>(
+    layout: &Layout,
+    file: &File,
+    path: &Path,
+    select: impl FnOnce(JournalSummary, &RawValue) -> Option<T>,
+) -> Option<T> {
+    let encoded = layout.checkpoint(file).ok()??;
+    let checkpoint: Checkpoint<serde::de::IgnoredAny, SummaryFacts, &RawValue> =
+        serde_json::from_slice(&encoded).ok()?;
+    if !valid_head(layout, file, path, &checkpoint) {
         return None;
     }
-    Some(checkpoint)
+    select(checkpoint.facts.summary, checkpoint.runtime)
+}
+
+fn valid_head<I, F, R>(
+    layout: &Layout,
+    file: &File,
+    path: &Path,
+    checkpoint: &Checkpoint<I, F, R>,
+) -> bool {
+    if checkpoint.bytes != layout.prefix_bytes
+        || checkpoint.head != layout.prefix_head
+        || checkpoint.event_count == 0
+    {
+        return false;
+    }
+    let end = layout.prefix_bytes;
+    reverse::read_before(&mut layout.reader(file, end, 0), path, end, None, 1).is_ok_and(|last| {
+        last.first()
+            .is_some_and(|event| event.id == checkpoint.head)
+    })
 }
 
 pub(super) fn encode(checkpoint: &impl Serialize) -> Result<Vec<u8>> {

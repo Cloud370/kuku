@@ -19,7 +19,7 @@ impl Session {
             ));
         }
         let command = creation_command(input, config, options.prompts_dir.as_deref())?;
-        Self::open_runtime(options, Some((command, config)))
+        Self::open_in_background(options, Some((command, config.clone()))).await
     }
 
     /// Verify a replay of the original creation intent against an open session.

@@ -27,6 +27,24 @@ pub(crate) fn lock_reader(file: &File, path: &Path) -> io::Result<()> {
         .map_err(|error| lock_error(path, error))
 }
 
+pub(crate) fn lock_journal(file: &File, path: &Path, exclusive: bool) -> io::Result<()> {
+    #[cfg(windows)]
+    return windows::lock_journal(file, exclusive).map_err(|error| lock_error(path, error));
+    #[cfg(not(windows))]
+    if exclusive {
+        lock_writer(file, path)
+    } else {
+        lock_reader(file, path)
+    }
+}
+
+pub(crate) fn unlock_journal(file: &File) -> io::Result<()> {
+    #[cfg(windows)]
+    return windows::unlock_journal(file);
+    #[cfg(not(windows))]
+    file.unlock()
+}
+
 pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -129,7 +147,14 @@ mod windows {
     use std::fs;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
     use std::path::Path;
+
+    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
@@ -137,6 +162,50 @@ mod windows {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+    }
+
+    fn journal_lock_offset() -> OVERLAPPED {
+        // NOTE: Windows locks are mandatory. Fence journal handles beyond the data range.
+        OVERLAPPED {
+            Anonymous: OVERLAPPED_0 {
+                Anonymous: OVERLAPPED_0_0 {
+                    Offset: u32::MAX - 1,
+                    OffsetHigh: i32::MAX as u32,
+                },
+            },
+            ..OVERLAPPED::default()
+        }
+    }
+
+    pub(super) fn lock_journal(file: &fs::File, exclusive: bool) -> Result<(), fs::TryLockError> {
+        let mut position = journal_lock_offset();
+        let flags = LOCKFILE_FAIL_IMMEDIATELY
+            | if exclusive {
+                LOCKFILE_EXCLUSIVE_LOCK
+            } else {
+                0
+            };
+        // SAFETY: The File and synchronous OVERLAPPED storage remain live during the call.
+        if unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut position) } != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        Err(
+            if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+                fs::TryLockError::WouldBlock
+            } else {
+                fs::TryLockError::Error(error)
+            },
+        )
+    }
+
+    pub(super) fn unlock_journal(file: &fs::File) -> io::Result<()> {
+        let mut position = journal_lock_offset();
+        // SAFETY: The same handle and byte range used during locking are live for this call.
+        if unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut position) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     pub(super) fn rename(from: &Path, to: &Path) -> io::Result<()> {

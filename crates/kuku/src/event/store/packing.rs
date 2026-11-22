@@ -1,14 +1,18 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Serialize;
+use serde_json::value::RawValue;
 
 use super::{
-    existing_path, find_active_store, recovery, registry, visit_events, Checkpoint, EventStore,
-    HistoryMarks, JournalIndex, JournalSummary, Layout, LockedJournal, Replay, ReplayVisitor,
+    existing_path, read_source, recovery, visit_events, Checkpoint, EventStore, HistoryMarks,
+    JournalIndex, JournalSnapshot, JournalSummary, Layout, LockedJournal, Replay, ReplayVisitor,
     Writer,
 };
 use crate::util::fs_sync;
 use crate::Result;
+
+use super::archive::PackCheckpoint;
 
 enum Projection {
     Runtime,
@@ -25,7 +29,7 @@ struct ReadFacts {
 impl EventStore {
     pub(crate) fn needs_packing(&self) -> bool {
         let writer = self.inner.writer.lock().unwrap();
-        writer.layout.worth_packing(writer.committed_len)
+        writer.needs_packing()
     }
 
     pub(crate) fn visit_recovery(
@@ -61,6 +65,20 @@ impl EventStore {
             .map(|(cursor, facts)| (cursor, facts.summary))
     }
 
+    pub(crate) fn read_sealed_summary<T>(
+        path: &Path,
+        select: impl FnOnce(JournalSummary, &RawValue) -> Option<T>,
+    ) -> Result<Option<T>> {
+        let Some(path) = existing_path(path)? else {
+            return Ok(None);
+        };
+        let JournalSnapshot { file, layout, end } = read_source(&path)?.snapshot(&path)?;
+        if end != layout.prefix_bytes {
+            return Ok(None);
+        }
+        Ok(recovery::load_summary(&layout, &file, &path, select))
+    }
+
     fn read_projection(
         path: &Path,
         projection: Projection,
@@ -70,25 +88,10 @@ impl EventStore {
         let Some(path) = existing_path(path)? else {
             return Ok((0, result));
         };
-        let stores = registry().lock().unwrap();
-        if let Some(inner) = find_active_store(&stores, &path) {
-            drop(stores);
-            let mut writer = inner.writer.lock().unwrap();
-            let cursor = writer.visit_recovery(&path, &mut visit)?;
-            match projection {
-                Projection::History => result.history = writer.facts.history_marks(true, cursor),
-                Projection::Summary => result.summary = writer.facts.summary.clone(),
-                Projection::Runtime => {}
-            }
-            return Ok((cursor, result));
-        }
-        let journal = LockedJournal::reader(&path)?;
-        drop(stores);
-        let layout = Layout::read(&journal.file)?;
-        let end = layout.logical_len(journal.file.metadata()?.len());
+        let JournalSnapshot { file, layout, end } = read_source(&path)?.snapshot(&path)?;
         let mut facts = matches!(projection, Projection::History).then(JournalIndex::default);
         let (mut start, mut after) = (0, 0);
-        if let Some(saved) = recovery::load(&layout, &journal.file, &path) {
+        if let Some(saved) = recovery::load(&layout, &file, &path) {
             if visit(Replay::Checkpoint(&saved.runtime))? {
                 start = layout.prefix_bytes;
                 after = layout.prefix_head;
@@ -100,7 +103,7 @@ impl EventStore {
             }
         }
         let cursor = visit_events(
-            layout.reader(&journal.file, end, start),
+            layout.reader(&file, end, start),
             &path,
             start,
             after,
@@ -124,7 +127,7 @@ impl EventStore {
         let path = &self.inner.path;
         let mut writer = self.inner.writer.lock().unwrap();
         writer.ensure_healthy(path)?;
-        if writer.last_id != head || !writer.layout.worth_packing(writer.committed_len) {
+        if writer.last_id != head || !writer.needs_packing() {
             return Ok(false);
         }
         writer.pack(path, runtime)
@@ -132,6 +135,10 @@ impl EventStore {
 }
 
 impl Writer {
+    fn needs_packing(&self) -> bool {
+        self.refresh_checkpoint || self.layout.worth_packing(self.committed_len)
+    }
+
     pub(super) fn visit_recovery(
         &mut self,
         path: &Path,
@@ -163,7 +170,10 @@ impl Writer {
             self.committed_len,
             self.last_id,
             self.turn_count,
-            &checkpoint,
+            PackCheckpoint {
+                bytes: &checkpoint,
+                replace_invalid: self.refresh_checkpoint && !checkpoint.is_empty(),
+            },
         )?
         else {
             return Ok(false);
@@ -179,7 +189,7 @@ impl Writer {
         match reopen {
             Ok((journal, layout)) => {
                 self.journal = Some(journal);
-                self.layout = layout;
+                self.layout = Arc::new(layout);
             }
             Err(error) => {
                 self.poison = Some(error.to_string());
@@ -187,6 +197,7 @@ impl Writer {
             }
         }
         publish?;
+        self.refresh_checkpoint = false;
         Ok(true)
     }
 }

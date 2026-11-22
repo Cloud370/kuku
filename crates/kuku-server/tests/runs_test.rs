@@ -13,6 +13,29 @@ use kuku::session::{
 use serde_json::{json, Value};
 
 #[tokio::test]
+async fn session_listing_keeps_healthy_sessions_when_one_journal_is_corrupt() {
+    let mock = mock_provider::start_mock_provider().await;
+    let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let healthy = server.events_path("healthy-session");
+    EventStore::open(&healthy).unwrap();
+    let damaged = server.events_path("damaged-session");
+    std::fs::create_dir_all(damaged.parent().unwrap()).unwrap();
+    std::fs::write(&damaged, b"{this is not a valid record}\n").unwrap();
+
+    let response = server
+        .request(wreq::Method::GET, "/sessions")
+        .query(&[("workspace", server.workspace.path())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(200, response.status());
+    let body = response.json::<Value>().await.unwrap();
+    let sessions = body["sessions"].as_array().unwrap();
+    assert_eq!(1, sessions.len());
+    assert_eq!("healthy-session", sessions[0]["session_id"]);
+}
+
+#[tokio::test]
 async fn first_send_returns_one_durable_receipt_after_response_loss_and_restart() {
     let mock = mock_provider::start_mock_provider().await;
     let provider = mock.mock(|when, then| {

@@ -114,6 +114,14 @@ async fn manager(state: &AppState) -> RunManager {
     state.run_manager.lock().await.clone()
 }
 
+async fn journal_task<T: Send + 'static>(
+    read: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(read)
+        .await
+        .map_err(std::io::Error::other)?
+}
+
 fn canonical_home(home: &Path) -> Result<PathBuf> {
     if home.is_dir() {
         Ok(home.canonicalize()?)

@@ -83,6 +83,12 @@ Start with one authoritative append-only log and one writer per Session, with cr
 
 Sessions keep one authoritative journal. On eligible clean closes, the same file can be published with an inline recovery checkpoint and independently decodable gzip frames for committed history. Subsequent records append to its plain tail. Frame and checkpoint metadata live in the journal. A damaged or unusable recovery projection can be rebuilt from readable facts, and reads verify the history frames they open.
 
+Read-only journal scans use a pinned file and a fixed committed boundary. Acquiring that boundary may coordinate with the writer. Reading or projecting the prefix must allow the writer to open and continue committing. Writer recovery for one Session must allow access to other Sessions.
+
+After replaying an unusable inline checkpoint, a normal close can replace that checkpoint independently of the journal compression threshold. The replacement is published atomically from the committed facts and remains subject to the checkpoint size limit.
+
+The Session list can use the summary and Agent status from a sealed journal independently of the execution and history indexes. It reads committed events when the listing data is missing or unusable.
+
 Define the commit unit and acknowledgement barriers explicitly. Referenced output must exist durably before its confirmed reference; an action's dispatch intent precedes the effect, and settlement precedes confirmation. Recover only identifiable incomplete tails; reject corruption of committed history. A required write failure stops dependent execution.
 
 A requested action, an action known to have been dispatched, and a confirmed result are different facts. If a side effect may already have happened, report an unknown outcome. A provider/tool adapter may reconcile or use a supported external idempotency mechanism; generic retry must not repeat arbitrary effects. Reject stale execution callbacks after cancellation/replacement using the bound execution identity.

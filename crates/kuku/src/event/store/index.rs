@@ -40,7 +40,7 @@ impl RouteSelectors {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub(super) struct FileFact {
     pub(super) location: EventOffset,
     pub(super) bytes: usize,

@@ -22,7 +22,7 @@ use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tokio_stream::Stream;
 
 use super::Params;
-use super::{manager, SessionTarget};
+use super::{journal_task, manager, SessionTarget};
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::{RunManager, TurnLookup};
 use crate::wire::{
@@ -94,30 +94,33 @@ pub(super) async fn events(
             "after cannot be used with before or reverse",
         ));
     }
-    let events = if reverse {
-        EventStore::read_page_before(&target.path, query.before, limit)?
-    } else {
-        EventStore::read_page(&target.path, after, limit)?
-    };
-    let next_after = events.last().map_or(after, |event| event.id);
-    let next_before = if reverse {
-        events.first().map(|event| event.id)
-    } else {
-        None
-    };
-    let filtered = events
-        .iter()
-        .filter(|event| {
-            query.agent.as_ref().is_none_or(|agent| {
-                matches!(event.payload, EventPayload::SessionCreated { .. })
-                    || event_agent(&event.payload).unwrap_or("main") == agent
+    journal_task(move || {
+        let events = if reverse {
+            EventStore::read_page_before(&target.path, query.before, limit)?
+        } else {
+            EventStore::read_page(&target.path, after, limit)?
+        };
+        let next_after = events.last().map_or(after, |event| event.id);
+        let next_before = if reverse {
+            events.first().map(|event| event.id)
+        } else {
+            None
+        };
+        let filtered = events
+            .iter()
+            .filter(|event| {
+                query.agent.as_ref().is_none_or(|agent| {
+                    matches!(event.payload, EventPayload::SessionCreated { .. })
+                        || event_agent(&event.payload).unwrap_or("main") == agent
+                })
             })
-        })
-        .map(|event| json!({"id":event.id,"payload":event.payload}))
-        .collect::<Vec<_>>();
-    Ok(Json(
-        json!({"ok":true,"events":filtered,"next_after":next_after,"next_before":next_before}),
-    ))
+            .map(|event| json!({"id":event.id,"payload":event.payload}))
+            .collect::<Vec<_>>();
+        Ok(Json(
+            json!({"ok":true,"events":filtered,"next_after":next_after,"next_before":next_before}),
+        ))
+    })
+    .await
 }
 
 pub(super) async fn history(
@@ -129,41 +132,45 @@ pub(super) async fn history(
     target.require_exists()?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
     validate_limit(limit)?;
-    let cursor = EventStore::read_head(&target.path)?;
-    let before = match cursor.checked_add(1) {
-        Some(end) => query.before.map(|before| before.min(end)),
-        None => query.before,
-    };
-    let (history, turns) = manager(&state).await.history(&target.path, cursor)?;
-    let agent = query.agent.as_deref().unwrap_or("main");
-    if query.user_only {
-        let (messages, next_before) = history.user_messages_before(agent, before, limit)?;
-        let entries: Vec<_> = messages
-            .into_iter()
-            .filter_map(|event| {
-                let EventPayload::MessageUser { turn, text, .. } = event.payload else {
-                    return None;
-                };
-                let preview = text
-                    .char_indices()
-                    .nth(512)
-                    .map_or(text.as_str(), |(end, _)| &text[..end]);
-                Some(
-                    json!({"type":"user","id":event.id,"agent":agent,"turn":turn,
-                "turn_number":turns.number(agent, turn),"text":preview}),
-                )
-            })
-            .collect();
-        let response =
-            json!({"ok":true,"entries":entries,"rewind_groups":[],"next_before":next_before});
+    let manager = manager(&state).await;
+    journal_task(move || {
+        let cursor = EventStore::read_head(&target.path)?;
+        let before = match cursor.checked_add(1) {
+            Some(end) => query.before.map(|before| before.min(end)),
+            None => query.before,
+        };
+        let (history, turns) = manager.history(&target.path, cursor)?;
+        let agent = query.agent.as_deref().unwrap_or("main");
+        if query.user_only {
+            let (messages, next_before) = history.user_messages_before(agent, before, limit)?;
+            let entries: Vec<_> = messages
+                .into_iter()
+                .filter_map(|event| {
+                    let EventPayload::MessageUser { turn, text, .. } = event.payload else {
+                        return None;
+                    };
+                    let preview = text
+                        .char_indices()
+                        .nth(512)
+                        .map_or(text.as_str(), |(end, _)| &text[..end]);
+                    Some(
+                        json!({"type":"user","id":event.id,"agent":agent,"turn":turn,
+                    "turn_number":turns.number(agent, turn),"text":preview}),
+                    )
+                })
+                .collect();
+            let response =
+                json!({"ok":true,"entries":entries,"rewind_groups":[],"next_before":next_before});
+            validate_response_bytes(&response)?;
+            return Ok(Json(response));
+        }
+        let (entries, rewind_groups, next_before) =
+            history_page(agent, before, limit, &turns, &history)?;
+        let response = json!({"ok":true,"entries":entries,"rewind_groups":rewind_groups,"next_before":next_before});
         validate_response_bytes(&response)?;
-        return Ok(Json(response));
-    }
-    let (entries, rewind_groups, next_before) =
-        history_page(agent, before, limit, &turns, &history)?;
-    let response = json!({"ok":true,"entries":entries,"rewind_groups":rewind_groups,"next_before":next_before});
-    validate_response_bytes(&response)?;
-    Ok(Json(response))
+        Ok(Json(response))
+    })
+    .await
 }
 
 pub(super) async fn history_destinations(
@@ -175,46 +182,50 @@ pub(super) async fn history_destinations(
     target.require_exists()?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
     validate_limit(limit)?;
-    let cursor = EventStore::read_head(&target.path)?;
-    let (history, turns) = manager(&state).await.history(&target.path, cursor)?;
-    let agent = query.agent.as_deref().unwrap_or("main");
-    let end = history.cursor().saturating_add(1);
-    let before = query.before.map_or(end, |before| before.min(end));
-    let mut points = turns.history_points(agent, before, limit + 1);
-    let next_before = (points.len() > limit).then(|| {
-        points.pop();
-        points.last().unwrap().event_id
-    });
-    let points = points
-        .into_iter()
-        .filter_map(|mut point| {
-            let prompt = if point.can_continue {
-                history
-                    .turn_prompt(agent, point.turn, point.event_id)
-                    .cloned()
-            } else {
-                history
-                    .editable_messages(agent, point.turn)
-                    .into_iter()
-                    .next()
-            };
-            if !point.can_continue && prompt.is_none() {
-                return None;
-            }
-            if let Some(message) = &prompt {
-                point.preview = Some(message.text.clone());
-            }
-            Some(HistoryDestination {
-                current_branch: history.includes_cursor(agent, point.event_id),
-                point,
-                prompt_event_id: prompt.map(|message| message.event_id),
+    let manager = manager(&state).await;
+    journal_task(move || {
+        let cursor = EventStore::read_head(&target.path)?;
+        let (history, turns) = manager.history(&target.path, cursor)?;
+        let agent = query.agent.as_deref().unwrap_or("main");
+        let end = history.cursor().saturating_add(1);
+        let before = query.before.map_or(end, |before| before.min(end));
+        let mut points = turns.history_points(agent, before, limit + 1);
+        let next_before = (points.len() > limit).then(|| {
+            points.pop();
+            points.last().unwrap().event_id
+        });
+        let points = points
+            .into_iter()
+            .filter_map(|mut point| {
+                let prompt = if point.can_continue {
+                    history
+                        .turn_prompt(agent, point.turn, point.event_id)
+                        .cloned()
+                } else {
+                    history
+                        .editable_messages(agent, point.turn)
+                        .into_iter()
+                        .next()
+                };
+                if !point.can_continue && prompt.is_none() {
+                    return None;
+                }
+                if let Some(message) = &prompt {
+                    point.preview = Some(message.text.clone());
+                }
+                Some(HistoryDestination {
+                    current_branch: history.includes_cursor(agent, point.event_id),
+                    point,
+                    prompt_event_id: prompt.map(|message| message.event_id),
+                })
             })
-        })
-        .collect();
-    Ok(Json(HistoryDestinations {
-        points,
-        next_before,
-    }))
+            .collect();
+        Ok(Json(HistoryDestinations {
+            points,
+            next_before,
+        }))
+    })
+    .await
 }
 
 pub(super) async fn observe(

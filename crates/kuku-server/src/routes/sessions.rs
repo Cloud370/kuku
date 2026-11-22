@@ -14,8 +14,9 @@ use serde_json::{json, Value};
 
 use super::workspaces::resolve_workspace;
 use super::Params;
-use super::{canonical_home, manager, SessionTarget, WorkspaceQuery};
+use super::{canonical_home, journal_task, manager, SessionTarget, WorkspaceQuery};
 use crate::error_mapping::{ApiError, Result};
+use crate::run_manager::RunManager;
 use crate::wire::{agent_summary, event_agent};
 use crate::AppState;
 
@@ -40,18 +41,33 @@ pub(super) async fn list(
     State(state): State<Arc<AppState>>,
     Params(query): Params<ListQuery>,
 ) -> Result<Json<Value>> {
+    let manager = manager(&state).await;
+    let permit = manager.catalog_permit().await;
+    journal_task(move || {
+        let _permit = permit;
+        list_sessions(&state.kuku_home, &manager, query)
+    })
+    .await
+}
+
+fn list_sessions(home: &FsPath, manager: &RunManager, query: ListQuery) -> Result<Json<Value>> {
     let workspace = query
         .workspace
         .as_deref()
         .map(resolve_workspace)
         .transpose()?;
-    let home = canonical_home(&state.kuku_home)?;
+    let home = canonical_home(home)?;
     let search = query.search.unwrap_or_default().to_lowercase();
-    let manager = manager(&state).await;
     let mut sessions = Vec::new();
     for file in kuku::session::session_files(&home, workspace.as_deref())? {
         let open = manager.open_session(file.events_path());
-        let listing = file.listing(open.as_ref())?;
+        let listing = match file.listing(open.as_ref()) {
+            Ok(listing) => listing,
+            Err(error) => {
+                tracing::warn!(%error, path = %file.events_path().display(), "Session listing read failed");
+                continue;
+            }
+        };
         let summary = listing.summary;
         let title = summary.title.chars().take(TITLE_CHARS).collect::<String>();
         if !search.is_empty()
@@ -96,15 +112,18 @@ pub(super) async fn agents(
 ) -> Result<Json<Value>> {
     let target = SessionTarget::new(&state, &query.workspace, &id)?;
     target.require_exists()?;
-    let open = manager(&state).await.open_session(&target.path);
-    let (agents, cursor) = match &open {
-        Some(session) => session.agents_with_cursor()?,
-        None => Session::read_agents_with_cursor(&target.path)?,
-    };
-    let agents: Vec<_> = agents.iter().map(agent_summary).collect();
-    Ok(Json(
-        json!({"ok":true,"session_id":id,"workspace":target.workspace,"cursor":cursor,"agents":agents}),
-    ))
+    let manager = manager(&state).await;
+    journal_task(move || {
+        let open = manager.open_session(&target.path);
+        let (agents, cursor) = match &open {
+            Some(session) => session.agents_with_cursor()?,
+            None => Session::read_agents_with_cursor(&target.path)?,
+        };
+        let agents: Vec<_> = agents.iter().map(agent_summary).collect();
+        Ok(Json(
+            json!({"ok":true,"session_id":id,"workspace":target.workspace,"cursor":cursor,"agents":agents}),
+        ))
+    }).await
 }
 
 pub(super) async fn snapshot(
@@ -114,8 +133,18 @@ pub(super) async fn snapshot(
 ) -> Result<Json<Value>> {
     let target = SessionTarget::new(&state, &query.workspace, &id)?;
     target.require_exists()?;
-    let address = query.agent.as_deref().unwrap_or("main");
     let manager = manager(&state).await;
+    journal_task(move || session_snapshot(&state, &manager, &target, &id, query)).await
+}
+
+fn session_snapshot(
+    state: &AppState,
+    manager: &RunManager,
+    target: &SessionTarget,
+    id: &str,
+    query: SnapshotQuery,
+) -> Result<Json<Value>> {
+    let address = query.agent.as_deref().unwrap_or("main");
     let mut open = manager.open_session(&target.path);
     let read_open = |session: &Session| {
         if query.progress {
@@ -197,12 +226,12 @@ pub(super) async fn snapshot(
         .active_config
         .as_ref()
         .unwrap_or(&view.snapshot.config);
-    match selection(&state, open.as_ref(), address, effective) {
+    match selection(state, open.as_ref(), address, effective) {
         Ok(selection) => value["selection"] = selection,
         Err(error) => value["selection_error"] = ApiError::from(error).value(),
     }
     if effective != &view.snapshot.config {
-        match selection(&state, open.as_ref(), address, &view.snapshot.config) {
+        match selection(state, open.as_ref(), address, &view.snapshot.config) {
             Ok(selection) => value["pending_selection"] = selection,
             Err(error) => value["pending_selection_error"] = ApiError::from(error).value(),
         }

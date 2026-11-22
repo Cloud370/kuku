@@ -1,13 +1,17 @@
-use super::{
-    existing_path, find_active_store, read_index, registry, EventStore, JournalIndex, Layout,
-    LockedJournal, SeekFrom, StoredEvent,
-};
-use crate::{Error, Result};
+use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::path::Path;
 
+use super::index::FileFact;
+use super::{
+    existing_path, read_index, read_source, EventStore, ReadSource, SeekFrom, StoredEvent,
+};
+use crate::{Error, Result};
+
 pub(crate) struct FileHistory<'a> {
-    index: &'a JournalIndex,
+    controls: Vec<StoredEvent>,
+    owners: HashMap<u64, String>,
+    files: Vec<FileFact>,
     reader: super::archive::Reader<'a>,
 }
 
@@ -18,36 +22,42 @@ impl EventStore {
     ) -> Result<T> {
         let path = existing_path(path)?
             .ok_or_else(|| Error::InvalidArgument("Session journal is missing".into()))?;
-        let stores = registry().lock().unwrap();
-        if let Some(store) = find_active_store(&stores, &path) {
-            drop(stores);
-            let writer = store.writer.lock().unwrap();
-            writer.ensure_healthy(&path)?;
-            let file = &writer.journal.as_ref().unwrap().file;
-            return plan(FileHistory {
-                index: &writer.facts,
-                reader: writer.layout.reader(file, writer.committed_len, 0),
-            });
-        }
-        let journal = LockedJournal::reader(&path)?;
-        drop(stores);
-        let layout = Layout::read(&journal.file)?;
-        let end = layout.logical_len(journal.file.metadata()?.len());
-        let (index, _) = read_index(&path, &journal.file)?;
+        let (journal, controls, owners, files) = match read_source(&path)? {
+            ReadSource::Active(store) => {
+                let writer = store.writer.lock().unwrap();
+                (
+                    writer.snapshot(&path)?,
+                    writer.facts.rewind_controls(),
+                    writer.facts.last_turn_owners(),
+                    writer.facts.files.clone(),
+                )
+            }
+            ReadSource::Closed(journal) => {
+                let (index, _) = read_index(&path, &journal)?;
+                (
+                    journal,
+                    index.rewind_controls(),
+                    index.last_turn_owners(),
+                    index.files,
+                )
+            }
+        };
         plan(FileHistory {
-            index: &index,
-            reader: layout.reader(&journal.file, end, 0),
+            controls,
+            owners,
+            files,
+            reader: journal.layout.reader(&journal.file, journal.end, 0),
         })
     }
 }
 
 impl FileHistory<'_> {
-    pub(crate) fn controls(&self) -> Vec<StoredEvent> {
-        self.index.rewind_controls()
+    pub(crate) fn take_controls(&mut self) -> Vec<StoredEvent> {
+        std::mem::take(&mut self.controls)
     }
 
-    pub(crate) fn owners(&self) -> std::collections::HashMap<u64, String> {
-        self.index.last_turn_owners()
+    pub(crate) fn take_owners(&mut self) -> HashMap<u64, String> {
+        std::mem::take(&mut self.owners)
     }
 
     pub(crate) fn visit(
@@ -56,7 +66,7 @@ impl FileHistory<'_> {
         before: u64,
         mut visit: impl FnMut(StoredEvent) -> Result<()>,
     ) -> Result<()> {
-        let facts = &self.index.files;
+        let facts = &self.files;
         let start = facts.partition_point(|fact| fact.location.id <= after);
         let end = facts.partition_point(|fact| fact.location.id < before);
         let mut buffer = Vec::new();

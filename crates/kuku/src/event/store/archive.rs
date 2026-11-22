@@ -114,8 +114,12 @@ impl Layout {
         tail >= MIN_UNPACKED_BYTES.max(self.tail_at)
     }
 
+    pub(super) fn has_checkpoint(&self) -> bool {
+        self.checkpoint_bytes != 0
+    }
+
     pub(super) fn checkpoint(&self, mut file: &File) -> io::Result<Option<Vec<u8>>> {
-        if self.checkpoint_bytes == 0 {
+        if !self.has_checkpoint() {
             return Ok(None);
         }
         file.seek(SeekFrom::Start(self.header_bytes))?;
@@ -148,13 +152,13 @@ impl Layout {
         end: u64,
         head: u64,
         turns: u64,
-        checkpoint: &[u8],
+        checkpoint: PackCheckpoint<'_>,
     ) -> io::Result<Option<Staged>> {
         let tail = end
             .checked_sub(self.prefix_bytes)
             .ok_or_else(|| invalid("invalid seal boundary"))?;
         let count = self.frames.len() + tail.div_ceil(BLOCK_BYTES as u64) as usize;
-        if count == 0 || count > MAX_FRAMES || checkpoint.len() > MAX_CHECKPOINT {
+        if count == 0 || count > MAX_FRAMES || checkpoint.bytes.len() > MAX_CHECKPOINT {
             return Ok(None);
         }
         let mut table = Vec::with_capacity(count * 8);
@@ -165,7 +169,7 @@ impl Layout {
         replacement.set_permissions(source.metadata()?.permissions())?;
         let data_at = SIZE_HEADER + count * 8;
         replacement.seek(SeekFrom::Start(data_at as u64))?;
-        replacement.write_all(checkpoint)?;
+        replacement.write_all(checkpoint.bytes)?;
         if let Some(first) = self.frames.first() {
             source.seek(SeekFrom::Start(first.offset))?;
             let length = self.tail_at - first.offset;
@@ -192,13 +196,13 @@ impl Layout {
             remaining -= bytes as u64;
         }
         let physical_end = replacement.stream_position()?;
-        if physical_end >= source.metadata()?.len() {
+        if !checkpoint.replace_invalid && physical_end >= source.metadata()?.len() {
             return Ok(None);
         }
         let mut header = [0; SIZE_HEADER];
         header[..8].copy_from_slice(MAGIC);
         header[8..12].copy_from_slice(&(count as u32).to_le_bytes());
-        header[12..16].copy_from_slice(&(checkpoint.len() as u32).to_le_bytes());
+        header[12..16].copy_from_slice(&(checkpoint.bytes.len() as u32).to_le_bytes());
         header[16..24].copy_from_slice(&head.to_le_bytes());
         header[24..32].copy_from_slice(&turns.to_le_bytes());
         let crc = directory_crc(&header, &table);
@@ -210,6 +214,11 @@ impl Layout {
         drop(replacement);
         Ok(Some(staging))
     }
+}
+
+pub(super) struct PackCheckpoint<'a> {
+    pub(super) bytes: &'a [u8],
+    pub(super) replace_invalid: bool,
 }
 
 pub(super) struct Staged(pub(super) PathBuf);
