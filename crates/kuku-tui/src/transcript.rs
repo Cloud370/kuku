@@ -182,12 +182,16 @@ impl Transcript {
         let entry_turn = entry.turn;
         let error_position = (entry.kind == HistoryKind::Error).then_some((entry.id, entry_turn));
         let interrupted_execution = retry::interruption_execution(&entry);
-        let previous_preview =
-            if entry.kind == HistoryKind::Assistant || entry.details["partial_reply"].is_string() {
-                execution.or(self.current_execution)
-            } else {
-                interrupted_execution
-            };
+        let previous_preview = if entry.kind == HistoryKind::Assistant
+            || entry
+                .details
+                .get("partial_reply")
+                .is_some_and(Value::is_string)
+        {
+            execution.or(self.current_execution)
+        } else {
+            interrupted_execution
+        };
         let mut record = Record::from_entry(entry);
         if let (Some(record), Some(execution)) = (&mut record, execution) {
             record.execution_id.get_or_insert(execution);
@@ -495,9 +499,19 @@ impl Record {
                 };
                 Body::Notice("Decision", decision.to_owned(), ACCENT)
             }
-            HistoryKind::Status if entry.details["partial_reply"].is_string() => {
-                let mut partial = capped(entry.details["partial_reply"].as_str(), MAX_BODY_BYTES);
-                if entry.details["truncated"] == true && !partial.ends_with(DISPLAY_LIMIT_NOTICE) {
+            HistoryKind::Status
+                if entry
+                    .details
+                    .get("partial_reply")
+                    .is_some_and(Value::is_string) =>
+            {
+                let mut partial = capped(
+                    entry.details.get("partial_reply").and_then(Value::as_str),
+                    MAX_BODY_BYTES,
+                );
+                if entry.details.get("truncated").and_then(Value::as_bool) == Some(true)
+                    && !partial.ends_with(DISPLAY_LIMIT_NOTICE)
+                {
                     partial.push_str(DISPLAY_LIMIT_NOTICE);
                 }
                 Body::Interrupted(partial)
