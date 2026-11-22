@@ -86,6 +86,8 @@ Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模�
 
 [嵌入式宿主](sdk.md#工作区执行)可以设置进程截止时间。命令和脚本共用 [Session Job](#session-job) 行为。顶层调用可用 `title` 说明操作目的，卡片和运行中的 Job 会显示这段说明。
 
+在 TUI 中，命令详情会显示实际调用：程序及其参数，或所选的 shell 和命令文本。
+
 进程正常退出后，工具状态可以为 `ok`，同时 `exit_code` 为非零值。Shell 调用报告外层 Shell 的退出码。串接命令或使用管道时，保留每项必要检查的失败状态。命令卡片显示用时，并单独标记 stderr。检查结构化事实中的 `termination`、`exit_code` 和 `capture_complete`。
 
 Agent 有 `read_output` 时，短命令输出直接显示。超过 2 KiB 或 40 行时返回有界视图和保留输出引用。视图展示识别到的构建／测试证据，或描述各条流已观察到的开头，对多行文本附上有界示例。对 JSON Lines，可以提示观察到的字段以及如何用可用的脚本处理。用 `read_output` 查看相关范围。TUI 可以独立显示输出片段。

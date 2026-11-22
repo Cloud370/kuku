@@ -86,6 +86,8 @@ If the task requires a shell script, supply its interpreter and arguments explic
 
 The [embedding host](sdk.md#workspace-execution) can set a process deadline. The same [Session Job](#session-jobs) behavior applies to commands and scripts. An optional top-level `title` explains the action's purpose on its card and while its Job is running.
 
+In the TUI, the command's details expose the actual invocation: the program and arguments, or the selected shell and command text.
+
 An exited process can return tool status `ok` with a nonzero `exit_code`. A shell invocation reports the outer shell's exit code. Preserve each required check's failure when composing commands or pipelines. The command card shows elapsed time and flags stderr separately from the exit status. Check `termination`, `exit_code`, and `capture_complete` in the structured facts.
 
 When the Agent has `read_output`, short command output appears inline. Output above 2 KiB or 40 lines returns a bounded view and retained output reference. The view gives recognized build/test evidence or describes each stream's observed prefix, including bounded samples for multiline text. For JSON Lines, the view can show observed keys and how to process the data through an available script. Use `read_output` to inspect a relevant range. The TUI can show an excerpt independently.
