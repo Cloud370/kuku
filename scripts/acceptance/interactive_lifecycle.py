@@ -250,6 +250,7 @@ def shared_model_editor(binary, bridge, directory):
         workspace = client.workspace("work-model-setup")
         with client.terminal(workspace) as terminal:
             terminal.request("resize", rows=32, cols=110)
+            terminal.open_first_model_settings()
             terminal.expect("Set up a model", also=("Esc exit",))
             terminal.press("\r")
             providers = terminal.expect("› New custom connection", also=("Esc previous step",))["screen"]
