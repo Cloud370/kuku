@@ -32,7 +32,7 @@ A top-level command or workspace script starts once. The observation window defa
 
 Schedule workspace reads together within a model response. Dispatch workspace mutations, arbitrary programs and scripts in call order with respect to reads and other workspace mutations. A read queued after a blocked mutation waits for it. Calls outside the workspace can continue independently, subject to authorization and capacity. Once a command or script returns a Job handle, the caller can continue while the Job runs. Each call retains its own result and authorization.
 
-Validate the complete tool batch before admitting any call. If a complete model response declares tool use with malformed argument JSON, the Session can regenerate once per turn under its retry setting and request budget. Keep the rejected response out of subsequent model input. Persist the cause and recovery so users can distinguish it from a failed tool.
+Validate the complete tool batch before admitting any call. If a complete model response declares tool use with malformed argument JSON, the Session can regenerate that step under its [runtime retry policy](../reference/sdk.md#limits-and-accounting). Keep the rejected response out of subsequent model input. Persist the cause and recovery so users can distinguish it from a failed tool.
 
 ## Proposed command output path
 

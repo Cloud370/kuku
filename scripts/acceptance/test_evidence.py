@@ -556,27 +556,33 @@ class EvidenceTests(unittest.TestCase):
         evidence = fixture.inspect()
         self.assertFalse(evidence["durable_cleanup_closed"])
 
-    def test_completed_tool_argument_regeneration_counts_both_prepared_requests(self):
+    def test_completed_tool_argument_regeneration_counts_attempts_in_each_step(self):
         fixture = self.fixture
-        index = next(i for i, event in enumerate(fixture.records) if event["kind"] == "runtime.step_prepared")
-        rejected = "request-rejected"
-        prepared, usage, response = [{**event, "request_id": rejected} for event in fixture.records[index:index + 3]]
-        response["stop_reason"] = "invalid_response"
-        retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn, "request_id": rejected,
-                 "recovery": "regenerate_tool_arguments", "will_retry": True, "failed_kind": "invalid_response",
-                 "provider_stop_reason": "tool_use", "attempt": 2}
-        fixture.records[index:index] = [prepared, usage, response, retry]
+        for request, retries in (("request-2", 1), ("request-1", 2)):
+            index = next(i for i, event in enumerate(fixture.records)
+                         if event["kind"] == "runtime.step_prepared" and event["request_id"] == request)
+            rejected_records = []
+            for failed_attempt in range(1, retries + 1):
+                rejected = f"{request}-rejected-{failed_attempt}"
+                prepared, usage, response = [{**event, "request_id": rejected} for event in fixture.records[index:index + 3]]
+                response["stop_reason"] = "invalid_response"
+                retry = {"kind": "runtime.model_retry", "agent": "main", "turn": fixture.turn, "request_id": rejected,
+                         "recovery": "regenerate_tool_arguments", "will_retry": True, "failed_kind": "invalid_response",
+                         "provider_stop_reason": "tool_use", "attempt": failed_attempt + 1,
+                         "failed_attempt": failed_attempt, "max_attempts": 6}
+                rejected_records.extend((prepared, usage, response, retry))
+            fixture.records[index:index] = rejected_records
         fixture.renumber()
-        fixture.report["provider_settings"].insert(0, prepared)
-        fixture.report["facts"].update(prepared_steps=3, model_responses=3)
+        fixture.report["provider_settings"] = [event for event in fixture.records if event["kind"] == "runtime.step_prepared"]
+        fixture.report["facts"].update(prepared_steps=5, model_responses=5)
         fixture.report["limits"]["automatic_retries"] = 1
-        fixture.totals.update(model_requests=3, input_tokens=300, output_tokens=60, cache_read_input_tokens=30)
+        fixture.totals.update(model_requests=5, input_tokens=500, output_tokens=100, cache_read_input_tokens=50)
         result = fixture.inspect()
         self.assertTrue(result["passed"], result)
         for accounting in (result["usage"], result["session_usage"]):
-            self.assertEqual(3, accounting["requests"])
+            self.assertEqual(5, accounting["requests"])
             self.assertEqual(0, accounting["unreported_requests"])
-            self.assertEqual(300, accounting["input_tokens"])
+            self.assertEqual(500, accounting["input_tokens"])
 
         response["stop_reason"] = "end_turn"
         self.assertIn("no eligible rejected response", fixture.inspect()["error"])

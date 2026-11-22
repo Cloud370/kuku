@@ -494,7 +494,8 @@ impl Query {
             thinking_duration_ms: 0,
             runtime_log_writer,
             request_base: None,
-            recovery_count: super::tool_response::resumed_regeneration_count(
+            recovery_count: 0,
+            tool_argument_retries: super::tool_response::resumed_tool_argument_retries(
                 &existing_events,
                 turn,
                 conversation.as_str(),

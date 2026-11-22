@@ -203,7 +203,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         provider_replay,
         accounting,
         stop_reason,
-        tool_calls,
+        mut tool_calls,
         tool_arg_buffers,
         tool_call_completions,
         tool_stream_invalid,
@@ -228,7 +228,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         || tool_stream_invalid;
     let validated_tool_calls = has_streamed_tool_artifacts.then(|| {
         validate_tool_calls(
-            tool_calls,
+            &mut tool_calls,
             tool_arg_buffers,
             tool_call_completions,
             tool_stream_invalid,
@@ -241,11 +241,31 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         (None, true) => Some(ToolResponseError::MissingCalls),
         _ => None,
     };
-    let regenerate = stream_ended
-        && !terminal_stream_invalid
-        && declared_tool_use
-        && tool_error == Some(ToolResponseError::InvalidArguments)
-        && tool_response::can_regenerate(&pending);
+    let argument_rejection = match tool_error {
+        Some(ToolResponseError::InvalidArguments { index, problem })
+            if stream_ended && !terminal_stream_invalid && declared_tool_use =>
+        {
+            let tool = tool_calls
+                .iter()
+                .find(|call| call.index == index)
+                .and_then(|call| {
+                    pending
+                        .resolved
+                        .as_ref()?
+                        .registry
+                        .iter()
+                        .find(|definition| definition.name == call.name)
+                });
+            Some(EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.tool_arguments_rejected",
+                "ts": now_timestamp()?, "agent": pending.conversation.as_str(), "turn": pending.turn,
+                "request_id": request_id, "tool_index": index, "tool": tool.map(|definition| &definition.name),
+                "problem": problem, "step_attempt": u16::from(pending.tool_argument_retries) + 1,
+            })))
+        }
+        _ => None,
+    };
+    let regenerate = argument_rejection.is_some() && tool_response::can_regenerate(&pending);
     let final_stop_reason = tool_response::stop_reason(
         stop_reason,
         terminal_stream_invalid,
@@ -288,6 +308,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
             provider_replay
                 .into_iter()
                 .filter(|_| final_stop_reason != ModelStopReason::InvalidResponse)
+                .chain(argument_rejection)
                 .chain([measurement, response]),
         )?;
     } else {
@@ -335,9 +356,6 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
         return Ok(PendingStep::Failed(failure));
     }
 
-    let tool_calls = validated_tool_calls
-        .and_then(std::result::Result::ok)
-        .unwrap_or_default();
     let has_tool_calls = !tool_calls.is_empty();
     if has_tool_calls {
         pending.tool_rounds += 1;
@@ -491,6 +509,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
             }
         }
     }
+    pending.tool_argument_retries = 0;
 
     for tool_call in tool_calls {
         pending.admitted_tool_call_ids.insert(tool_call.id.clone());

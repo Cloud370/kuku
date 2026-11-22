@@ -93,7 +93,9 @@ cargo run -p kuku --example session_task -- \
 
 `RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于 tier 配置，宿主上限适用于每个 Agent。Rust 的 `TierConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。详见[模型配置](config.md#modelname)。
 
-`RuntimeLimits.retry_transient_provider_errors` 默认为 true。最多进行六次尝试（五次重试），所有可重试的 provider 故障共用 2/4/8/16/32 秒指数退避，并加 0–25% 抖动。有效且不超过 30 秒的 `Retry-After` 可延长等待；缺失、无效或更长的提示不会禁用重试，超过 30 秒的提示会被忽略。明确的认证、权限、额度、上下文、请求和无效响应错误不会重试。首个流内容前的错误可以重试；输出开始后发生的可重试错误会结束本次尝试，以免重复已发出或持久化的副作用。每次重试沿用已准备请求，只有实际派发的尝试计入调用方请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告五次允许的重试（禁用时为零）。
+`RuntimeLimits.retry_transient_provider_errors` 默认为 true。最多进行六次尝试（五次重试），所有可重试的 provider 故障共用 2/4/8/16/32 秒指数退避，并加 0–25% 抖动。有效且不超过 30 秒的 `Retry-After` 可延长等待；缺失、无效或更长的提示不会禁用重试，超过 30 秒的提示会被忽略。传输层将明确的认证、权限、额度、上下文、请求和无效响应错误视为终止条件。首个流内容前的错误可以重试；输出开始后发生的可重试错误会结束本次尝试，以免重复已发出或持久化的副作用。每次重试沿用已准备请求，只有实际派发的尝试计入调用方请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告五次允许的重试（禁用时为零）。
+
+开启 provider 重试时，如果一次完整的工具调用响应包含无效 JSON 参数，Session 可以请求模型重新生成响应。整批调用会在派发之前丢弃，重生成使用已经接纳的上下文。每步最多重生成五次，重开 Session 后也沿用这个计数。每接纳一批工具调用就进入新一步。每次重生成计入调用方的模型请求预算。日志记录失败类别、工具调用索引、可识别的已注册工具名和当前步骤的尝试次数，省去被拒绝的参数原文。
 
 日志每记录最多 1 MiB。分页最多 256 条，达到 1 MiB 目标停止，单条超出时整页小于 2 MiB。输出读取最多 80,000 字节。保留输出配额含捕获帧及元信息。达到配额时运行时继续排空管道，并将保留结果标记为不完整。Session 默认保留总计 128 MiB 的数据与 64 个命名绑定。没有引用的普通输出保留 24 小时后可被回收。可通过 `RuntimeLimits` 中的 `max_retained_output_bytes`、`max_named_values` 和 `output_retention_secs` 调整这些限额。
 

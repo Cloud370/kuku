@@ -378,7 +378,8 @@ class SessionFacts:
                     "prepared request routing metadata is invalid or oversized")
             self.session_steps[session_request] = metadata
             if kind == "runtime.step_prepared" and agent_turn in self.regenerations:
-                self.regenerations[agent_turn] = True
+                attempt, _ = self.regenerations[agent_turn]
+                self.regenerations[agent_turn] = (attempt, True)
         elif kind == "runtime.model_retry":
             self.retry(event, agent_turn, session_request)
         elif kind == "model.response" and session_request in self.session_steps:
@@ -387,6 +388,8 @@ class SessionFacts:
             step = self.session_steps[session_request]
             require(not step.get("regenerated"), "discarded model response admitted a tool call")
             step["admitted_tools"] = True
+            _, replaced = self.regenerations.pop(agent_turn, (1, True))
+            require(replaced, "tool argument regeneration has no replacement request")
         elif kind in ("runtime.model_usage", "runtime.provider_report"):
             require(session_request in self.session_steps, "Session usage or report has no prepared request")
             if kind == "runtime.model_usage":
@@ -498,13 +501,17 @@ class SessionFacts:
     def retry(self, event, agent_turn, session_request):
         step = self.session_steps.get(session_request)
         if event.get("recovery") == "regenerate_tool_arguments":
+            prior_attempt, replaced = self.regenerations.get(agent_turn, (1, True))
+            attempt, maximum = event.get("attempt"), event.get("max_attempts")
             require(step and step.get("stop_reason") == "invalid_response"
-                    and session_request in self.session_usages and not step.get("admitted_tools")
+                    and session_request in self.session_usages and not step.get("admitted_tools") and not step.get("regenerated")
                     and event.get("will_retry") is True and event.get("failed_kind") == "invalid_response"
-                    and event.get("provider_stop_reason") == "tool_use" and agent_turn not in self.regenerations,
+                    and event.get("provider_stop_reason") == "tool_use" and replaced
+                    and type(attempt) is int and attempt == prior_attempt + 1
+                    and event.get("failed_attempt") == prior_attempt and type(maximum) is int and attempt <= maximum,
                     "tool argument regeneration has no eligible rejected response")
             step["regenerated"] = True
-            self.regenerations[agent_turn] = False
+            self.regenerations[agent_turn] = (attempt, False)
             return
         require(step and not step.get("retry_stopped"), "retry has no active prepared request")
         phase = event.get("phase")
@@ -666,7 +673,7 @@ class SessionFacts:
                 and self.responses.keys() == self.usages.keys()
                 and self.rejected_requests == self.overflow_recoveries,
                 "prepared requests lack a response and usage or a recovered context rejection")
-        require(all(self.regenerations.values()), "tool argument regeneration has no replacement request")
+        require(all(replaced for _, replaced in self.regenerations.values()), "tool argument regeneration has no replacement request")
         limits = report.get("limits", {})
         max_requests, max_steps = limits.get("max_requests"), limits.get("max_steps")
         max_output_tokens = limits.get("max_output_tokens")

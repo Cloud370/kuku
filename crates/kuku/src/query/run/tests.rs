@@ -96,6 +96,7 @@ pub(super) fn make_test_pending(
         runtime_log_writer: crate::log::BufferedLogWriter::new(dir.join("runtime.jsonl")),
         request_base: None,
         recovery_count: 0,
+        tool_argument_retries: 0,
     }
 }
 

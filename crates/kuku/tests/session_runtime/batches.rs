@@ -167,7 +167,16 @@ async fn malformed_tool_batch_reports_its_cause_without_dispatching_calls() {
 #[derive(Debug)]
 struct ToolArgumentModel {
     requests: Mutex<Vec<Value>>,
-    always_invalid: bool,
+    replies: &'static [ArgumentReply],
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ArgumentReply {
+    Invalid,
+    NonObject,
+    Read,
+    Write,
+    Done,
 }
 
 impl ModelAdapter for ToolArgumentModel {
@@ -181,39 +190,51 @@ impl ModelAdapter for ToolArgumentModel {
             let mut events = vec![ModelEvent::StreamStart {
                 request_id: format!("model-{attempt}"),
             }];
-            let reason = if attempt == 1 || self.always_invalid {
-                events.push(ModelEvent::TextDelta {
-                    text: "rejected-reply-text".into(),
-                });
-                add_tool(
-                    &mut events,
-                    0,
-                    "rejected-write",
-                    "write_file",
-                    r#"{"path":"NODISPATCH","content":"unexpected"}"#,
-                );
-                add_tool(
-                    &mut events,
-                    1,
-                    "rejected-read",
-                    "read_file",
-                    r#"{"path":broken-argument"#,
-                );
-                ModelStopReason::ToolUse
-            } else if attempt == 2 {
-                add_tool(
-                    &mut events,
-                    0,
-                    "valid-read",
-                    "read_file",
-                    r#"{"path":"evidence.txt"}"#,
-                );
-                ModelStopReason::ToolUse
-            } else {
-                events.push(ModelEvent::TextDelta {
-                    text: "finished with evidence".into(),
-                });
-                ModelStopReason::EndTurn
+            let reason = match self.replies[attempt - 1] {
+                ArgumentReply::Invalid | ArgumentReply::NonObject => {
+                    events.push(ModelEvent::TextDelta {
+                        text: "rejected-reply-text".into(),
+                    });
+                    add_tool(
+                        &mut events,
+                        0,
+                        "rejected-write",
+                        "write_file",
+                        r#"{"path":"NODISPATCH","content":"unexpected"}"#,
+                    );
+                    let args = match self.replies[attempt - 1] {
+                        ArgumentReply::NonObject => "[]",
+                        _ => r#"{"path":broken-argument"#,
+                    };
+                    add_tool(&mut events, 1, "rejected-read", "read_file", args);
+                    ModelStopReason::ToolUse
+                }
+                ArgumentReply::Read => {
+                    add_tool(
+                        &mut events,
+                        0,
+                        "valid-read",
+                        "read_file",
+                        r#"{"path":"evidence.txt"}"#,
+                    );
+                    ModelStopReason::ToolUse
+                }
+                ArgumentReply::Write => {
+                    add_tool(
+                        &mut events,
+                        0,
+                        "valid-write",
+                        "write_file",
+                        r#"{"path":"answer.txt","content":"verified answer"}"#,
+                    );
+                    ModelStopReason::ToolUse
+                }
+                ArgumentReply::Done => {
+                    events.push(ModelEvent::TextDelta {
+                        text: "finished with evidence".into(),
+                    });
+                    ModelStopReason::EndTurn
+                }
             };
             events.push(ModelEvent::StopReason { reason });
             events.push(ModelEvent::StreamEnd);
@@ -295,22 +316,39 @@ async fn workspace_creation_batch_writes_nested_files_in_one_model_turn() {
 }
 
 #[tokio::test]
-async fn malformed_tool_arguments_regenerate_once_with_the_same_admitted_context() {
+async fn malformed_tool_arguments_regenerate_per_step_with_the_same_admitted_context() {
+    use ArgumentReply::{Done, Invalid, NonObject, Read, Write};
+
     let server = MockServer::start_async().await;
-    for (always_invalid, budget, expected_requests, expected_regenerations) in
-        [(false, 3, 3, 1), (true, 3, 2, 1), (true, 1, 1, 0)]
-    {
+    for (replies, budget, reopened, expected_regenerations, dispatched) in [
+        (
+            &[Invalid, Read, NonObject, Write, Done][..],
+            5,
+            false,
+            2,
+            &["valid-read", "valid-write"][..],
+        ),
+        (
+            &[Invalid, Read, NonObject, Write, Done][..],
+            2,
+            true,
+            2,
+            &["valid-read", "valid-write"][..],
+        ),
+        (&[Invalid; 6][..], 7, false, 5, &[][..]),
+        (&[Invalid][..], 1, false, 0, &[][..]),
+    ] {
         let workspace = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         std::fs::write(workspace.path().join("evidence.txt"), "valid tool evidence").unwrap();
         let model = Arc::new(ToolArgumentModel {
             requests: Mutex::new(Vec::new()),
-            always_invalid,
+            replies,
         });
         let mut settings = options(&server, workspace.path(), data.path());
         settings.model_adapter = Some(model.clone());
         settings.limits.max_requests_per_open = Some(budget);
-        let session = Session::open(settings).await.unwrap();
+        let mut session = Session::open(settings.clone()).await.unwrap();
         session
             .create_agent(
                 "create",
@@ -324,13 +362,25 @@ async fn malformed_tool_arguments_regenerate_once_with_the_same_admitted_context
         session
             .send(Input::new("input", "main", "Read the evidence file."))
             .unwrap();
+        if reopened {
+            assert_eq!(
+                AgentStatus::Interrupted,
+                settled(&session, "main").await.status
+            );
+            settings.session_id = Some(session.id().into());
+            settings.limits.max_requests_per_open = Some(5);
+            session.close().await.unwrap();
+            session = Session::open(settings).await.unwrap();
+            session.advance("main").unwrap();
+        }
         let snapshot = settled(&session, "main").await;
+        let completed = matches!(replies.last(), Some(Done));
         assert_eq!(
             snapshot.status,
-            if always_invalid {
-                AgentStatus::Interrupted
-            } else {
+            if completed {
                 AgentStatus::Idle
+            } else {
+                AgentStatus::Interrupted
             }
         );
         assert!(!workspace.path().join("NODISPATCH").exists());
@@ -338,29 +388,61 @@ async fn malformed_tool_arguments_regenerate_once_with_the_same_admitted_context
         let retries = events.iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value)
               if value["kind"] == "runtime.model_retry" && value["recovery"] == "regenerate_tool_arguments")).count();
         assert_eq!(retries, expected_regenerations);
-        let dispatched = events
+        let rejections: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::Unknown(value)
+                    if value["kind"] == "runtime.tool_arguments_rejected" =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(if completed { 2 } else { replies.len() }, rejections.len());
+        for (index, rejected) in rejections.iter().enumerate() {
+            assert_eq!(1, rejected["tool_index"]);
+            assert_eq!("read_file", rejected["tool"]);
+            assert_eq!(
+                if completed { 1 } else { index + 1 },
+                rejected["step_attempt"]
+            );
+            assert_eq!(
+                if completed && index == 1 {
+                    "non_object"
+                } else {
+                    "invalid_json"
+                },
+                rejected["problem"]["reason"]
+            );
+            assert!(!rejected.to_string().contains("broken-argument"));
+        }
+        let actual_dispatches = events
             .iter()
             .filter_map(|event| match &event.payload {
                 EventPayload::ToolCall { tool_call_id, .. } => Some(tool_call_id.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        if always_invalid {
-            assert!(dispatched.is_empty());
-        } else {
-            assert_eq!(dispatched, ["valid-read"]);
+        assert_eq!(dispatched, actual_dispatches);
+        if completed {
             assert_eq!(
                 snapshot.last_output.as_deref(),
                 Some("finished with evidence")
             );
+            assert_eq!(
+                "verified answer",
+                std::fs::read_to_string(workspace.path().join("answer.txt")).unwrap()
+            );
         }
         {
             let requests = model.requests.lock().unwrap();
-            assert_eq!(requests.len(), expected_requests);
-            if expected_requests > 1 {
+            assert_eq!(requests.len(), replies.len());
+            if requests.len() > 1 {
                 assert_eq!(requests[0]["messages"], requests[1]["messages"]);
             }
-            if !always_invalid {
+            if completed {
+                assert_eq!(requests[2]["messages"], requests[3]["messages"]);
                 let continued = requests[2]["messages"].to_string();
                 assert!(continued.contains("valid tool evidence"));
                 assert!(
