@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, Terminal, eventually, json_response, run_cases
 from interactive_history import paginated_rewind, rewind_files
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
-from interactive_rendering import has_selected_queued_input
+from interactive_rendering import has_selected_queued_input, queued_input_click_position
 
 
 def lifecycle_cases(binary, bridge, directory):
@@ -837,13 +837,25 @@ def keyboard_queue_withdrawal(client):
             ))
             ids = {entry["input"]["text"]: entry["receipt"]["command_id"] for entry in pending}
             assert set(ids) == {kept, withdrawn}, pending
+
+            def both_queue_rows_visible():
+                screen = terminal.request("screen")["screen"]
+                return all(queued_input_click_position(screen, text) is not None
+                           for text in (kept, withdrawn))
+
+            eventually("both exact inputs to appear in the pending-input panel", both_queue_rows_visible)
             terminal.press("\x1b[A")
 
             def selected_input():
                 value = terminal.request("screen")["screen"]
                 return value if has_selected_queued_input(value, withdrawn) else None
 
-            selected = eventually("Up to select the newest exact queued input", selected_input)
+            try:
+                selected = eventually("Up to select the newest exact queued input", selected_input)
+            except AssertionError as error:
+                raise AssertionError(
+                    f"{error}\nLast terminal screen:\n{terminal.request('screen')['screen']}"
+                ) from error
             terminal.press("\x1b[3~")
             restored = terminal.expect(withdrawn, state="Draft", also=(kept, "Removed from queue"))["screen"]
             def remaining_input():
