@@ -222,6 +222,7 @@ impl Run {
                 tool: job.tool.clone(),
                 summary: slot.label.clone(),
                 started: job.started,
+                wait_tool_available: super::helpers::resolved_tool_available(pending, "wait_job"),
             },
             slot.cancel.clone(),
             || {

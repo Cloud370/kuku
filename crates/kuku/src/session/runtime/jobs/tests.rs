@@ -87,7 +87,7 @@ async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
             })
             .unwrap();
         dispatch_recorded_call(&path, "run_command", "fixture-command", 3);
-        session
+        let receipt = session
             .register_job(
                 &mut state,
                 &JobRequest {
@@ -98,9 +98,11 @@ async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
                     tool: "run_command".into(),
                     summary: "interrupted command".into(),
                     started: Instant::now(),
+                    wait_tool_available: false,
                 },
             )
             .unwrap();
+        assert!(!receipt.model_content.contains("wait_job"));
     }
     assert!(session.job("main", "job-1").unwrap().output_id.is_some());
     {

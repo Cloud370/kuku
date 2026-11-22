@@ -628,6 +628,7 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         let (start_cursor, receipt) = first_result(&mut observer).await;
         let id = job_id(&receipt);
         assert_eq!("cancel", receipt["on_session_close"]);
+        assert!(receipt.get("guidance").is_none());
         let job = session.job(AGENT, id).unwrap();
         assert_eq!(JobStatus::Running, job.status);
         assert_eq!(start_cursor, job.started_at);
@@ -688,6 +689,13 @@ async fn explicit_background_returns_before_foreground_deadline_and_can_be_cance
         let facts: Value = serde_json::from_str(tool_result["content"].as_str().unwrap()).unwrap();
         assert_eq!(id, facts["job_id"]);
         assert_eq!("cancel", facts["on_session_close"]);
+        assert_eq!(
+            facts["guidance"],
+            format!(
+                "Call wait_job({}) when the next step needs this Job's finished result.",
+                json!({"job_id": id}),
+            )
+        );
     }
 }
 

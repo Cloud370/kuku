@@ -30,6 +30,7 @@ pub(crate) struct JobRequest {
     pub(crate) tool: String,
     pub(crate) summary: String,
     pub(crate) started: Instant,
+    pub(crate) wait_tool_available: bool,
 }
 
 pub(super) struct JobWorker {
@@ -492,7 +493,14 @@ impl Session {
             "elapsed_ms": elapsed_ms(request.started),
             "output_id": output_id,
         });
-        let envelope = ToolResultEnvelope::ok(&summary, serde_json::to_string(&facts)?, facts);
+        let mut model_view = facts.clone();
+        if request.wait_tool_available {
+            let args = json!({"job_id": id});
+            model_view["guidance"] = json!(format!(
+                "Call wait_job({args}) when the next step needs this Job's finished result."
+            ));
+        }
+        let envelope = ToolResultEnvelope::ok(&summary, serde_json::to_string(&model_view)?, facts);
         let mut writer = self.inner.writer.lock().unwrap();
         let writer = writer
             .as_mut()
