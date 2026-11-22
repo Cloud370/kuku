@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::event::StoredEvent;
+use crate::session::runtime::JobControl;
 use crate::tool::ToolResultEnvelope;
 
 use super::job_slots::ForegroundJob;
@@ -388,6 +389,7 @@ pub(super) fn spawn_job_control(
     session: crate::Session,
     pending: &PendingRun,
     queued: &QueuedToolCall,
+    control: JobControl,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
@@ -395,12 +397,10 @@ pub(super) fn spawn_job_control(
     let id = queued.tool_call.id.clone();
     let args = queued.tool_call.args.clone();
     let owner = pending.conversation.as_str().to_owned();
-    let stop_job = queued.tool_call.name == "cancel_job";
     tokio::spawn(async move {
-        let result =
-            super::runtime_tools::jobs::control(session, owner, args, stop, stop_job).await;
-        let event = if !stop_job && result.status == "ok" {
-            SlotEvent::JobWaitDone(result)
+        let result = super::runtime_tools::jobs::control(session, owner, args, stop, control).await;
+        let event = if result.status == "ok" {
+            SlotEvent::JobControlDone(result)
         } else {
             SlotEvent::Done(result)
         };

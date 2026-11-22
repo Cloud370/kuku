@@ -21,7 +21,7 @@ mod workspace_host;
 pub(crate) use workspace_host::WorkspaceWorkerPermit;
 pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
 
-pub(crate) use jobs::JobRequest;
+pub(crate) use jobs::{JobControl, JobRequest};
 pub(crate) use retention::{command_output_id, OutputReservation};
 pub(crate) use selection::resolve_agent_model;
 pub(crate) use values::OutputSelector;

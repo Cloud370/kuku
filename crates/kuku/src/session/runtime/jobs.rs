@@ -22,6 +22,40 @@ pub(super) const JOB_DELIVERY_PREFIX: &str = "job-completion:";
 const MAX_JOB_SUMMARY_BYTES: usize = 1024;
 const RECENT_JOB_COUNT: usize = 64;
 
+#[derive(Clone, Copy)]
+pub(crate) enum JobControl {
+    Wait,
+    Cancel,
+}
+
+impl JobControl {
+    pub(crate) fn for_tool(name: &str) -> Option<Self> {
+        match name {
+            "wait_job" => Some(Self::Wait),
+            "cancel_job" => Some(Self::Cancel),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn result_kind(self) -> &'static str {
+        match self {
+            Self::Wait => "job_wait_result",
+            Self::Cancel => "job_cancel_result",
+        }
+    }
+
+    pub(crate) fn is_result(data: &serde_json::Value) -> bool {
+        [Self::Wait, Self::Cancel]
+            .into_iter()
+            .any(|control| data["kind"] == control.result_kind())
+    }
+}
+
+pub(crate) struct JobObservation {
+    pub(crate) snapshot: JobSnapshot,
+    pub(crate) model_content: Option<String>,
+}
+
 pub(crate) struct JobRequest {
     pub(crate) agent: String,
     pub(crate) execution_id: u64,
@@ -63,7 +97,8 @@ enum JobCall {
         tool: String,
         dispatched: bool,
     },
-    Wait {
+    Control {
+        control: JobControl,
         job_id: Option<String>,
         dispatched: bool,
     },
@@ -93,11 +128,16 @@ impl JobReplay {
                         tool: tool.clone(),
                         dispatched: false,
                     },
-                    "wait_job" => JobCall::Wait {
-                        job_id: None,
-                        dispatched: false,
-                    },
-                    _ => return Ok(()),
+                    name => {
+                        let Some(control) = JobControl::for_tool(name) else {
+                            return Ok(());
+                        };
+                        JobCall::Control {
+                            control,
+                            job_id: None,
+                            dispatched: false,
+                        }
+                    }
                 };
                 self.calls
                     .insert((agent.clone(), *turn, tool_call_id.clone()), call);
@@ -157,11 +197,11 @@ impl JobReplay {
         };
         if data["kind"] == "runtime.tool_dispatched" {
             match call {
-                JobCall::Execution { dispatched, .. } | JobCall::Wait { dispatched, .. } => {
+                JobCall::Execution { dispatched, .. } | JobCall::Control { dispatched, .. } => {
                     *dispatched = true;
                 }
             }
-        } else if let JobCall::Wait { job_id, .. } = call {
+        } else if let JobCall::Control { job_id, .. } = call {
             *job_id = data["args"]["job_id"].as_str().map(str::to_owned);
         }
     }
@@ -180,9 +220,13 @@ impl JobReplay {
                     state.jobs.register(event)?;
                 }
             }
-            JobCall::Wait { job_id, dispatched } => {
+            JobCall::Control {
+                control,
+                job_id,
+                dispatched,
+            } => {
                 if let Some(id) = job_id {
-                    if dispatched && data["kind"] == "job_wait_result" && data["id"] == id {
+                    if dispatched && data["kind"] == control.result_kind() && data["id"] == id {
                         state.acknowledge_job_result(agent, &id)?;
                     }
                 }
@@ -230,12 +274,7 @@ impl Session {
 
     /// Read one Job's status and terminal facts for its owning Agent.
     pub fn job(&self, agent: &str, job_id: &str) -> Result<JobSnapshot> {
-        let snapshot = {
-            let state = self.inner.state.lock().unwrap();
-            state.agent(agent)?;
-            state.jobs.observe_snapshot(state.jobs.get(agent, job_id)?)
-        };
-        hydrate_job(self.events_path(), snapshot)
+        Ok(self.observe_job(agent, job_id)?.snapshot)
     }
 
     /// Read recent Job summaries from an offline Session without acquiring its runtime lease.
@@ -255,11 +294,19 @@ impl Session {
         let (state, _) = load_state(events_path)?;
         state.agent(agent)?;
         let snapshot = state.jobs.get(agent, job_id)?.clone();
-        hydrate_job(events_path, offline_snapshot(snapshot))
+        Ok(hydrate_job(events_path, offline_snapshot(snapshot))?.snapshot)
     }
 
     /// Wait for a Job's terminal state without changing its lifetime.
     pub async fn wait_job(&self, agent: &str, job_id: &str) -> Result<JobSnapshot> {
+        Ok(self.wait_job_observation(agent, job_id).await?.snapshot)
+    }
+
+    pub(crate) async fn wait_job_observation(
+        &self,
+        agent: &str,
+        job_id: &str,
+    ) -> Result<JobObservation> {
         let changed = self
             .inner
             .writer
@@ -285,6 +332,14 @@ impl Session {
 
     /// Request cancellation of one owned Job and await its terminal cleanup.
     pub async fn cancel_job(&self, agent: &str, job_id: &str) -> Result<JobSnapshot> {
+        Ok(self.cancel_job_observation(agent, job_id).await?.snapshot)
+    }
+
+    pub(crate) async fn cancel_job_observation(
+        &self,
+        agent: &str,
+        job_id: &str,
+    ) -> Result<JobObservation> {
         let done = {
             let state = self.inner.state.lock().unwrap();
             state.agent(agent)?;
@@ -303,14 +358,14 @@ impl Session {
         if let Some(done) = done {
             await_job_cleanup(done).await?;
         }
-        self.job(agent, job_id)
+        self.observe_job(agent, job_id)
     }
 
     pub(crate) fn active_jobs(&self, agent: &str) -> usize {
         self.inner.state.lock().unwrap().jobs.running_count(agent)
     }
 
-    pub(crate) fn append_job_wait_result(&self, payload: EventPayload) -> Result<StoredEvent> {
+    pub(crate) fn append_job_control_result(&self, payload: EventPayload) -> Result<StoredEvent> {
         let EventPayload::ToolResult {
             conversation: Some(agent),
             status,
@@ -318,12 +373,14 @@ impl Session {
             ..
         } = &payload
         else {
-            return Err(Error::InvalidEventStream("invalid Job wait result".into()));
+            return Err(Error::InvalidEventStream(
+                "invalid Job control result".into(),
+            ));
         };
         let id = data["id"]
             .as_str()
-            .filter(|_| status == "ok" && data["kind"] == "job_wait_result")
-            .ok_or_else(|| Error::InvalidEventStream("invalid Job wait identity".into()))?;
+            .filter(|_| status == "ok" && JobControl::is_result(data))
+            .ok_or_else(|| Error::InvalidEventStream("invalid Job control identity".into()))?;
         let mut state = self.inner.state.lock().unwrap();
         if state.jobs.get(agent, id)?.status == JobStatus::Running {
             return Err(Error::InvalidEventStream(format!(
@@ -433,7 +490,7 @@ impl Session {
         let mut state = self.inner.state.lock().unwrap();
         for job in state.jobs.unsettled() {
             let summary = "Job interrupted before a durable terminal outcome; inspect side effects before rerunning";
-            let result = JobResult {
+            let mut result = JobResult {
                 status: "interrupted".into(),
                 summary: summary.into(),
                 structured: None,
@@ -441,7 +498,7 @@ impl Session {
                 output_persistence_failed: false,
                 cleanup_incomplete: true,
             };
-            let delivery = self.job_delivery(&job, JobStatus::Interrupted, &result, "");
+            let delivery = self.job_delivery(&job, JobStatus::Interrupted, &mut result, "", None);
             self.commit(
                 &mut state,
                 Record::JobFinished {
@@ -546,7 +603,7 @@ impl Session {
             } else {
                 None
             };
-        let result = JobResult {
+        let mut result = JobResult {
             status: outcome.status,
             summary: outcome.summary,
             structured: outcome.structured,
@@ -554,7 +611,13 @@ impl Session {
             output_persistence_failed: outcome.faults.output_persistence_failed,
             cleanup_incomplete: outcome.faults.cleanup_incomplete,
         };
-        let delivery = self.job_delivery(job, status, &result, &outcome.model_content);
+        let delivery = self.job_delivery(
+            job,
+            status,
+            &mut result,
+            &outcome.model_content,
+            Some(elapsed_ms),
+        );
         let turn = job.turn;
         if let Err(error) = self.commit(
             &mut state,
@@ -587,13 +650,17 @@ impl Session {
         &self,
         job: &JobSnapshot,
         status: JobStatus,
-        result: &JobResult,
+        result: &mut JobResult,
         model_content: &str,
+        elapsed_ms: Option<u64>,
     ) -> Input {
         let mut text = format!(
             "Job {} ({}): {status:?}. {}",
             job.id, job.tool, result.summary
         );
+        if let Some(ms) = elapsed_ms {
+            text.push_str(&format!("\nElapsed {ms} ms."));
+        }
         let body = model_content
             .strip_prefix(result.summary.as_str())
             .and_then(|rest| {
@@ -612,6 +679,7 @@ impl Session {
             .max_input_bytes
             .min(self.inner.options.limits.max_preview_bytes);
         if text.len() > limit {
+            result.truncated = true;
             let mut suffix = "\n\nJob preview truncated.".to_string();
             if let Some(id) = result.output_id() {
                 suffix.push_str(&format!("\nOutput: {id} (read more with read_output)."));
@@ -632,7 +700,16 @@ impl Session {
         }
     }
 
-    fn wait_outcome(&self, agent: &str, job_id: &str) -> Result<Option<JobSnapshot>> {
+    fn observe_job(&self, agent: &str, job_id: &str) -> Result<JobObservation> {
+        let snapshot = {
+            let state = self.inner.state.lock().unwrap();
+            state.agent(agent)?;
+            state.jobs.observe_snapshot(state.jobs.get(agent, job_id)?)
+        };
+        hydrate_job(self.events_path(), snapshot)
+    }
+
+    fn wait_outcome(&self, agent: &str, job_id: &str) -> Result<Option<JobObservation>> {
         let (snapshot, closed) = {
             let state = self.inner.state.lock().unwrap();
             state.agent(agent)?;
@@ -833,19 +910,28 @@ fn interrupted_job(id: &str) -> Error {
     ))
 }
 
-fn hydrate_job(events_path: &Path, mut snapshot: JobSnapshot) -> Result<JobSnapshot> {
-    if let Some(cursor) = snapshot.finished_at {
+fn hydrate_job(events_path: &Path, mut snapshot: JobSnapshot) -> Result<JobObservation> {
+    let model_content = if let Some(cursor) = snapshot.finished_at {
         let events = EventStore::read_page(events_path, cursor - 1, 1)?;
         let event = events
             .first()
             .filter(|event| event.id == cursor)
             .ok_or_else(|| missing_job_result(&snapshot.id))?;
-        let Some(Record::JobFinished { result, .. }) = Record::from_event(event)? else {
+        let Some(Record::JobFinished {
+            result, delivery, ..
+        }) = Record::from_event(event)?
+        else {
             return Err(missing_job_result(&snapshot.id));
         };
         snapshot.result = Some(result);
-    }
-    Ok(snapshot)
+        Some(delivery.text)
+    } else {
+        None
+    };
+    Ok(JobObservation {
+        snapshot,
+        model_content,
+    })
 }
 
 fn offline_snapshot(mut snapshot: JobSnapshot) -> JobSnapshot {

@@ -7,6 +7,7 @@ pub(crate) mod values;
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
 use crate::permission::{authorize_action, ActionAuthorization};
+use crate::session::runtime::JobControl;
 use crate::tool::builtin::common::{changed_file_target, prepare_file_target};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result};
@@ -243,10 +244,10 @@ pub(super) async fn dispatch(
         let slot = super::adapters::spawn_tool(registered, action, output, event_tx);
         return start_slot(pending, queued, slot);
     }
-    if matches!(queued.tool_call.name.as_str(), "wait_job" | "cancel_job") {
+    if let Some(control) = JobControl::for_tool(&queued.tool_call.name) {
         let session = runtime_session(&pending)?;
         mark_dispatched(&pending, &queued)?;
-        let slot = super::slots::spawn_job_control(session, &pending, &queued, event_tx);
+        let slot = super::slots::spawn_job_control(session, &pending, &queued, control, event_tx);
         return start_slot(pending, queued, slot);
     }
     if matches!(queued.tool_call.name.as_str(), "run_command" | "run_js") {

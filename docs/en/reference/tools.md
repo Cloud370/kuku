@@ -112,7 +112,7 @@ A top-level `run_command` or `run_js` returns its outcome when it settles within
 - `wait_job({job_id})` waits for one of the current Agent's Jobs to settle. Use it when the next action needs that result.
 - `cancel_job({job_id})` requests cancellation of one of the current Agent's Jobs and waits for cleanup.
 
-Use the command's retained output reference to inspect its capture. [Job API for embedding hosts](sdk.md#workspace-execution)
+Both control tools return the same bounded completion receipt used for automatic delivery. It includes the terminal status, elapsed time when known, and the available result or failure details. Use retained output references to inspect captures. The SDK Job lookup provides the full execution facts. [Job API for embedding hosts](sdk.md#workspace-execution)
 
 ## JavaScript tool composition
 

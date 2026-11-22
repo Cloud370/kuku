@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderToolCall;
+use crate::session::runtime::JobControl;
 use serde_json::json;
 
 use super::helpers::{is_inline_skill_tool, now_timestamp, resolved_tool_available};
@@ -41,18 +42,17 @@ pub(crate) fn write_tool_result(
     result: &crate::tool::ToolResultEnvelope,
     events_path: &std::path::Path,
     turn: u64,
-    job_wait: Option<&crate::Session>,
+    job_control: Option<&crate::Session>,
 ) -> crate::error::Result<Option<serde_json::Value>> {
     let mut store = crate::event::EventStore::open(events_path)?;
     let mut structured = finalize_persisted_tool_result(store.next_id(), result);
-    if let Some(data) = structured
-        .as_mut()
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        if job_wait.is_none()
-            && data.get("kind").and_then(serde_json::Value::as_str) == Some("job_wait_result")
+    if job_control.is_none() {
+        if let Some(fields) = structured
+            .as_mut()
+            .filter(|data| JobControl::is_result(data))
+            .and_then(serde_json::Value::as_object_mut)
         {
-            data.remove("kind");
+            fields.remove("kind");
         }
     }
     let payload = crate::event::EventPayload::ToolResult {
@@ -73,8 +73,8 @@ pub(crate) fn write_tool_result(
         memory_changed: None,
         structured: structured.clone(),
     };
-    let stored = if let Some(session) = job_wait {
-        session.append_job_wait_result(payload)?
+    let stored = if let Some(session) = job_control {
+        session.append_job_control_result(payload)?
     } else {
         store.append(payload)?
     };

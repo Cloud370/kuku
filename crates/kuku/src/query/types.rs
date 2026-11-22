@@ -326,7 +326,7 @@ pub(crate) enum SlotEvent {
     WorkspacePermission(Box<super::run_js::AwaitingAction>),
     Output(ToolEvent),
     Done(crate::tool::ToolResultEnvelope),
-    JobWaitDone(crate::tool::ToolResultEnvelope),
+    JobControlDone(crate::tool::ToolResultEnvelope),
 }
 
 #[derive(Debug)]

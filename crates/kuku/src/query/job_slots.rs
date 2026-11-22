@@ -95,7 +95,7 @@ impl Run {
         id: &str,
         event: SlotEvent,
     ) -> Result<Option<(UiEvent, ToolFaults)>> {
-        let job_wait = matches!(&event, SlotEvent::JobWaitDone(_));
+        let job_control = matches!(&event, SlotEvent::JobControlDone(_));
         let event = match event {
             SlotEvent::Output(event) => UiEvent::ToolOutput {
                 id: id.into(),
@@ -120,9 +120,9 @@ impl Run {
                 }
                 self.finish_slot(id, action.partial, false)?
             }
-            SlotEvent::Done(result) | SlotEvent::JobWaitDone(result) => {
+            SlotEvent::Done(result) | SlotEvent::JobControlDone(result) => {
                 let faults = result.faults;
-                let event = self.finish_slot(id, result, job_wait)?;
+                let event = self.finish_slot(id, result, job_control)?;
                 if faults.output_persistence_failed || faults.cleanup_incomplete {
                     self.cancel();
                 }
@@ -232,7 +232,7 @@ impl Run {
                     match receiver.await.unwrap_or_else(|_| worker_exited()) {
                         SlotEvent::Done(result) => result,
                         SlotEvent::WorkspacePermission(action) => action.blocked_job(),
-                        SlotEvent::Output(_) | SlotEvent::JobWaitDone(_) => {
+                        SlotEvent::Output(_) | SlotEvent::JobControlDone(_) => {
                             unreachable!("unexpected Job completion event")
                         }
                     }

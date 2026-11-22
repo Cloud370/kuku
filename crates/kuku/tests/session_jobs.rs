@@ -1,4 +1,6 @@
 mod common;
+#[path = "session_jobs/control.rs"]
+mod control;
 
 use std::fs;
 use std::path::PathBuf;

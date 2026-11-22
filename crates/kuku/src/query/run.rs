@@ -181,12 +181,12 @@ impl Run {
         &mut self,
         id: &str,
         envelope: ToolResultEnvelope,
-        job_wait: bool,
+        job_control: bool,
     ) -> Result<UiEvent> {
         let slot = self.slots.remove(id).expect("slot must exist");
         self.state.record_tool_completion(&envelope.status);
         let job_session = match &self.state {
-            RunState::Pending(pending) if job_wait => {
+            RunState::Pending(pending) if job_control => {
                 Some(super::runtime_tools::runtime_session(pending)?)
             }
             _ => None,
