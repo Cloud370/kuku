@@ -395,7 +395,7 @@ class AcceptanceTests(unittest.TestCase):
             "log-summary-date-ranges", "cancel-async-tasks", "regex-log", "large-scale-text-editing",
             "nginx-request-logging", "sqlite-with-gcov", "kv-store-grpc", "gcode-to-text", "pypi-server",
             "schemelike-metacircular-eval", "code-from-image", "db-wal-recovery", "adaptive-rejection-sampler",
-            "count-dataset-tokens",
+            "count-dataset-tokens", "multi-source-data-merger",
         ])
         self.assertEqual(case["artifacts"], ["/app/apply_macros.vim"])
         for case_id, artifact in (("db-wal-recovery", "/app/recovered.json"),
@@ -407,6 +407,9 @@ class AcceptanceTests(unittest.TestCase):
         _, gcode = ACCEPTANCE.manifest_case("gcode-to-text", "frontier")
         self.assertEqual((gcode["workspace"], gcode["artifacts"], gcode["timeout_sec"]),
                          ("/app", ["/app/out.txt"], 900))
+        _, merger = ACCEPTANCE.manifest_case("multi-source-data-merger", "frontier")
+        self.assertEqual((merger["workspace"], merger["artifacts"], merger["timeout_sec"]),
+                         ("/app", ["/app/merged_users.parquet", "/app/conflicts.json"], 900))
         _, package_server = ACCEPTANCE.manifest_case("pypi-server", "frontier")
         self.assertEqual((package_server["workspace"], package_server["artifacts"], package_server["timeout_sec"]),
                          ("/app", [], 900))

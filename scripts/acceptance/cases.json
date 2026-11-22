@@ -60,7 +60,8 @@
         "code-from-image",
         "db-wal-recovery",
         "adaptive-rejection-sampler",
-        "count-dataset-tokens"
+        "count-dataset-tokens",
+        "multi-source-data-merger"
       ],
       "additional_cases": [
         {
@@ -138,6 +139,13 @@
           "role": "process a public dataset with a specified tokenizer and verify the aggregate",
           "workspace": "/app",
           "artifacts": ["/app/answer.txt"],
+          "timeout_sec": 900
+        },
+        {
+          "id": "multi-source-data-merger",
+          "role": "reconcile data across JSON, CSV and Parquet and verify both result artifacts",
+          "workspace": "/app",
+          "artifacts": ["/app/merged_users.parquet", "/app/conflicts.json"],
           "timeout_sec": 900
         }
       ]
