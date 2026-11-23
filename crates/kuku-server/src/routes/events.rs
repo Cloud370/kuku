@@ -55,6 +55,7 @@ pub(super) struct HistoryQuery {
     workspace: PathBuf,
     agent: Option<String>,
     before: Option<u64>,
+    after: Option<u64>,
     limit: Option<usize>,
     #[serde(default)]
     user_only: bool,
@@ -132,6 +133,11 @@ pub(super) async fn history(
     target.require_exists()?;
     let limit = query.limit.unwrap_or(HISTORY_DEFAULT_LIMIT);
     validate_limit(limit)?;
+    if query.after.is_some() && (query.before.is_some() || query.user_only) {
+        return Err(ApiError::invalid(
+            "after requires forward transcript history",
+        ));
+    }
     let manager = manager(&state).await;
     journal_task(move || {
         let cursor = EventStore::read_head(&target.path)?;
@@ -141,6 +147,13 @@ pub(super) async fn history(
         };
         let (history, turns) = manager.history(&target.path, cursor)?;
         let agent = query.agent.as_deref().unwrap_or("main");
+        if let Some(after) = query.after {
+            let (entries, rewind_groups, next_after) =
+                history_after(agent, after, limit, &turns, &history)?;
+            let response = json!({"ok":true,"entries":entries,"rewind_groups":rewind_groups,"next_after":next_after});
+            validate_response_bytes(&response)?;
+            return Ok(Json(response));
+        }
         if query.user_only {
             let (messages, next_before) = history.user_messages_before(agent, before, limit)?;
             let entries: Vec<_> = messages
@@ -423,6 +436,89 @@ fn history_page(
     Ok((entries, group_entries, before.filter(|id| *id > 1)))
 }
 
+fn history_after(
+    agent: &str,
+    mut after: u64,
+    limit: usize,
+    turns: &TurnLookup,
+    history: &SessionHistory,
+) -> Result<(Vec<Value>, Vec<RewindGroup>, Option<u64>)> {
+    let mut entries = Vec::new();
+    let mut groups = Vec::new();
+    let mut bytes = 0;
+    let mut scanned = 0;
+    let max_bytes = HISTORY_PAGE_BYTES.saturating_sub(HISTORY_RESPONSE_OVERHEAD);
+    'scan: while scanned < HISTORY_SCAN_LIMIT && after < history.cursor() {
+        let page = history.page_after(after, READ_PAGE_SIZE)?;
+        if page.is_empty() {
+            break;
+        }
+        for event in page {
+            let rewind = if let EventPayload::MessageUser { turn, .. } = &event.payload {
+                history
+                    .rewinds()
+                    .iter()
+                    .filter(|rewind| {
+                        rewind.target_event_id == event.id
+                            && rewind.agent == agent
+                            && !history.includes_cursor(agent, event.id)
+                    })
+                    .map(|rewind| RewindGroup {
+                        rewind_event_id: rewind.event_id,
+                        target_event_id: event.id,
+                        agent: agent.to_owned(),
+                        turn_number: turns.number(agent, *turn),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let entry = (history.agent(&event) == agent && history.includes(&event))
+                .then(|| history_entry_for_agent(&event, turns, agent))
+                .flatten();
+            let entry_bytes = entry
+                .as_ref()
+                .map(serde_json::to_vec)
+                .transpose()
+                .map_err(kuku::Error::from)?
+                .map_or(0, |value| value.len());
+            let group_bytes = rewind
+                .iter()
+                .try_fold(0usize, |sum, group| {
+                    serde_json::to_vec(group).map(|value| sum + value.len())
+                })
+                .map_err(kuku::Error::from)?;
+            let size = entry_bytes + group_bytes;
+            let items = entries.len() + groups.len();
+            if size > max_bytes {
+                return Err(ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "history_entry_too_large",
+                    "history item exceeds the response byte limit",
+                ));
+            }
+            if items > 0
+                && (bytes + size > max_bytes
+                    || items + usize::from(entry.is_some()) + rewind.len() > limit)
+            {
+                break 'scan;
+            }
+            if let Some(entry) = entry {
+                entries.push(entry);
+            }
+            groups.extend(rewind);
+            bytes += size;
+            after = event.id;
+            scanned += 1;
+            if entries.len() + groups.len() >= limit || scanned >= HISTORY_SCAN_LIMIT {
+                break 'scan;
+            }
+        }
+    }
+    add_tool_names(&mut entries);
+    Ok((entries, groups, (after < history.cursor()).then_some(after)))
+}
+
 pub(super) fn add_tool_names(entries: &mut [Value]) {
     let mut tools = HashMap::new();
     for entry in entries {
@@ -643,6 +739,39 @@ mod tests {
     }
 
     #[test]
+    fn forward_history_pages_from_a_rewound_anchor_without_skipping_active_entries() {
+        let events = vec![
+            user_event(1, "main", "archived"),
+            user_event(2, "main", "hidden"),
+            StoredEvent {
+                id: 3,
+                payload: EventPayload::Unknown(json!({
+                    "kind":"runtime.operation",
+                    "record":{"operation":"message_rewind","address":"main","target_event_id":1}
+                })),
+            },
+            user_event(4, "reviewer", "other Agent"),
+            user_event(5, "main", "first"),
+            user_event(6, "main", "second"),
+        ];
+        let (_root, history) = read_history(&events);
+        let turns = crate::run_manager::TurnLookup::Closed(std::sync::Arc::default());
+        let (entries, groups, next) = super::history_after("main", 0, 1, &turns, &history).unwrap();
+        assert!(entries.is_empty());
+        assert_eq!(1, groups[0].target_event_id);
+        assert_eq!(Some(1), next);
+        let (entries, groups, next) =
+            super::history_after("main", next.unwrap(), 1, &turns, &history).unwrap();
+        assert!(groups.is_empty());
+        assert_eq!(5, entries[0]["id"]);
+        assert_eq!(Some(5), next);
+        let (entries, _, next) =
+            super::history_after("main", next.unwrap(), 1, &turns, &history).unwrap();
+        assert_eq!(6, entries[0]["id"]);
+        assert_eq!(None, next);
+    }
+
+    #[test]
     fn rewind_archives_compaction_progress_and_its_checkpoint() {
         let events = vec![
             user_event(1, "main", "selected"),
@@ -657,7 +786,8 @@ mod tests {
                 payload: EventPayload::Unknown(json!({
                     "kind":"runtime.compaction_finished", "agent":"main", "turn":1, "request_id":"compact-1",
                     "status":"completed", "summary":"Retained in rewind", "elapsed_ms":2000,
-                    "before_bytes":10000, "after_bytes":5000, "checkpointed_messages":6,
+                    "estimated_input_tokens_before":10000, "estimated_input_tokens_after":5000, "checkpointed_messages":6,
+                    "summary_output_tokens":3376,
                 })),
             },
             StoredEvent {
@@ -679,6 +809,7 @@ mod tests {
         let entry = crate::wire::history_entry_for_agent(&events[2], &turns, "main").unwrap();
         assert_eq!(entry["type"], "compaction");
         assert_eq!(entry["text"], "Retained in rewind");
+        assert_eq!(entry["summary_output_tokens"], 3376);
     }
 
     #[test]

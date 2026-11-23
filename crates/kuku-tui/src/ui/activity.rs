@@ -17,10 +17,12 @@ mod motion;
 pub(crate) use clock::ActivityClock;
 use motion::Ring;
 
-const PHASE_SLOT: usize = 14;
-const RECIPIENT_SLOT: usize = 30;
-const TOOLS_SLOT: usize = 4;
-const METER_SLOT: usize = 11;
+const PHASE_SLOT: usize = 23;
+const MIN_PHASE_SLOT: usize = 14;
+const RECIPIENT_SLOT: usize = 18;
+const MIN_RECIPIENT_SLOT: usize = 8;
+const METER_SLOT: usize = 12;
+const FIELD_GAP: &str = "  ";
 const FEEDBACK_LIMIT: usize = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +30,7 @@ enum ObservedActivity {
     Service(ServiceStatus),
     Agent(Activity),
     Sending,
+    Compacting,
 }
 
 impl ObservedActivity {
@@ -45,6 +48,13 @@ impl ObservedActivity {
                 )
             {
                 Self::Sending
+            } else if activity == Activity::Running
+                && app
+                    .pane()
+                    .transcript
+                    .compacting(app.pane().turn_timing().map(|timing| timing.turn))
+            {
+                Self::Compacting
             } else {
                 Self::Agent(activity)
             }
@@ -57,12 +67,22 @@ impl ObservedActivity {
         match self {
             Self::Service(service) => service.label(),
             Self::Sending => "Send",
-            Self::Agent(Activity::WaitingForModel) => "Waiting",
+            Self::Compacting => "Compacting context",
+            Self::Agent(Activity::WaitingForModel) => "Waiting for model",
             Self::Agent(Activity::Streaming) => "Reply",
-            Self::Agent(Activity::ToolArguments) => "Tool call",
-            Self::Agent(Activity::RunningTools) => "Tools",
+            Self::Agent(Activity::ToolArguments) => "Model tool arguments",
             Self::Agent(Activity::RetryingModel) => "Retrying",
             Self::Agent(activity) => activity.label(),
+        }
+    }
+
+    fn short_label(self) -> &'static str {
+        match self {
+            Self::Agent(Activity::WaitingForModel) => "Model wait",
+            Self::Agent(Activity::ToolArguments) => "Model args",
+            Self::Agent(Activity::RunningTools) => "Tools running",
+            Self::Compacting => "Compacting",
+            status => status.label(),
         }
     }
 
@@ -85,6 +105,7 @@ impl ObservedActivity {
 
     fn motion(self) -> Option<Activity> {
         match self {
+            Self::Compacting => Some(Activity::Running),
             Self::Agent(
                 activity @ (Activity::Running
                 | Activity::WaitingForModel
@@ -115,6 +136,7 @@ pub(crate) struct ActivityFrame {
     text_step: Option<u128>,
     thinking: String,
     elapsed: Option<u64>,
+    phase_elapsed: Option<u64>,
 }
 
 impl ActivityFrame {
@@ -162,6 +184,7 @@ impl ActivityFrame {
             text_step: step,
             thinking: String::new(),
             elapsed,
+            phase_elapsed: None,
         }
     }
 
@@ -178,13 +201,18 @@ impl ActivityFrame {
     }
 
     pub(super) fn still(self) -> Self {
-        Self::new(self.status, None, self.elapsed)
+        Self {
+            phase_elapsed: self.phase_elapsed,
+            ..Self::new(self.status, None, self.elapsed)
+        }
     }
 
     pub(super) fn agent_activity(&self, app: &App) -> Activity {
         match self.status {
             ObservedActivity::Agent(activity) => activity,
-            ObservedActivity::Service(_) | ObservedActivity::Sending => app.pane().activity(),
+            ObservedActivity::Service(_)
+            | ObservedActivity::Sending
+            | ObservedActivity::Compacting => app.pane().activity(),
         }
     }
 }
@@ -194,82 +222,86 @@ pub(super) fn render_heading(
     width: usize,
     frame: ActivityFrame,
 ) -> (Line<'static>, Option<Range<usize>>) {
-    let Some(name) = app.visible_recipient().filter(|_| width > 0) else {
-        return (render_activity(app, width, frame), None);
-    };
-
-    let room = if width >= 24 {
-        (width - PHASE_SLOT).min(RECIPIENT_SLOT)
-    } else {
-        width
-    };
-    let (prefix, suffix) = match room {
-        16.. => ("Send to ", " ▾"),
-        8..=15 => ("To ", " ▾"),
-        _ => ("", ""),
-    };
-    let name = shorten_middle(&single_line(name), room - (prefix.width() + suffix.width()));
-    let label = format!("{prefix}{name}{suffix}");
-    let mut line = Line::styled(
-        label,
-        emphasis(if app.is_subagent() { MODEL } else { ACCENT }),
-    );
-    let span = 0..line.width();
-    if width > room + 2 {
-        line.push_span(" ".repeat(room + 2 - span.end));
-        line.spans
-            .extend(render_activity(app, width - room - 2, frame).spans);
-    }
-    (line, Some(span))
-}
-
-fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'static> {
     let muted = Style::default().fg(MUTED);
+    let gap = FIELD_GAP.len();
+    let recipient_room = (width / 3)
+        .clamp(MIN_RECIPIENT_SLOT, RECIPIENT_SLOT)
+        .min(width.saturating_sub(MIN_PHASE_SLOT + gap));
+    let recipient = app
+        .visible_recipient()
+        .filter(|_| recipient_room >= MIN_RECIPIENT_SLOT);
+    let recipient_width = recipient.map_or(0, |_| recipient_room + gap);
+    let phase_width = (width - recipient_width).min(PHASE_SLOT);
+    let core_width = phase_width + recipient_width;
     let feedback_limit = width
-        .saturating_sub(PHASE_SLOT + 1)
+        .saturating_sub(core_width + 1)
         .min(width / 3)
         .min(FEEDBACK_LIMIT);
     let feedback = app
         .displayed_statusline()
         .composer_feedback(app, feedback_limit);
     let left_width = width - feedback.as_ref().map_or(0, |feedback| feedback.width() + 1);
-    let render_metrics = left_width >= PHASE_SLOT + TOOLS_SLOT + METER_SLOT;
-    let phase_width = if render_metrics {
-        PHASE_SLOT
-    } else {
-        left_width
-    };
+
+    let key = Shortcut::CYCLE_THINKING.label;
+    let action = " think";
+    let key_width = gap + key.width() + action.width();
+    let show_thinking = left_width >= core_width + key_width
+        && app.modal.is_none()
+        && app.available()
+        && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
+            caps.selectable_reasoning_efforts()
+                .any(|level| level != ThinkLevel::ProviderDefault.as_str())
+        });
+    let thinking_width = if show_thinking { key_width } else { 0 };
+    let render_metrics = left_width >= core_width + thinking_width + METER_SLOT + gap;
     let mut line = frame.ring.line(phase_width);
     if phase_width > line.width() {
         line.push_span(" ");
     }
+    let label_room = phase_width.saturating_sub(line.width());
+    let label = frame.status.label();
     let status = shorten(
-        frame.status.label(),
-        phase_width.saturating_sub(line.width()),
+        if label.width() <= label_room {
+            label
+        } else {
+            frame.status.short_label()
+        },
+        label_room,
     );
     line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
 
-    if render_metrics {
-        line.push_span(" ".repeat(PHASE_SLOT - line.width()));
-        let activity = frame.agent_activity(app);
-        let parallel = matches!(
-            frame.status,
-            ObservedActivity::Agent(
-                Activity::Streaming | Activity::Thinking | Activity::ToolArguments
-            )
-        );
-        let count = app.pane().parallel_tools();
-        let tools = if parallel && count != 0 {
-            format!("↳{}", count.min(999))
+    if recipient.is_some() || render_metrics || show_thinking {
+        line.push_span(" ".repeat(phase_width - line.width()));
+    }
+    let recipient_hit = recipient.map(|name| {
+        let name = single_line(name);
+        let suffix = " ▾";
+        let long_prefix = "Send to ";
+        let prefix = if long_prefix.len() + name.width() + suffix.width() <= recipient_room {
+            long_prefix
         } else {
-            String::new()
+            "To "
         };
+        let name = shorten_middle(&name, recipient_room - prefix.len() - suffix.width());
+        let label = format!("{prefix}{name}{suffix}");
+        let start = phase_width + gap;
+        let end = start + label.width();
+        line.push_span(FIELD_GAP);
         line.push_span(Span::styled(
-            format!("{tools:<TOOLS_SLOT$}"),
-            Style::new().fg(crate::theme::USAGE),
+            label,
+            emphasis(if app.is_subagent() { MODEL } else { ACCENT }),
         ));
+        if render_metrics || show_thinking {
+            line.push_span(" ".repeat(start + recipient_room - end));
+        }
+        start..end
+    });
+
+    if render_metrics {
         let tokens = match frame.status {
-            ObservedActivity::Agent(_) => app.pane().composer_output_tokens(activity),
+            ObservedActivity::Agent(_) => {
+                app.pane().composer_output_tokens(frame.agent_activity(app))
+            }
             _ => None,
         };
         let metric = match tokens {
@@ -279,11 +311,40 @@ fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'stati
                 .elapsed
                 .filter(|_| frame.status.clock_runs())
                 .map_or_else(String::new, |seconds| {
-                    format_elapsed(Duration::from_secs(seconds))
+                    format!("Turn {}", format_elapsed(Duration::from_secs(seconds)))
                 }),
         };
         let metric = shorten(&metric, METER_SLOT);
-        line.push_span(Span::styled(format!("{metric:<METER_SLOT$}"), muted));
+        if !metric.is_empty() || show_thinking {
+            let padding = if show_thinking {
+                METER_SLOT - metric.width()
+            } else {
+                0
+            };
+            line.push_span(FIELD_GAP);
+            line.push_span(Span::styled(metric, muted));
+            line.push_span(" ".repeat(padding));
+        }
+    }
+
+    if show_thinking {
+        line.push_span(FIELD_GAP);
+        line.push_span(Span::styled(key, Style::new().fg(SURFACE_TEXT)));
+        line.push_span(Span::styled(action, muted));
+    }
+
+    if frame.status == ObservedActivity::Agent(Activity::RunningTools) {
+        let tool = app.pane().running_tool_name();
+        if let Some(tool) = tool.filter(|_| left_width.saturating_sub(line.width()) > 8) {
+            let tool = shorten(tool, left_width - line.width() - 3);
+            line.push_span(Span::styled(format!(" · {tool}"), muted));
+        } else {
+            let count = app.pane().parallel_tools();
+            let summary = format!(" · {count}");
+            if count > 1 && left_width.saturating_sub(line.width()) >= summary.width() {
+                line.push_span(Span::styled(summary, muted));
+            }
+        }
     }
 
     if let Some(jobs) = app
@@ -303,23 +364,29 @@ fn render_activity(app: &App, width: usize, frame: ActivityFrame) -> Line<'stati
         }
     }
 
-    let key = Shortcut::CYCLE_THINKING.label;
-    let action = " think";
-    let key_width = 2 + key.width() + action.width();
-    let thinking = app.modal.is_none()
-        && app.available()
-        && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
-            caps.selectable_reasoning_efforts()
-                .any(|level| level != ThinkLevel::ProviderDefault.as_str())
-        });
-    if thinking && left_width.saturating_sub(line.width()) >= key_width {
-        line.push_span("  ");
-        line.push_span(Span::styled(key, Style::new().fg(SURFACE_TEXT)));
-        line.push_span(Span::styled(action, muted));
+    if matches!(
+        frame.status,
+        ObservedActivity::Agent(Activity::Streaming | Activity::Thinking | Activity::ToolArguments)
+    ) {
+        let count = app.pane().parallel_tools();
+        if count != 0 {
+            let tools = format!("↳{}", count.min(999));
+            if left_width.saturating_sub(line.width()) >= gap + tools.width() {
+                line.push_span(FIELD_GAP);
+                line.push_span(Span::styled(tools, Style::new().fg(crate::theme::USAGE)));
+            }
+        }
+    }
+    if let Some(seconds) = frame.phase_elapsed {
+        let duration = format_elapsed(Duration::from_secs(seconds));
+        if left_width.saturating_sub(line.width()) >= gap + duration.width() {
+            line.push_span(FIELD_GAP);
+            line.push_span(Span::styled(duration, muted));
+        }
     }
     if let Some(feedback) = feedback {
         line.push_span(" ".repeat(width - line.width() - feedback.width()));
         line.push_span(feedback);
     }
-    line
+    (line, recipient_hit)
 }

@@ -293,7 +293,7 @@ impl AgentCard<'_> {
         checks: usize,
         creation: Option<&AgentCard<'_>>,
     ) -> Vec<Row> {
-        let frame = CardFrame::new(width);
+        let frame = CardFrame::timeline(width);
         let title = format!("Agent {}", single_line(self.address));
         let mut rows = vec![Row::plain(
             frame.agent_title(&title, self.receipt_cursor.is_some()),
@@ -355,7 +355,7 @@ impl AgentCard<'_> {
         facts: Option<&AgentFacts>,
         in_timeline: bool,
     ) -> Vec<Row> {
-        let frame = CardFrame::new(width);
+        let frame = CardFrame::timeline(width);
         let width = if in_timeline {
             width
         } else {
@@ -665,9 +665,7 @@ mod tests {
         );
         let view = transcript.project(90, 24);
         let plain = lines(&view).join("\n");
-        assert!(
-            plain.contains("╭─ Agent reviewer") && plain.matches("Agent reviewer").count() == 1
-        );
+        assert!(plain.contains("Agent reviewer") && plain.matches("Agent reviewer").count() == 1);
         assert!(plain.contains("Verify the new CLI") && !plain.contains("List failing cases"));
         assert!(plain.contains("Verify fixtures") && plain.contains("verify-fixtures"));
         assert!(
@@ -735,7 +733,7 @@ mod tests {
         let all = lines(&transcript.project(90, 100));
         let header = all
             .iter()
-            .position(|line| line.contains("╭─ Agent reviewer"))
+            .position(|line| line.contains("Agent reviewer"))
             .unwrap();
         let footer = all
             .iter()
@@ -875,10 +873,10 @@ mod tests {
         let view = lines(&transcript.project(82, 27));
         let header = view
             .iter()
-            .position(|line| line.contains("╭─ Agent reviewer"))
+            .position(|line| line.contains("Agent reviewer"))
             .unwrap();
-        assert!(view[header + 2].contains("Streaming reply"));
-        assert!(toggle_row(&mut transcript, header + 2));
+        assert!(view[header + 1].contains("Streaming reply"));
+        assert!(toggle_row(&mut transcript, header + 1));
         let opened = transcript.project(82, 27);
         let rendered = lines(&opened).join("\n");
         assert!(rendered.contains("▸ Created") && rendered.contains("▸ Input delivered"));

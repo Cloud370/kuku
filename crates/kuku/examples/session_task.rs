@@ -113,7 +113,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
         println!("session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens N --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]");
         println!("--max-requests optionally caps provider attempts across this open session. --no-provider-retry disables the default pre-stream retry.");
         println!("--max-output-tokens optionally caps each model request. Omit it to use the selected tier or provider default.");
-        println!("--max-request-bytes caps the serialized provider request. It defaults to the SDK's request byte limit.");
+        println!("--max-request-bytes caps the serialized provider request. Omit it to use the provider's request-size limits.");
         println!("--max-command-seconds sets a host deadline for each tool command, including script commands and Jobs.");
         return Ok(true);
     }
@@ -145,8 +145,7 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
     }
     options.limits.max_output_tokens_per_request = max_output_tokens;
     options.limits.max_agents = max_agents;
-    options.limits.max_request_bytes =
-        number(&args, "max-request-bytes", options.limits.max_request_bytes)?;
+    options.limits.max_request_bytes = optional_number(&args, "max-request-bytes")?;
     options.limits.max_command_seconds =
         optional_number::<NonZeroU32>(&args, "max-command-seconds")?;
     let limits = options.limits.clone();

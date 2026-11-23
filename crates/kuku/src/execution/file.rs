@@ -26,7 +26,7 @@ pub struct FileMutationFacts {
 impl FileMutationFacts {
     /// Decode a structured file mutation result produced by the SDK.
     pub fn from_structured(value: &serde_json::Value) -> serde_json::Result<Self> {
-        serde_json::from_value(value.clone())
+        Self::deserialize(value)
     }
 }
 

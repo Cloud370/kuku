@@ -3,6 +3,8 @@ mod common;
 mod history_restore;
 #[path = "session_workspace/media.rs"]
 mod media;
+#[path = "session_workspace/retained_return.rs"]
+mod retained_return;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,14 +1,10 @@
-# Update Manifest
+# Update manifest
 
-The release manifest file is named `latest.json`.
-
-## Role
-
-Current docs use this manifest for release install scripts and update-channel configuration.
+Release manifests are published as `latest.json` and used by install scripts and update-channel configuration.
 
 ## Format
 
-`latest.json` follows the Tauri updater manifest shape.
+`latest.json` follows the Tauri updater manifest shape:
 
 ```json
 {
@@ -25,7 +21,9 @@ Current docs use this manifest for release install scripts and update-channel co
 }
 ```
 
-## Required Top-Level Keys
+## Keys
+
+Top-level keys:
 
 | Key | Meaning |
 |---|---|
@@ -33,22 +31,17 @@ Current docs use this manifest for release install scripts and update-channel co
 | `notes` | Release notes |
 | `pub_date` | Publication timestamp |
 | `platforms` | Per-platform download map |
+| `desktop` | Reserved for desktop updater metadata |
 
-`desktop` is reserved for desktop updater metadata.
-
-## Platform Entries
-
-Each platform entry contains:
+Platform entries:
 
 | Key | Meaning |
 |---|---|
 | `url` | Download URL |
 | `sha256` | SHA-256 checksum |
-| `size` | Optional archive size in bytes, used by the installer to show the download size |
+| `size` | Optional archive size in bytes (shown by installers) |
 
-## Config Link
-
-`config.toml` selects the manifest source with:
+## Config example
 
 ```toml
 [update]

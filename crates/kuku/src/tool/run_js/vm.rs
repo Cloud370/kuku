@@ -54,6 +54,7 @@ pub(super) struct BufferedResponse {
 #[derive(Debug)]
 pub(super) enum Failure {
     Error(String),
+    OversizedReturn(String),
     TimedOut,
     Stopped,
 }
@@ -314,9 +315,7 @@ impl<'js> Worker<'js> {
             json_bytes(&self.ctx, value).map_err(|error| self.describe_at(error, Some(script)))?;
         let max_bytes = self.execution.limits.result_bytes;
         if json.len() > max_bytes {
-            return Err(Failure::Error(format!(
-                "script result exceeds {max_bytes} bytes; return a small value or retain derived output"
-            )));
+            return Err(Failure::OversizedReturn(json.to_string()));
         }
         serde_json::from_str(json.as_str())
             .map_err(|_| Failure::Error("script result cannot be represented as JSON".into()))

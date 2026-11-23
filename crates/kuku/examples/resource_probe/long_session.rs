@@ -260,7 +260,7 @@ fn options(
     );
     options.session_id = Some(SESSION_ID.into());
     options.model_adapter = Some(model);
-    options.limits.max_request_bytes = REQUEST_CAP;
+    options.limits.max_request_bytes = Some(REQUEST_CAP);
     options.limits.max_retained_output_bytes = 256 * JOURNAL_MIB;
     Ok(options)
 }

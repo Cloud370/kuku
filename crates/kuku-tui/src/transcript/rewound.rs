@@ -398,7 +398,12 @@ impl RewindGroupState {
             Row {
                 line,
                 inset: inset as u16,
+                right_inset: 0,
                 links: Vec::new(),
+                script_detail: None,
+                output: None,
+                command_arguments: None,
+                inline_output: None,
             }
         }));
         self.row_entries.extend(
@@ -531,7 +536,9 @@ impl Transcript {
                 key: Key::RewindGroup(rewind_event_id),
                 line: AnchorLine::Group(0),
             },
-            newer: std::collections::VecDeque::new(),
+            newer: None,
+            rebase_after_page: false,
+            visible_through: None,
             unseen: false,
             manual: true,
         });

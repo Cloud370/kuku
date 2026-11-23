@@ -248,6 +248,16 @@ impl SessionHistory {
         EventStore::read_page_before(&self.path, self.bound_before(before), limit)
     }
 
+    /// Read a bounded chronological page after an exclusive cursor in this history view.
+    pub fn page_after(&self, after: u64, limit: usize) -> Result<Vec<StoredEvent>> {
+        if after >= self.cursor {
+            return Ok(Vec::new());
+        }
+        let mut events = EventStore::read_page(&self.path, after, limit)?;
+        events.truncate(events.partition_point(|event| event.id <= self.cursor));
+        Ok(events)
+    }
+
     fn bound_before(&self, before: Option<u64>) -> Option<u64> {
         self.cursor
             .checked_add(1)

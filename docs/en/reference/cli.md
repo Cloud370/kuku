@@ -1,328 +1,266 @@
 # CLI
 
-## Entry Modes
+## Entry modes
 
-- `kuku` opens the full-screen client in an interactive terminal.
-- `kuku run ...` starts a non-interactive run. Use it in scripts or when no interactive terminal is available.
+- `kuku` opens the full-screen terminal interface (TUI).
+- `kuku run ...` runs a non-interactive task for scripts or headless terminals.
 
-The terminal, script and browser clients submit work to the server. The local clients reuse the managed service for the selected data directory. [Run the server](../guides/run-the-server.md)
+The TUI, `kuku run`, and the web UI all talk to a kuku service. Locally, clients share one managed service per data directory. [Run the server](../guides/run-the-server.md)
 
-First-run interactive setup and `kuku init` use the same local provider-settings flow. `kuku init` requires a TTY, can edit an existing valid config, and never starts a service to configure it. Remote settings are not supported. See [Configuration](../start/configuration.md).
+First-run setup and `kuku init` share the same interactive local provider setup flow. `kuku init` requires a TTY, can edit an existing valid config, does not start the server, and does not configure remote servers. [Configuration](../start/configuration.md)
 
-## Connection and workspace flags
+## Connection and workspace options
 
-| Flag | Meaning |
+| Option | Meaning |
 |---|---|
-| `-w`, `--workspace <path>` | Workspace for commands and file tools. Local clients default to the resolved current directory. For a remote Session, provide the absolute path on the server machine. |
-| `--data-dir <path>` | Local service data directory. Defaults to `$KUKU_HOME` or `~/.kuku`. With `--remote`, it selects local client storage. |
-| `--config <path>` | Select a specific local configuration file. Manage remote configuration on the server machine. |
-| `--remote <url>` | Connect to this server explicitly. |
-| `--token <token>` | Bearer token for the explicit server, also accepted via `KUKU_TOKEN`. |
+| `-w`, `--workspace <path>` | Workspace for file and command tools. Defaults to the resolved current directory locally; required as an absolute server-side path for remote Sessions. |
+| `--data-dir <path>` | Data directory for the local service (defaults to `$KUKU_HOME` or `~/.kuku`). With `--remote`, selects the client's local storage directory. |
+| `--config <path>` | Local config file path. Remote configs are managed on the server host. |
+| `--remote <url>` | Connect explicitly to a remote server URL. |
+| `--token <token>` | Bearer token for `--remote` (or set `KUKU_TOKEN`). |
 
-Put options before the prompt in `kuku run`, because it consumes the remaining words as prompt text.
+For `kuku run`, place all options before the prompt — remaining words are treated as the prompt.
 
-## Top-Level Commands
+## Top-level commands
 
 | Command | Purpose |
 |---|---|
-| `kuku run <prompt...>` | Submit a task and observe its execution |
-| `kuku reply <session-id> <request-id>` | Answer a durable question or authorization |
-| `kuku show <session-id>` | Show final output from a session |
-| `kuku events <session-id>` | Show persisted session facts |
-| `kuku list` | List sessions |
-| `kuku pending ...` | Reconcile submissions whose receipt was lost |
-| `kuku delete <session-id>` | Delete a session |
-| `kuku config ...` | Show, validate, or change config |
-| `kuku init` | Open shared local provider and credential settings |
-| `kuku prompts ...` | Show or export prompt assets |
-| `kuku agents ...` | List or inspect agents |
-| `kuku skills ...` | List or inspect skills |
-| `kuku server ...` | Start an explicit HTTP server |
+| `kuku run <prompt...>` | Submit a task and observe execution |
+| `kuku reply <session-id> <request-id>` | Answer a durable question or permission request |
+| `kuku show <session-id>` | Show a Session's final output |
+| `kuku events <session-id>` | Inspect durable Session events |
+| `kuku list` | List Sessions |
+| `kuku pending ...` | Reconcile submissions with missing receipts |
+| `kuku delete <session-id>` | Delete a Session |
+| `kuku config ...` | Show, validate, or edit config |
+| `kuku init` | Run local provider and credential setup |
+| `kuku prompts ...` | Inspect or export Prompt assets |
+| `kuku agents ...` | List or inspect Agent presets |
+| `kuku skills ...` | List or inspect Skills |
+| `kuku server ...` | Run an explicit HTTP server |
 | `kuku server status` | Inspect service identity and activity |
-| `kuku server restart` | Restart the managed local service after outstanding work settles |
-| `kuku web ...` | Open the browser interface on the selected service |
+| `kuku server restart` | Restart the managed local service when idle |
+| `kuku web ...` | Open the browser UI for the selected service |
 
 ## Terminal interface
 
-### Send, edit, or stop
+### Sending, editing, and stopping
 
-| What you want to do | Where to do it |
+| Action | How |
 |---|---|
-| Send a message now or as soon as the Agent can take it | Press Enter. If the Agent is busy, it can pick up the message during the current turn. |
-| Have the Agent handle a message on the next turn | Press Alt+Enter to put it in **Pending inputs**. |
-| Change a message still in **Pending inputs** | Click it, or press ↑ from an empty draft. Press Enter to edit it or Delete to remove it from the queue. |
-| Stop the current turn | Press Esc from the main screen while the Agent is working. The conversation so far stays available. |
+| Send immediately | Press `Enter`. If the Agent is running, it may pick up the message during the current Turn. |
+| Queue for the next Turn | Press `Alt+Enter` to place the message in **Pending inputs**. |
+| Edit a queued message | Click it, or press `↑` from an empty composer. `Enter` edits it; `Delete` removes it. |
+| Interrupt the current Turn | Press `Esc` while the Agent is running. Output already shown stays visible. |
 
-### Edit a past message or continue from history
+### Rewinding and branching
 
-Press Ctrl+G while the Agent is idle, or enter `/rewind`. `/jump` opens the same list. Current and saved turns appear in chronological order, with the latest selected at the bottom. Scroll up to load earlier turns.
+When the Agent is idle, press `Ctrl+G` or run `/rewind` (or `/jump`) to open conversation history. Active Turns and saved branches appear in chronological order with the latest Turn selected; scroll up to load older Turns.
 
-Choose a finished turn and press Enter to review it. Press Enter again to switch the conversation through that turn, including its replies and tool results. Its original message goes into an empty composer as an unsent draft. An existing draft stays in place. You can return to a turn marked **Saved** from the same list.
+Select a completed Turn and press `Enter` twice to switch back to that point (preserving its reply and tool results). If the composer is empty, the original prompt loads as a draft; existing drafts are kept. Select any **Saved** entry in the same list to return to a prior branch.
 
-Files stay as they are by default. When going back in the current history, press Space in the confirmation to see the files eligible for restoration and their line counts where available. Press Enter to switch the conversation and apply the displayed file changes. If the preview finds no restorable files, Enter switches the conversation and keeps the current files. [What rewind changes](../how-it-works/sessions.md#message-rewind)
+Workspace files stay unchanged by default. When rewinding to an earlier Turn on the current branch, press `Space` on the confirmation screen to preview restorable files and line diffs; `Enter` switches the conversation and applies those file changes. [How rewind works](../how-it-works/sessions.md#message-rewind)
 
-### More terminal controls
+### Keybindings and controls
 
-| Key or action | Behavior |
+| Control | Behavior |
 |---|---|
-| Ctrl+C | Clear the draft. With an empty draft, exit the TUI. Running work continues on the server. Inside an editor dialog, clear the focused input. |
-| Shift+Enter or Ctrl+J | Insert a newline in the draft. |
-| Esc | Close a panel or dialog, or leave a focused control. Closing a question editor saves its draft. With an idle Agent and an empty draft, press Esc again after the hint to open conversation history. |
-| Ctrl+P or F1 | Show read-only shortcut help. The draft is preserved; Enter and clicks do not run actions from help. |
-| `/` in an empty composer, or after Ctrl+P | Search actions and Skills in a list above the composer. Choosing a Skill inserts an editable `/skill:NAME` prefix for the next send. |
-| `@` or Tab | Complete workspace-relative paths as draft text. |
-| Alt+← or Alt+→ | Switch directly to the previous or next Agent. The order wraps and starts with `main`, followed by the other addresses in sorted order. |
-| F2 outside editors | Cycle visible controls in order: request, authentication repair when available, Continue or Stop, pending-delivery recovery, Previous Agent, service actions, then Messages. F2 or click opens a question's answer editor; Esc saves its unsent answer by request ID and preserves the main draft. F2 or click focuses a permission request. Enter activates focused controls; clicks on other side-effect controls only focus them. Esc interrupts Running/cleanup work regardless of focus; otherwise it dismisses that focus. Ctrl+R reconnects. |
-| Permission request card | Choose **Deny** or **Allow once** with Left/Right or a click, then press Enter. F2, Left, Enter is the keyboard Deny path. While Waiting, Esc leaves focus without answering or interrupting. |
-| Ctrl+T | Cycle the selected model's supported thinking levels for this Agent at the next safe request boundary. Keep the draft and reading position. |
-| Authentication repair | After a matching authentication failure, **Repair credentials** can update the failed managed-local connection and explicitly restart its service. Remote connections show server-side guidance. [Recovery steps](../start/configuration.md#recover-an-authentication-failure). |
-| **Messages** (or **Msg** in a narrow header) | Browse user, assistant and tool entries in the active Agent's loaded transcript. Enter opens only the actions available for that entry; Tab or ←/→ selects an action, Enter runs it, and Esc returns to the message list without changing the composer draft. Full output opens a saved result or a complete inline result when no saved output exists. For scripts with multiple outputs, choose the individual action to inspect. Read-only rewind history groups are not message-action targets. |
-| Ctrl+O | Expand or collapse visible transcript previews, including tool groups and Agent cards. |
-| S in the tool output viewer | Name the selected retained output. Enter `NAME --replace` at the naming prompt to update an existing name. |
-| Left-button drag | Highlight visible text and copy the selected range to the clipboard on release. |
-| Mouse wheel, Page Up, Page Down | Scroll the transcript. |
-| Ctrl+End or Alt+↑ while reading history | Return to the latest output and resume following. |
-| ↑, ↓ in the editor | Move within a multiline draft and scroll the transcript at its boundaries. Ctrl+↑ and Ctrl+↓ recall sent prompts and restore the draft. In queue focus, Up/Down moves between editable queued inputs. |
-| Arrow keys, Tab, Enter in a menu | Move the highlight, complete editable text, or activate the selected action, respectively. |
-| `exit` or `quit` | With only that lowercase word, optional surrounding spaces, and no attachments, Enter or Alt+Enter opens **Exit kuku?** beside the draft. Press Y to exit or Esc to keep editing. |
+| `Ctrl+C` | Clear the current draft (or exit TUI when the draft is empty; active server work continues). Inside an edit dialog, clears only that field. |
+| `Shift+Enter` or `Ctrl+J` | Insert a newline in the draft. |
+| `Esc` | Close an overlay, exit focused controls, or interrupt while running/cleaning up. Closing a reply editor preserves the reply draft. When idle with an empty composer, press `Esc` twice to open conversation history. |
+| `Ctrl+P` or `F1` | Show read-only shortcut help without losing your draft. |
+| `/` (on empty draft) or `Ctrl+P` then `/` | Search slash commands and Skills above the composer. Picking a Skill inserts an editable `/skill:NAME` prefix. |
+| `@` or `Tab` | Complete workspace-relative file paths into the draft. |
+| `Alt+←` / `Alt+→` | Cycle between Agents (`main` first, others sorted by address, wrapping at ends). |
+| `F2` (outside editor) | Cycle visible interactive controls (pending requests, auth repair, continue/stop, pending delivery recovery, previous Agent, service actions, and **Messages**). `F2` or clicking a question opens its reply editor; `F2` or clicking a permission focuses it for explicit `←`/`→` + `Enter` (**Deny** / **Allow once**; keyboard deny is `F2`, `←`, `Enter`). `Ctrl+R` reconnects. |
+| `Ctrl+T` | Cycle supported thinking levels for the active model (applies on the next safe request boundary). |
+| **Repair credentials** | Shown after a matching auth failure to update the failing managed local connection and explicitly restart its service (remote connections show server-side instructions). [Recovering from an auth failure](../start/configuration.md#recover-an-authentication-failure) |
+| **Messages** (narrow: **Msg**) | Inspect user, assistant, and tool entries in the current Agent's transcript. Pick an entry, then choose an action (`Full output` opens retained output or full inline content; multi-output JS scripts let you pick individual actions). |
+| `Ctrl+O` | Expand or collapse visible transcript previews (tool groups and Agent cards). |
+| `S` (in output viewer) | Name the selected retained output (`NAME --replace` overwrites an existing name). |
+| Mouse drag | Highlight text and copy to clipboard on release. |
+| Wheel, `Page Up` / `Page Down` | Scroll the transcript. |
+| `Ctrl+End` or `Alt+↑` | Jump back to the latest output and resume auto-follow. |
+| `↑` / `↓` in composer | Move across multi-line drafts, then scroll at edges. `Ctrl+↑` / `Ctrl+↓` browse sent prompt history (or queued inputs when focused on the queue). |
+| `exit` or `quit` | Submitting a bare lowercase `exit` or `quit` with no attachments opens **Exit kuku?** (`Y` to exit, `Esc` to keep editing). |
 
-In a selection dialog, click a row to highlight it. A click can switch the viewed Agent or Session, open a model ID editor, or show transcript details and retained output. The Messages header button opens the entry selector, where clicking an entry opens its actions and clicking an action runs it. Applying a tier or reasoning setting, deciding an authorization or restarting still requires Enter.
-
-Continue acknowledgements appear briefly and do not replace an existing error. Narrow focused-control hints keep the Esc action visible.
+Clicking rows in picker modals highlights them; clicking can also switch Agents/Sessions, open model input, or inspect messages and retained outputs. Applying model/thinking changes, permission decisions, or service restarts still requires `Enter`.
 
 ### Slash commands
 
-Search by the command or any alias. The list shows the canonical spelling. Tab completes that spelling and retains arguments. Choosing a row or submitting a complete slash command runs the same action. The first directly submitted alias for each action displays its canonical spelling beside the composer. `/reload` is reserved for configuration reload.
+Search matches both primary names and aliases; `Tab` completes the primary name and preserves arguments. `/reload` is reserved for config reload.
 
 | Command | Aliases | Behavior |
 |---|---|---|
-| `/new` | `/new-session` | Open a blank draft and keep the prior Session available. |
-| `/resume` | `/sessions` | Find a retained Session in the workspace. |
-| `/rewind` | `/backtrack`, `/jump` | Open the conversation history and switch to a selected Turn. |
-| `/compact` | `/compress`, `/summarize` | Summarize earlier context for the selected Agent once its running work settles. The transcript shows progress, elapsed time, request sizes and an expandable checkpoint. Use `/compact retry` after a failure, or `/compact undo` to restore the previous context without removing messages. |
-| `/agents` | `/agent`, `/subagents` | Search the Session's Agents, switch recipients or create an Agent. The selector shows activity, pending requests, queue counts and task excerpts when available. |
-| `/jobs` | `/job`, `/ps` | List the selected Agent's background jobs with their original title and current status. The input area shows the running count when there is room. Select a job to cancel it or read its available output. Use `/jobs cancel <id>` to cancel by ID. A completion entry in `/messages` can also open its retained output. |
-| `/model` | `/models` | Choose, add or edit model routes. Ctrl+L opens the same selector. |
-| `/thinking` | `/think`, `/effort` | Show the inherited model default and supported levels. A check marks the current selection. Enter applies the highlighted level to this Agent. **Use default** clears its override. On a writable local model route, press D on a level then Enter to save it as the model default while retaining explicit Agent overrides. |
-| `/statusline` | `/status-line` | Open **Status line settings** to preview, select, reorder and save footer fields. |
-| `/save` | `/save-value` | Name pasted text or the current draft before sending it. |
-| `/values` | `/value`, `/saved-values` | Browse saved values. Select one to read it or attach it to the draft. |
-| `/server` | `/service` | Inspect the connected service. Ctrl+R reconnects. |
-| `/restart` | `/restart-service` | Confirm a managed local service restart. Active work defers it. |
-| `/web` | `/browser` | Open the conversation in the browser. |
+| `/new` | `/new-session` | Open a fresh draft (previous Sessions remain accessible). |
+| `/resume` | `/sessions` | Browse and switch to an existing Session in this workspace. |
+| `/rewind` | `/backtrack`, `/jump` | Open conversation history and switch to a selected Turn. |
+| `/compact` | `/compress`, `/summarize` | Compact older context for the selected Agent once idle (also `/compact retry` and `/compact undo`). |
+| `/agents` | `/agent`, `/subagents` | Search Session Agents, switch recipients, or create an Agent. |
+| `/jobs` | `/job`, `/ps` | List background Jobs for the selected Agent, read live output, or cancel (`/jobs cancel <id>`). |
+| `/model` | `/models` | Pick, add, or edit model routes (`Ctrl+L` opens the same picker). |
+| `/thinking` | `/think`, `/effort` | Pick a thinking level for the current Agent, choose **Use default** to clear the override, or press `D` + `Enter` on a writable local route to save as the model default. |
+| `/statusline` | `/status-line` | Preview, toggle, reorder, and save status-line fields to `tui.toml`. |
+| `/save` | `/save-value` | Name pasted text or the current draft before sending. |
+| `/values` | `/value`, `/saved-values` | Browse saved values to read or attach to the draft. |
+| `/server` | `/service` | Inspect the connected service (`Ctrl+R` reconnects). |
+| `/restart` | `/restart-service` | Confirm restarting the managed local service (deferred while busy). |
+| `/web` | `/browser` | Open the conversation in the browser UI. |
 | `/help` | `/hotkeys` | Show keyboard shortcuts. |
-| `/quit` | `/exit`, `/q` | Leave the terminal client. Accepted work continues on the service. |
+| `/quit` | `/exit`, `/q` | Exit the TUI (accepted work continues on the server). |
 
 ### Reading the transcript
 
-Each Turn contains user messages, tool activity and assistant text. Consecutive successful read-only inspections within a Turn are grouped by default, with counts for reads, searches and listings. File changes, running calls, failures and authorization requests stay individually visible. **List Agents** summarizes participants and their activity. **Query Session** summarizes matching events. Use **Messages** in the transcript header to inspect individual calls and operate on a selected entry.
-
-While reading earlier output, click **Jump to latest** beside the composer to resume following.
-
-Completed Turn statistics appear once beneath the reply and scroll with it. When reading history, a floating Turn strip shares the composer’s left edge and text inset. It offers a return control without moving the input. It shows elapsed time, tokens, cache hits and tools as space permits.
-
-The command card shows the executable and arguments. If a call has a title, the card shows that purpose above the invocation. The bottom border shows the observed status and exit code when available. Recognized test reports show program-reported counts. Open the card for recorded arguments, capture details, and available evidence. Completed writes and edits share the code block frame. A write previews recorded file content with syntax highlighting or rendered Markdown. An edit shows the recorded diff. The footer shows the written or changed line counts.
-
-A workspace script card shows completed host actions and observed file changes. Expand it for action outcomes, including partial or unknown work. Choose the script in **Messages**, then **Full output**, to open retained captures from individual script actions.
-
-Sent messages waiting to be processed appear in **Pending inputs**. Messages move into the transcript when the Agent takes them. Reopening the Session also lets you recover sends awaiting confirmation.
-
-Messages delivered by another Agent show the sender's address, for example `From main`, including when they open a Turn.
-
-Markdown renders as it streams, including a code fence that is still open. A terminal that joins an active reply can show a bounded prefix of its already streamed text. The committed reply replaces that preview.
-
-Markdown replies support task lists, nested quotes and lists, and inline `<sup>`, `<sub>` and `<br>`. Wrapped list text aligns with its item. Select an underlined HTTP or HTTPS link to open its destination in the default browser. Dragging over a link selects text. Code and the original source view keep their literal contents.
-
-If you interrupt a streaming reply, its bounded preview stays under that Turn and remains visible after reopening the Session.
-
-By default, a fence labeled `md` or `markdown` in an assistant reply previews the enclosed document, including its headings, lists, tables and code blocks. The label is case-insensitive. Inner code uses its declared language. Ordinary code fences display their contents literally, with syntax highlighting for supported languages.
-
-Message, command, Agent, and file preview cards leave space around their content. Code blocks follow the same spacing. Side padding contracts with the terminal width. Agent cards and code blocks fill the available width at their level of indentation. A separate Agent card has its own border and a blank line between it and adjacent commands. Its Details control stays above the expanded task and reply. The Agent name serves as the title. Select **Open agent →** on a confirmed Agent card to switch to that Agent. Narrow cards shorten the action to **Open →**. Creation instructions appear under their own label and wrap across up to three preview lines. Open Details to read longer instructions. Task and reply excerpts each use a single preview line. A delegation card groups creation and delivery to the same Agent. Expand it to inspect the individual actions. Status checks involving only the sender and recipient join that card’s timeline. Checks involving other Agents keep their own counted group. A completed reply keeps its thinking reader beside the Assistant heading.
-
-Thinking appears at the start of the assistant’s answer. The transcript types a muted, single-line excerpt when the provider publishes reasoning. The first line of the reply takes its place. Select **View thinking** or the selected entry's **Thinking** action to read the received text at its position in the conversation. The reader shows up to five wrapped lines beside the reply. Use the arrow keys or the wheel over those lines to read more. Esc or a second click on the heading closes it. Copy and Markdown source use the selected reply text. Thinking from intermediate tool steps remains available through **Messages**.
+- **Tool activity**: Consecutive workspace calls share a group. Its summary shows read and search counts, diagnostics, and each recorded file change with a short preview when available. Repeated diagnostics show once with a count. Select the heading to review each call or select a file to expand its preview in place. A minus marks a line in the old file and a plus marks a line in the new file. The header’s **Messages** view retains individual calls and full output. An open script shows **Input**, **Actions**, and **Output**. Input previews the JavaScript that the Agent submitted. Actions shows completion counts and the operations the script invoked. An object output shows its field count and up to three field names with their value summaries. Select **Input** or **Output** to expand the corresponding content in place.
+- **Tool results**: Command results show the command, optional title, status, exit code, and parsed test counts. Use **View output** under an expanded command to open its saved output, including commands run inside `run_js`. Select **Read saved output** to open the byte range recorded for that read. An expanded file row shows the saved content or diff. Expanded `run_js` results show completed host actions, a failure reason when available, and links to saved output. The compaction heading shows the recorded duration and estimated input tokens before and after summarization.
+- **Delegation & inbox**: Messages from another Agent display the sender (for example `From main`). Delegated Agent creation and task deliveries group into a delegation card with an **Open agent →** link and expandable details. Queued messages appear under **Pending inputs** until accepted.
+- **Streaming & Markdown**: Markdown renders incrementally (including unclosed fences, task lists, nested quotes/lists, inline `<sup>`/`<sub>`/`<br>`, clickable HTTP/HTTPS links, and rendered `md`/`markdown` code fences). Interrupting a stream preserves a bounded preview in that Turn.
+- **Thinking**: While the model reasons, an inline excerpt streams above the reply. Click **View thinking** (or choose **Thinking** in **Messages**) to open a scrollable 5-line inline reader; pre-tool reasoning is available via **Messages**.
+- **Navigation & Turn stats**: Click **Jump to latest** to resume following; a per-Turn summary at the end of the reply shows elapsed time, tokens, cache hit rate, and tool count.
 
 ### Status and usage
 
-An empty Session opens with the kuku title. On a spacious terminal, the session label and first actions align beneath the name. Once work starts, the Session header contracts to one line. The default status bar leads with the effective model and its resolved thinking level, for example `gemini-4-neon · High`. `Default` means the provider chooses the level and the actual value is unknown. Pending changes appear under **Next model request**. The footer also shows connection state, the selected Agent and its workspace. At phone widths, the workspace and usage move to a second row. Very short terminals keep a single row to leave room for your draft. Click a character in a draft to move the caret there, including on wrapped lines. Elapsed time appears directly beside the current activity.
+The default bottom status bar shows the active model and resolved thinking level (e.g. `gemini-4-neon · High`, with `Default` for provider-chosen), connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending model/thinking changes show under **Next model request**.
 
-Above the input, an activity mark and label show the selected Agent's state. The mark animates during active work and stays still when ready or finished. The display smooths brief phase changes and shows errors and requests for attention immediately. During work the Turn timer updates each second and keeps its start time across phases and Agent switches. The completed duration appears in the Turn summary. An input receipt clears once the Agent settles the Turn. Use `/statusline` to add the optional `execution` field to the footer. The composer shows its `To <agent>` recipient above the draft and grows as you type. `Draft` describes local text, while `Awaiting receipt`, `Input queued` and `Input accepted` describe submitted text.
+Above the composer, kuku displays the recipient (`To <agent>`), input delivery state (`Draft`, `Awaiting receipt`, `Input queued`, `Input accepted`), live elapsed Turn timer, and Agent execution state:
 
-`Waiting for model` shows a pending model request. Provider updates can move among `Thinking`, `Streaming reply` and `Writing tool arguments` as reasoning, visible reply text and tool arguments arrive. `Running tools` shows dispatched tools. `Waiting` identifies a pending question or permission, and `Failed` identifies an execution error. `Offline` indicates a service connection problem. `Updates unavailable` indicates that the live transcript subscription has failed. While reconnecting or missing updates, `Last seen` marks the most recent observed execution state.
+- `Waiting for model`, `Thinking`, `Streaming reply`, `Writing tool arguments`, `Running tools`
+- `Waiting` (pending question or permission), `Failed` (execution error)
+- `Offline` (connection lost), `Updates unavailable` (live stream failed), with `Last seen` showing the last observed state
 
-In `/statusline`, use ↑ or ↓ to select a field, Space to toggle it, and ← or → to move an enabled field. Press R to preview the defaults, Enter to save, or Esc to return to the previous layout. Saving applies the layout and keeps it in the local `tui.toml` for later launches. If `KUKU_TUI_STATUSLINE` is set, its layout resumes when the editor closes. [TUI configuration](config.md#terminal-preferences)
+Customize fields interactively with `/statusline` (writes `tui.toml`) or per-launch with `KUKU_TUI_STATUSLINE`. [Terminal preferences](config.md#terminal-preferences)
 
-| Field | How to read it |
+| Metric | Meaning |
 |---|---|
-| `Context …% used` | Input tokens reported for the latest measured request divided by the context window bound to that request. The value describes the last measured prompt. |
-| `in`, `out` | Cumulative input and output tokens for this Agent across its requests. Input includes cached tokens. A `≥` prefix marks a partial total. |
-| `Cache hit …%` | Total cache-read tokens divided by total input tokens across this Agent's requests that report both counts. `0%` means measured zero hits, and a dash means there is no positive measured input total. |
-| `TPS` | Average output tokens per second for the selected Agent across completed requests with measured output and a positive duration. Divide their total output by their total duration, including first-token wait and excluding tools and retry backoff. |
-
-A dash (`—`) means the measurement is unavailable. A newly prepared request clears the previous context percentage until its own usage arrives. Average TPS stays visible while the next request runs. To show only identity, directory and usage, set `KUKU_TUI_STATUSLINE=agent,workspace,context,tokens_in,tokens_out,cache,tps` before opening the terminal.
+| `Context` | Input tokens of the latest measured request divided by its context window. With sufficient width, the default layout also shows the input token count and window size. |
+| `in`, `out` | Cumulative input (including cache) and output tokens across the Agent's requests. `≥` means only some requests reported usage. |
+| `Cache hit …%` | Cumulative cache-read tokens divided by cumulative input tokens across requests reporting both. `0%` is measured zero; `—` means no positive measured input yet. |
+| `TPS` | Total output tokens divided by total request duration across completed requests with output and valid timing (includes time-to-first-token; excludes tool execution and retry backoff). |
+| Request cost | Session request cost in USD. `~` marks a total that includes estimates. `≥` marks a lower bound. |
 
 ## `kuku run`
 
 ```text
-kuku run [options] <prompt...>
+kuku run [OPTIONS] <PROMPT...>
 ```
 
-Flags:
-
-| Flag | Meaning |
+| Option | Meaning |
 |---|---|
-| `-y`, `--yes` | Explicitly select the default trusted-local policy |
-| `--connection <name>` | Exact configured connection name |
-| `--model <id>` | Exact model identifier |
-| `--tier <name>` | Reusable model route and settings |
-| `--agent <address>` | Stable Session-local address; default `main` |
-| `--command-id <id>` | Caller-selected identity for idempotent input retry |
-| `--reasoning-effort <value>` | Provider-supported reasoning setting |
-| `--service-tier <value>` | Provider-supported service setting |
-| `--max-output-tokens <n>` | Maximum tokens for one model response |
-| `-s`, `--session <id>` | Continue one session |
-| `-c`, `--continue` | Continue the most recent session |
-| `--json` | Emit one final JSON line |
-| `--stream-json` | Emit realtime JSON lines |
-| `--show-thinking` | Show public reasoning text or summaries when provided by the model service |
-| `--raw` | Plain text output |
-| `--verbose` | Show the durable Agent snapshot, configuration, and usage |
-| `--prompts-dir <dir>` | Override embedded prompt assets when creating a Session. With `--remote`, use an authorized absolute directory on the server. |
-| `--no-agents` | Disable `create_agent`, `send_message`, and `list_agents`; retain `ask_user` |
-| `--no-skills` | Disable the default skill tool surface: `list_skills`, `search_skills`, and `use_skill`, plus slash-skill loading |
+| `-s`, `--session <id>` | Continue an existing Session |
+| `-a`, `--agent <name>` | Target a specific Agent (defaults to `main`) |
+| `-m`, `--model <spec>` | Override model route for this run |
+| `--json` | Print one JSON object per line |
+| `-o`, `--output <path>` | Write final output to a file |
+| `--no-wait` | Return after the service accepts the input |
+| `--auto-approve` | Allow permission requests during this run |
+| `--wait-for-reply` | Stay attached while a durable request awaits an external reply |
+| `--timeout <seconds>` | Exit after this wait timeout without canceling server work |
 
-The server uses the SDK's trusted-local policy by default. After a run starts, Ctrl-C requests cancellation of the observed execution and waits for cleanup. Losing the client connection leaves the server's execution running. A fresh `run` can advance a stopped Agent. A waiting Agent requires its matching reply. Check the actual files or command results to verify task success.
-
-Use `--tier` for a tier name. `--model` selects an exact identifier, and `--connection` selects one named connection even when multiple connections use the same protocol. An explicit `--model` overrides the tier’s model, including when both flags are supplied while reopening an Agent. Explicit settings affect only the selected Agent. Reopening without selection flags retains that Agent's configuration and independent context. A changed model route clears previous Agent-local reasoning/service overrides before applying new explicit values.
-
-With `--command-id`, retrying the same input returns its original durable receipt and current Agent state. If a first send loses its reply, the client retains the generated Session ID with the unconfirmed command. After receiving its receipt, use the returned `--session` for further retries. `--json` and `--stream-json` report `event: "acknowledged"`, `replayed: true`, `receipt`, and `state` for a replay. Use a new command identity for new work or configuration.
-
-`--json` emits one final `type: "session"` object with `event`, `session_id`, `agent`, `status`, `turns`, `response`, `error`, `config`, `usage`, `permission`, `question` and `duration_ms`. `--stream-json` also emits transient progress and committed-receipt information. A child-Agent query's output-limit retry emits a `type: "model_recovery"` line in `--stream-json`, with the conversation, turn, failed/retry request IDs, reason, and attempt counts. Slow observers may lose transient deltas. The final response comes from committed state. Provider usage and unavailable reporting follow the [Session SDK](../how-it-works/sessions.md) contract.
-
-If the prompt starts with `/skill-name` and the first token is a valid skill name, `kuku run` loads that Skill and sends the remaining text as the user prompt. Path-like prompts such as `/tmp/foo` stay plain user input. `--no-skills` disables that shortcut because it disables the default skill tool surface.
+With `--json`, `kuku run` emits `session`, `accepted`, `delta`, `tool.call`, `tool.result`, `request`, `turn.completed`, `turn.failed`, and `error` lines. Wait timeouts exit with code `124`. [Run a task](../guides/run-a-task.md)
 
 ## `kuku reply`
 
 ```text
-kuku reply <session-id> <request-id> [--agent <address>] (--allow | --deny | --answer <text>)
+kuku reply <SESSION_ID> <REQUEST_ID> --allow
+kuku reply <SESSION_ID> <REQUEST_ID> --deny
+kuku reply <SESSION_ID> <REQUEST_ID> --answer "<text>"
+kuku reply <SESSION_ID> <REQUEST_ID> --answer-file <path>
+kuku reply <SESSION_ID> <REQUEST_ID> --answer-stdin
 ```
 
-Replies target the exact retained request, including after reopening. `--allow` authorizes its bound action once; `--deny` rejects it; `--answer` answers a pending question. Ordinary `run` input never acts as approval. `--command-id` enables retrying the same reply; an already committed reply returns only its original acknowledgement and current state, without resuming work or issuing another permission decision. Stale or mismatched requests fail visibly. This command also accepts `--config`, `--workspace`, and `--data-dir`, observes the continuation, and awaits cleanup.
-
-Reply output is JSON lines without a `--json` flag: a fresh question answer ends with an `AgentSnapshot`; a fresh permission reply first emits `permission_decision`, then the snapshot. A duplicate reply emits the `acknowledged` Session object with `receipt` and `state` described above. These replies do not use the normal `run` completion object.
+Answers a durable permission request or question. Returns cleanly if the same reply was already recorded.
 
 ## `kuku show`
 
 ```text
-kuku show <session-id> [--agent <address>] [--json] [--workspace <path>] [--data-dir <path>]
+kuku show <SESSION_ID> [--agent <name>] [--json]
 ```
 
-Read the last durable response. `--json` returns the Agent snapshot, including any pending question or authorization identity. `show` and Session-specific `list` can query a Session while another client is working in it.
+Prints the final assistant reply for the Session or selected Agent.
 
 ## `kuku events`
 
 ```text
-kuku events <session-id> [--agent <address>] [--kind <event-kind>] [--search <text>]
-kuku events --file <path> [--before <id> | --after <id>] [--limit <n>] [--json]
-kuku events <session-id> --all [--after <id>] --json
+kuku events <SESSION_ID> [--agent <name>] [--kind <kind>] [--after <id> | --before <id>] [--limit <n>] [--all] [--json]
+kuku events --file <EVENTS_JSONL> [--agent <name>] [--kind <kind>] [--after <id> | --before <id>] [--limit <n>] [--all] [--json]
 ```
 
-- With no cursor, the CLI starts at the latest committed event. `--before <id>` continues toward older records. `--after <id>` reads toward newer records. Both cursors are exclusive.
-- `--limit` defaults to 40 and accepts 1–256 matching records. `--kind` matches the event kind exactly. `--search` matches a case-insensitive substring of event content. The CLI prints the continuation flag and cursor to stderr.
-- `--all` streams all matching records oldest first. `--json` writes one complete event per line to stdout. `--verbose` adds metadata in the text display.
-- `--file` reads a local Session journal directly, including a packed journal. A Session ID is resolved with `--workspace` and `--data-dir`; a Session held open by the local service is read through that service. `--remote` reads from the selected service.
-
-Observability logs live under `$KUKU_HOME/logs/`. [File layout](file-layout.md)
+Prints durable Session events. `--json` writes one record per line to `stdout` and prints pagination flags to `stderr`. `--file` inspects a local journal offline (transparently reading sealed history and open tails). [Session events](events.md)
 
 ## `kuku list`
 
 ```text
-kuku list [--all] [--workspace <path>] [--data-dir <path>] [--json | --verbose]
-kuku list <session-id> [--workspace <path>] [--data-dir <path>] [--json]
+kuku list [--json]
 ```
 
-With a Session ID, `list` shows Agent addresses, statuses, and pending-input counts. `--json` emits a JSON array of Sessions or Agents. Session sizes report bytes on disk for the journal.
-
-## `kuku delete`
-
-```text
-kuku delete [--workspace <path>] <session-id>
-```
+Lists Sessions for the selected workspace.
 
 ## `kuku pending`
 
 ```text
-kuku pending list
-kuku pending resend COMMAND_ID [--session SESSION_ID]
-kuku pending discard COMMAND_ID [--session SESSION_ID]
+kuku pending list [--json]
+kuku pending reconcile [--id <record-id>] [--json]
+kuku pending drop <record-id> [--json]
 ```
 
-`list` queries the selected service for receipts and removes confirmed entries from local pending storage. An unconfirmed entry can be resent with the original command identity and contents, or discarded from the client. Discarding leaves any already committed server work in place. Supply `--session` to distinguish entries with the same command ID in different Sessions.
+Inspects and reconciles submissions whose HTTP receipt was lost due to a timeout or disconnect.
+
+## `kuku delete`
+
+```text
+kuku delete <SESSION_ID> [--force]
+```
+
+Deletes a Session.
 
 ## `kuku config`
 
 ```text
-kuku config [--config <path>] [show|validate|set|policy]
+kuku config path
+kuku config show
+kuku config validate
+kuku config set <key> <value>
+kuku config init
 ```
 
-Subcommands:
-
-| Subcommand | Syntax |
-|---|---|
-| show | `kuku config show` |
-| validate | `kuku config validate` |
-| models | `kuku config models` |
-| set | `kuku config set <key> <value>` |
-| policy allow | `kuku config policy allow <risk>` |
-| policy deny | `kuku config policy deny <risk>` |
-
-`config validate` resolves each configured model tier with the same checks the service uses for new Sessions. It reports the tier that failed and does not call the provider.
-
-`policy allow` and `policy deny` currently print a not-yet-implemented message instead of editing `policy.md`.
+`kuku config show` redacts API keys. `kuku config set` updates scalar fields (for example `default_model`, `provider.<name>.model_pricing.<model>.mode`, or `provider.<name>.proxy.mode`). `kuku config init` writes the starter config file (non-interactive). Use `kuku init` for interactive provider and credential setup.
 
 ## `kuku prompts`
 
 ```text
-kuku prompts [show [name] | export <dir>]
+kuku prompts list [--json]
+kuku prompts show <name> [--json]
+kuku prompts export <dir>
 ```
 
-Valid `show` names:
+Inspects or exports the built-in Prompt assets.
 
-- `system`
-- `project-context`
-- `tool-guidance`
-- `runtime-context`
-
-## `kuku agents`
+## `kuku agents` and `kuku skills`
 
 ```text
-kuku agents [list | show <name>]
+kuku agents list
+kuku agents show <name>
+kuku skills list
+kuku skills show <name>
 ```
 
-## `kuku skills`
-
-```text
-kuku skills [list | show <name>]
-```
+Lists and inspects discovered Agent presets and Skills.
 
 ## `kuku server` and `kuku web`
 
 ```text
-kuku server [--listen <addr>] [--config <path>] [--password <token>] [--max-concurrent-runs <n>]
+kuku server [--host <addr>] [--port <port>] [--password <secret>]
 kuku server status
 kuku server restart
-kuku web [--session <id> [--agent <address>]] [--print-url]
+kuku web [--session <id>] [--agent <name>] [--print-url]
 ```
 
-Defaults:
+- `kuku server` requires `--password` or `KUKU_SERVER_PASSWORD`.
+- `kuku web` opens the browser UI on the selected service (managed sign-in links carry a short-lived, single-use ticket; use `--print-url` to print without opening).
+- `kuku server status` returns service info as JSON (`{"state":"stopped"}` when local service is down).
+- `kuku server restart` exits `1` with `state: "deferred"` when busy, or `0` with `state: "restarted"` on success.
 
-- `--listen 127.0.0.1:17777`
-- `--max-concurrent-runs 16`
-
-The explicit server requires `--password` or `KUKU_SERVER_PASSWORD`. `kuku web` opens the browser on the selected service. It can pass the workspace, Session and Agent selection to the page. Use `--print-url` to print the link. A managed sign-in link contains a short-lived, single-use ticket.
-
-`server status` reports service information as JSON. For a stopped local service it returns `{"state":"stopped"}`. On a busy service, `server restart` exits with status 1 and emits JSON with `state: "deferred"` and the current `service` status. On success it reports `state: "restarted"` and the replacement service.
-
-To build the embedded UI in a checkout, run these commands from the repository root with Node.js 24 and npm installed:
+To build the embedded web UI from a source checkout (requires Node.js 24 and npm):
 
 ```bash
 npm --prefix apps/web ci
@@ -330,4 +268,4 @@ npm --prefix apps/web run build
 cargo run --locked -p kuku-app --features embedded-web-assets -- web
 ```
 
-For service authentication and request formats, see [Run the server](../guides/run-the-server.md) and [Server API](server-api.md).
+[Run the server](../guides/run-the-server.md) · [Server API](server-api.md)

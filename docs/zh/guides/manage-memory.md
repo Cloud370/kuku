@@ -1,42 +1,30 @@
-# Manage Memory
+# 管理 Memory
 
-Memory 是存储在磁盘上的长期上下文。
+Memory 是以纯 Markdown 存在磁盘上的长期上下文，会自动注入后续的 Session。
 
-## Know the Two Scopes
+## 两种作用域
 
-- 全局 Memory 适用于所有 Session。
-- 项目 Memory 只适用于一个工作区。
+- **全局 Memory**：`$KUKU_HOME/memory.md` — 对所有 Session 生效。
+- **项目 Memory**：`$KUKU_HOME/p/<workspace>/memory.md` — 仅对单个工作区生效。
 
-路径见 [File Layout](../reference/file-layout.md)。
+这两个文件都是普通文本，随时可以直接打开查看或手动编辑。[文件布局](../reference/file-layout.md)
 
-## Let the Agent Update Memory
+## 让 Agent 自动维护 Memory
 
-运行时暴露了两个专用 Tool：
+运行时提供两个内置工具：
 
 - `remember_memory`
 - `forget_memory`
 
-它们的准确参数定义见 [Tools](../reference/tools.md)。
+具体参数定义见 [工具参考](../reference/tools.md)。
 
-## Review Memory Files
+## 保持精简
 
-当你想以文本形式检查或编辑时，可以直接读取当前 Memory 文件：
+Memory 只适合放稳定的习惯偏好、长期成立的项目事实，以及真正影响后续判断的线索。不要往里塞：
 
-- global: `$KUKU_HOME/memory.md`
-- project: `$KUKU_HOME/p/<workspace>/memory.md`
+- 一次性任务笔记
+- Session 对话记录
+- 密钥或凭据
+- 已经写在 `AGENTS.md` 或 `CLAUDE.md` 里的规则
 
-## Keep Memory Small
-
-好的 Memory 条目应当是稳定的指导、持久的事实，以及会影响后续决策的线索。
-
-不要把以下内容放进 Memory：
-
-- 临时任务笔记
-- Session 转录
-- secret
-- 已经由 `AGENTS.md` 或 `CLAUDE.md` 强制定义的事实
-
-## Related Pages
-
-- [File Layout](../reference/file-layout.md)
-- [Glossary](../reference/glossary.md)
+延伸阅读：[Memory 机制](../how-it-works/memory.md) · [术语表](../reference/glossary.md)

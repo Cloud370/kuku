@@ -3,7 +3,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
 use crate::keys::Shortcut;
-use crate::markup::{render_diff, render_literal, wrap, wrap_bounded};
+use crate::markup::{render_diff, render_literal, wrap, wrap_bounded, wrap_numbered};
 use crate::theme::{ACCENT, ERROR, MUTED, WARNING};
 use crate::transcript::ToolView;
 
@@ -22,7 +22,8 @@ pub(crate) struct OutputViewer {
     top: usize,
     height: usize,
     row_count: usize,
-    offsets: Vec<u64>,
+    offsets: Vec<(u64, usize)>,
+    first_line: usize,
     previous_request: bool,
 }
 
@@ -39,6 +40,7 @@ impl OutputViewer {
             height: 1,
             row_count: 0,
             offsets: Vec::new(),
+            first_line: 1,
             previous_request: false,
         }
     }
@@ -48,12 +50,20 @@ impl OutputViewer {
         self.problem = None;
         if let Some(previous) = &self.chunk {
             if self.previous_request {
-                self.offsets.pop();
+                if let Some((_, line)) = self.offsets.pop() {
+                    self.first_line = line;
+                }
             } else if chunk.offset > previous.offset {
                 if self.offsets.len() == MAX_PREVIOUS_OFFSETS {
                     self.offsets.remove(0);
                 }
-                self.offsets.push(previous.offset);
+                self.offsets.push((previous.offset, self.first_line));
+                self.first_line += previous
+                    .segments
+                    .iter()
+                    .flat_map(|segment| segment.as_bytes())
+                    .filter(|&&byte| byte == b'\n')
+                    .count();
             }
         }
         self.top = 0;
@@ -65,20 +75,52 @@ impl OutputViewer {
         let previous = amount.is_negative() && self.top == 0;
         let next = amount > 0 && self.top == bottom;
         self.top = self.top.saturating_add_signed(amount).min(bottom);
-        let chunk = self.chunk.as_ref()?;
-        if self.loading {
-            return None;
+        if previous || next {
+            return self.request_page(previous);
         }
-        let offset = if previous {
-            self.offsets.last().copied()
-        } else if next && (chunk.has_more || !chunk.complete) {
+        None
+    }
+
+    pub(crate) fn page_offset(&self, previous: bool) -> Option<u64> {
+        let chunk = self.chunk.as_ref()?;
+        if previous {
+            self.offsets.last().map(|&(offset, _)| offset)
+        } else if (chunk.has_more || !chunk.complete)
+            && self
+                .tool
+                .output_range
+                .as_ref()
+                .is_none_or(|range| chunk.next_offset < range.end)
+        {
             Some(chunk.next_offset)
         } else {
             None
-        }?;
+        }
+    }
+
+    pub(crate) fn request_page(&mut self, previous: bool) -> Option<u64> {
+        if self.loading {
+            return None;
+        }
+        let offset = self.page_offset(previous)?;
         self.loading = true;
         self.previous_request = previous;
         Some(offset)
+    }
+
+    pub(crate) fn read_request(&self, offset: u64) -> Option<(String, usize)> {
+        let id = self.tool.output_id.clone()?;
+        let limit = self
+            .tool
+            .output_range
+            .as_ref()
+            .map_or(OUTPUT_PAGE_BYTES, |range| {
+                range
+                    .end
+                    .saturating_sub(offset)
+                    .min(OUTPUT_PAGE_BYTES as u64) as usize
+            });
+        Some((id, limit))
     }
 
     pub(crate) fn retry(&mut self) -> Option<u64> {
@@ -87,7 +129,15 @@ impl OutputViewer {
         }
         self.loading = true;
         self.previous_request = false;
-        Some(self.chunk.as_ref().map_or(0, |chunk| chunk.offset))
+        Some(self.chunk.as_ref().map_or_else(
+            || {
+                self.tool
+                    .output_range
+                    .as_ref()
+                    .map_or(0, |range| range.start)
+            },
+            |chunk| chunk.offset,
+        ))
     }
 
     pub(crate) fn page_size(&self) -> usize {
@@ -119,22 +169,7 @@ impl OutputViewer {
                 lines.extend(evidence);
             }
         }
-        if let Some(chunk) = &self.chunk {
-            for segment in &chunk.segments {
-                let color = match segment.stream {
-                    OutputStream::Stdout => Color::Reset,
-                    OutputStream::Stderr => WARNING,
-                };
-                lines.extend(render_literal(&segment.text, Style::default().fg(color)));
-            }
-        } else if !self.tool.diff.is_empty() {
-            lines.extend(render_diff(&self.tool.diff));
-        } else if !self.tool.details.is_empty() && self.tool.details != self.tool.summary {
-            lines.extend(render_literal(
-                &self.tool.details,
-                Style::default().fg(Color::Reset),
-            ));
-        }
+        lines.extend(self.output_lines(width));
         if self.loading {
             lines.push(Line::styled(
                 "Reading saved output…",
@@ -146,6 +181,49 @@ impl OutputViewer {
         self.row_count = lines.len();
         self.top = self.top.min(lines.len().saturating_sub(height));
         lines.into_iter().skip(self.top).take(height).collect()
+    }
+
+    pub(crate) fn output_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        if let Some(chunk) = &self.chunk {
+            for segment in &chunk.segments {
+                lines.extend(render_literal(&segment.text, stream_style(segment.stream)));
+            }
+        } else if let Some(formatted) = self.tool.formatted_lines(width) {
+            lines.extend(formatted);
+        } else if !self.tool.diff.is_empty() {
+            lines.extend(render_diff(&self.tool.diff));
+        } else if !self.tool.details.is_empty() && self.tool.details != self.tool.summary {
+            lines.extend(render_literal(
+                &self.tool.details,
+                Style::default().fg(Color::Reset),
+            ));
+        }
+        lines
+    }
+
+    pub(crate) fn numbered_output_lines(&self, width: usize, total: usize) -> Vec<Line<'static>> {
+        let lines = if let Some(chunk) = &self.chunk {
+            let mut lines = vec![Line::default()];
+            for segment in &chunk.segments {
+                let mut rows =
+                    render_literal(&segment.text, stream_style(segment.stream)).into_iter();
+                if let Some(first) = rows.next() {
+                    lines.last_mut().expect("output line").extend(first.spans);
+                }
+                lines.extend(rows);
+            }
+            if lines
+                .last()
+                .is_some_and(|line| line.spans.iter().all(|span| span.content.is_empty()))
+            {
+                lines.pop();
+            }
+            lines
+        } else {
+            self.output_lines(width)
+        };
+        wrap_numbered(lines, width, usize::MAX, self.first_line, total)
     }
 
     pub(crate) fn footer(&self) -> Line<'static> {
@@ -168,24 +246,10 @@ impl OutputViewer {
                 Style::default().fg(MUTED),
             );
         };
-        let mut state = String::new();
-        if chunk.capture_truncated {
-            state.push_str(" · capture truncated");
-        }
-        if chunk.cleanup_incomplete {
-            state.push_str(" · cleanup incomplete");
-        } else if !chunk.complete {
-            state.push_str(" · capturing");
-        }
-        if chunk.lossy_utf8 {
-            state.push_str(" · decoding replaced bytes");
-        }
         Line::styled(
             format!(
-                "{}–{} / {} bytes{state} · {} Name · {}/{} · {} Refresh · {}",
-                chunk.offset,
-                chunk.next_offset,
-                chunk.total_bytes,
+                "{} · {} Name · {}/{} · {} Refresh · {}",
+                page_caption(chunk),
                 Shortcut::NAME_OUTPUT.label,
                 Shortcut::PAGE_UP.label,
                 Shortcut::PAGE_DOWN.label,
@@ -195,6 +259,36 @@ impl OutputViewer {
             Style::default().fg(ACCENT),
         )
     }
+
+    pub(crate) fn page_caption(&self) -> Option<String> {
+        self.chunk.as_ref().map(page_caption)
+    }
+}
+
+fn stream_style(stream: OutputStream) -> Style {
+    Style::default().fg(match stream {
+        OutputStream::Stdout => Color::Reset,
+        OutputStream::Stderr => WARNING,
+    })
+}
+
+fn page_caption(chunk: &OutputChunk) -> String {
+    let mut text = format!(
+        "{}–{} / {} bytes",
+        chunk.offset, chunk.next_offset, chunk.total_bytes
+    );
+    if chunk.capture_truncated {
+        text.push_str(" · capture truncated");
+    }
+    if chunk.cleanup_incomplete {
+        text.push_str(" · cleanup incomplete");
+    } else if !chunk.complete {
+        text.push_str(" · capturing");
+    }
+    if chunk.lossy_utf8 {
+        text.push_str(" · decoding replaced bytes");
+    }
+    text
 }
 
 #[cfg(test)]
@@ -216,6 +310,7 @@ mod tests {
                 output_id: Some("saved".into()),
                 evidence: String::new(),
                 inline_output_complete: false,
+                ..ToolView::default()
             },
         );
         viewer.apply(output(0, "first page", true));
@@ -229,6 +324,23 @@ mod tests {
         assert!(next.contains("next page!"));
         assert!(!next.contains("long_command"));
         assert_eq!(Some(0), viewer.scroll(-1));
+    }
+
+    #[test]
+    fn recorded_read_retries_its_offset_and_stops_at_the_range_end() {
+        let mut viewer = OutputViewer::new(
+            1,
+            ToolView {
+                output_id: Some("saved".into()),
+                output_range: Some(9..15),
+                ..ToolView::default()
+            },
+        );
+        viewer.loading = false;
+        assert_eq!(Some(9), viewer.retry());
+        viewer.apply(output(9, "screen", true));
+        assert!(rendered(&mut viewer).contains("screen"));
+        assert_eq!(None, viewer.scroll(1));
     }
 
     fn rendered(viewer: &mut OutputViewer) -> String {

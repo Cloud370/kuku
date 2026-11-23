@@ -77,7 +77,7 @@ auto_discover = true
 
 [handoff]
 enabled = true
-threshold = 0.7          # 0.0–1.0, triggers handoff at this context usage ratio
+threshold = 0.95         # 0.0–1.0, share of available input token budget
 keep_turns = 2           # number of recent turns preserved after handoff
 
 # ── Logs ──────────────────────────────────────────────────────────────────────

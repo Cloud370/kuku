@@ -42,7 +42,7 @@ use snapshot::{
     read_after_source, read_before_source, read_source, JournalSnapshot, LockedJournal, ReadSource,
 };
 
-const MAX_RECORD_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 1024 * 1024;
 const MAX_PAGE_RECORDS: usize = 256;
 const INDEX_STRIDE: usize = 128;
@@ -458,6 +458,16 @@ impl EventStore {
         drop(writer);
         self.changed().notify_waiters();
         Ok(events)
+    }
+
+    pub(crate) fn validate_batch_records(first: u64, payloads: &[EventPayload]) -> Result<()> {
+        for (index, payload) in payloads.iter().enumerate() {
+            let id = first.checked_add(index as u64).ok_or_else(ids_exhausted)?;
+            let mut payload = payload.clone();
+            patch_event_id(&mut payload, id)?;
+            serialize_record(&StoredEvent { id, payload })?;
+        }
+        Ok(())
     }
 
     #[cfg(test)]

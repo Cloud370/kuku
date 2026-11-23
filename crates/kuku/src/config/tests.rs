@@ -441,7 +441,7 @@ fn handoff_config_defaults_when_absent() {
     assert!(file.handoff.is_none());
     let config = file.resolve().unwrap();
     assert!(config.handoff.enabled);
-    assert!((config.handoff.threshold - 0.7).abs() < f64::EPSILON);
+    assert!((config.handoff.threshold - 0.95).abs() < f64::EPSILON);
     assert_eq!(config.handoff.keep_turns, 2);
 }
 
@@ -451,7 +451,7 @@ fn handoff_config_partial() {
     let file: ConfigFile = toml::from_str(&toml_str).unwrap();
     let config = file.resolve().unwrap();
     assert!(!config.handoff.enabled);
-    assert!((config.handoff.threshold - 0.7).abs() < f64::EPSILON);
+    assert!((config.handoff.threshold - 0.95).abs() < f64::EPSILON);
     assert_eq!(config.handoff.keep_turns, 2);
 }
 
@@ -492,7 +492,7 @@ fn generate_default_includes_all_sections() {
     assert!(file.discovery.is_some());
     let h = file.handoff.unwrap();
     assert!(h.enabled);
-    assert!((h.threshold - 0.7).abs() < f64::EPSILON);
+    assert!((h.threshold - 0.95).abs() < f64::EPSILON);
     assert_eq!(h.keep_turns, 2);
     let logs = file.logs.unwrap();
     assert_eq!(logs.max_age_days, 14);
@@ -695,7 +695,7 @@ api_key = "test-key"
     assert!(file.handoff.is_some());
     let h = file.handoff.unwrap();
     assert!(h.enabled);
-    assert!((h.threshold - 0.7).abs() < f64::EPSILON);
+    assert!((h.threshold - 0.95).abs() < f64::EPSILON);
     assert_eq!(h.keep_turns, 2);
 }
 

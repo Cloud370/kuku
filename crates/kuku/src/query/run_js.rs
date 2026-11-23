@@ -156,6 +156,13 @@ impl ScriptHost for WorkspaceHost {
         self.methods.clone()
     }
 
+    fn retain_return(
+        &self,
+        json: String,
+    ) -> ScriptFuture<'_, Result<Option<crate::OutputReference>>> {
+        Box::pin(async move { self.actions.retain_script_return(json).await.map(Some) })
+    }
+
     fn dispatch(
         &self,
         call: ScriptCall,

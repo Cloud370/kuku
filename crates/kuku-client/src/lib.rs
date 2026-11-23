@@ -32,10 +32,10 @@ pub use pending::PendingStore;
 pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpdate};
 pub use types::{
     Acknowledgement, Action, AgentProgress, AgentSettlement, AgentSummary, ApiError, Command,
-    EventPage, HistoryDestination, HistoryDestinations, HistoryEntry, HistoryKind, HistoryPage,
-    ModelDefaultPlan, ReplyPreview, RetryFailureKind, RetryMetadata, RetryPhase, RetrySource,
-    RetryStopReason, RewindGroup, RewindGroupPage, SessionStatus, SessionSummary, Snapshot, Target,
-    Timing,
+    EventPage, ForwardHistoryPage, HistoryDestination, HistoryDestinations, HistoryEntry,
+    HistoryKind, HistoryPage, ModelDefaultPlan, ReplyPreview, RetryFailureKind, RetryMetadata,
+    RetryPhase, RetrySource, RetryStopReason, RewindGroup, RewindGroupPage, SessionStatus,
+    SessionSummary, Snapshot, Target, Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
 

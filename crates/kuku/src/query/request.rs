@@ -1,4 +1,6 @@
-use crate::context::{ContextAssembly, MessageBlock, Role};
+use serde_json::Value;
+
+use crate::context::{CanonicalMessage, ContextAssembly, MessageBlock, Role};
 use crate::prompt::{PromptAsset, PromptCatalog};
 use crate::provider::types::{CanonicalPromptInput, ProviderRequest};
 
@@ -90,7 +92,6 @@ impl OwnedRequestBase {
         mut history: Vec<crate::context::CanonicalMessage>,
         instruction: String,
         reuse_prefix: bool,
-        output_limit: u32,
     ) -> Self {
         let mut request = self.clone();
         if !reuse_prefix {
@@ -98,17 +99,31 @@ impl OwnedRequestBase {
             request.assembly.prelude_messages.clear();
             request.assembly.system_prompt.clear();
         }
-        request.max_output_tokens = Some(
-            self.max_output_tokens
-                .unwrap_or(output_limit)
-                .min(output_limit),
-        );
         request.current_user_index = history.len();
         let instruction = crate::context::CanonicalMessage::user_text(instruction);
         history.push(instruction.clone());
         request.assembly.history = history;
         request.current_input.parts = vec![instruction];
         request
+    }
+
+    pub(super) fn estimated_input_tokens(&self) -> u32 {
+        let prelude = estimate_text(&self.assembly.system_prompt).saturating_add(
+            estimated_message_tokens(self.assembly.prelude_messages.iter()),
+        );
+        let tools = self.assembly.tools.iter().fold(0u32, |total, tool| {
+            total
+                .saturating_add(estimate_text(&tool.name))
+                .saturating_add(estimate_text(&tool.description))
+                .saturating_add(estimate_json(&tool.input_schema))
+        });
+        prelude
+            .saturating_add(tools)
+            .saturating_add(estimated_message_tokens(self.assembly.history.iter()))
+    }
+
+    pub(super) fn limit_checkpoint_output(&mut self, available: u32) {
+        self.max_output_tokens = self.max_output_tokens.map(|limit| limit.min(available));
     }
 
     pub(super) fn checkpoint_instruction(&self) -> Option<&str> {
@@ -187,6 +202,69 @@ impl OwnedRequestBase {
         resolved
             .max_context_tokens
             .saturating_sub(self.think_level.overhead_tokens())
+    }
+
+    pub(super) fn context_headroom(
+        &self,
+        resolved: &crate::provider::types::ResolvedProvider,
+    ) -> crate::notice::ContextHeadroom {
+        crate::notice::compute_context_headroom(
+            self.context_limit(resolved),
+            self.max_output_tokens,
+            None,
+        )
+    }
+}
+
+pub(super) fn estimated_message_tokens<'a>(
+    messages: impl Iterator<Item = &'a CanonicalMessage>,
+) -> u32 {
+    messages.fold(0u32, |total, message| {
+        message
+            .blocks
+            .iter()
+            .fold(total.saturating_add(4), |tokens, block| {
+                let addition = match block {
+                    MessageBlock::Text(text) | MessageBlock::Thinking(text) => estimate_text(text),
+                    MessageBlock::ToolUse(call) => estimate_text(&call.name)
+                        .saturating_add(estimate_json(&call.args))
+                        .saturating_add(estimate_text(&call.id)),
+                    MessageBlock::ToolResult(result) => estimate_text(&result.model_content)
+                        .saturating_add(estimate_text(&result.tool_call_id)),
+                    MessageBlock::ProviderReplay { value, .. } => estimate_json(value),
+                };
+                tokens.saturating_add(addition)
+            })
+    })
+}
+
+fn estimate_text(text: &str) -> u32 {
+    if text.is_ascii() {
+        return u32::try_from(text.len().div_ceil(4)).unwrap_or(u32::MAX);
+    }
+    let (ascii, other) = text.chars().fold((0u32, 0u32), |(ascii, other), ch| {
+        if ch.is_ascii() {
+            (ascii.saturating_add(1), other)
+        } else {
+            (ascii, other.saturating_add(1))
+        }
+    });
+    ascii.div_ceil(4).saturating_add(other)
+}
+
+fn estimate_json(value: &Value) -> u32 {
+    match value {
+        Value::String(text) => estimate_text(text).saturating_add(2),
+        Value::Array(items) => items.iter().fold(2u32, |total, value| {
+            total.saturating_add(estimate_json(value)).saturating_add(1)
+        }),
+        Value::Object(fields) => fields.iter().fold(2u32, |total, (key, value)| {
+            total
+                .saturating_add(estimate_text(key))
+                .saturating_add(estimate_json(value))
+                .saturating_add(3)
+        }),
+        _ => 4,
     }
 }
 

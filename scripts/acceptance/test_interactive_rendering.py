@@ -6,14 +6,14 @@ from unittest.mock import MagicMock, Mock, patch
 
 from interactive import wait_restart_and_recover_crash
 from interactive_fixture import InstalledClient, ProviderCall, Terminal, TOOL_OUTPUT, run_cases
+from interactive_fixture import (
+    has_standalone_assistant_rail, page_up_after_rendered_resize, rendered_running_transcript,
+)
 from interactive_rendering import (
     click_queued_input,
     has_selected_queued_input,
-    has_standalone_assistant_rail,
-    page_up_after_rendered_resize,
     queued_input_click_context,
     queued_input_click_position,
-    rendered_running_transcript,
     select_message_action,
 )
 
@@ -270,7 +270,7 @@ class QueuedInputFocusTests(unittest.TestCase):
                 "Pending inputs · ↑ select · Enter edit · Del withdraw",
                 "  › You · Queued · next Turn",
                 "  Actual queued input",
-                "│ Send to reviewer ▾        ⢎⡱ Ready Draft",
+                "│ ⢎⡱ Ready  Send to reviewer ▾",
                 "Composer text: Obsolete checkpoint follow-up",
             ]
         )
@@ -295,6 +295,23 @@ class MessageActionSelectionTests(unittest.TestCase):
         ])
         select_message_action(terminal, screen, "Copy")
         terminal.press.assert_called_once_with("\r")
+
+    def test_tabs_through_a_choice_with_visible_transcript_text_to_its_right(self):
+        terminal = MagicMock()
+        screen = "\n".join([
+            "  │   Message actions                                           │",
+            "  │   › Copy                                                    │",
+            "  │     Expand                                      transcript text",
+            "  │     Full output                                             │",
+            "  │   Operate message · Enter Run                               │",
+        ])
+        terminal.request.side_effect = [
+            {"screen": screen.replace("› Copy", "  Copy").replace("  Expand", "› Expand")},
+            {"screen": screen.replace("› Copy", "  Copy").replace("  Full output", "› Full output")},
+            {"screen": "The message action ran"},
+        ]
+        select_message_action(terminal, screen, "Full output")
+        assert [entry.args[0] for entry in terminal.press.call_args_list] == ["\t", "\t", "\r"]
 
 
 class TranscriptResizeSynchronizationTests(unittest.TestCase):
@@ -330,6 +347,7 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
         )
         self.assertFalse(rendered_running_transcript(stale, 32, markers))
         self.assertTrue(rendered_running_transcript(resized, 32, markers))
+        self.assertTrue(rendered_running_transcript(self.running_frame(27), 32, markers))
 
         background = resized.replace("Tools", "Running")
         self.assertTrue(rendered_running_transcript(background, 32, markers))

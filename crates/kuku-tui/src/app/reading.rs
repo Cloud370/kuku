@@ -1,9 +1,11 @@
 use crossterm::event::KeyEvent;
+use kuku_client::{Error, OutputChunk};
 
-use crate::jobs::Job;
+use crate::jobs::{Job, Selection};
 use crate::keys::Shortcut;
+use crate::transcript::InlineOutputEffect;
 
-use super::App;
+use super::{Address, App, Modal};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum KeyboardFocus {
@@ -28,6 +30,37 @@ impl App {
             return self.activate_readonly_rewind_group(rewind_event_id, action);
         }
         let (width, height) = self.transcript_area;
+        if key.is_inline_output() {
+            let id = self.modal_id();
+            let pane = self.pane_mut();
+            let Some(effect) = pane
+                .transcript
+                .activate_inline_output(key, id, width, height)
+            else {
+                return false;
+            };
+            if pane.transcript.is_reading() {
+                pane.keyboard_focus = KeyboardFocus::Transcript;
+            }
+            match effect {
+                InlineOutputEffect::Render => {}
+                InlineOutputEffect::Read {
+                    id,
+                    output,
+                    offset,
+                    limit,
+                } => {
+                    self.effects
+                        .push(Job::Output(self.selection(), id, output, offset, limit));
+                }
+                InlineOutputEffect::Name(output) => self.prompt_value_name(Some(output)),
+            }
+            return true;
+        }
+        if let Some(outputs) = self.pane().transcript.detail_outputs(key) {
+            self.show_outputs(outputs);
+            return true;
+        }
         if self.pane().transcript.note_is_open(key) {
             return self.pane_mut().transcript.close_notes();
         }
@@ -41,6 +74,39 @@ impl App {
             pane.keyboard_focus = KeyboardFocus::Transcript;
         }
         changed
+    }
+
+    pub(super) fn output_loaded(
+        &mut self,
+        selection: Selection,
+        id: u64,
+        result: Result<OutputChunk, Error>,
+    ) {
+        if selection.target.workspace != self.workspace {
+            return;
+        }
+        if selection == self.selection() {
+            if let Some(Modal::Output(viewer)) = &mut self.modal {
+                if viewer.id == id {
+                    match result {
+                        Ok(chunk) => viewer.apply(chunk),
+                        Err(error) => {
+                            viewer.loading = false;
+                            viewer.problem = Some(format!("Saved output · {error} · R Retry"));
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        let address = Address {
+            session: selection.target.session_id,
+            agent: selection.target.agent,
+        };
+        if let Some(pane) = self.panes.get_mut(&address) {
+            pane.transcript
+                .apply_inline_output(id, result.map_err(|error| error.to_string()));
+        }
     }
 
     pub(crate) fn focus_composer(&mut self) {

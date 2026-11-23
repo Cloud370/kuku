@@ -197,7 +197,7 @@ fn message(
                 "Sending edit"
             }
             (SubmissionStatus::Saving | SubmissionStatus::AwaitingReceipt, _, false) => "Sending",
-            (SubmissionStatus::Queued, Timing::Steer, _) => "Queued · steer",
+            (SubmissionStatus::Queued, Timing::Steer, _) => "Queued · next step",
             (SubmissionStatus::Queued, Timing::NextTurn, _) => "Queued · next Turn",
             (SubmissionStatus::Rejected, _, true) => "Edit rejected",
             (status, _, _) => status.label(),

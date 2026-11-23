@@ -56,7 +56,7 @@ async fn example_separates_request_bytes_from_context_tokens_and_reports_settlem
     provider.assert_hits_async(0).await;
 
     let completed = run_example(root, "completed.json", &[], true).await;
-    let request_byte_limit = kuku::RuntimeLimits::default().max_request_bytes;
+    let request_byte_limit = Value::Null;
     assert_eq!(CONTEXT_TOKENS, completed["limits"]["max_context_tokens"]);
     assert_eq!(request_byte_limit, completed["limits"]["max_request_bytes"]);
     assert_eq!(Value::Null, completed["limits"]["max_output_tokens"]);

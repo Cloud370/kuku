@@ -1,3 +1,4 @@
+use crate::transcript::tests::card_text;
 use serde_json::{json, Value};
 
 use crate::transcript::Transcript;
@@ -50,13 +51,19 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
             "tool_call_id":"script", "status":"ok", "summary":"Everything passed",
             "model_content":"All effects were applied",
             "structured":{
-                "kind":"workspace_script_result", "value":{"verified":true},
+                "kind":"workspace_script_result",
+                "value":{"verified":true,"agentsAndSkills":"Line one\nLine two","cliFiles":["main.rs","lib.rs"]},
                 "timed_out":false,"cleanup_incomplete":true,"not_dispatched":1,
                 "actions":[
                     {"id":"write","tool":"write_file","status":"ok","summary":"written","truncated":false,
                      "result":{"kind":"file_write","path":"report.txt","canonical_path":"/workspace/report.txt",
                                "commit_state":"committed","content_hash_before":null,"content_hash_after":"now","bytes_written":14}},
                     {"id":"append","tool":"append_output","status":"unknown","summary":"","truncated":false,"result":null},
+                    {"id":"file","tool":"read_file","status":"ok",
+                     "summary":"read docs/en/reference/tools.md, lines 1-200 of 231","truncated":false,
+                     "result":{"kind":"file_content","path":"docs/en/reference/tools.md","start_line":1,"line_count":200,"total_lines":231}},
+                    {"id":"find","tool":"find_files","status":"ok","summary":"found two entries somewhere","truncated":false,
+                     "result":{"kind":"file_list","path":"crates/kuku-cli/src","pattern":"**/*.rs","entry_count":2}},
                     {"id":"read","tool":"read_output","status":"ok","summary":"Output read","truncated":false,
                      "result":{"pages":5}},
                     {"id":"report","tool":"finish_output","status":"ok","summary":"report retained","truncated":false,
@@ -66,22 +73,90 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
         })).unwrap(),
         None,
     );
-    let rendered = transcript
-        .project(100, 28)
+    let view = transcript.project(100, 28);
+    let title_row = view
         .lines
-        .into_iter()
+        .iter()
+        .position(|line| card_text(&line.to_string()) == "Script")
+        .unwrap();
+    let detail = transcript.detail_at(title_row).unwrap().clone();
+    assert!(transcript.toggle_in_view(&detail, 100, 28));
+    let view = transcript.project(100, 28);
+    let rendered = view
+        .lines
+        .iter()
         .map(|line| line.to_string())
         .collect::<Vec<_>>()
         .join("\n");
     for evidence in [
-        "Run JavaScript · partial",
-        "7/9 host actions completed",
+        "│   │ Status · partial",
+        "Actions · 9/11 completed",
+        "│   │   │ Find crates/kuku-cli/src · **/*.rs · 2 entries",
+        "Output · 3 fields",
+        "verified · true",
+        "agentsAndSkills · Text · 2 lines",
+        "cliFiles · 2 items",
         "1 file change",
-        "Wrote report.txt",
+        "Added    report.txt",
         "effects unknown",
         "stopped before dispatch",
     ] {
         assert!(rendered.contains(evidence), "{evidence}\n{rendered}");
+    }
+    let read = view
+        .lines
+        .iter()
+        .find(|line| line.to_string().contains("docs/en/reference/tools.md"))
+        .unwrap();
+    for (field, color) in [
+        ("Read ", Some(crate::theme::ACCENT)),
+        (
+            "docs/en/reference/tools.md",
+            Some(crate::theme::SURFACE_TEXT),
+        ),
+        ("lines ", Some(crate::theme::MUTED)),
+        ("1–200", Some(crate::theme::USAGE)),
+        (" of ", Some(crate::theme::MUTED)),
+        ("231", Some(crate::theme::USAGE)),
+    ] {
+        assert!(read
+            .spans
+            .iter()
+            .any(|span| span.content.contains(field) && span.style.fg == color));
+    }
+    for (field, spans) in [
+        (
+            "agentsAndSkills",
+            [
+                ("agentsAndSkills", crate::theme::CODE_NAME),
+                ("Text", crate::theme::MODEL),
+                ("2", crate::theme::USAGE),
+                (" lines", crate::theme::MUTED),
+            ],
+        ),
+        (
+            "cliFiles",
+            [
+                ("cliFiles", crate::theme::CODE_NAME),
+                (" · ", crate::theme::MUTED),
+                ("2", crate::theme::USAGE),
+                (" items", crate::theme::MUTED),
+            ],
+        ),
+    ] {
+        let row = view
+            .lines
+            .iter()
+            .find(|line| line.to_string().contains(field))
+            .unwrap();
+        for (label, color) in spans {
+            assert!(
+                row.spans
+                    .iter()
+                    .any(|span| span.content == label && span.style.fg == Some(color)),
+                "{field} {label}"
+            );
+        }
     }
     assert!(!rendered.contains("Everything passed"));
     let message = transcript
@@ -93,11 +168,233 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
             "main",
         )
         .unwrap();
-    assert_eq!(2, message.outputs.len());
+    assert_eq!(4, message.outputs.len());
     assert_eq!(
         Some("retained-report"),
-        message.outputs[1].output_id.as_deref()
+        message.outputs[2].output_id.as_deref()
     );
+}
+
+#[test]
+fn closed_script_card_previews_an_action_and_the_return_shape() {
+    let mut transcript = Transcript::default();
+    for event in [
+        json!({"id":1,"agent":"main","turn":1,"type":"tool_call","tool":"run_js","tool_call_id":"check",
+            "args":{"title":"Check workspace","code":"return await verify();"}}),
+        json!({"id":2,"agent":"main","turn":1,"type":"tool_result","tool_call_id":"check","status":"ok",
+        "structured":{"kind":"workspace_script_result","timed_out":false,
+            "cleanup_incomplete":false,"not_dispatched":0,
+            "value":{"verified":true},
+            "actions":[
+                {"id":"command","tool":"run_command","status":"ok","summary":"completed","truncated":false,
+                 "result":command_facts("verify", "log", 8, "private command output")},
+                {"id":"read","tool":"read_file","status":"ok","summary":"read guide.md","truncated":false,
+                 "result":{"kind":"file_content","path":"guide.md","start_line":1,"line_count":3,"total_lines":3}}
+            ]}}),
+    ] {
+        transcript.apply(serde_json::from_value(event).unwrap(), None);
+    }
+    let view = transcript.project(96, 20);
+    let screen = view
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for row in [
+        "Status · ok · 2/2 actions completed",
+        "Run verify",
+        "Output · 1 field",
+    ] {
+        assert!(screen.contains(row), "{screen}");
+    }
+    for row in [
+        "guide.md",
+        "private command output",
+        "return await verify()",
+        "verified · true",
+    ] {
+        assert!(!screen.contains(row), "{screen}");
+    }
+    let title = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("Script   Check workspace"))
+        .unwrap();
+    let body = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("Run verify"))
+        .unwrap();
+    assert_eq!(transcript.detail_at(title), transcript.detail_at(body));
+    let action = transcript.detail_at(body).unwrap().clone();
+    assert!(transcript.toggle_in_view(&action, 96, 20));
+    assert!(transcript
+        .project(96, 20)
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("Input · JavaScript")));
+}
+
+#[test]
+fn script_details_show_source_inside_the_tool_card() {
+    let mut transcript = Transcript::default();
+    for event in [
+        json!({"id":1,"agent":"main","turn":1,"type":"tool_call","tool":"run_js","tool_call_id":"script",
+            "args":{"title":"Save the report","code":"const marker = '```';\nconst first = 1;\nconst second = 2;\nreturn { marker };"}}),
+        json!({"id":2,"agent":"main","turn":1,"type":"tool_result","tool_call_id":"script","status":"ok",
+            "structured":{"kind":"workspace_script_result","actions":[],"value":null,"timed_out":false,
+                "cleanup_incomplete":false,"not_dispatched":0,"output_ref":{"id":"saved","offset":0,"bytes":16000}}}),
+    ] {
+        transcript.apply(serde_json::from_value(event).unwrap(), None);
+    }
+    let view = transcript.project(80, 20);
+    let label = "Script   Save the report";
+    let index = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains(label))
+        .unwrap();
+    assert!(!view
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("const marker")));
+    assert!(view
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("Output · Saved JSON")));
+    let heading = view.lines[index].clone();
+    for (text, color) in [
+        ("Script", crate::theme::MODEL),
+        ("Save the report", crate::theme::SURFACE_TEXT),
+    ] {
+        assert!(heading
+            .spans
+            .iter()
+            .any(|span| span.content.trim() == text && span.style.fg == Some(color)));
+    }
+    let detail = transcript.detail_at(index).unwrap().clone();
+    assert!(transcript.toggle_in_view(&detail, 80, 20));
+    let view = transcript.project(80, 20);
+    assert_eq!(heading, view.lines[index]);
+    assert!(view.lines[index + 1]
+        .to_string()
+        .contains("│   │ Status · ok"));
+    let source = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("Input · JavaScript"))
+        .unwrap();
+    assert_eq!(source, index + 2);
+    assert!(view.lines[source].to_string().contains("4 lines"));
+    assert!(view.lines[source + 1]
+        .to_string()
+        .contains("│   │   │ const marker"));
+    assert!(!view
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("return { marker };")));
+    let source_key = transcript.detail_at(source).unwrap().clone();
+    assert!(transcript.toggle_in_view(&source_key, 80, 20));
+    let view = transcript.project(80, 20);
+    let text: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
+    assert!(text[index].contains(label));
+    let source = text
+        .iter()
+        .position(|line| line.contains("│   │ Input · JavaScript"))
+        .unwrap();
+    assert_eq!(source, index + 2);
+    assert!(view.lines[source].to_string().contains("4 lines"));
+    assert!(text[source + 1].contains("│   │   │ const marker"));
+    assert!(transcript.detail_at(source + 1).is_none());
+    assert_eq!(
+        view.lines[index].spans[0].style.bg,
+        view.lines[source].spans[0].style.bg
+    );
+    assert_eq!(
+        1,
+        text.iter()
+            .filter(|line| line.contains("│   │ Input · JavaScript"))
+            .count()
+    );
+    assert!(text
+        .iter()
+        .any(|line| line.contains("const marker = '```';")));
+    assert!(text.iter().any(|line| line.contains("return { marker };")));
+    assert!(!text.iter().any(|line| line.contains("Requested arguments")));
+}
+
+#[test]
+fn creation_and_overwrite_previews_share_the_same_diff_rules() {
+    let created = super::FileChange::from_result(
+        &json!({
+            "kind": "file_write",
+            "path": "guide.md",
+            "created": true,
+            "line_count": 2,
+            "raw_text_after": "# Usage\r\nTry `/resume`.\r\n",
+        }),
+        false,
+    )
+    .unwrap();
+    let overwritten = super::FileChange::from_result(
+        &json!({
+            "kind": "file_write",
+            "path": "guide.md",
+            "created": false,
+            "line_count": 2,
+            "change": {
+                "added_lines": 1, "removed_lines": 1,
+                "preview": "-Try `/resume`.\n+Open a session.",
+                "preview_line_numbers": [2, 2],
+            }
+        }),
+        false,
+    )
+    .unwrap();
+    for (change, heading, body) in [
+        (created, "Added    guide.md (+2 -0)", "│ 2 + Try `/resume`."),
+        (
+            overwritten,
+            "Edited   guide.md (+1 -1)",
+            "│ 2 + Open a session.",
+        ),
+    ] {
+        let row = super::file_change::compact_change_row(&change, "guide.md", 62);
+        assert_eq!(row.line.to_string(), heading);
+        for rows in [change.compact_preview(62), change.expanded_rows(62)] {
+            let row = rows
+                .iter()
+                .find(|row| row.line.to_string().contains(body))
+                .unwrap();
+            assert!(row
+                .line
+                .spans
+                .iter()
+                .any(|span| span.content.starts_with("│")
+                    && span.style.fg == Some(crate::theme::TURN_RULE)));
+            assert!(row
+                .line
+                .spans
+                .iter()
+                .any(|span| body.ends_with(span.content.as_ref())
+                    && span.style.fg == Some(crate::theme::SUCCESS)));
+        }
+    }
+}
+
+#[test]
+fn omitted_diff_preview_still_shows_the_recorded_line() {
+    let change = super::FileChange::from_result(
+        &json!({"kind":"file_edit","change":{
+            "added_lines": 1, "removed_lines": 2, "first_changed_line": 37,
+        }}),
+        false,
+    )
+    .unwrap();
+    let row = super::file_change::compact_change_row(&change, "guide.md", 72);
+    assert_eq!("Edited   guide.md (+1 -2) · line 37", row.line.to_string());
+    assert!(change.compact_preview(72).is_empty());
 }
 
 #[test]
@@ -142,12 +439,12 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
         .map(|line| line.to_string().trim_matches('│').trim().to_owned())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("╭─ check") && rendered.contains("╰─ timed out"));
+    assert!(rendered.contains("check · timed out"));
     assert!(rendered.contains("command timed out; output truncated"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
     assert!(
         rendered.contains(&format!(
-            "stderr:\ntry fewer inputs\nSaved output\n{warning}"
+            "stderr:\ntry fewer inputs\nView output\n{warning}"
         )),
         "{rendered}"
     );
@@ -231,9 +528,7 @@ fn reads_separated_by_a_turn_boundary_show_each_path_with_its_actual_line_range(
     assert_eq!(1, rendered.matches("Turn 4").count());
     assert_eq!(1, rendered.matches("src/lib.rs").count());
     assert_eq!(1, rendered.matches("src/main.rs").count());
-    assert!(
-        rendered.contains("Read file · ok · src/lib.rs · lines 17–21 of 30 · cached · truncated")
-    );
+    assert!(rendered.contains("Read src/lib.rs · lines 17–21 of 30 · cached · truncated"));
     assert!(rendered.contains("…") && !rendered.contains("Assistant"));
     assert!(rendered.contains("19    gamma") && !rendered.contains("epsilon"));
     assert_eq!(Some("Ctrl+O hide"), view.tool_hint.as_deref());
@@ -267,7 +562,7 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
             "edit_file",
             "notes.txt",
             json!({"old_text":"sentinel old", "new_text":"sentinel new"}),
-            json!({"status":"ok", "structured":{"kind":"file_edit", "path":"notes.txt", "replacement_count":1, "raw_text_after":"new line", "change":{"added_lines":1,"removed_lines":2,"preview":"-first\n-second\n+new line"}}}),
+            json!({"status":"ok", "structured":{"kind":"file_edit", "path":"notes.txt", "replacement_count":1, "raw_text_after":"new line", "change":{"added_lines":1,"removed_lines":2,"preview":"-first\n-second\n+new line","preview_line_numbers":[17,18,17]}}}),
         ),
         (
             "write_file",
@@ -292,7 +587,26 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
             );
         }
     }
-    let view = transcript.project(90, 32);
+    let compact = transcript.project(72, 32);
+    let rows: Vec<_> = compact.lines.iter().map(ToString::to_string).collect();
+    let write_row = rows
+        .iter()
+        .position(|line| line.contains("Wrote    notes.txt"))
+        .unwrap();
+    let edit_row = rows
+        .iter()
+        .position(|line| line.contains("Edited   notes.txt"))
+        .unwrap();
+    assert!(write_row < edit_row);
+    let compact_text = rows.join("\n");
+    assert!(compact_text.contains("│ 17 - first") && compact_text.contains("│ 17 + new line"));
+    assert!(compact_text.contains("18 - second") && !compact_text.contains("sentinel"));
+    let write_key = transcript.detail_at(write_row).unwrap().clone();
+    let edit_key = transcript.detail_at(edit_row).unwrap().clone();
+    assert!(transcript.toggle_detail(&write_key));
+    assert!(transcript.toggle_detail(&edit_key));
+
+    let view = transcript.project(90, 40);
     let rendered = view
         .lines
         .iter()
@@ -300,48 +614,37 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
         .collect::<Vec<_>>()
         .join("\n");
     for fact in [
-        "Write file · ok · notes.txt",
+        "Wrote    notes.txt",
         "saved UTF-8 中",
         "actual␛line",
-        "2 lines written",
-        "Edit file · ok · notes.txt",
-        "-first",
-        "-second",
-        "+new line",
-        "+1 −2",
+        "(2 lines)",
+        "Edited   notes.txt",
+        "17 - first",
+        "18 - second",
+        "17 + new line",
+        "(+1 -2)",
         "No permission for failed.txt",
     ] {
         assert!(rendered.contains(fact), "missing {fact}\n{rendered}");
     }
-    assert!(
-        !rendered.contains("sentinel")
-            && !rendered.contains("incorrect preview")
-            && !rendered.contains("3 lines written")
-    );
-    let edit_header = view
+    assert!(!rendered.contains("incorrect preview") && !rendered.contains("(3 lines)"));
+    assert!(!rendered.contains("Requested arguments · edit_file"));
+    assert!(!rendered.contains("sentinel new"));
+    assert_eq!("-first\n-second\n+new line", transcript.tools()[1].diff);
+    assert!(transcript.toggle_detail(&edit_key));
+    let folded = transcript.project(90, 40);
+    assert!(folded
         .lines
         .iter()
-        .position(|line| line.to_string().contains("Edit file · ok · notes.txt"))
-        .unwrap();
-    assert!(view.lines[edit_header]
-        .to_string()
-        .starts_with("╭─ Edit file"));
-    assert!(view.lines[edit_header..edit_header + 7]
-        .iter()
-        .all(|line| line.width() == 90));
-    assert!(view.lines[edit_header + 6].to_string().contains("╰─ +1 −2"));
-    let key = transcript.detail_at(edit_header).unwrap().clone();
-    assert!(transcript.toggle_detail(&key));
-    let inspected = transcript
-        .project(90, 40)
+        .any(|line| line.to_string().contains("Edited   notes.txt")));
+    assert!(folded
         .lines
-        .into_iter()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        inspected.contains("Requested arguments · edit_file") && inspected.contains("sentinel new")
-    );
+        .iter()
+        .any(|line| line.to_string().contains("17 - first")));
+    assert!(folded
+        .lines
+        .iter()
+        .any(|line| line.to_string().contains("18 - second")));
 }
 
 #[test]
@@ -369,23 +672,187 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     let lines: Vec<_> = screen.lines().collect();
     let heading = lines
         .iter()
-        .position(|line| line.starts_with(r#"╭─ check-file ["file with spaces"]"#))
+        .position(|line| card_text(line).starts_with(r#"check-file ["file with spaces"]"#))
         .unwrap();
-    assert!(lines[heading].ends_with('╮') && !lines[heading].contains("exit"));
-    assert!(lines[heading + 1].trim_matches('│').trim().is_empty());
-    assert_eq!(lines[heading + 2].trim_matches('│').trim(), "GONE");
-    assert!(lines[heading + 3].trim_matches('│').trim().is_empty());
-    assert!(lines[heading + 4].starts_with("╰─ ok · exit 0 · 180ms"));
+    assert!(card_text(lines[heading]).ends_with("ok · exit 0 · 180ms"));
+    for (text, tone) in [
+        ("ok", crate::theme::TranscriptTone::Success),
+        ("0", crate::theme::TranscriptTone::Success),
+        ("180", crate::theme::TranscriptTone::Value),
+        ("ms", crate::theme::TranscriptTone::Label),
+    ] {
+        assert!(
+            view.lines[heading]
+                .spans
+                .iter()
+                .any(|span| span.content == text && span.style.fg == Some(tone.color())),
+            "{text}"
+        );
+    }
+    assert_eq!(card_text(lines[heading + 1]), "GONE");
     let key = transcript.detail_at(heading).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript.project(80, 24);
+    for label in ["View output", "View arguments"] {
+        let link = inspected
+            .lines
+            .iter()
+            .find(|line| line.to_string().contains(label))
+            .unwrap();
+        for span in &link.spans {
+            assert_eq!(
+                span.content == label,
+                span.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::UNDERLINED)
+            );
+        }
+    }
+    let inspected: Vec<_> = inspected.lines.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        1,
+        inspected
+            .iter()
+            .filter(|line| line.contains("check-file"))
+            .count()
+    );
+    assert!(inspected.iter().any(|line| line.contains("View output")));
     assert!(inspected
+        .iter()
+        .any(|line| line.contains("│   │ Output · 1 line")));
+    assert!(inspected.iter().any(|line| line.contains("│   │ 1 GONE")));
+    assert!(!inspected
+        .iter()
+        .any(|line| line.contains("Requested arguments")));
+    let args_row = inspected
+        .iter()
+        .position(|line| line.contains("View arguments"))
+        .unwrap();
+    let args = transcript.detail_at(args_row).unwrap().clone();
+    assert!(transcript.toggle_in_view(&args, 80, 24));
+    let args_view = transcript.project(80, 24);
+    let args_text = args_view
         .lines
         .iter()
-        .any(|line| line.to_string().contains("check-file")));
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(args_text.contains("Hide arguments"));
+    assert!(args_text.contains("Program    check-file"));
+    assert!(args_text.contains(r#"Arguments  "file with spaces""#));
+    assert!(args_text.contains("Directory"));
+    let output = transcript
+        .detail_at(
+            args_text
+                .lines()
+                .position(|line| line.contains("View output"))
+                .unwrap(),
+        )
+        .unwrap()
+        .clone();
+    assert!(transcript.detail_outputs(&output).is_none());
+    assert!(matches!(
+        transcript.activate_inline_output(&output, 1, 80, 24),
+        Some(crate::transcript::InlineOutputEffect::Read { id: 1, output, offset: 0, limit: 4096 }) if output == "saved"
+    ));
+    let first_page = "page one\npartial ";
+    let second_page = "continued\npage two";
+    let second_offset = first_page.len() as u64;
+    let page = |offset, text: &str| kuku_client::OutputChunk {
+        output_id: "saved".into(),
+        offset,
+        next_offset: offset + text.len() as u64,
+        total_bytes: second_offset + second_page.len() as u64,
+        segments: vec![kuku_client::OutputSegment {
+            stream: kuku_client::OutputStream::Stdout,
+            offset,
+            bytes: text.len(),
+            raw_bytes: None,
+            text: text.to_owned(),
+        }],
+        summary: Vec::new(),
+        has_more: offset == 0,
+        complete: true,
+        capture_truncated: false,
+        cleanup_incomplete: false,
+        filtered: false,
+        lossy_utf8: false,
+    };
+    transcript.apply_inline_output(1, Ok(page(0, first_page)));
+    let first = transcript
+        .project(80, 24)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(first.contains("Hide arguments") && first.contains("Hide output"));
     assert!(
-        !screen.contains("stdout") && !screen.contains("Saved output") && !screen.contains('␍')
+        first.contains("│   │ 1 page one")
+            && first.contains("│   │ 2 partial ")
+            && !first.contains("GONE")
     );
+    transcript.show_latest();
+    let following = transcript.project(80, 24);
+    let next = transcript
+        .detail_at(
+            following
+                .lines
+                .iter()
+                .position(|line| line.to_string().contains("Next output page"))
+                .unwrap(),
+        )
+        .unwrap()
+        .clone();
+    assert!(matches!(
+        transcript.activate_inline_output(&next, 2, 80, 24),
+        Some(crate::transcript::InlineOutputEffect::Read {
+            id: 2,
+            offset,
+            ..
+        }) if offset == second_offset
+    ));
+    assert!(transcript.is_reading());
+    transcript.apply_inline_output(2, Ok(page(second_offset, second_page)));
+    let second = transcript
+        .project(80, 24)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        second.contains("│   │ 2 continued")
+            && second.contains("│   │ 3 page two")
+            && !second.contains("page one")
+    );
+    assert!(second.contains("Previous output page") && !second.contains("Next output page"));
+    let close = transcript
+        .detail_at(
+            second
+                .lines()
+                .position(|line| line.contains("Hide output"))
+                .unwrap(),
+        )
+        .unwrap()
+        .clone();
+    assert!(matches!(
+        transcript.activate_inline_output(&close, 3, 80, 24),
+        Some(crate::transcript::InlineOutputEffect::Render)
+    ));
+    let collapsed = transcript
+        .project(80, 24)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        collapsed.contains("View output")
+            && collapsed.contains("GONE")
+            && !collapsed.contains("page two")
+    );
+    assert!(!screen.contains("stdout") && !screen.contains("View output") && !screen.contains('␍'));
     assert_eq!(transcript.tools()[0].details, raw);
 }
 

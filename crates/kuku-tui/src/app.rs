@@ -651,7 +651,7 @@ impl App {
             }
             Update::WatchReconnecting(selection, error) if selection == self.selection() => {
                 self.drop_watch(Watch::Reconnecting(format!(
-                    "kuku service live updates interrupted · {error} · Ctrl+R to reconnect"
+                    "kuku service live updates interrupted · Ctrl+R to reconnect · {error}"
                 )));
             }
             Update::WatchFailed(selection, error) if selection == self.selection() => {
@@ -747,19 +747,7 @@ impl App {
                     Err(_) => StartupSkills::Unavailable,
                 };
             }
-            Update::Output(selection, id, result) if selection == self.selection() => {
-                if let Some(Modal::Output(viewer)) = &mut self.modal {
-                    if viewer.id == id {
-                        match result {
-                            Ok(chunk) => viewer.apply(chunk),
-                            Err(error) => {
-                                viewer.loading = false;
-                                viewer.problem = Some(format!("Saved output · {error} · R Retry"));
-                            }
-                        }
-                    }
-                }
-            }
+            Update::Output(selection, id, result) => self.output_loaded(selection, id, result),
             Update::RestartPrepared(ticket, result) => self.restart_prepared(ticket, result),
             Update::Restarted(result) => {
                 self.restarting = false;
@@ -781,8 +769,7 @@ impl App {
             | Update::Observation(..)
             | Update::Refreshed(..)
             | Update::BackgroundJobCancelled(..)
-            | Update::StartupSkills(..)
-            | Update::Output(..) => {}
+            | Update::StartupSkills(..) => {}
         }
         self.sync_pending_picker();
         self.sync_agent_picker();

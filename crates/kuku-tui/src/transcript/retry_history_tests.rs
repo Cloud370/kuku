@@ -170,7 +170,7 @@ fn consecutive_retry_history_entries_share_one_heading_and_one_line_each() {
     let events = lines
         .iter()
         .skip(heading + 1)
-        .take_while(|line| !line.trim().is_empty())
+        .take_while(|line| !line.trim().is_empty() && !line.starts_with('╰'))
         .collect::<Vec<_>>();
     assert_eq!(3, events.len(), "each retry decision should occupy one row");
     let scheduled = text.find("Retry scheduled").unwrap();
@@ -336,11 +336,11 @@ fn retry_detail_restores_when_paging_trims_correlated_error() {
             .expect("error record"),
     );
 
-    let correlated = rendered_at_height(&mut transcript, 512);
+    let correlated = rendered_at_height(&mut transcript, 4 * MAX_RECORDS);
     assert_eq!(1, correlated.matches(retry_message).count());
-    assert!(transcript.recent.trim_back().is_some());
+    assert!(transcript.recent.trim_back(None).is_some());
 
-    let paged = rendered_at_height(&mut transcript, 512);
+    let paged = rendered_at_height(&mut transcript, 4 * MAX_RECORDS);
     assert_eq!(1, paged.matches(retry_message).count());
     assert!(!paged.contains("Connection reset by peer"));
 }

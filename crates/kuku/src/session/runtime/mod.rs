@@ -151,7 +151,7 @@ impl Session {
         mut options: SessionOptions,
         creation: Option<(Command, AgentConfig)>,
     ) -> Result<Self> {
-        validate_limits(&options.limits)?;
+        options.limits.validate()?;
         let tool_adapters = Arc::new(selection::register_tools(&options)?);
         options.workspace = std::fs::canonicalize(&options.workspace)
             .map_err(|_| Error::InvalidWorkspacePath(options.workspace.display().to_string()))?;
@@ -174,7 +174,7 @@ impl Session {
             &events_path,
             &output_dir,
             &id,
-            options.limits.max_request_bytes,
+            options.limits.context_replay_bytes(),
         )?;
         let recovery::Projection {
             mut state, startup, ..
@@ -874,7 +874,7 @@ impl Session {
                 && writer.needs_packing()
             {
                 let id = self.id().to_owned();
-                let max_bytes = self.inner.options.limits.max_request_bytes;
+                let max_bytes = self.inner.options.limits.context_replay_bytes();
                 let events = self.events_path().to_owned();
                 let pack = tokio::task::spawn_blocking(move || {
                     recovery::pack(writer, &events, &id, max_bytes)
@@ -960,46 +960,4 @@ fn reduce_event(
     job_replay.observe(state, &event)?;
     state.outputs.observe_dispatch(&event.payload);
     usage::reduce_model_fact(state, &event.payload)
-}
-
-fn validate_limits(limits: &RuntimeLimits) -> Result<()> {
-    limits
-        .workspace_script
-        .validate()
-        .map_err(Error::InvalidArgument)?;
-    if limits.max_requests_per_open == Some(0) || limits.max_output_tokens_per_request == Some(0) {
-        return Err(Error::InvalidArgument(
-            "optional model request and output-token limits must be positive".into(),
-        ));
-    }
-    if limits.max_request_bytes < 4096
-        || limits.max_request_bytes > 16 * 1024 * 1024
-        || limits.max_preview_bytes < 1024
-    {
-        return Err(Error::InvalidArgument("model request byte limit must be 4096..=16777216 and output preview must retain at least 1024 bytes".into()));
-    }
-    if limits.max_agents == 0
-        || limits.max_agents > 4096
-        || limits.max_pending_inputs == 0
-        || limits.max_pending_inputs > 4096
-        || limits.max_input_bytes == 0
-        || limits.max_input_bytes > 262_144
-        || limits.max_model_requests == 0
-        || limits.max_model_requests > 256
-        || limits.max_tools_per_agent == 0
-        || limits.max_tools_per_agent > 128
-        || limits.max_output_bytes < 4096
-        || limits.max_output_bytes > 1024 * 1024 * 1024
-        || limits.max_retained_output_bytes < 4096
-        || limits.max_named_values > 4096
-        || limits.max_preview_bytes == 0
-        || limits.max_preview_bytes > 65_536
-        || limits.observation_capacity == 0
-        || limits.observation_capacity > 4096
-    {
-        return Err(Error::InvalidArgument(
-            "runtime limits are zero or outside the supported bounds".into(),
-        ));
-    }
-    Ok(())
 }

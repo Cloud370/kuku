@@ -16,7 +16,7 @@ PLATFORMS = {
 CASE_RULES = (
     (("crates/kuku-tui/*", "crates/kuku-client/*", "crates/kuku-cli/*", "apps/kuku/*",
       "scripts/acceptance/interactive_composer.py", "scripts/acceptance/interactive_rendering.py"),
-     ("startup-info", "composer-actions", "paste", "interrupt", "keyboard-queue")),
+     ("startup-info", "composer-actions", "paste", "statusline", "interrupt", "keyboard-queue")),
     (("crates/kuku-tui/src/setup*", "crates/kuku/src/config/*", "crates/kuku/src/config.rs",
       "crates/kuku-server/src/routes/models.rs", "scripts/acceptance/interactive_model_recovery.py"),
      ("first-run", "model-setup")),

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 use kuku_client::{
     Acknowledgement, Error, HistoryPage, InputStatus, Receipt, Snapshot, Timing, UsageTotals,
@@ -9,12 +9,13 @@ use serde_json::{json, Value};
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    compact_token_count, render_segments, Field, Priority, Segment, StatusLine, SEPARATOR,
+    compact_token_count, render_segments, Field, Priority, Segment, StatusLine, GROUP_GAP,
+    SEPARATOR,
 };
 use crate::app::{Address, App};
 use crate::config::StatusLineSettings;
 use crate::jobs::{Job, Update};
-use crate::theme::{ERROR, MODEL, WARNING};
+use crate::theme::{horizontal_gutter, ERROR, MODEL, WARNING};
 use crate::ui;
 
 fn connected_app() -> App {
@@ -67,6 +68,12 @@ fn measured_usage() -> UsageTotals {
         "unreported_requests": 0,
         "input_reported_requests": 3,
         "output_reported_requests": 3,
+        "costs": {
+            "reported_nanodollars": 10_000_000,
+            "estimated_nanodollars": 8_000_000,
+            "reported_requests": 1,
+            "estimated_requests": 2,
+        },
         "cache_measured_input_tokens": 129_000_000,
         "cache_measured_read_tokens": 96_750_000,
         "measured_output_tokens": 920,
@@ -143,7 +150,7 @@ fn status_line_setting_reports_duplicates_and_unknown_fields() {
 fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
     let line = render_segments(
         vec![
-            Segment::workspace("/dir/开发👩‍💻/最后".into()),
+            Segment::workspace(Some(Path::new("/dir/开发👩‍💻/最后"))),
             Segment::labels(vec!["Waiting".into()], WARNING, Priority::Attention),
             Segment::labels(vec!["Offline".into()], ERROR, Priority::ConnectionProblem),
         ],
@@ -159,9 +166,9 @@ fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
             .collect::<Vec<_>>()
     );
     let line = render_segments(
-        vec![Segment::workspace(
-            "/dir/e\u{0301}e\u{0301}e\u{0301}/👩‍💻末".into(),
-        )],
+        vec![Segment::workspace(Some(Path::new(
+            "/dir/e\u{0301}e\u{0301}e\u{0301}/👩‍💻末",
+        )))],
         10,
         SEPARATOR,
     )
@@ -306,7 +313,7 @@ fn cost_is_a_compact_amount_with_an_honest_precision_marker() {
 }
 
 #[test]
-fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
+fn default_status_line_shows_workspace_usage_and_cost() {
     let workspace = PathBuf::from("/workspace")
         .join("archived-projects".repeat(12))
         .join("work-right");
@@ -316,11 +323,20 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     let statusline = StatusLine::default();
     let rows = screen(&mut app, &statusline, 140, 24);
     let footer = rows[23].trim();
-    for label in ["Agent main", "work-right", "Context 89% used", "18.4 TPS"] {
+    for label in [
+        "Agent main",
+        "work-right",
+        "Context 89K/100K (89%)",
+        "Cache hit 75%",
+        "18.4 TPS",
+        "129M in",
+        "210K out",
+        "~$0.018",
+    ] {
         assert!(footer.contains(label), "missing {label:?} in {footer}");
     }
     assert!(footer.starts_with("Model pending  Agent main"));
-    for detail in ["Running", "http://", "129M in", "210K out", "Cache hit"] {
+    for detail in ["Running", "http://"] {
         assert!(!footer.contains(detail), "{footer}");
     }
     assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
@@ -328,14 +344,14 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     assert!(rows[19].contains("Running"));
     assert!(rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 80, 24);
-    assert!(rows[23].contains("Ctx 89%"));
+    assert!(rows[23].contains("Ctx 89%") && rows[23].contains("Cache 75%"));
     assert!(rows[23].contains("work-right") && rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 29, 24);
     assert!(rows[19].contains("Running"));
     let rows = screen(&mut app, &statusline, 42, 24);
     assert!(rows[22].contains("Model pending · Agent main"));
     assert!(
-        rows[23].contains("work-right · Ctx 89% · 18.4 TPS"),
+        rows[23].contains("work-right · Ctx 89% · Cache 75%"),
         "{}",
         rows[23]
     );
@@ -350,23 +366,42 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
 }
 
 #[test]
-fn wide_status_line_keeps_metrics_anchored_while_identity_width_changes() {
-    let layout = StatusLine::default();
+fn wide_default_and_custom_status_lines_anchor_usage_and_shorten_long_paths() {
     let mut short = connected_workspace(PathBuf::from("/short"));
-    let mut long = connected_workspace(PathBuf::from("/really-long-directory".repeat(20)));
+    let workspace = PathBuf::from("/really-long-directory".repeat(20)).join("work-right");
+    let mut long = connected_workspace(workspace);
     for app in [&mut short, &mut long] {
         load_agent(app, "running", 0, Value::Null, measured_usage());
     }
-    let first = screen(&mut short, &layout, 120, 24);
     long.pane_mut().draft.insert("正在输入");
-    let second = screen(&mut long, &layout, 120, 24);
-    let measures = "Context 89% used  18.4 TPS";
-    assert_ne!(first[23], second[23]);
-    let position = |row: &str| row.split_once(measures).map(|(prefix, _)| prefix.width());
-    assert_eq!(position(&first[23]), position(&second[23]));
-    assert!(first[23].trim_end().ends_with(measures));
-    assert!(second[23].trim_end().ends_with(measures));
-    assert_eq!("", second[22].trim());
+    let abbreviated = format!("…{MAIN_SEPARATOR}work-right");
+    for (layout, measures) in [
+        (
+            StatusLine::default(),
+            "Context 89K/100K (89%)  Cache hit 75%  18.4 TPS  129M in  210K out  ~$0.018",
+        ),
+        (
+            StatusLine::parse("workspace,agent,cache,context,tps").unwrap(),
+            "Cache hit 75% · Context 89% used · 18.4 TPS",
+        ),
+    ] {
+        for width in [140, 200] {
+            let first = screen(&mut short, &layout, width, 24);
+            let second = screen(&mut long, &layout, width, 24);
+            assert!(first[23].contains("/short"));
+            assert!(second[23].contains(&abbreviated));
+            assert!(!second[23].contains("really-long-directory"));
+            for footer in [&first[23], &second[23]] {
+                let footer = footer.trim_end();
+                assert!(footer.ends_with(measures), "{footer}");
+                assert_eq!(
+                    usize::from(width - horizontal_gutter(width)),
+                    footer.width()
+                );
+            }
+            assert_eq!("", second[22].trim());
+        }
+    }
 }
 
 #[test]
@@ -420,7 +455,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
 }
 
 #[test]
-fn configured_status_line_can_show_full_metrics_and_connection_details() {
+fn configured_status_line_can_show_full_metrics_and_connection_state() {
     let mut app = connected_app();
     load_agent(&mut app, "running", 0, Value::Null, measured_usage());
     let statusline = StatusLine::parse(
@@ -435,6 +470,9 @@ fn configured_status_line_can_show_full_metrics_and_connection_details() {
         "{footer}"
     );
     assert!(rows[21].contains("Enter steer"));
+    let connection = StatusLine::parse("connection").unwrap();
+    let rows = screen(&mut app, &connection, 140, 24);
+    assert_eq!("Connected Local", rows[23].trim());
 }
 
 #[test]
@@ -453,15 +491,21 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
     assert_eq!("Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace", fields);
     assert!(rows[16].contains("Enter steer"));
 
+    let assert_wide_footer = |app: &mut App, agent, expected| {
+        let rows = screen(app, &statusline, 120, 20);
+        let (left, right) = rows[19].trim().split_once(GROUP_GAP).unwrap();
+        assert_eq!(agent, left);
+        assert_eq!(expected, right.trim_start());
+    };
     app.select(
         Address::new(main.session.clone(), "reviewer".into()),
         true,
         "Example".into(),
     );
-    let rows = screen(&mut app, &statusline, 120, 20);
-    assert_eq!(
-        "Agent reviewer · — TPS · Context — · — out · Cache hit — · — in · /workspace",
-        rows[19].trim()
+    assert_wide_footer(
+        &mut app,
+        "Agent reviewer",
+        "— TPS · Context — · — out · Cache hit — · — in · /workspace",
     );
     let reviewer: UsageTotals = serde_json::from_value(json!({
         "model_requests": 2,
@@ -473,16 +517,16 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
     }))
     .unwrap();
     load_agent(&mut app, "idle", 0, Value::Null, reviewer);
-    let rows = screen(&mut app, &statusline, 120, 20);
-    assert_eq!(
-        "Agent reviewer · — TPS · Context — · 0 out · Cache hit — · ≥1.2K in · /workspace",
-        rows[19].trim()
+    assert_wide_footer(
+        &mut app,
+        "Agent reviewer",
+        "— TPS · Context — · 0 out · Cache hit — · ≥1.2K in · /workspace",
     );
     app.select(main, true, "Example".into());
-    let rows = screen(&mut app, &statusline, 120, 20);
-    assert_eq!(
-        "Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace",
-        rows[19].trim()
+    assert_wide_footer(
+        &mut app,
+        "Agent main",
+        "18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace",
     );
 }
 

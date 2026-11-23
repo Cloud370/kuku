@@ -1,14 +1,10 @@
-# Update Manifest
+# 更新清单
 
-发布 manifest 文件名为 `latest.json`。
-
-## 作用
-
-当前文档中，这个 manifest 用于发布安装脚本和更新 channel 配置。
+发布更新清单文件名为 `latest.json`，供安装脚本与更新频道配置读取。
 
 ## 格式
 
-`latest.json` 遵循 Tauri updater manifest 结构。
+`latest.json` 采用 Tauri updater 清单格式：
 
 ```json
 {
@@ -25,30 +21,27 @@
 }
 ```
 
-## 必需的顶层键
+## 字段
 
-| Key | Meaning |
+顶层字段：
+
+| 字段 | 含义 |
 |---|---|
-| `version` | 发布版本 |
+| `version` | 发布版本号 |
 | `notes` | 发布说明 |
-| `pub_date` | 发布时间戳 |
-| `platforms` | 按平台划分的下载映射 |
+| `pub_date` | 发布时间 |
+| `platforms` | 按平台划分的下载条目映射 |
+| `desktop` | 预留给桌面更新器的元数据 |
 
-`desktop` 预留给桌面更新器元数据。
+平台条目：
 
-## 平台条目
-
-每个平台条目包含：
-
-| Key | Meaning |
+| 字段 | 含义 |
 |---|---|
-| `url` | 下载 URL |
+| `url` | 下载地址 |
 | `sha256` | SHA-256 校验和 |
-| `size` | 可选的压缩包字节数，供安装脚本显示下载大小 |
+| `size` | 可选压缩包大小（字节），供安装脚本展示 |
 
-## Config 链接
-
-`config.toml` 通过以下配置选择 manifest 来源：
+## 配置示例
 
 ```toml
 [update]

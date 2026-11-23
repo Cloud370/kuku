@@ -13,9 +13,9 @@ mod snapshot;
 
 pub(super) use file_io::WorkspaceCommitError;
 pub(crate) use file_io::{
-    content_hash, ensure_active, file_read_error, file_version, format_content_hash,
-    mutation_preview, publish_file, read_file_as_utf8, remove_observed_file, write_atomically,
-    FileCancellation, StableFile,
+    content_hash, ensure_active, file_read_error, file_version, file_version_with_text,
+    format_content_hash, mutation_preview, publish_file, read_file_as_utf8, remove_observed_file,
+    write_atomically, FileCancellation, StableFile,
 };
 #[cfg(test)]
 use snapshot::find_write_snapshot;

@@ -4,6 +4,7 @@ pub(crate) use frame::CardFrame;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Padding;
 
 pub(crate) const ACCENT: Color = Color::Rgb(70, 161, 163);
@@ -41,7 +42,6 @@ pub(crate) const PICKER_WIDTH: u16 = 88;
 pub(crate) const PICKER_HEIGHT: u16 = 25;
 pub(crate) const SHORT_PROMPT_HEIGHT: u16 = 13;
 pub(crate) const STATUS_EDITOR_HEIGHT: u16 = 19;
-pub(crate) const OUTPUT_WIDTH: u16 = 112;
 const PANEL: Color = Color::Rgb(28, 35, 44);
 const FOCUS: Color = Color::Rgb(53, 73, 85);
 
@@ -64,6 +64,16 @@ pub(crate) fn horizontal_gutter(width: u16) -> u16 {
         72..=109 => 2,
         _ => 3,
     }
+}
+
+pub(crate) fn session_area(outer: Rect) -> Rect {
+    let gutter = horizontal_gutter(outer.width);
+    Rect::new(
+        outer.x + gutter,
+        outer.y,
+        outer.width.saturating_sub(2 * gutter),
+        outer.height,
+    )
 }
 
 pub(crate) fn card_padding(width: usize) -> Padding {
@@ -105,6 +115,79 @@ pub(crate) const THINKING_GLINT: Color = Color::Rgb(161, 166, 188);
 pub(crate) const TURN_RULE: Color = Color::Rgb(70, 85, 100);
 pub(crate) const TURN_CARD: Color = Color::Rgb(34, 45, 57);
 pub(crate) const USAGE: Color = Color::Rgb(153, 181, 214);
+
+#[derive(Clone, Copy)]
+pub(crate) enum TranscriptTone {
+    Text,
+    Label,
+    Field,
+    Type,
+    Value,
+    Success,
+    Warning,
+    Error,
+}
+
+impl TranscriptTone {
+    pub(crate) fn color(self) -> Color {
+        match self {
+            Self::Text => SURFACE_TEXT,
+            Self::Label => MUTED,
+            Self::Field => CODE_NAME,
+            Self::Type => MODEL,
+            Self::Value => USAGE,
+            Self::Success => SUCCESS,
+            Self::Warning => WARNING,
+            Self::Error => ERROR,
+        }
+    }
+
+    pub(crate) fn style(self) -> Style {
+        Style::new().fg(self.color())
+    }
+
+    pub(crate) fn emphasized(self) -> Style {
+        self.style().add_modifier(Modifier::BOLD)
+    }
+}
+
+fn line_count(count: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(count.to_string(), TranscriptTone::Value.emphasized()),
+        Span::styled(
+            if count == 1 { " line" } else { " lines" },
+            TranscriptTone::Label.style(),
+        ),
+    ])
+}
+
+pub(crate) fn append_line_count(title: &mut Line<'static>, width: usize, count: usize) {
+    let count = line_count(count);
+    let separator = if title.width() == 0 { "" } else { " · " };
+    let separator = Span::styled(separator, TranscriptTone::Label.style());
+    if title.width() + separator.width() + count.width() <= width {
+        title.push_span(separator);
+        title.extend(count.spans);
+    }
+}
+
+pub(crate) fn transcript_background() -> Style {
+    Style::new().bg(SURFACE)
+}
+
+pub(crate) fn tool_operation_color(name: &str) -> Color {
+    match name {
+        "write_file" | "edit_file" | "save_value" | "create_output" | "append_output"
+        | "finish_output" => USAGE,
+        "remove_file" => ERROR,
+        "run_js" | "run_command" => MODEL,
+        _ => ACCENT,
+    }
+}
+
+pub(crate) fn tool_status(color: Color) -> Style {
+    Style::new().fg(color)
+}
 
 pub(crate) const CODE_BACKGROUND: Color = Color::Rgb(29, 38, 46);
 pub(crate) const CODE_TEXT: Color = Color::Rgb(224, 232, 239);

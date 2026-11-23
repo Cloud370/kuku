@@ -40,6 +40,11 @@ impl ActivityClock {
             self.elapsed
                 .sample(app.pane().turn_timing(), observed.clock_runs(), now, wall);
         let mut frame = ActivityFrame::new(shown, step, elapsed);
+        frame.phase_elapsed = self
+            .phase
+            .shown_since
+            .filter(|_| shown.clock_runs())
+            .map(|began| now.duration_since(began).as_secs());
         let source = if observed == ObservedActivity::Agent(crate::app::Activity::Thinking) {
             app.pane().transcript.live_thinking()
         } else {
@@ -65,6 +70,7 @@ impl ActivityClock {
 #[derive(Default)]
 struct PhaseClock {
     shown: Option<ObservedActivity>,
+    shown_since: Option<Instant>,
     next: Option<(ObservedActivity, Instant)>,
 }
 
@@ -81,6 +87,13 @@ impl PhaseClock {
             if now.duration_since(*began) < PHASE_CONFIRMATION {
                 return shown;
             }
+        }
+        if self.shown.is_some_and(|shown| shown != observed) {
+            self.shown_since = Some(
+                self.next
+                    .filter(|(candidate, _)| *candidate == observed)
+                    .map_or(now, |(_, began)| began),
+            );
         }
         self.shown = Some(observed);
         self.next = None;

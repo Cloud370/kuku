@@ -1,20 +1,8 @@
-# File Layout
+# File layout
 
-## kuku Home
+## kuku home
 
-Default runtime home:
-
-```text
-~/.kuku/
-```
-
-Or, if set:
-
-```text
-$KUKU_HOME/
-```
-
-## Top-Level Layout
+Default root is `~/.kuku/`, or `$KUKU_HOME/` when set:
 
 ```text
 $KUKU_HOME/
@@ -28,30 +16,21 @@ $KUKU_HOME/
 └── p/
 ```
 
-`logs/` stores observability logs. Session facts remain in each session's `events.jsonl`.
+- **`logs/`** — observability logs and rotating [provider traces](environment-variables.md#provider-trace-logs) under `logs/provider-trace/`. Session facts live only in each Session's `events.jsonl`.
+- **`credentials/`** — owner-only plaintext key files written by interactive setup and referenced via `api_key = "file:<absolute-path>"`. Secrets are never copied into `config.toml` or printed by `kuku config show`. All workspaces sharing the same data directory share this folder (accessible to processes running as the same OS user). On Unix, the directory is `0700` and files are `0600`; on Windows, a protected ACL restricts access to the current user. Symlinks and insecure permissions are rejected rather than auto-repaired. Files are unencrypted and are not auto-deleted when config changes.
 
-`credentials/` contains private, immutable plaintext key files created by interactive setup. Configs reference them with `api_key = "file:<absolute-path>"`; secrets are not copied into TOML or shown by `kuku config show`. Every workspace that uses the same data directory shares this credential store. Files remain accessible to processes running as the same user. On Unix it uses mode `0700`, and each key file uses `0600` (owner access only). On Windows, setup requires a protected ACL that grants access only to the current user. Symlinks and insecure existing paths are rejected rather than repaired. Files are not encrypted and are not automatically deleted when a config changes.
+## Project-scoped layout
 
-Rotating [provider diagnostics and full traces](environment-variables.md#provider-trace-logs) live under `$KUKU_HOME/logs/provider-trace/`.
-
-## Project-Scoped Layout
-
-kuku uses the resolved path of an existing workspace for its Sessions, project Memory and policy. Opening the same directory through a symbolic link addresses the same data. For `/code/my-app` the project home is shown below.
+kuku keys Sessions, project Memory, and policy by the canonical path of the workspace (opening via a symlink hits the same data). For `/code/my-app`:
 
 ```text
 $KUKU_HOME/p/code/my-app/
-```
-
-That directory may contain:
-
-```text
-$KUKU_HOME/p/<workspace>/
 ├── memory.md
 ├── policy.md
 └── sessions/
 ```
 
-## Session Layout
+## Session layout
 
 ```text
 <data-dir>/p/<workspace>/sessions/<session-id>/
@@ -60,32 +39,22 @@ $KUKU_HOME/p/<workspace>/
 └── outputs/<output-id>.output
 ```
 
-`events.jsonl` is authoritative. The OS lock protects a single writer, and its file can remain after close. `outputs/` holds bounded framed command captures, derived output and named value contents. The journal records naming and sharing separately from the stored bytes. The public SDK uses flat Agent addresses in the journal, without per-agent directories or hidden Agent aliases. Historical rollback backups can remain in older sessions. The Session API preserves admitted context.
+- `events.jsonl` is the single source of truth; `events.jsonl.lock` holds the single-writer OS lock (the lock file may stay on disk after close).
+- `outputs/` holds bounded framed command captures, derived outputs, and named values. Naming and sharing metadata live in the journal.
+- Agents use flat addresses inside the journal with no per-Agent subdirectories or hidden aliases. (Older Sessions may still contain legacy rollback backups.)
+- Journals start as plain JSONL. On [eligible clean closes](../how-it-works/sessions.md#when-the-journal-compacts), kuku can seal older records into independent gzip frames with an inline checkpoint while continuing to append JSONL to the tail. `kuku events --file <path> --all --json` reads both layouts transparently. [Session events](events.md) · [Sessions](../how-it-works/sessions.md) · [SDK](sdk.md)
 
-The journal begins as JSON Lines. [Eligible Session closes](../how-it-works/sessions.md#when-the-journal-is-compressed) can seal history into independent gzip frames with an inline recovery checkpoint. New records append to a JSON Lines tail in the same file. Use `kuku events --file <path> --all --json` to stream the complete logical journal in either layout. [Session events](events.md)
+## Directory creation intents (Unix)
 
-See [Sessions](../how-it-works/sessions.md) for ownership and [SDK](sdk.md) for bounded reads and retention limits.
+When creating directories on Unix, the SDK may temporarily place an empty, owner-only `.kuku-mkdir-v1-<sha256>.intent` lock file in the parent directory (hashed from the child's raw filename bytes) to serialize creation and crash recovery. It syncs the intent and parent before `mkdir`, syncs the created directory and parent afterward, and removes the intent on success.
 
-## Directory Creation Intents
+Do not delete `.intent` files while SDK resources may be opening — subsequent opens recover interrupted creations automatically. Windows uses write-through handles, flushes, and atomic moves instead of intent files.
 
-On Unix, SDK directory creation may temporarily place an empty, owner-only `.kuku-mkdir-v1-<sha256>.intent` file in a directory's direct parent. The digest is SHA-256 of the child directory's raw filename bytes. The file lock serializes creation and recovery of that child; it is not a PID lease.
+## User and project extensions
 
-Before `mkdir`, the SDK syncs the intent file and its parent. It then syncs the created directory and its parent before removing the intent and syncing the parent again. Later creation or reopen checks the exact intent names along the requested path and completes interrupted transactions before descending. This also covers an interrupted first creation of a nested data directory. Existing directories without an intent need no directory sync, so unchanged ancestors need only traversal permission. A waiter whose locked intent was removed must re-open and lock the current inode before changing the directory.
+Conventional locations:
 
-Failed publication leaves the intent for recovery. Do not remove these files while SDK resources may be opening. Successful creation removes them. Windows file publication uses write-through file handles, full file flushes, and write-through moves; the Unix intent protocol does not apply there. Contract tests cover process exit and reopen, concurrent creators, replaced intent inodes, and directory permissions. They do not establish power-loss behavior on a particular filesystem or device.
+- User: `~/.kuku/agents/`, `~/.kuku/skills/`, `~/.kuku/packages/`
+- Project: `<workspace>/.kuku/agents/`, `<workspace>/.kuku/skills/`, `<workspace>/.kuku/packages/`
 
-## User and Project Extensions
-
-Conventional user-level definitions:
-
-- `~/.kuku/agents/`
-- `~/.kuku/skills/`
-- `~/.kuku/packages/`
-
-Conventional project-level definitions inside a workspace:
-
-- `<workspace>/.kuku/agents/`
-- `<workspace>/.kuku/skills/`
-- `<workspace>/.kuku/packages/`
-
-With `auto_discover = true`, kuku also scans other user and project dot-directories for `skills/`, `agents/`, and `agent/` subdirectories. Compatibility layouts such as `.claude/skills`, `.claude/agents`, and `.opencode/agent` are discovered automatically.
+With `auto_discover = true`, kuku also scans other user and project dot-directories for `skills/`, `agents/`, and `agent/` (such as `.claude/skills`, `.claude/agents`, and `.opencode/agent`).

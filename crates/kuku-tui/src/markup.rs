@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{replace_tabs, shorten, terminal_text};
-use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS};
+use crate::theme::{append_line_count, ACCENT, ERROR, MUTED, SUCCESS};
 
 mod code;
 mod document;
@@ -100,7 +100,41 @@ pub(crate) fn wrap_bounded(
     wrap_with_indent(lines, width, limit, "")
 }
 
-fn wrap_with_indent(
+pub(crate) fn number_gutter(digits: usize) -> usize {
+    digits + usize::from(digits != 0)
+}
+
+pub(crate) fn number_line(mut line: Line<'static>, number: usize, digits: usize) -> Line<'static> {
+    if digits > 0 {
+        line.spans.insert(
+            0,
+            Span::styled(format!("{number:>digits$} "), Style::new().fg(MUTED)),
+        );
+    }
+    line
+}
+
+pub(crate) fn wrap_numbered(
+    lines: Vec<Line<'static>>,
+    width: usize,
+    limit: usize,
+    first: usize,
+    total: usize,
+) -> Vec<Line<'static>> {
+    let end = first.saturating_add(lines.len().saturating_sub(1));
+    let digits = end.max(total).to_string().len();
+    if width < digits + 3 {
+        return wrap_bounded(lines, width, limit);
+    }
+    let numbered = lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| number_line(line, first + index, digits))
+        .collect();
+    wrap_with_indent(numbered, width, limit, &" ".repeat(number_gutter(digits)))
+}
+
+pub(crate) fn wrap_with_indent(
     lines: Vec<Line<'static>>,
     width: usize,
     limit: usize,
@@ -339,10 +373,7 @@ impl Markdown {
             style.fg(color).add_modifier(Modifier::UNDERLINED)
         });
         let style = match self.heading {
-            Some(HeadingLevel::H1 | HeadingLevel::H2) => style.add_modifier(Modifier::BOLD),
-            Some(HeadingLevel::H3 | HeadingLevel::H4 | HeadingLevel::H5 | HeadingLevel::H6) => {
-                style.add_modifier(Modifier::ITALIC)
-            }
+            Some(_) => style.add_modifier(Modifier::BOLD),
             None => style,
         };
         append(&mut self.current, &terminal_text(text), style);
@@ -397,7 +428,9 @@ impl Markdown {
         } else {
             "Markdown"
         };
-        let mut rows = vec![Line::styled(shorten(label, width), Style::new().fg(MUTED))];
+        let mut title = Line::styled(shorten(label, width), Style::new().fg(MUTED));
+        append_line_count(&mut title, width, source.lines().count());
+        let mut rows = vec![title];
         if limit > 0 {
             let mut document = Markdown {
                 width,
@@ -652,7 +685,8 @@ mod tests {
         let source = "```\n  # 甲乙\n\n    **Literal**\n```";
         let width = 20;
         let plain = rows(&render_markdown(source, width, LIMIT));
-        assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
+        assert!(plain[0].starts_with("╭─ 3 lines "));
+        assert_eq!(width, plain[0].width());
         assert!(plain[1].starts_with("│   # 甲乙 "));
         assert_eq!(format!("│{}│", " ".repeat(width - 2)), plain[2]);
         assert!(plain[3].starts_with("│     **Literal** "));
@@ -673,6 +707,9 @@ mod tests {
         );
         let explicit = rows(&render_markdown("```python", 32, LIMIT));
         assert!(explicit[0].starts_with("╭─ python "));
+        assert!(explicit[0].starts_with("╭─ python · 0 lines "));
+        let unfinished = rows(&render_markdown("```python\nfirst\n\nlast", 32, LIMIT));
+        assert!(unfinished[0].starts_with("╭─ python · 3 lines "));
     }
 
     #[test]
@@ -683,7 +720,7 @@ mod tests {
             width,
             LIMIT,
         ));
-        assert_eq!(format!("╭{}╮", "─".repeat(width - 2)), plain[0]);
+        assert!(plain[0].starts_with("╭─ 2 lines "));
         assert!(plain[2].starts_with("│ # Literal "));
         assert!(plain[3].starts_with("│     second "));
     }
@@ -726,6 +763,21 @@ mod tests {
                 lines[row]
             );
         }
+    }
+
+    #[test]
+    fn code_title_counts_source_lines_before_wrapping_or_clipping_body() {
+        let source =
+            "```text\nThis source line will wrap across several rows of a narrow terminal.\n```";
+        for width in [20, 52] {
+            let lines = render_markdown(source, width, 1);
+            let title = lines.first().unwrap();
+            assert_eq!(width, title.width());
+            assert!(title.to_string().starts_with("╭─ text · 1 line "));
+        }
+        let narrow = render_markdown(source, 8, LIMIT);
+        assert!(narrow[0].to_string().contains("text"));
+        assert!(narrow.iter().all(|line| line.width() <= 8));
     }
 
     #[test]
@@ -774,19 +826,19 @@ mod tests {
 
     #[test]
     fn headings_use_spacing_and_typography() {
-        let lines = render_markdown("# First *part*\n\n### Detail\n\nBody", 30, LIMIT);
+        let lines = render_markdown("# First *part*\n\n### 中文 `config`\n\nBody", 30, LIMIT);
         assert_eq!(
-            ["First part", "", "Detail", "", "Body", ""],
+            ["First part", "", "中文 config", "", "Body", ""],
             rows(&lines).as_slice()
         );
         assert!(lines[0]
             .spans
             .iter()
             .all(|span| span.style.add_modifier.contains(Modifier::BOLD)));
-        assert!(lines[2].spans[0]
-            .style
-            .add_modifier
-            .contains(Modifier::ITALIC));
+        assert!(lines[2].spans.iter().all(|span| {
+            span.style.add_modifier.contains(Modifier::BOLD)
+                && !span.style.add_modifier.contains(Modifier::ITALIC)
+        }));
         assert!(lines[4].spans[0].style.add_modifier.is_empty());
     }
 
@@ -802,9 +854,11 @@ mod tests {
             let plain = rows(&lines);
             assert_eq!("Before example", plain.first().unwrap());
             assert!(plain.iter().any(|line| line == "After example"));
-            assert!(plain
-                .iter()
-                .any(|line| line == "Markdown preview · Messages"));
+            assert!(plain.iter().any(|line| line
+                == &format!(
+                    "Markdown preview · Messages · {} lines",
+                    DOCUMENT.lines().count()
+                )));
             assert!(plain.iter().any(|line| line.starts_with('┌')));
             assert!(plain.iter().any(|line| line.contains("隔离 │ 通过")));
             assert!(plain.iter().any(|line| line == "• 检查结果"));

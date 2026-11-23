@@ -1,24 +1,35 @@
 # Install kuku
 
-## Build the testing version
+## Build from source
 
-Install Rust and Cargo, then select the workspace package that provides the `kuku` executable.
+With Rust and Cargo installed, install the `kuku` binary from the workspace package:
 
 ```bash
 cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
 kuku --help
 ```
 
-The default source build includes the terminal interface, script commands, and HTTP server. For `kuku web`, use a release bundle with the embedded UI or [build the browser assets from a checkout](../reference/cli.md#kuku-server-and-kuku-web).
+A default source build includes the TUI, CLI commands, and HTTP server. To use `kuku web`, install a release bundle (which embeds the Web UI) or [build the browser assets from a checkout](../reference/cli.md#kuku-server-and-kuku-web).
 
 ## Install a published release
 
-For a tagged release, choose its `latest.json` asset from the release list. From a checkout, pass its URL to `sh scripts/install.sh --source MANIFEST_URL` on x86-64 or ARM64 Linux and on Apple Silicon macOS. On x86-64 Windows, use `.\scripts\install.ps1 -Source MANIFEST_URL`. The default installer URL selects a stable release. Use Cargo above to try the development tree. [Releases](https://github.com/Cloud370/kuku/releases) · [Unix installer](../../../scripts/install.sh) · [Windows installer](../../../scripts/install.ps1) · [Update manifest](../reference/update-manifest.md)
+Pick the `latest.json` asset URL from a tagged [GitHub Release](https://github.com/Cloud370/kuku/releases), then run the installer from a checkout:
 
-The installer shows the download size when available, displays progress in interactive terminals, and retries transient download failures. A reinstall can reuse a cached archive that matches the release checksum. [Download and installation measurements](../how-it-works/performance.md#download-and-installation)
+- Linux (x86-64, ARM64) and macOS (Apple Silicon):
+  ```bash
+  sh scripts/install.sh --source MANIFEST_URL
+  ```
+- Windows (x86-64):
+  ```powershell
+  .\scripts\install.ps1 -Source MANIFEST_URL
+  ```
 
-On Linux and macOS, the installer saves the PATH entry in your shell configuration. If the install directory is missing from the current terminal's PATH, it prints the command to activate it in that terminal. Run it before starting `kuku`.
+Without `--source` / `-Source`, the installer targets the default stable release URL. Use `cargo install` above to track the development tree. [Unix installer](../../../scripts/install.sh) · [Windows installer](../../../scripts/install.ps1) · [Update manifest](../reference/update-manifest.md)
 
-## Run the first task
+The installer prints the download size and progress in interactive terminals, retries transient failures, verifies SHA-256 checksums, and reuses matching cached archives on reinstall. [Download and installation measurements](../how-it-works/performance.md#download-and-installation) · [Low-memory ARM64 measurements](../how-it-works/performance.md#low-memory-arm64-device)
 
-Use a writable home or set `KUKU_HOME` to a writable directory. The quickstart covers configuration, opening the terminal interface, and continuing a task from another client. [Quickstart](quickstart.md)
+On Linux and macOS, the installer adds the install directory to your shell profile. If your current terminal does not have it on `PATH` yet, run the activation command it prints before starting `kuku`.
+
+## Next step
+
+Make sure your home directory is writable (or point `KUKU_HOME` to a writable directory), then follow the [Quickstart](quickstart.md).

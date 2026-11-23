@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 
 use super::super::{AnchorLine, HistoryRequest, Transcript, TranscriptView};
 use super::{DetailKey, DetailKind};
+use crate::transcript::tests::card_text;
 
 #[derive(Default)]
 struct Journal(Vec<HistoryEntry>);
@@ -133,9 +134,8 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
 
     let compact = transcript.project(90, 64);
     let rendered = text(&compact);
-    assert!(rendered.contains("Read-only activity · 15 calls · ok"));
-    assert!(rendered.contains("12 file reads · 3 file searches"));
-    assert_eq!(3, rendered.matches("╰─ ok · exit 0").count());
+    assert!(rendered.contains("12 file reads") && !rendered.contains("3 file searches"));
+    assert_eq!(2, rendered.matches("ok · exit 0").count());
     assert!(rendered.contains("failed · exit 23"));
     for term in [
         "actual diagnostic",
@@ -145,7 +145,7 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
         "Permission",
         "Confirm the next operation",
         "running",
-        "requested",
+        "result not loaded",
     ] {
         assert!(rendered.contains(term), "{term} missing\n{rendered}");
     }
@@ -155,11 +155,13 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
         .all(|record| record.rendered.preview.is_none() && record.rendered.source.is_none()));
     assert_eq!(Some("Ctrl+O show"), compact.tool_hint.as_deref());
     let group = transcript
-        .detail_at(line(&compact, "12 file reads · 3 file searches"))
+        .detail_at(line(&compact, "12 file reads"))
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&group));
     let expanded = transcript.project(90, 64);
+    assert_eq!(3, text(&expanded).matches("ok · exit 0").count());
+    assert!(text(&expanded).contains("3 file searches"));
     assert!(text(&expanded).contains("samples/read-12.txt"));
     assert!(!text(&expanded).contains("contents for samples/read-12.txt"));
     let (record, _, _) = transcript
@@ -347,7 +349,7 @@ fn summaries_do_not_merge_across_prose_turns_addresses_or_missing_metadata() {
     journal.read(0, "main", "e.txt");
     let mut transcript = journal.load();
     let view = text(&transcript.project(90, 50));
-    assert_eq!(1, view.matches("Read file ×2 · ok").count());
+    assert_eq!(1, view.matches("Read file ×2").count());
     assert!(!view.contains("Read 2 files"));
     for path in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"] {
         assert!(view.contains(path), "{path} missing\n{view}");
@@ -405,7 +407,7 @@ fn delegation_groups_only_its_own_checks_and_keeps_the_result_separate_from_hist
     let compact = transcript.project(82, 44);
     let summary = text(&compact);
     for label in [
-        "╭─ Agent writer",
+        "Agent writer",
         "Finished · Report ready",
         "Timeline · 4 calls",
         "other (Idle)",
@@ -457,12 +459,20 @@ fn built_in_actions_use_human_labels_and_extensions_keep_their_names() {
     ] {
         journal.tool(name, json!({"path":"source.txt"}), json!({"status":"ok"}));
     }
-    let view = text(&journal.load().project(72, 32));
+    let mut transcript = journal.load();
+    let collapsed = transcript.project(72, 32);
+    assert!(text(&collapsed).contains("1 more call"));
+    let activity = transcript
+        .detail_at(line(&collapsed, "2 text searches"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_detail(&activity));
+    let view = text(&transcript.project(72, 32));
     for label in [
-        "Search text ×2 · ok",
-        "Write file · ok",
-        "Edit file · ok",
-        "vendor_lookup · ok",
+        "2 text searches",
+        "Write    source.txt",
+        "Edit     source.txt",
+        "vendor_lookup",
     ] {
         assert!(view.contains(label), "{label} missing\n{view}");
     }
@@ -527,7 +537,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     let view = transcript.project(108, 28);
     let compact = text(&view);
     for term in [
-        "List Agents ×3 · ok",
+        "List Agents ×3",
         "2 agents",
         "reviewer (Idle, reply available)",
         "4 agents · 2 need attention",
@@ -539,10 +549,7 @@ fn listing_polls_show_their_recorded_snapshot_and_preserve_the_original_result()
     }
     assert!(!compact.contains("Original large reply heading") && !compact.contains("preset"));
     let row = line(&view, "List Agents ×3");
-    assert_eq!(
-        Some(crate::theme::CODE_BACKGROUND),
-        view.lines[row].spans[0].style.bg
-    );
+    assert!(card_text(&view.lines[row].to_string()).starts_with("List Agents ×3"));
     let group = transcript.detail_at(row).unwrap().clone();
     assert!(transcript.toggle_detail(&group));
     let expanded = transcript.project(108, 28);
@@ -588,7 +595,7 @@ fn an_open_listing_group_reads_each_agent_check_once() {
 }
 
 #[test]
-fn mixed_inspection_results_keep_the_same_frame_when_opened() {
+fn mixed_inspection_results_keep_the_same_heading_when_opened() {
     let mut journal = Journal::default();
     journal.tool(
         "list_agents",
@@ -603,14 +610,14 @@ fn mixed_inspection_results_keep_the_same_frame_when_opened() {
     let mut transcript = journal.load();
     for width in [60, 120] {
         let collapsed = transcript.project(width, 30);
-        let heading = line(&collapsed, "▸ Read-only activity");
+        let heading = line(&collapsed, "Read-only activity");
         let group = transcript.detail_at(heading).unwrap().clone();
         let search = line(&collapsed, "Find files · found 0 entries under .");
         assert_eq!(search + 1, line(&collapsed, "Agent · main (Running)"));
         assert!(!text(&collapsed).contains("Agent listing"));
         assert!(transcript.toggle_detail(&group));
         let open = transcript.project(width, 30);
-        let heading = line(&open, "▾ Read-only activity");
+        let opened_heading = line(&open, "Read-only activity");
         let agent = line(&open, "Agent check · main (Running)");
         let files = line(&open, "Find files");
         assert_eq!(agent + 1, files);
@@ -619,21 +626,12 @@ fn mixed_inspection_results_keep_the_same_frame_when_opened() {
             .contains("found 0 entries under ."));
         assert_ne!(transcript.detail_at(agent), transcript.detail_at(files));
         assert!(!text(&open).contains("Agent · main"));
-        for view in [&collapsed, &open] {
-            let end = line(view, "╰");
-            for row in &view.lines[heading..=end] {
-                assert_eq!(row.width(), width);
-                assert!(row.spans.iter().all(|span| {
-                    row.style.patch(span.style).bg == Some(crate::theme::CODE_BACKGROUND)
-                }));
-            }
-            assert!(view.lines[end + 1].spans.is_empty());
-        }
-        assert!(open.lines[files + 1]
-            .to_string()
-            .trim_matches('│')
-            .trim()
-            .is_empty());
+        assert_eq!(
+            collapsed.lines[heading].to_string(),
+            open.lines[opened_heading].to_string(),
+        );
+        assert_eq!(1, text(&collapsed).matches("Read-only activity").count());
+        assert_eq!(1, text(&open).matches("Read-only activity").count());
         assert!(transcript.toggle_detail(&group));
         assert_eq!(text(&collapsed), text(&transcript.project(width, 30)));
     }
@@ -727,9 +725,12 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&group));
-    transcript.scroll(3, 72, 3);
+    transcript.scroll(2, 72, 3);
     let before = text(&transcript.project(72, 3));
-    assert!(before.starts_with("│ Read file · p5.txt"), "{before}");
+    assert!(
+        card_text(before.lines().next().unwrap()).starts_with("Read p5.txt"),
+        "{before}"
+    );
     let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
     assert_eq!(AnchorLine::Body(0), anchor.line);
 
@@ -743,14 +744,14 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
     );
     assert_eq!(before, text(&transcript.project(72, 3)));
     assert!(transcript.toggle_detail(&group));
-    assert!(text(&transcript.project(72, 3)).starts_with("╭─ ▸ Read 8 files · ok"));
+    assert!(card_text(&transcript.project(72, 3).lines[0].to_string()).starts_with("Read 8 files"));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
     assert!(transcript.toggle_detail(&group));
     assert_eq!(before, text(&transcript.project(72, 3)));
 }
 
 #[test]
-fn a_wrapped_group_caption_is_a_stable_reading_and_pointer_target() {
+fn a_narrow_group_heading_is_a_stable_reading_and_pointer_target() {
     let mut journal = Journal::default();
     journal.read(7, "main", "first.txt");
     journal.tool(
@@ -770,12 +771,12 @@ fn a_wrapped_group_caption_is_a_stable_reading_and_pointer_target() {
     );
     let mut transcript = journal.load();
     transcript.scroll(-100, 37, 3);
-    transcript.scroll(3, 37, 3);
+    transcript.scroll(1, 37, 3);
     let view = transcript.project(37, 3);
     let caption = view.lines[0].to_string();
     assert!(caption.contains("1 file read · 1 file search"), "{caption}");
     let anchor = transcript.reading.as_ref().unwrap().anchor.clone();
-    assert_eq!(AnchorLine::Group(2), anchor.line);
+    assert_eq!(AnchorLine::Group(0), anchor.line);
     let key = transcript.detail_at(0).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
@@ -800,11 +801,11 @@ fn live_result_joins_the_group_only_on_commit_and_reconnect_keeps_its_expansion(
     transcript.apply(result, Some(4));
     let compact = transcript.project(80, 20);
     let key = transcript
-        .detail_at(line(&compact, "Read 2 files · ok"))
+        .detail_at(line(&compact, "Read 2 files"))
         .unwrap()
         .clone();
     assert!(transcript.toggle_detail(&key));
-    assert!(text(&transcript.project(80, 20)).contains("Read file · second.txt"));
+    assert!(text(&transcript.project(80, 20)).contains("Read second.txt"));
 
     transcript.replace_recent(HistoryPage {
         entries: complete,
@@ -812,24 +813,8 @@ fn live_result_joins_the_group_only_on_commit_and_reconnect_keeps_its_expansion(
         next_before: None,
     });
     let restored = text(&transcript.project(80, 20));
-    assert!(
-        restored.contains("Read file · first.txt") && restored.contains("Read file · second.txt")
-    );
-    assert_eq!(1, restored.matches("Read 2 files · ok").count());
-}
-
-#[test]
-fn repeated_global_toggles_follow_the_group_state_before_the_next_frame() {
-    let mut journal = Journal::default();
-    journal.read(7, "main", "first.txt");
-    journal.read(7, "main", "second.txt");
-    let mut transcript = journal.load();
-    transcript.project(80, 20);
-    assert!(transcript.toggle_details());
-    assert!(!transcript.toggle_details());
-    assert!(!text(&transcript.project(80, 20)).contains("second.txt"));
-    assert!(transcript.toggle_details());
-    assert!(text(&transcript.project(80, 20)).contains("Read file · second.txt"));
+    assert!(restored.contains("Read first.txt") && restored.contains("Read second.txt"));
+    assert_eq!(1, restored.matches("Read 2 files").count());
 }
 
 #[test]
@@ -877,7 +862,7 @@ fn a_reply_burst_preserves_the_first_answer_line_after_thinking() {
         &json!({"type":"text","content":reply}),
     );
     let view = transcript.project(58, 9);
-    assert_eq!(view.lines[row].to_string().trim_start(), "Paragraph 1");
+    assert_eq!(card_text(&view.lines[row].to_string()), "Paragraph 1");
     assert!(transcript.is_reading());
     assert_eq!(transcript.history_hint(), None);
     transcript.scroll(1, 58, 9);
@@ -909,13 +894,13 @@ fn thinking_before_a_tool_has_its_own_expandable_transcript_row() {
         Some(&choice.0)
     );
     assert_ne!(
-        transcript.detail_at(line(&view, "Read file")),
+        transcript.detail_at(line(&view, "Read hello.py")),
         Some(&choice.0)
     );
     assert!(transcript.open_notes(&choice.0, 64, 10));
     let read = transcript.project(64, 10);
     assert!(text(&read).contains("Check the greeting"));
-    assert!(transcript.detail_at(line(&read, "Read file")).is_some());
+    assert!(transcript.detail_at(line(&read, "Read hello.py")).is_some());
 }
 
 #[test]
@@ -957,3 +942,51 @@ fn global_scroll_keeps_expanded_thinking_with_its_message() {
     assert!(transcript.close_notes());
     assert_eq!(text(&transcript.project(90, 24)), text(&closed));
 }
+
+#[test]
+fn successful_script_reads_fold_with_direct_reads_and_partial_scripts_stay_visible() {
+    let mut journal = Journal::default();
+    journal.read(7, "main", "direct.txt");
+    let script = |status: &str, not_dispatched: usize| {
+        json!({
+            "status":status,
+            "structured":{
+                "kind":"workspace_script_result",
+                "value":{"raw":"script return preview"},
+                "actions":[
+                    {"id":"read","tool":"read_file","status":"ok","summary":"read script.txt","truncated":false,"result":{}},
+                    {"id":"search","tool":"search_text","status":"ok","summary":"searched source","truncated":false,"result":{}}
+                ],
+                "timed_out":false,
+                "cleanup_incomplete":false,
+                "not_dispatched":not_dispatched
+            }
+        })
+    };
+    journal.tool("run_js", json!({"title":"Inspect files"}), script("ok", 0));
+    journal.tool(
+        "run_js",
+        json!({"title":"Read with a failure"}),
+        script("error", 1),
+    );
+    let mut transcript = journal.load();
+    let compact = transcript.project(96, 40);
+    assert!(text(&compact).contains("Read with a failure"));
+    let group = transcript
+        .detail_at(line(&compact, "3 file reads"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_detail(&group));
+    let expanded = transcript.project(96, 40);
+    let rendered = text(&expanded);
+    assert!(rendered.contains("2 text searches"));
+    assert!(rendered.contains("direct.txt"));
+    let row = line(&expanded, "Script   Inspect files");
+    let script = transcript.detail_at(row).unwrap().clone();
+    assert!(transcript.toggle_in_view(&script, 96, 40));
+    let inspected = transcript.project(96, 40);
+    assert_eq!(row, line(&inspected, "Script   Inspect files"));
+    assert!(text(&inspected).contains("Actions · 2/2 completed"));
+}
+
+mod activity;

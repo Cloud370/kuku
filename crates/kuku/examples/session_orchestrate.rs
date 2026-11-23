@@ -54,8 +54,11 @@ impl Settings {
         options.limits.max_agents = 2;
         options.limits.max_requests_per_open = Some(number(args, "max-requests", 16_u64)?);
         options.limits.retry_transient_provider_errors = false;
-        options.limits.max_request_bytes =
-            number(args, "max-request-bytes", options.limits.max_request_bytes)?;
+        options.limits.max_request_bytes = args
+            .get("max-request-bytes")
+            .map(|value| value.parse())
+            .transpose()
+            .map_err(|_| "invalid numeric value for '--max-request-bytes'")?;
         let mut reviewer = selection(args, REVIEWER, max_output_tokens);
         reviewer.instructions = Some(std::fs::read_to_string(required(
             args,

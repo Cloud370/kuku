@@ -1,24 +1,35 @@
 # 安装 kuku
 
-## 构建测试版本
+## 从源码构建
 
-安装 Rust 和 Cargo 后，选择提供 `kuku` 可执行文件的 workspace 包。
+装好 Rust 和 Cargo 后，直接安装提供 `kuku` 命令的 workspace 包：
 
 ```bash
 cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
 kuku --help
 ```
 
-默认源码构建包含终端界面、脚本命令和 HTTP 服务。使用 `kuku web` 时，选择内嵌浏览器界面的发行包，或[从源码构建浏览器资源](../reference/cli.md#kuku-server-和-kuku-web)。
+默认源码构建包含 TUI、CLI 命令和 HTTP 服务。如果要用 `kuku web`，建议直接装带内嵌界面的发行包，或者[从源码构建浏览器资源](../reference/cli.md#kuku-server-与-kuku-web)。
 
 ## 安装已发布版本
 
-安装带标签的版本时，从发布列表选取该版本的 `latest.json` 资源 URL。在仓库目录运行脚本。x86-64 或 ARM64 Linux 以及 Apple Silicon macOS 使用 `sh scripts/install.sh --source MANIFEST_URL`。x86-64 Windows 使用 `.\scripts\install.ps1 -Source MANIFEST_URL`。安装器的默认地址选择稳定版。体验当前开发版本请使用上面的 Cargo 命令。[发布列表](https://github.com/Cloud370/kuku/releases) · [Unix 安装脚本](../../../scripts/install.sh) · [Windows 安装脚本](../../../scripts/install.ps1) · [更新清单](../reference/update-manifest.md)
+在 [GitHub Releases](https://github.com/Cloud370/kuku/releases) 里找到对应版本的 `latest.json` 链接，在仓库根目录运行安装脚本：
 
-安装脚本会显示可用的下载大小，在交互式终端显示进度，并重试暂时的下载失败。重新安装时会复用与发布校验值一致的缓存压缩包。[下载与安装实测](../how-it-works/performance.md#下载和安装)
+- Linux（x86-64 / ARM64）和 macOS（Apple Silicon）：
+  ```bash
+  sh scripts/install.sh --source MANIFEST_URL
+  ```
+- Windows（x86-64）：
+  ```powershell
+  .\scripts\install.ps1 -Source MANIFEST_URL
+  ```
 
-在 Linux 和 macOS 上，安装脚本会把 PATH 条目写入 Shell 配置。如果当前终端的 PATH 缺少安装目录，脚本会打印一条可在当前终端执行的命令。执行后即可启动 `kuku`。
+不传 `--source` / `-Source` 时，安装脚本默认指向稳定版地址；体验最新开发树请用上面的 `cargo install`。[Unix 安装脚本](../../../scripts/install.sh) · [Windows 安装脚本](../../../scripts/install.ps1) · [更新清单](../reference/update-manifest.md)
 
-## 运行第一个任务
+安装脚本会在交互终端里显示下载大小与进度、自动重试临时失败、安装前校验 SHA-256，并在重装时直接复用匹配校验值的缓存压缩包。[下载与安装实测](../how-it-works/performance.md#下载和安装) · [低内存 ARM64 实测](../how-it-works/performance.md#低内存-arm64-设备)
 
-使用可写的用户目录，或将 `KUKU_HOME` 设为可写路径。快速开始介绍如何配置模型、打开终端界面，以及如何换客户端接着工作。[快速开始](quickstart.md)
+在 Linux 和 macOS 上，脚本会把安装目录写入 Shell 配置。如果当前终端的 `PATH` 还没生效，先执行脚本打印出的那条命令，再启动 `kuku`。
+
+## 下一步
+
+确保用户主目录可写（或把 `KUKU_HOME` 指向一个可写目录），然后继续看[快速开始](quickstart.md)。

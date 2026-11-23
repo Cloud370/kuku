@@ -1,12 +1,21 @@
 use kuku_client::{CommandExecutionFacts, CommandInvocation, CommandShell, CommandTermination};
-use ratatui::style::Color;
-use ratatui::text::Line;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::text::single_line;
-use crate::theme::{CardFrame, ERROR, SUCCESS, SURFACE_TEXT, WARNING};
+use crate::markup::{render_literal, wrap_numbered};
+use crate::text::{cap, single_line};
+use crate::theme::{
+    tool_operation_color, TranscriptTone, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING,
+};
+use crate::transcript::MAX_VISUAL_ROWS;
 
-use super::{arguments_json, capped, Row, Tool, MAX_DETAIL_BYTES};
+use super::super::details::{InlineOutput, InlineOutputAction, OutputTarget};
+use super::{
+    arguments_json, capped, finish_card, render_excerpt, render_preview, render_rows, Row, Tool,
+    ToolDetails, ToolView, MAX_DETAIL_BYTES, MAX_INVOCATION_ROWS, MAX_PREVIEW_BYTES,
+    MAX_RESULT_ROWS, MAX_WARNING_ROWS,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct CommandPreview {
@@ -61,12 +70,17 @@ impl CommandPreview {
         }
     }
 
-    pub(super) fn elapsed(&self) -> String {
+    pub(super) fn elapsed_metric(&self) -> Line<'static> {
         let ms = self.facts.duration_ms;
         if ms < 1_000 {
-            format!("{ms}ms")
+            Row::metric(" · ", ms.to_string(), "ms", TranscriptTone::Value)
         } else {
-            format!("{:.1}s", ms as f64 / 1_000.0)
+            Row::metric(
+                " · ",
+                format!("{:.1}", ms as f64 / 1_000.0),
+                "s",
+                TranscriptTone::Value,
+            )
         }
     }
 
@@ -111,6 +125,16 @@ impl CommandPreview {
     }
 
     pub(super) fn notes(&self) -> String {
+        let mut notes = self.capture_notes();
+        if self.facts.output_summary.is_some() {
+            notes.push("Raw output retained");
+        } else if self.facts.output_preview_truncated {
+            notes.push("Output preview truncated");
+        }
+        notes.join("\n")
+    }
+
+    fn capture_notes(&self) -> Vec<&'static str> {
         let mut notes = Vec::new();
         if self.facts.quota_truncated {
             notes.push("Capture truncated at the byte limit");
@@ -120,15 +144,156 @@ impl CommandPreview {
         if self.facts.cleanup_incomplete {
             notes.push("Process or pipe cleanup incomplete");
         }
-        if self.facts.output_summary.is_some() {
-            notes.push("Raw output retained");
-        } else if self.facts.output_preview_truncated {
-            notes.push("Output preview truncated");
-        }
         if self.facts.lossy_utf8 {
             notes.push("Display replaced invalid UTF-8");
         }
-        notes.join("\n")
+        notes
+    }
+
+    pub(super) fn format_output(&self, mut view: ToolView) -> ToolView {
+        view.invocation = self.invocation();
+        view.summary = self.summary();
+        view.evidence = self.capture_notes().join("\n");
+        if view.output_id.is_none() && !self.body().is_empty() {
+            view.details = self.body().to_owned();
+        }
+        view
+    }
+
+    pub(super) fn inspection_rows(
+        &self,
+        title: &str,
+        width: usize,
+        output: Option<OutputTarget>,
+        arguments: Option<bool>,
+        inline_output: Option<&InlineOutput>,
+    ) -> Vec<Row> {
+        let columns = Row::detail_width(width);
+        let invocation = single_line(&self.invocation());
+        let mut rows = Vec::new();
+        if !invocation.is_empty() && invocation != title {
+            rows.extend(render_preview(
+                &invocation,
+                tool_operation_color("run_command"),
+                columns,
+                MAX_INVOCATION_ROWS,
+                0,
+            ));
+        }
+        if let Some(error) = &self.facts.start_error {
+            rows.extend(render_preview(
+                &single_line(error),
+                ERROR,
+                columns,
+                MAX_WARNING_ROWS,
+                0,
+            ));
+        }
+        if let Some(open) = arguments {
+            rows.push(Row::command_arguments(open, columns));
+            if open {
+                rows.extend(render_rows(
+                    self.argument_fields(),
+                    columns,
+                    MAX_VISUAL_ROWS,
+                    0,
+                ));
+            }
+        }
+        let body = self.body();
+        let color = if self.facts.stdout_bytes == 0 && self.has_stderr() {
+            WARNING
+        } else {
+            TranscriptTone::Text.color()
+        };
+        let lines = self
+            .facts
+            .stdout_lines
+            .saturating_add(self.facts.stderr_lines);
+        let line_count = usize::try_from(lines).unwrap_or(usize::MAX);
+        let preview = if body.is_empty() || inline_output.is_some() {
+            Vec::new()
+        } else {
+            let source = render_excerpt(body, |text| render_literal(text, Style::new().fg(color)));
+            wrap_numbered(source, columns, MAX_RESULT_ROWS, 1, line_count)
+        };
+        if !preview.is_empty() || output.is_some() {
+            let limited = !preview.is_empty()
+                && (self.facts.output_preview_truncated
+                    || self.facts.output_summary.is_some()
+                    || preview.len() > MAX_RESULT_ROWS
+                    || cap(body, MAX_PREVIEW_BYTES).len() < body.len());
+            let heading = if limited && inline_output.is_none() {
+                "Output preview"
+            } else {
+                "Output"
+            };
+            if lines > 0 {
+                let unit = if lines == 1 { " line" } else { " lines" };
+                let label = Row::metric(
+                    format!("{heading} · "),
+                    lines.to_string(),
+                    unit,
+                    TranscriptTone::Value,
+                );
+                rows.push(Row::plain(Row::fit(label, columns)));
+            } else {
+                rows.push(Row::caption(heading, "", MUTED, columns));
+            }
+        }
+        if let Some(target) = output {
+            let action = if inline_output.is_some() {
+                InlineOutputAction::Close
+            } else {
+                InlineOutputAction::Open
+            };
+            rows.push(Row::inline_output(target, action, columns));
+        }
+        if let Some(output) = inline_output {
+            rows.extend(output.rows(columns, line_count));
+        } else {
+            rows.extend(preview.into_iter().map(Row::plain));
+        }
+        rows.extend(render_preview(
+            &self.capture_notes().join("\n"),
+            WARNING,
+            columns,
+            MAX_WARNING_ROWS,
+            0,
+        ));
+        rows.into_iter()
+            .map(|row| row.with_detail_rule(width))
+            .collect()
+    }
+
+    fn argument_fields(&self) -> Vec<Line<'static>> {
+        let field = |label: &str, value: String| {
+            Line::from(vec![
+                Span::styled(format!("{label:<11}"), TranscriptTone::Label.style()),
+                Span::styled(value, TranscriptTone::Text.style()),
+            ])
+        };
+        let mut rows =
+            match &self.facts.invocation {
+                CommandInvocation::Program { program, args } => {
+                    let mut rows = vec![field("Program", display_argument(program))];
+                    rows.extend(args.iter().take(MAX_VISUAL_ROWS).enumerate().map(
+                        |(index, arg)| {
+                            field(
+                                if index == 0 { "Arguments" } else { "" },
+                                display_argument(arg),
+                            )
+                        },
+                    ));
+                    rows
+                }
+                CommandInvocation::Shell { shell, command } => vec![
+                    field("Shell", shell_name(*shell).to_owned()),
+                    field("Command", display_argument(command)),
+                ],
+            };
+        rows.push(field("Directory", single_line(&self.facts.cwd)));
+        rows
     }
 
     pub(super) fn evidence(&self) -> String {
@@ -168,6 +333,56 @@ impl CommandPreview {
 }
 
 impl Tool {
+    pub(super) fn render_short_command(
+        &self,
+        command: &CommandPreview,
+        width: usize,
+        details: ToolDetails,
+    ) -> Vec<Row> {
+        let mut rows = self.command_heading(width);
+        if details != ToolDetails::Collapsed {
+            rows.extend(render_preview(command.body(), SURFACE_TEXT, width, 3, 0));
+        }
+        finish_card(rows)
+    }
+
+    pub(super) fn render_command_inspection(
+        &self,
+        command: &CommandPreview,
+        width: usize,
+        in_group: bool,
+        arguments_open: bool,
+        inline_output: Option<&InlineOutput>,
+    ) -> Vec<Row> {
+        let mut rows = if in_group {
+            self.render_activity(width, 1)
+        } else {
+            self.command_heading(width)
+        };
+        let title = single_line(self.command_title());
+        let output = self.view().has_full_output().then_some(OutputTarget::Tool);
+        rows.extend(command.inspection_rows(
+            &title,
+            width,
+            output,
+            Some(arguments_open),
+            inline_output,
+        ));
+        finish_card(rows)
+    }
+
+    pub(in crate::transcript) fn format_output(&self, mut view: ToolView) -> ToolView {
+        let Some(command) = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.command_preview.as_deref())
+        else {
+            return view;
+        };
+        view.name = single_line(self.command_title());
+        command.format_output(view)
+    }
+
     pub(super) fn command_title(&self) -> &str {
         if !self.request_title.is_empty() {
             return &self.request_title;
@@ -182,8 +397,26 @@ impl Tool {
         }
     }
 
-    pub(super) fn command_heading(&self, frame: &CardFrame) -> Row {
-        Row::plain(frame.title(&single_line(self.command_title()), SURFACE_TEXT))
+    pub(super) fn command_heading(&self, width: usize) -> Vec<Row> {
+        let (status, _) = self.status_line();
+        Row::styled_status(
+            &single_line(self.command_title()),
+            status,
+            tool_operation_color("run_command"),
+            width,
+        )
+    }
+}
+
+fn display_argument(argument: &str) -> String {
+    if argument.is_empty()
+        || argument
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '"' | '\\'))
+    {
+        format!("{argument:?}")
+    } else {
+        argument.to_owned()
     }
 }
 
@@ -198,19 +431,13 @@ pub(super) fn invocation(args: &Value) -> String {
     }
 }
 
-pub(super) fn finish(
-    frame: CardFrame,
-    mut rows: Vec<Row>,
-    (status, color): (String, Color),
-) -> Vec<Row> {
-    for row in rows.iter_mut().skip(1) {
-        row.line = frame.line(std::mem::take(&mut row.line));
-        row.inset = frame.content_inset() as u16;
-    }
-    Row::pad_framed_body(&mut rows, &frame);
-    rows.push(Row::plain(frame.status_foot(&status, color)));
-    rows.push(Row::plain(Line::default()));
-    rows
+pub(super) fn exit_metric(label: &str, code: i64) -> Line<'static> {
+    let tone = if code == 0 {
+        TranscriptTone::Success
+    } else {
+        TranscriptTone::Error
+    };
+    Row::metric(format!(" · {label} "), code.to_string(), "", tone)
 }
 
 fn render_program(program: &str, args: &Value) -> String {

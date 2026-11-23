@@ -1,5 +1,5 @@
 use kuku_client::AgentStatus;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -14,9 +14,9 @@ use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
-    composer_padding, composer_surface, emphasis, focused_row, horizontal_gutter, panel,
-    panel_padding, ACCENT, ERROR, MAX_DRAFT_ROWS, MODEL, MUTED, OUTPUT_WIDTH, PICKER_HEIGHT,
-    PICKER_WIDTH, SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING,
+    composer_padding, composer_surface, emphasis, focused_row, panel, panel_padding, session_area,
+    ACCENT, ERROR, MAX_DRAFT_ROWS, MODEL, MUTED, PICKER_HEIGHT, PICKER_WIDTH, SHORT_PROMPT_HEIGHT,
+    STATUS_EDITOR_HEIGHT, WARNING,
 };
 
 mod activity;
@@ -26,6 +26,7 @@ mod delivery;
 mod header;
 mod model_default_confirmation;
 mod rewind_picker;
+mod transcript_body;
 pub(crate) use activity::{ActivityClock, ActivityFrame};
 
 const MAX_BANNER_ROWS: u16 = 5;
@@ -70,7 +71,7 @@ pub(crate) fn render_at(
         app.composer_area = Rect::ZERO;
         return false;
     }
-    let area = outer.inner(Margin::new(horizontal_gutter(outer.width), 0));
+    let area = session_area(outer);
     let width = usize::from(area.width);
     let footer = app.displayed_statusline().render_rows(
         app,
@@ -411,7 +412,7 @@ fn render_transcript(
     app: &mut App,
     show_service_problem: bool,
     activity: &ActivityFrame,
-) -> (Rect, Vec<u16>) {
+) -> (Rect, Vec<crate::selection::TextInsets>) {
     if area.is_empty() {
         app.text_selection.set_messages_area(None);
         app.transcript_area = (usize::from(area.width).max(1), 1);
@@ -439,7 +440,8 @@ fn render_transcript(
     let mut view = transcript.project(width, height);
     if let Some(row) = view.thinking_row {
         view.lines[row] = if app.pane().activity() == crate::app::Activity::Thinking {
-            activity.thinking_line(width)
+            let card = crate::theme::CardFrame::timeline(width);
+            card.line(activity.thinking_line(card.content_width()))
         } else {
             Line::default()
         };
@@ -466,13 +468,7 @@ fn render_transcript(
         view.tool_hint.as_deref(),
     );
     app.text_selection.set_messages_area(messages_area);
-    for (row, line) in view.lines.iter().take(height).enumerate() {
-        if line.style.bg.is_some() {
-            let area = Rect::new(body.x, body.y + row as u16, body.width, 1);
-            frame.buffer_mut().set_style(area, line.style);
-        }
-    }
-    frame.render_widget(Paragraph::new(view.lines), body);
+    transcript_body::render(frame, body, view.lines, view.turn_surface);
     (body, view.row_insets)
 }
 
@@ -670,9 +666,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             app.modal_info_rows = header;
             inner
         }
-        Modal::Output(viewer) => {
-            render_output(frame, popup(area, OUTPUT_WIDTH, area.height), viewer)
-        }
+        Modal::Output(viewer) => render_output(frame, session_area(area), viewer),
         Modal::StatusLineEditor(editor) => {
             let available = Rect {
                 height: area.height.saturating_sub(1),

@@ -9,10 +9,12 @@ use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    content_hash, expected_version, file_read_error, file_version, mutation_preview, plural,
-    publish_file, require_version, resolve_stat_path, snapshot_stale_error, ExecutorObservation,
-    FileCancellation, WriteEvidence, WriteSnapshotLookup,
+    content_hash, expected_version, file_read_error, file_version_with_text, mutation_preview,
+    plural, publish_file, require_version, resolve_stat_path, snapshot_stale_error,
+    ExecutorObservation, FileCancellation, WriteEvidence, WriteSnapshotLookup,
 };
+
+use super::file_change;
 
 struct WriteRequest<'a> {
     path: &'a str,
@@ -65,7 +67,8 @@ fn write_file_with_evidence(
         Err(result) => return result,
     };
 
-    let before = match current_version(&resolved.path, cancelled) {
+    let text_limit = file_change::MAX_INPUT_BYTES.checked_sub(request.content.len());
+    let (before, before_text) = match current_version(&resolved.path, cancelled, text_limit) {
         Ok(before) => before,
         Err(error) => return file_read_error(Path::new(&resolved.relative), error),
     };
@@ -106,6 +109,12 @@ fn write_file_with_evidence(
         "line_count": line_count,
         "created": before.is_none(),
     });
+    if let Some(text) = before_text.as_deref() {
+        let change = file_change::facts(text, request.content);
+        if !change.is_null() {
+            fields["change"] = change;
+        }
+    }
     if evidence.is_model() {
         mutation_preview(request.content, &mut fields);
     }
@@ -133,10 +142,12 @@ fn write_file_with_evidence(
 fn current_version(
     path: &Path,
     cancelled: &FileCancellation<'_>,
-) -> std::io::Result<Option<String>> {
+    text_limit: Option<usize>,
+) -> std::io::Result<(Option<String>, Option<String>)> {
     match fs::symlink_metadata(path) {
-        Ok(_) => file_version(path, cancelled).map(|(hash, _)| Some(hash)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Ok(_) => file_version_with_text(path, cancelled, text_limit)
+            .map(|(hash, text)| (Some(hash), text)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok((None, None)),
         Err(error) => Err(error),
     }
 }
@@ -304,6 +315,12 @@ mod tests {
         let structured = ok.structured.as_ref().unwrap();
         let canonical_path = dir.path().join("README.md").canonicalize().unwrap();
         assert_eq!(structured["created"], false);
+        assert_eq!(structured["change"]["added_lines"], 1);
+        assert_eq!(structured["change"]["removed_lines"], 2);
+        assert_eq!(
+            structured["change"]["preview_line_numbers"],
+            serde_json::json!([1, 2, 1])
+        );
         assert_eq!(
             structured["canonical_path"].as_str().unwrap(),
             canonical_path.to_string_lossy().as_ref()

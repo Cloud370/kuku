@@ -130,8 +130,7 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         );
         let footer: String = row(27).iter().map(|cell| cell.symbol()).collect();
         let footer_label = match label {
-            "Waiting" => "Waiting for model",
-            "Tool call" => "Writing tool arguments",
+            "Model tool arguments" => "Writing tool arguments",
             other => other,
         };
         assert!(
@@ -146,8 +145,8 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
             app.composer_area,
         )
     };
-    let original = draw(&mut app, &mut clock, 0, "Waiting");
-    assert!(original.0.contains("8s"));
+    let original = draw(&mut app, &mut clock, 0, "Waiting for model");
+    assert!(original.0.contains("Turn 8s"));
     let live = |app: &mut App, clock: &mut ActivityClock, ms, event| {
         app.update(Update::Observation(
             selection.clone(),
@@ -163,7 +162,7 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         clock.observe(app, first + Duration::from_millis(ms));
     };
     live(&mut app, &mut clock, 40, json!({"type":"thinking"}));
-    draw(&mut app, &mut clock, 45, "Waiting");
+    draw(&mut app, &mut clock, 45, "Waiting for model");
     live(
         &mut app,
         &mut clock,
@@ -171,10 +170,10 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         json!({"type":"text","content":"Early text"}),
     );
     live(&mut app, &mut clock, 95, json!({"type":"thinking"}));
-    let current = draw(&mut app, &mut clock, 145, "Waiting");
+    let current = draw(&mut app, &mut clock, 145, "Waiting for model");
     assert_eq!((original.1, original.2), (current.1, current.2));
     live(&mut app, &mut clock, 160, json!({"type":"tool_arguments"}));
-    let tools = draw(&mut app, &mut clock, 2_100, "Tool call");
+    let tools = draw(&mut app, &mut clock, 2_100, "Model tool arguments");
     assert!(tools.0.contains("~3 tok"));
     assert_eq!(original.0.find("Draft"), tools.0.find("Draft"));
     assert_eq!((original.1, original.2), (tools.1, tools.2));
@@ -198,7 +197,7 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
     let rows = screen(&mut app, 71, 25);
     let recipient = rows.lines().nth(20).unwrap();
     assert!(
-        recipient.contains("Send to reviewer")
+        recipient.contains("To review")
             && recipient.contains("-92 ▾")
             && recipient.contains("Ready"),
         "{recipient}"
@@ -222,7 +221,7 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
 
     for width in [32, 80, 128] {
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
-        let mut phase_column = None;
+        let mut recipient_start = None;
         for (address, accent, background) in [
             (
                 reviewer.clone(),
@@ -247,28 +246,33 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
                 row(1)
             );
             let to = app.recipient_area;
-            assert_eq!(to.x, app.composer_area.x);
+            let heading = row(to.y);
+            let phase = buffer.cell((app.composer_area.x, to.y)).unwrap();
             assert!(
-                row(to.y).contains(&format!("to {} ▾", address.agent))
-                    || row(to.y).contains(&format!("To {} ▾", address.agent)),
-                "{}",
-                row(to.y)
+                crate::theme::KUKU_MARK.starts_with(phase.symbol()),
+                "{heading}"
+            );
+            assert!(to.x > app.composer_area.x);
+            assert_eq!(to.x, *recipient_start.get_or_insert(to.x));
+            let label: String = (to.x..to.right())
+                .map(|x| buffer.cell((x, to.y)).unwrap().symbol())
+                .collect();
+            assert!(
+                label == format!("Send to {} ▾", address.agent)
+                    || label == format!("To {} ▾", address.agent)
+                    || (width == 32 && label.starts_with("To rev") && label.ends_with("… ▾")),
+                "{label:?} in {heading}"
             );
             assert_eq!(buffer.cell((to.x, to.y)).unwrap().fg, accent);
-            let edge = crate::theme::horizontal_gutter(width);
-            assert_eq!(buffer.cell((edge, to.y)).unwrap().fg, accent);
-            let right = width - edge - 1;
+            assert_eq!(buffer.cell((to.right() - 1, to.y)).unwrap().symbol(), "▾");
+            let session = crate::theme::session_area(buffer.area);
+            assert_eq!(buffer.cell((session.left(), to.y)).unwrap().fg, accent);
+            let right = session.right() - 1;
             assert_eq!(buffer.cell((right, to.y)).unwrap().bg, background);
             assert_eq!(
                 buffer.cell((right, app.composer_area.y)).unwrap().bg,
                 background
             );
-            let heading = row(to.y);
-            let column = heading
-                .find(crate::theme::KUKU_MARK)
-                .unwrap_or_else(|| panic!("{heading}"));
-            let expected = phase_column.get_or_insert(column);
-            assert_eq!(column, *expected);
         }
     }
 }
@@ -306,7 +310,11 @@ fn compact_heading_shows_only_real_parallel_tools_and_prefers_reported_output() 
         ));
     };
     let before = screen(&mut app, 60, 28);
-    assert!(before.contains("Tools") && !before.contains("↳1"));
+    assert!(
+        before.contains("Running tools") || before.contains("Tools running"),
+        "{before}"
+    );
+    assert!(!before.contains("↳1"));
     emit(
         &mut app,
         json!({"type":"text","content":"01234567890123456789"}),

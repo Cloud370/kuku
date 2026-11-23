@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+pub(super) const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHANGED_LINES: usize = 256;
 const MAX_PREVIEW_ROWS: usize = 8;
 const MAX_PREVIEW_BYTES: usize = 2048;
@@ -12,6 +12,7 @@ pub(super) struct Change {
     pub(super) added_lines: usize,
     pub(super) removed_lines: usize,
     preview: String,
+    preview_line_numbers: Vec<usize>,
     preview_truncated: bool,
 }
 
@@ -19,7 +20,7 @@ pub(super) fn summarize(before: &str, after: &str) -> Option<Change> {
     if before.len().saturating_add(after.len()) > MAX_INPUT_BYTES {
         return None;
     }
-    let (before, after) = changed_region(before, after);
+    let (before, after, prefix_lines) = changed_region(before, after);
     let old: Vec<_> = before
         .split_inclusive('\n')
         .take(MAX_CHANGED_LINES + 1)
@@ -56,10 +57,10 @@ pub(super) fn summarize(before: &str, after: &str) -> Option<Change> {
     let common = usize::from(shared[0]);
     let (mut i, mut j) = (0, 0);
     let mut preview = String::new();
-    let mut rows = 0;
+    let mut preview_line_numbers = Vec::with_capacity(MAX_PREVIEW_ROWS);
     let mut preview_truncated = false;
     while i < old.len() || j < new.len() {
-        let (marker, line) = match (old.get(i), new.get(j)) {
+        let (marker, line, number) = match (old.get(i), new.get(j)) {
             (Some(_), Some(_)) if old_keys[i] == new_keys[j] => {
                 i += 1;
                 j += 1;
@@ -67,27 +68,28 @@ pub(super) fn summarize(before: &str, after: &str) -> Option<Change> {
             }
             (None, Some(right)) => {
                 j += 1;
-                ('+', right)
+                ('+', right, prefix_lines + j)
             }
             (Some(_), Some(right)) if shared[cell(i, j + 1)] > shared[cell(i + 1, j)] => {
                 j += 1;
-                ('+', right)
+                ('+', right, prefix_lines + j)
             }
             (Some(left), _) => {
                 i += 1;
-                ('-', left)
+                ('-', left, prefix_lines + i)
             }
             (None, None) => break,
         };
         let room = MAX_PREVIEW_BYTES.saturating_sub(preview.len() + 2);
-        if rows == MAX_PREVIEW_ROWS || room == 0 {
+        if preview_line_numbers.len() == MAX_PREVIEW_ROWS || room == 0 {
             preview_truncated = true;
             break;
         }
-        if rows > 0 {
+        if !preview_line_numbers.is_empty() {
             preview.push('\n');
         }
         preview.push(marker);
+        preview_line_numbers.push(number);
         let line = line
             .strip_suffix("\r\n")
             .or_else(|| line.strip_suffix('\n'))
@@ -98,24 +100,45 @@ pub(super) fn summarize(before: &str, after: &str) -> Option<Change> {
             preview_truncated = true;
             break;
         }
-        rows += 1;
     }
     Some(Change {
         added_lines: new.len() - common,
         removed_lines: old.len() - common,
         preview,
+        preview_line_numbers,
         preview_truncated,
     })
 }
 
-fn changed_region<'a>(before: &'a str, after: &'a str) -> (&'a str, &'a str) {
+pub(super) fn facts(before: &str, after: &str) -> serde_json::Value {
+    if let Some(change) = summarize(before, after) {
+        return serde_json::json!(change);
+    }
+    let prefix = before
+        .bytes()
+        .zip(after.bytes())
+        .take_while(|(before, after)| before == after)
+        .count();
+    if prefix == before.len() && prefix == after.len() {
+        return serde_json::Value::Null;
+    }
+    let first_changed_line = before.as_bytes()[..prefix]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1;
+    serde_json::json!({"first_changed_line": first_changed_line})
+}
+
+fn changed_region<'a>(before: &'a str, after: &'a str) -> (&'a str, &'a str, usize) {
     let matching = |a: &str, b: &str| a == b;
-    let prefix: usize = before
+    let (prefix, prefix_lines) = before
         .split_inclusive('\n')
         .zip(after.split_inclusive('\n'))
         .take_while(|(a, b)| matching(a, b))
-        .map(|(line, _)| line.len())
-        .sum();
+        .fold((0, 0), |(bytes, lines), (line, _)| {
+            (bytes + line.len(), lines + 1)
+        });
     let before = &before[prefix..];
     let after = &after[prefix..];
     let suffix: usize = before
@@ -128,6 +151,7 @@ fn changed_region<'a>(before: &'a str, after: &'a str) -> (&'a str, &'a str) {
     (
         &before[..before.len() - suffix],
         &after[..after.len() - suffix],
+        prefix_lines,
     )
 }
 
@@ -145,6 +169,7 @@ mod tests {
         assert_eq!(1, change.added_lines);
         assert_eq!(2, change.removed_lines);
         assert_eq!("-alpha\n+新\n-omega", change.preview);
+        assert_eq!([2, 2, 4], change.preview_line_numbers.as_slice());
         assert!(!change.preview_truncated);
     }
 
@@ -155,6 +180,8 @@ mod tests {
         assert_eq!((1, 1), (change.added_lines, change.removed_lines));
         assert!(change.preview_truncated);
         assert!(change.preview.len() <= super::MAX_PREVIEW_BYTES);
-        assert!(summarize("", &"extra\n".repeat(super::MAX_CHANGED_LINES + 1)).is_none());
+        let after = format!("same\n{}", "extra\n".repeat(super::MAX_CHANGED_LINES + 1));
+        assert!(summarize("same\n", &after).is_none());
+        assert_eq!(super::facts("same\n", &after)["first_changed_line"], 2);
     }
 }

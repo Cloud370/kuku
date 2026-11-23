@@ -187,7 +187,7 @@ impl Default for HandoffConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            threshold: 0.7,
+            threshold: 0.95,
             keep_turns: 2,
         }
     }

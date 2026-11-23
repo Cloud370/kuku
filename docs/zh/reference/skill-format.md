@@ -1,11 +1,9 @@
-# Skill Format
+# Skill 格式
 
-## 位置
+## 目录位置与结构
 
 - 用户级：`~/.kuku/skills/<name>/`
 - 项目级：`<workspace>/.kuku/skills/<name>/`
-
-## 必需布局
 
 ```text
 <skill>/
@@ -16,11 +14,11 @@
 └── assets/
 ```
 
-只有 `SKILL.md` 是必需的。
+只有 `SKILL.md` 是必需的。其余目录不会自动预加载，保留在 Skill 目录下供指令或工具按需引用。
 
-## `SKILL.md` 形状
+## `SKILL.md` 格式
 
-`SKILL.md` 使用 YAML frontmatter，后面跟 Markdown 指令。
+使用 YAML frontmatter 加 Markdown 指令：
 
 ```markdown
 ---
@@ -41,41 +39,37 @@ Before writing any code:
 
 必填：
 
-| Field | Rule |
+| 字段 | 规则 |
 |---|---|
-| `name` | 1-64 个字符，小写字母、数字、连字符；必须与目录名匹配 |
-| `description` | 1-1024 个字符；说明 Skill 做什么以及何时使用 |
+| `name` | 1–64 个字符（小写字母、数字、连字符），必须与目录名一致 |
+| `description` | 1–1024 个字符，说明用途与适用时机 |
 
 可选：
 
-| Field | Type | Meaning |
+| 字段 | 类型 | 含义 |
 |---|---|---|
-| `allowed-tools` | string[] | 仅为遗留元数据；不是运行时强制策略 |
-| `disallowed-tools` | string[] | 仅为遗留元数据；不是运行时强制策略 |
+| `allowed-tools` | string[] | 仅保留的旧字段，运行时不作为权限策略执行 |
+| `disallowed-tools` | string[] | 仅保留的旧字段，运行时不作为权限策略执行 |
 | `max-turns` | integer | 激活时的轮次上限 |
-| `model` | string | tier 覆盖 |
-| `metadata` | table | 任意元数据 |
+| `model` | string | 模型档位覆盖 |
+| `metadata` | table | 任意自定义元数据 |
 
-Skill 会指导模型行为，但不会改变权限。Tool 访问和权限提示仍然由当前 Session 的运行时策略决定。
+Skill 只指导模型行为，不会改变运行时的工具权限。
 
 ## 运行时快照
 
-每个 turn 开始时，运行时会发现当前可用的 Skill 定义，并把这个目录快照写入 Session 事件日志。只有在 `plugin.enabled` 开启时，package 提供的 Skill 才会参与这个快照。
+每个 Turn 开始时，kuku 将当前发现的 Skill 目录快照写入 Session 日志（`plugin.enabled = true` 时包含 Package 里的 Skill）：
 
-- `list_skills` 和 `search_skills` 读取当前 turn 的快照。
-- `use_skill` 也从同一个快照加载完整指令，而不是在本 turn 中稍后再次从磁盘重新读取。
-- 如果一个 turn 被恢复，运行时会恢复该 turn 已持久化的快照，而不是重新发现磁盘上的最新 Skill。
+- `list_skills`、`search_skills` 与 `use_skill` 均读取当前 Turn 的快照，不中途重读磁盘。
+- 恢复既有 Turn 时沿用其持久化的快照。
+- 磁盘上的修改在下一次新 Turn 生效。
 
-磁盘上的变更会在下一次新的 turn 中生效，不会在 turn 中途生效，也不会在恢复旧 turn 时生效。
+## 路径解析
 
-运行时不会单独预加载 `references/`、`scripts/`、`examples/` 和 `assets/`。这些目录仍然保留在 Skill 目录下，供指令或工具按需引用。
-
-## Path Resolution
-
-当 Skill 被加载时，运行时会在前面加入类似下面的注释：
+加载 Skill 时，运行时会在正文前插入目录标记：
 
 ```markdown
 <!-- loaded: /home/user/.kuku/skills/tdd -->
 ```
 
-Skill 指令中使用的相对路径会相对于这个 Skill 目录解析。
+Skill 指令里的相对路径均相对于该目录解析。

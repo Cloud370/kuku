@@ -13,11 +13,15 @@ import sys
 from urllib.parse import urlencode
 
 from interactive_fixture import EXE, InstalledClient, eventually, install, is_composer_heading, scratch_directory, serve
+from interactive_review import (
+    APPROVAL, AUDIT, CLOSE, DELEGATE, EDIT, LOCATE, replay_release_review, review_workspace, verify_workspace,
+)
 from paid_model import RequestBoundary, RunLimits, paid_budget, route_for
 from run import ROOT, config_record, load_secrets, now, redact, write_json
 
 
 INTENT_REQUEST_BYTES = 64000
+REVIEW_REQUEST_BYTES = 192 * 1024
 TURN_TIMEOUT = 125
 ARTIFACT_LIMIT = 64 * 1024
 ROUTING_FIELDS = ("connection", "tier", "model", "reasoning_effort", "service_tier", "preset")
@@ -293,6 +297,83 @@ def delegation(client, boundary, folder, secret_values, route):
             "main_tools": main_tools, "child_tools": reviewer_tools, "screen": "first-delegation.txt"}
 
 
+def live_release_review(client, boundary, folder, secret_values):
+    workspace = review_workspace(client)
+    stages = (
+        ("locate", LOCATE, "先执行 python -B -m unittest discover -s tests -v 并定位原因，此轮只排查。"),
+        ("edit", EDIT, (
+            "只修 billing/settlement.py 中的净额规则，更新 docs/release-notes.md，新增 docs/settlement-policy.md。"
+            "只新增两个单元测试，分别验证只含退款时为负数、只含待结算记录时为零。执行三个测试。"
+        )),
+        ("delegate", DELEGATE, (
+            "创建地址为 reviewer 的只读子 Agent，向它分派核对实现、文档和测试的任务，等它完成再汇报。"
+        )),
+        ("audit", AUDIT, (
+            "执行 python -B -m tools.audit，按实际输出给出结果。检查 docs/finance-approval.md 是否存在。"
+            "移除已被替换的 docs/refund-workaround.md，先验证路径和文件版本。"
+        )),
+        ("approval", APPROVAL, "调用 ask_user 询问我是否只提交代码、把财务审批留为发布前置。"),
+    )
+    turns = []
+    previous = 0
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.request("resize", rows=55, cols=160)
+        for name, prompt, detail in stages:
+            boundary.phase = name
+            submit(terminal, prompt + "\n" + detail, marker=prompt)
+            session, agent = wait_for_turn(client, workspace, previous)
+            previous = agent["turn"]
+            turns.append({"phase": name, "turn": previous, "status": agent["status"]})
+            if agent.get("question"):
+                boundary.phase = "answer"
+                answer = "是，只提交代码和测试，将财务审批保留为发布前置条件。"
+                with client.command(workspace, "reply", session, agent["question"]["id"], "--answer", answer) as process:
+                    client.finish(process)
+                session, agent = wait_for_turn(client, workspace, previous)
+                previous = agent["turn"]
+                turns.append({"phase": "answer", "turn": previous, "status": agent["status"]})
+            assert agent["status"] == "idle", f"{name} settled as {agent['status']}"
+        boundary.phase = "compact"
+        terminal.press("/compact\r")
+        compaction = eventually(
+            "manual compaction to settle",
+            lambda: next((entry for entry in reversed(history(client, workspace, session))
+                          if entry["type"] == "compaction"
+                          and entry.get("status") in {"completed", "failed", "cancelled"}), None),
+            timeout=TURN_TIMEOUT,
+        )
+        boundary.phase = "close"
+        submit(terminal, CLOSE + "\n用 Markdown 表格给出测试、样本、子 Agent 复核、审批状态。", marker=CLOSE)
+        session, agent = wait_for_turn(client, workspace, previous)
+        turns.append({"phase": "close", "turn": agent["turn"], "status": agent["status"]})
+        entries = history(client, workspace, session)
+        terminal.exit_cleanly()
+    checks = verify_workspace(workspace)
+    checks.update(
+        single_session_reused=all(first["turn"] < second["turn"] for first, second in zip(turns, turns[1:])),
+        real_question_answered=any(turn["phase"] == "answer" for turn in turns),
+        compaction_completed=compaction["status"] == "completed",
+        final_turn_finished=agent["status"] == "idle",
+    )
+    tools = tool_facts(entries)
+    checks["reviewer_created"] = any(tool["name"] == "create_agent" and tool["status"] == "ok" for tool in tools)
+    markers = ["Assistant"]
+    if any(tool["name"] == "edit_file" and tool["status"] == "ok" for tool in tools):
+        markers.append("Edited")
+    if checks["reviewer_created"]:
+        markers.append("Agent reviewer")
+    if checks["compaction_completed"]:
+        markers.append("Context compacted")
+    requests_before_replay = len(boundary.attempts)
+    for width, frames in replay_release_review(client, markers=markers).items():
+        save_screen(folder, f"settlement-review-{width}", "\n\n".join(frame["screen"] for frame in frames), secret_values)
+        save_screen(folder, f"settlement-review-{width}-styled", "\n\n".join(frame["styled"] for frame in frames), secret_values)
+    checks["replay_used_no_model_requests"] = len(boundary.attempts) == requests_before_replay
+    return {"name": "release-review", "passed": all(checks.values()), "checks": checks,
+            "session_id": session, "workspace": str(workspace), "turns": turns, "tools": tools}
+
+
 def run_selected_live(args, directory, record, scratch, bridge, checked):
     artifact = args.archive or args.binary
     record["input"] = {"type": "release_archive" if args.archive else "installed_binary", **config_record(artifact)}
@@ -336,16 +417,19 @@ def main():
     for arg in ("bridge", "evidence", "ledger", "secrets"):
         parser.add_argument("--" + arg, type=Path, required=True)
     parser.add_argument("--scratch-base", type=Path)
+    parser.add_argument("--keep-session", action="store_true", help="keep the review Session for rendering replay")
     parser.add_argument("--provider", required=True, choices=("deepseek", "openrouter"))
     parser.add_argument("--model")
     parser.add_argument("--effort", default="low")
     parser.add_argument("--upstream")
     parser.add_argument("--max-requests", type=int, default=36)
     parser.add_argument("--max-output-tokens", type=int, default=2048)
-    parser.add_argument("--case", default="all", choices=("all", "delivery", "delegation"))
+    parser.add_argument("--case", default="all", choices=("all", "delivery", "delegation", "release-review"))
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--revision", required=True)
     args = parser.parse_args()
+    if args.keep_session and (args.case != "release-review" or args.scratch_base is None):
+        parser.error("--keep-session requires --case release-review and an explicit --scratch-base")
     if not re.fullmatch(r"[0-9a-f]{7,40}", args.revision):
         parser.error("--revision must be a Git commit ID of at least seven hexadecimal characters")
     credentials = load_secrets(args.secrets)
@@ -353,7 +437,8 @@ def main():
     if not upstream_key:
         raise ValueError("The selected provider needs its acceptance credential")
     route = route_for(args.provider, model=args.model, effort=args.effort, upstream=args.upstream, key=upstream_key)
-    limits = RunLimits(args.max_requests, INTENT_REQUEST_BYTES, args.max_output_tokens)
+    request_bytes = REVIEW_REQUEST_BYTES if args.case == "release-review" else INTENT_REQUEST_BYTES
+    limits = RunLimits(args.max_requests, request_bytes, args.max_output_tokens)
     loopback_key = secrets.token_hex(32)
     masked = [loopback_key, *(value for name, value in credentials.items() if name.endswith(("_KEY", "_TOKEN", "_SECRET")))]
     boundary = RequestBoundary(route, limits, upstream_key, loopback_key)
@@ -369,7 +454,7 @@ def main():
               **route.evidence(limits), "ledger": str(budget.path), "requests": boundary.attempts,
               "transport_rejections": boundary.rejections, "cases": []}
     try:
-        with (scratch_directory(args.scratch_base, report, prefix="kuku-live-intent-") as scratch,
+        with (scratch_directory(args.scratch_base, report, prefix="kuku-live-intent-", retain=args.keep_session) as scratch,
               serve(boundary.handler()) as endpoint):
             executable = scratch / "data" / "bin" / ("kuku" + EXE)
             client = InstalledClient(executable, args.bridge.resolve(), scratch)
@@ -394,13 +479,19 @@ def main():
                     assert selected["model"] == route.model and selected["connection"] == route.connection
                     assert selected["settings"]["reasoning_effort"] == route.effort and not boundary.attempts
                     terminal.exit_cleanly()
-                boundary.reserve(budget, args.run_id, "Native intent and first delegation")
+                boundary.reserve(budget, args.run_id, f"Native intent: {args.case}")
                 if args.case in {"all", "delivery"}:
                     delivery_and_revision(client, boundary, evidence, masked, report["cases"])
                 if args.case in {"all", "delegation"}:
                     report["cases"].append(delegation(client, boundary, evidence, masked, route))
+                if args.case == "release-review":
+                    report["cases"].append(live_release_review(client, boundary, evidence, masked))
             finally:
                 client.stop()
+                if args.keep_session:
+                    replay_config = route.config("http://127.0.0.1:9", limits)
+                    replay_config = replay_config.replace("$KUKU_INTENT_FIXTURE_TOKEN", "review-replay")
+                    (client.home / "config.toml").write_text(replay_config, encoding="utf-8")
         report["upstream_confirmed"] = boundary.confirm_upstream()
         report["passed"] = report["upstream_confirmed"] is True and bool(report["cases"]) and not boundary.rejections \
             and all(result["passed"] for result in report["cases"])

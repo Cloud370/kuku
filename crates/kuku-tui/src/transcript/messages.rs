@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use crate::jobs::Selection;
 use crate::text::{shorten, single_line};
 
@@ -151,7 +149,7 @@ impl Transcript {
                 };
                 let mut outputs = tool.output_views();
                 if view.has_full_output() {
-                    outputs.insert(0, view);
+                    outputs.insert(0, tool.format_output(view));
                 }
                 (MessageKind::Tool, text, outputs, false)
             }
@@ -197,7 +195,9 @@ impl Transcript {
                 key,
                 line: AnchorLine::Body(0),
             },
-            newer: VecDeque::new(),
+            newer: None,
+            rebase_after_page: false,
+            visible_through: None,
             unseen: false,
             manual: true,
         });

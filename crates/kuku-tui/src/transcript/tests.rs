@@ -25,17 +25,31 @@ fn page(first: u64, before: u64) -> HistoryPage {
     }
 }
 
+pub(super) fn card_text(row: &str) -> &str {
+    let row = row.trim();
+    if let Some(title) = row
+        .strip_prefix("╭─ ")
+        .and_then(|row| row.strip_suffix('╮'))
+    {
+        return title.trim_end_matches('─').trim_end();
+    }
+    row.strip_prefix('│')
+        .map_or(row, |body| body.strip_suffix('│').unwrap_or(body).trim())
+}
+
 fn rows(transcript: &mut Transcript) -> Vec<String> {
     transcript
-        .project(44, 10)
+        .project(44, 16)
         .lines
         .iter()
-        .map(ToString::to_string)
+        .map(|line| card_text(&line.to_string()).to_owned())
         .collect()
 }
 
 fn compact(text: &str) -> String {
-    text.split_whitespace().collect()
+    text.split_whitespace()
+        .filter(|word| *word != "│")
+        .collect()
 }
 
 #[test]
@@ -56,27 +70,71 @@ fn compaction_progress_updates_the_same_card_and_reveals_the_checkpoint_on_reque
     let completed = serde_json::from_value(json!({
         "id": 5, "agent": "main", "turn": 1, "type": "compaction",
         "request_id": "compact-1", "status": "completed", "elapsed_ms": 2120,
-        "before_bytes": 16384, "after_bytes": 8192, "checkpointed_messages": 7,
+        "estimated_input_tokens_before": 16000, "estimated_input_tokens_after": 8000,
+        "summary_output_tokens": 3376,
+        "checkpointed_messages": 7,
         "text": "Earlier work verified.\n\nInspect the parser at parse_range.",
     }))
     .unwrap();
     transcript.apply(completed, None);
     let preview = rows(&mut transcript).join("\n");
     assert!(!preview.contains("Compacting context"));
-    assert!(preview.contains("Context compacted") && preview.contains("2.1s"));
-    let preview_words = preview.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(preview_words.contains("16.0 KiB → 8.0 KiB"));
-    assert!(preview_words.contains("7 messages summarized"), "{preview}");
-    assert!(preview.contains("Earlier work verified.") && !preview.contains("parse_range"));
+    assert!(preview.contains("Context compacted · 2.1s"));
+    assert!(preview.contains("~16K → ~8K input tokens"));
+    assert!(preview.contains("Summary · 3376 output tokens"));
+    assert!(preview.contains("7 messages summarized"));
+    assert!(!preview.contains("Earlier work verified.") && !preview.contains("parse_range"));
+    let wide = transcript.project(90, 16);
+    let context = wide
+        .lines
+        .iter()
+        .find(|line| line.to_string().contains("~16K → ~8K input tokens"))
+        .unwrap();
+    assert!(context
+        .spans
+        .iter()
+        .all(|span| span.style.bg == crate::theme::transcript_background().bg));
+    let summary = wide
+        .lines
+        .iter()
+        .find(|line| line.to_string().contains("Summary · 3376 output tokens"))
+        .unwrap();
+    use crate::theme::{MUTED, USAGE};
+    for (line, text, color) in [
+        (context, "~16K", USAGE),
+        (context, " → ", MUTED),
+        (context, "~8K", USAGE),
+        (context, " input tokens", MUTED),
+        (summary, "Summary · ", MUTED),
+        (summary, "3376", USAGE),
+        (summary, " output tokens", MUTED),
+    ] {
+        assert!(
+            line.spans
+                .iter()
+                .any(|span| span.content == text && span.style.fg == Some(color)),
+            "{text}"
+        );
+    }
+    let narrow = transcript.project(32, 16);
+    assert!(narrow.lines.windows(2).any(|lines| {
+        lines[0].to_string().contains("Context compacted · 2.1s")
+            && lines[1].to_string().contains("~16K → ~8K input tokens")
+    }));
+    rows(&mut transcript);
     let (detail, _, _) = transcript
         .visible_detail_choices()
         .into_iter()
         .next()
         .unwrap();
     assert!(transcript.toggle_detail(&detail));
-    assert!(rows(&mut transcript).join("\n").contains("parse_range"));
+    let open = rows(&mut transcript).join("\n");
+    assert!(open.contains("Context compacted · 2.1s"));
+    assert!(open.contains("~16K → ~8K input tokens"));
+    assert_eq!(open.matches("7 messages summarized").count(), 1);
+    assert!(open.contains("Earlier work verified.") && open.contains("parse_range"));
     assert!(transcript.toggle_detail(&detail));
-    assert!(!rows(&mut transcript).join("\n").contains("parse_range"));
+    assert_eq!(preview, rows(&mut transcript).join("\n"));
 }
 
 #[test]
@@ -171,6 +229,44 @@ fn evicted_view_restores_its_saved_anchor_from_durable_history() {
     transcript.replace_recent(page(101, 141));
     transcript.apply_page(request, page(before - HISTORY_PAGE as u64, before));
     assert_eq!(anchored, rows(&mut transcript));
+    assert_eq!(
+        Some(HistoryRequest::Newer(before - 1)),
+        transcript.scroll(1000, 44, 16)
+    );
+}
+
+#[test]
+fn deep_history_pages_forward_past_the_old_backtrack_limit() {
+    use kuku_client::ForwardHistoryPage;
+
+    let newest = 140 * HISTORY_PAGE as u64;
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(page(newest - HISTORY_PAGE as u64 + 1, newest + 1));
+    while let Some(HistoryRequest::Older(before)) = transcript.scroll(-1000, 44, 10) {
+        transcript.apply_page(
+            HistoryRequest::Older(before),
+            page(before.saturating_sub(HISTORY_PAGE as u64).max(1), before),
+        );
+    }
+    let mut fetched = 0;
+    while let Some(HistoryRequest::Newer(after)) = transcript.scroll(1000, 44, 10) {
+        assert!(after < newest);
+        let through = (after + HISTORY_PAGE as u64).min(newest);
+        transcript.apply_forward_page(
+            HistoryRequest::Newer(after),
+            ForwardHistoryPage {
+                page: page(after + 1, through + 1),
+                next_after: (through < newest).then_some(through),
+            },
+        );
+        assert_eq!(
+            Some(through),
+            transcript.reading.as_ref().unwrap().window.last_position()
+        );
+        fetched += 1;
+    }
+    assert!(fetched > 128);
+    assert!(!transcript.is_reading());
 }
 
 #[test]
@@ -226,7 +322,10 @@ fn retry_stop_and_explicit_error_code_remain_readable_in_history() {
     let rendered = rows(&mut transcript).join(" ");
     let compacted = compact(&rendered);
     assert!(rendered.contains("No automatic retry"));
-    assert!(rendered.contains("attempt limit reached"));
+    assert!(
+        compacted.contains(&compact("attempt limit reached")),
+        "{rendered}"
+    );
     assert!(rendered.contains("connection reset"));
     assert!(
         compacted.contains(&compact("Wait/check service/network; then Continue")),
@@ -285,7 +384,10 @@ fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
         .windows(2)
         .any(|pair| pair[0].starts_with("Turn 2  ─") && pair[1] == "Interrupted"));
     assert_eq!(1, rendered.matches("Interrupted body.").count());
-    assert!(rendered.contains("Display limit reached"));
+    assert!(
+        compact(&rendered).contains(&compact("Display limit reached")),
+        "{rendered}"
+    );
     transcript.replace_recent(HistoryPage {
         entries: vec![previous, interruption],
         rewind_groups: Vec::new(),
@@ -339,47 +441,36 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
     for width in [17, 72] {
         let view = transcript.project(width, 32);
         let plain: Vec<_> = view.lines.iter().map(ToString::to_string).collect();
-        let (title, body, inset, heading) = if width == 17 {
-            (0, 1, 2, "│ You · Turn 1")
+        let heading = if width == 17 {
+            "You · Turn 1"
         } else {
-            assert_eq!("│", plain[0].trim_end());
-            assert_eq!(view.lines[0].style.bg, Some(crate::theme::SURFACE));
-            assert_eq!(view.row_insets[0], width as u16);
-            (1, 3, 2, "│ You  ·  Turn 1")
+            "You  ·  Turn 1"
         };
-        assert_eq!(heading, plain[title]);
-        assert_eq!(
-            "看一下 e\u{301} 👩‍💻",
-            plain[body].trim_start_matches('│').trim_start()
-        );
-        assert_eq!(inset, view.row_insets[body]);
-        if width == 72 {
-            assert_eq!("│", plain[body + 1].trim_end());
-            assert_eq!(view.lines[body + 1].style.bg, Some(crate::theme::SURFACE));
-            assert_eq!(view.row_insets[body + 1], width as u16);
-        }
-        let gap = body + if width == 72 { 2 } else { 1 };
+        assert_eq!(heading, card_text(&plain[0]));
+        assert_eq!("看一下 e\u{301} 👩‍💻", card_text(&plain[1]));
+        assert_eq!(if width < 18 { 1 } else { 2 }, view.row_insets[1].left);
+        assert!(view.lines[0]
+            .spans
+            .iter()
+            .all(|span| span.style.bg == Some(crate::theme::SURFACE)));
+        let gap = if width < 18 { 2 } else { 3 };
         assert!(plain[gap].is_empty());
         assert!(view.lines[gap].style.bg.is_none());
         assert!(plain.windows(2).any(|pair| {
-            pair[0] == "Assistant"
-                && pair[1].trim_start() == "我来检查"
-                && pair[1].starts_with("  ")
+            card_text(&pair[0]) == "Assistant" && card_text(&pair[1]) == "我来检查"
         }));
-        assert!(plain.iter().any(|row| row.starts_with("╭─ Read file")));
+        assert!(plain
+            .iter()
+            .any(|row| card_text(row).starts_with("Read file")));
         assert!(plain.iter().any(|row| row.contains("error")));
-        assert!(plain
-            .iter()
-            .any(|row| row.trim_matches('│').trim() == "中文.txt"));
-        assert!(plain
-            .iter()
-            .any(|row| row.trim_matches('│').trim() == "文件丢失"));
+        assert!(plain.iter().any(|row| card_text(row) == "中文.txt"));
+        assert!(plain.iter().any(|row| card_text(row) == "文件丢失"));
         assert!(view.lines.iter().all(|line| line.width() <= width));
     }
 
     assert_eq!(
-        "│ You · Turn 1",
-        transcript.project(14, 40).lines[0].to_string()
+        "You · Turn 1",
+        transcript.project(14, 40).lines[0].to_string().trim()
     );
 
     let compact: Vec<_> = transcript
@@ -389,9 +480,9 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
         .map(ToString::to_string)
         .collect();
     assert!(compact[0].starts_with("Turn 1"));
-    assert_eq!("You", compact[1]);
-    assert!(compact.iter().any(|row| row == "AI"));
-    assert!(compact.iter().any(|row| row == "文件丢失"));
+    assert_eq!("You", compact[1].trim());
+    assert!(compact.iter().any(|row| row.trim() == "AI"));
+    assert!(compact.iter().any(|row| card_text(row) == "文件丢失"));
 }
 
 #[test]
@@ -469,21 +560,19 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     let plain: Vec<_> = settled.lines.iter().map(ToString::to_string).collect();
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
     assert!(plain[0].starts_with("Turn 1  ─"));
-    assert_eq!("Assistant", plain[1]);
+    assert_eq!("Assistant", card_text(&plain[1]));
     assert_eq!(
         1,
         plain
             .iter()
-            .filter(|row| row.starts_with("╭─ Check workspace"))
+            .filter(|row| card_text(row).starts_with("Check workspace"))
             .count()
     );
     assert!(plain.iter().any(|row| row.contains("failed · exit 7")));
     assert!(plain
         .iter()
-        .any(|row| row.trim_matches('│').trim() == "durable diagnostic"));
-    assert!(plain
-        .iter()
-        .any(|row| row.trim_matches('│').trim() == "Saved output"));
+        .any(|row| card_text(row) == "durable diagnostic"));
+    assert!(plain.iter().any(|row| card_text(row) == "View output"));
     assert!(!plain
         .iter()
         .any(|row| row.contains("live diagnostic") || row.contains("late duplicate")));
@@ -546,13 +635,17 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
     assert_eq!(
         vec!["1", "2"],
         all.iter()
-            .filter_map(|row| row.strip_prefix("│ You  ·  Turn ").or_else(|| row
-                .strip_prefix("Turn ")
-                .and_then(|tail| tail.split_once("  ─"))
-                .map(|(number, _)| number)))
+            .filter_map(
+                |row| card_text(row).strip_prefix("You  ·  Turn ").or_else(|| row
+                    .strip_prefix("Turn ")
+                    .and_then(|tail| tail.split_once("  ─"))
+                    .map(|(number, _)| number))
+            )
             .collect::<Vec<_>>()
     );
-    assert_eq!("│ Inspect the file", all[3]);
+    assert!(all.windows(2).any(|pair| {
+        card_text(&pair[0]) == "You  ·  Turn 1" && card_text(&pair[1]) == "Inspect the file"
+    }));
 }
 
 #[test]
@@ -655,7 +748,7 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
-    let rendered_lines: Vec<_> = rendered.lines().map(str::trim_start).collect();
+    let rendered_lines: Vec<_> = rendered.lines().map(card_text).collect();
     assert!(rendered_lines.windows(2).any(|pair| pair == ["Checks", ""]));
     assert!(rendered_lines.contains(&"Tests failed."));
     let narrow = transcript.project(24, 24);
@@ -688,11 +781,7 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
 
     assert!(transcript.toggle_source());
     let raw = rows(&mut transcript).join("\n");
-    let raw_lines = raw
-        .lines()
-        .map(str::trim_start)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let raw_lines = raw.lines().map(card_text).collect::<Vec<_>>().join("\n");
     assert!(raw_lines.contains("````markdown\n# Document\n\n```text\nsafe␛[31m\n```"));
     assert!(!raw.contains('\u{001b}'));
     let cache = &transcript.recent.records[0].rendered;
@@ -756,7 +845,7 @@ fn toggling_markdown_source_keeps_the_reading_anchor_and_round_trips_the_view() 
     assert!(source
         .lines
         .iter()
-        .any(|row| row.to_string().trim_start().starts_with("## Section")));
+        .any(|row| card_text(&row.to_string()).starts_with("## Section")));
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
 
     assert!(!transcript.toggle_source());
@@ -819,4 +908,31 @@ fn message_entries_exclude_records_evicted_from_the_active_window() {
         .message_entries("main")
         .iter()
         .all(|entry| entry.id != MessageId::Event(9)));
+}
+
+#[test]
+fn a_completed_compaction_without_token_estimates_stops_the_clock() {
+    let mut transcript = Transcript::default();
+    for event in [
+        json!({"id":688, "agent":"main", "turn":6, "type":"compaction",
+               "request_id":"compact-1", "status":"running", "ts":"2026-11-22T15:44:23Z"}),
+        json!({"id":702, "agent":"main", "turn":6, "type":"compaction",
+               "request_id":"compact-1", "status":"completed", "elapsed_ms":26643,
+               "checkpointed_messages":28, "text":"Keep editing the documentation."}),
+    ] {
+        transcript.apply(serde_json::from_value(event).unwrap(), None);
+    }
+    let closed = rows(&mut transcript).join("\n");
+    assert!(closed.contains("Context compacted · 26.6s"));
+    assert!(!closed.contains("elapsed") && !closed.contains("tokens"));
+    assert!(closed.contains("28 messages summarized"));
+    let (detail, _, _) = transcript
+        .visible_detail_choices()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(transcript.toggle_detail(&detail));
+    let open = rows(&mut transcript).join("\n");
+    assert!(open.contains("28 messages summarized"));
+    assert!(open.contains("Keep editing the documentation."));
 }

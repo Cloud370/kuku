@@ -40,10 +40,16 @@ pub(crate) enum MouseAction {
     Click(ClickTarget),
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TextInsets {
+    pub(crate) left: u16,
+    pub(crate) right: u16,
+}
+
 #[derive(Default)]
 pub(crate) struct TextSelection {
     areas: Vec<Rect>,
-    transcript_insets: Option<(Rect, Vec<u16>)>,
+    transcript_insets: Option<(Rect, Vec<TextInsets>)>,
     messages_area: Option<Rect>,
     drag: Option<Drag>,
 }
@@ -53,7 +59,7 @@ impl TextSelection {
         &mut self,
         buffer: &mut Buffer,
         areas: &[Rect],
-        transcript_insets: Option<(Rect, Vec<u16>)>,
+        transcript_insets: Option<(Rect, Vec<TextInsets>)>,
     ) {
         self.areas.clear();
         self.areas.extend_from_slice(areas);
@@ -173,7 +179,7 @@ impl TextSelection {
     }
 }
 
-fn insets_for(transcript: &Option<(Rect, Vec<u16>)>, area: Rect) -> &[u16] {
+fn insets_for(transcript: &Option<(Rect, Vec<TextInsets>)>, area: Rect) -> &[TextInsets] {
     transcript
         .as_ref()
         .filter(|(rect, _)| *rect == area)
@@ -189,7 +195,7 @@ struct Drag {
 }
 
 impl Drag {
-    fn new(area: Rect, anchor: Position, buffer: &Buffer, insets: &[u16]) -> Self {
+    fn new(area: Rect, anchor: Position, buffer: &Buffer, insets: &[TextInsets]) -> Self {
         let mut drag = Self {
             area,
             anchor,
@@ -201,7 +207,7 @@ impl Drag {
         drag
     }
 
-    fn move_to(&mut self, point: Position, buffer: &Buffer, insets: &[u16]) {
+    fn move_to(&mut self, point: Position, buffer: &Buffer, insets: &[TextInsets]) {
         let end = Position::new(
             point.x.clamp(self.area.left(), self.area.right() - 1),
             point.y.clamp(self.area.top(), self.area.bottom() - 1),
@@ -213,7 +219,7 @@ impl Drag {
         }
     }
 
-    fn project(&self, buffer: &Buffer, insets: &[u16]) -> (String, Vec<Rect>) {
+    fn project(&self, buffer: &Buffer, insets: &[TextInsets]) -> (String, Vec<Rect>) {
         let (start, end) = if (self.anchor.y, self.anchor.x) <= (self.end.y, self.end.x) {
             (self.anchor, self.end)
         } else {
@@ -225,14 +231,14 @@ impl Drag {
             let inset = insets
                 .get(usize::from(row - self.area.top()))
                 .copied()
-                .unwrap_or(0);
-            if inset >= self.area.width {
+                .unwrap_or_default();
+            if inset.left + inset.right >= self.area.width {
                 continue;
             }
             if !highlights.is_empty() {
                 text.push('\n');
             }
-            let line_start = self.area.left() + inset;
+            let line_start = self.area.left() + inset.left;
             let from = if row == start.y {
                 start.x.max(line_start)
             } else {
@@ -243,7 +249,7 @@ impl Drag {
             } else {
                 self.area.right()
             };
-            let line_end = (line_start..self.area.right())
+            let line_end = (line_start..self.area.right() - inset.right)
                 .rev()
                 .find(|&x| buffer[(x, row)].symbol() != " ")
                 .map_or(line_start, |x| x + buffer[(x, row)].cell_width());

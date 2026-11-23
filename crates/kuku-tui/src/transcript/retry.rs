@@ -2,9 +2,9 @@ use kuku_client::{HistoryEntry, HistoryKind};
 use ratatui::style::Style;
 
 use crate::markup::render_literal;
-use crate::theme::{ERROR, WARNING};
+use crate::theme::{CardFrame, ERROR, WARNING};
 
-use super::{render_record, render_rows, Body, Row, MAX_VISUAL_ROWS};
+use super::{message, render_rows, Body, Row, MAX_VISUAL_ROWS};
 
 pub(super) fn interruption_execution(entry: &HistoryEntry) -> Option<u64> {
     if entry.kind == HistoryKind::Status
@@ -105,12 +105,8 @@ pub(super) fn render(
                     notice.push_str(hint);
                 }
             }
-            Some(render_record(
-                &title,
-                ERROR,
-                render_literal(&notice, Style::default()),
-                width,
-                0,
+            Some(message::render_activity_record(
+                &title, ERROR, &notice, width,
             ))
         }
         Body::Retry {
@@ -127,16 +123,22 @@ pub(super) fn render(
 }
 
 fn render_retry_history(text: &str, width: usize, heading: bool, ends: bool) -> Vec<Row> {
-    let lines = render_literal(text, Style::default());
-    let mut rows = if heading {
-        render_record("Retry history", WARNING, lines, width, 0)
-    } else {
-        render_rows(lines, width, MAX_VISUAL_ROWS, 0).collect()
-    };
-    if !ends && rows.last().is_some_and(|row| row.line.spans.is_empty()) {
-        rows.pop();
-    } else if ends && rows.last().is_none_or(|row| !row.line.spans.is_empty()) {
-        rows.push(Row::plain(ratatui::text::Line::default()));
+    let frame = CardFrame::timeline(width);
+    let mut rows = Vec::new();
+    if heading {
+        rows.push(Row::plain(frame.title("Retry history", WARNING)));
+    }
+    rows.extend(
+        render_rows(
+            render_literal(text, Style::default()),
+            frame.content_width(),
+            MAX_VISUAL_ROWS,
+            0,
+        )
+        .map(|row| row.framed(&frame)),
+    );
+    if ends {
+        rows.extend(Row::frame_end(&frame));
     }
     rows
 }

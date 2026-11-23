@@ -125,6 +125,9 @@ pub struct WorkspaceScriptFacts {
     pub kind: WorkspaceScriptResultKind,
     /// The script's JSON return value, or null if it supplied no value.
     pub value: Value,
+    /// Complete JSON return saved as retained output when it exceeded the inline limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_ref: Option<crate::OutputReference>,
     /// Host actions that reached the host dispatch boundary.
     pub actions: Vec<WorkspaceScriptActionFacts>,
     /// Whether the JavaScript execution budget was exhausted.

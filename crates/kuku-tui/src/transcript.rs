@@ -1,11 +1,8 @@
-use std::collections::VecDeque;
-
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, TurnSummary};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use serde_json::Value;
 
-use crate::markup::{render_literal, wrap_bounded, LinkDestination};
+use crate::markup::{wrap_bounded, LinkDestination};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{ACCENT, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
 
@@ -26,29 +23,30 @@ mod row;
 use row::Row;
 mod rewound;
 mod stream;
+mod timing;
 mod tool;
 mod turn_summary;
 mod window;
 
 use self::agent::AgentCards;
 use self::body::Body;
-pub(crate) use self::details::DetailKey;
-use self::details::{DetailRecord, Details};
+pub(crate) use self::details::{DetailKey, InlineOutputEffect};
+use self::details::{DetailRecord, Details, ScriptDetail};
 use self::job::JobNotice;
-use self::message::{render_assistant_source, render_record, render_user};
+use self::message::{render_assistant_source, render_user};
 pub(crate) use self::messages::{MessageId, MessageInfo, MessageKind, SelectedMessage};
 use self::rewound::RewindGroupState;
 pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroupRequest};
+use self::timing::CardTiming;
 use self::tool::Tool;
 pub(crate) use self::tool::ToolView;
-use self::window::{Layout, RenderCache, Window};
+use self::window::{Block, Layout, RenderCache, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 pub(crate) const REWIND_GROUP_PAGE: usize = 12;
 pub(crate) const MAX_RECORDS: usize = HISTORY_PAGE * 3;
 const MAX_LIVE_RECORDS: usize = 32;
 pub(crate) const MAX_BODY_BYTES: usize = 64 * 1024;
-const MAX_BACKTRACK_PAGES: usize = 128;
 const MAX_VISUAL_ROWS: usize = 768;
 const DISPLAY_LIMIT_NOTICE: &str = "\n… Display limit reached";
 
@@ -75,26 +73,34 @@ enum AnchorLine {
     Group(usize),
     RewindEntry { event_id: u64, line: usize },
     Body(usize),
+    CommandArguments,
+    InlineOutput(details::OutputTarget),
+    Script(ScriptDetail),
+    Footer(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HistoryRequest {
     Recent,
     Older(u64),
-    Newer { first: u64, before: u64 },
+    Newer(u64),
     Restore(u64),
 }
 
 impl HistoryRequest {
+    #[cfg(test)]
     pub(crate) fn before(self) -> u64 {
         match self {
-            Self::Recent => 0,
-            Self::Older(before) | Self::Newer { before, .. } | Self::Restore(before) => before,
+            Self::Recent | Self::Newer(_) => 0,
+            Self::Older(before) | Self::Restore(before) => before,
         }
     }
 
     pub(crate) fn before_option(self) -> Option<u64> {
-        (self != Self::Recent).then(|| self.before())
+        match self {
+            Self::Older(before) | Self::Restore(before) => Some(before),
+            Self::Recent | Self::Newer(_) => None,
+        }
     }
 }
 
@@ -104,7 +110,11 @@ enum ToolDetails {
     Expanded,
     Collapsed,
     GroupMember,
+    ActivityPreview(usize),
+    CompactFile,
+    ExpandedFile,
     Inspection,
+    InspectionWithArguments,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -135,6 +145,34 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) fn compacting(&self, turn: Option<u64>) -> bool {
+        self.recent
+            .records
+            .iter()
+            .rev()
+            .find_map(|record| {
+                if record.turn != turn {
+                    return None;
+                }
+                match &record.body {
+                    Body::Compaction(entry) => Some(entry.running()),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn tool_name(&self, id: &str) -> Option<&str> {
+        self.recent
+            .records
+            .iter()
+            .rev()
+            .find_map(|record| match &record.key {
+                Key::Tool { id: call_id, .. } if id == call_id => record.tool().map(Tool::name),
+                _ => None,
+            })
+    }
+
     pub(crate) fn replace_recent(&mut self, page: HistoryPage) {
         self.readonly_epoch = self.readonly_epoch.wrapping_add(1);
         self.reset_pending_rewind_group_pages();
@@ -261,6 +299,7 @@ impl Transcript {
         self.restore = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn reading_anchor(&self) -> Option<&Anchor> {
         self.reading.as_ref().map(|reading| &reading.anchor)
     }
@@ -332,12 +371,15 @@ impl Transcript {
                 return None;
             }
             let mut window = self.recent.clone();
-            let rows = window.row_count(layout);
-            let anchor = window.anchor_at(rows.saturating_sub(height), layout)?;
+            let blocks = window.blocks(layout);
+            let anchor =
+                Block::anchor_at(&blocks, Block::row_count(&blocks).saturating_sub(height))?;
             self.reading = Some(Reading {
                 window,
                 anchor,
-                newer: VecDeque::new(),
+                newer: None,
+                rebase_after_page: false,
+                visible_through: None,
                 unseen: false,
                 manual: true,
             });
@@ -347,21 +389,42 @@ impl Transcript {
         }
         let reading = self.reading.as_mut().expect("read window");
         reading.manual = true;
-        let rows = reading.window.row_count(layout);
-        let start = reading.window.position_of(&reading.anchor, layout);
-        let bottom = rows.saturating_sub(height);
-        let next = start.saturating_add_signed(amount).min(bottom);
-        if let Some(anchor) = reading.window.anchor_at(next, layout) {
+        let blocks = reading.window.blocks(layout);
+        if std::mem::take(&mut reading.rebase_after_page) {
+            Block::rebase_anchor(&blocks, &mut reading.anchor);
+        }
+        let start = Block::position_of(&blocks, &reading.anchor);
+        let bottom = Block::row_count(&blocks).saturating_sub(height);
+        let next = if amount < 0 {
+            start.saturating_add_signed(amount)
+        } else {
+            start.saturating_add_signed(amount).min(bottom.max(start))
+        };
+        if let Some(anchor) = Block::anchor_at(&blocks, next) {
             reading.anchor = anchor;
         }
+        reading.visible_through = history::last_visible_card(&blocks, next, height);
+        drop(blocks);
         if amount.is_negative() && next == 0 {
             return reading.window.older.map(HistoryRequest::Older);
         }
-        if amount > 0 && next == bottom {
-            if let Some(request) = reading.newer.front() {
-                return Some(*request);
+        if amount > 0 {
+            let lookahead = (height / 4).max(3);
+            if next.saturating_add(lookahead) >= bottom {
+                if reading.newer.is_none() && reading.unseen {
+                    reading.newer = reading.window.last_position().filter(|after| {
+                        self.recent
+                            .last_position()
+                            .is_some_and(|recent| recent > *after)
+                    });
+                }
+                if let Some(after) = reading.newer {
+                    return Some(HistoryRequest::Newer(after));
+                }
             }
-            self.show_latest();
+            if next >= bottom {
+                self.show_latest();
+            }
         }
         None
     }
@@ -370,16 +433,25 @@ impl Transcript {
 pub(crate) struct TranscriptView {
     pub(crate) thinking_row: Option<usize>,
     pub(crate) lines: Vec<Line<'static>>,
-    pub(crate) row_insets: Vec<u16>,
+    pub(crate) row_insets: Vec<crate::selection::TextInsets>,
+    pub(crate) turn_surface: TurnSurface,
     pub(crate) following: bool,
     pub(crate) tool_hint: Option<String>,
+}
+
+pub(crate) struct TurnSurface {
+    pub(crate) rows: Vec<std::ops::Range<usize>>,
+    pub(crate) connectors: Vec<usize>,
+    pub(crate) connector_column: Option<usize>,
 }
 
 #[derive(Debug)]
 struct Reading {
     window: Window,
     anchor: Anchor,
-    newer: VecDeque<HistoryRequest>,
+    newer: Option<u64>,
+    rebase_after_page: bool,
+    visible_through: Option<u64>,
     unseen: bool,
     manual: bool,
 }
@@ -443,6 +515,7 @@ struct Record {
     turn: Option<u64>,
     turn_number: Option<u64>,
     owner: Option<String>,
+    timing: CardTiming,
     execution_id: Option<u64>,
     position: Option<u64>,
     before_event: Option<u64>,
@@ -451,6 +524,26 @@ struct Record {
     reasoning_preview: String,
     turn_summary: Option<TurnSummary>,
     rendered: RenderCache,
+}
+
+impl Clone for Record {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            turn: self.turn,
+            turn_number: self.turn_number,
+            timing: self.timing,
+            owner: self.owner.clone(),
+            execution_id: self.execution_id,
+            position: self.position,
+            before_event: self.before_event,
+            body: self.body.clone(),
+            suppress_interruption: self.suppress_interruption,
+            reasoning_preview: self.reasoning_preview.clone(),
+            turn_summary: self.turn_summary.clone(),
+            rendered: RenderCache::default(),
+        }
+    }
 }
 
 impl Record {
@@ -545,6 +638,7 @@ impl Record {
             key,
             turn: entry.turn,
             turn_number: entry.details.get("turn_number").and_then(Value::as_u64),
+            timing: CardTiming::from_entry(&entry),
             owner: (!entry.agent.is_empty()).then_some(entry.agent),
             execution_id,
             position: Some(entry.id),
@@ -563,21 +657,35 @@ impl Record {
             self.owner = record.owner;
         }
         self.execution_id = self.execution_id.or(record.execution_id);
+        self.timing.merge(record.timing);
         if self.turn_summary.is_none() && record.turn_summary.is_some() {
             self.turn_summary = record.turn_summary;
             self.rendered = RenderCache::default();
         }
-        match (&mut self.body, record.body) {
-            (Body::Tool(tool), Body::Tool(incoming)) => tool.merge(*incoming),
-            (Body::Compaction(current), Body::Compaction(incoming)) => current.update(incoming),
+        let earliest = self.position.into_iter().chain(record.position).min();
+        self.position = match (&mut self.body, record.body) {
+            (Body::Tool(tool), Body::Tool(incoming)) => {
+                let position = if incoming.positioned_at_result() {
+                    record.position.or(self.position)
+                } else if tool.positioned_at_result() {
+                    self.position
+                } else {
+                    earliest
+                };
+                tool.merge(*incoming);
+                position
+            }
+            (Body::Compaction(current), Body::Compaction(incoming)) => {
+                current.update(incoming);
+                earliest
+            }
             _ => return,
-        }
-        self.position = match (self.position, record.position) {
-            (Some(current), Some(incoming)) => Some(current.min(incoming)),
-            (None, Some(incoming)) => Some(incoming),
-            (current, None) => current,
         };
         self.rendered = RenderCache::default();
+    }
+
+    fn has_reply(&self) -> bool {
+        matches!(&self.body, Body::Assistant(text) | Body::Interrupted(text) if !text.trim().is_empty())
     }
 
     fn reasoning_only(&self) -> bool {
@@ -613,6 +721,7 @@ impl Record {
         retry_heading: bool,
         retry_end: bool,
         user_turn: Option<window::TurnHeading>,
+        grouped: bool,
     ) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
         let Layout {
             width,
@@ -680,11 +789,14 @@ impl Record {
             | Body::Retry { .. }
             | Body::TurnSummary => (None, ToolDetails::Expanded, None),
         };
+        let inline_output = items.inline_output(&self.key);
         let cache_key = PreviewLayout {
             width,
             mode,
-            in_timeline: details == ToolDetails::GroupMember,
+            in_timeline: grouped,
             agent_revision: facts.map_or(0, |facts| facts.paint_revision),
+            script_detail: items.script_detail(&self.key),
+            inline_output: inline_output.map(details::InlineOutput::revision),
             retry_heading,
             retry_end,
             user_turn,
@@ -731,20 +843,12 @@ impl Record {
                 Body::Interrupted(text) => {
                     message::render_markdown_record("Interrupted", WARNING, text, width)
                 }
-                Body::Notice(title, text, color) => render_record(
-                    title,
-                    *color,
-                    render_literal(text, Style::default()),
-                    width,
-                    0,
-                ),
-                Body::Job(job) => render_record(
-                    "Background job",
-                    job.color,
-                    render_literal(&job.text, Style::default()),
-                    width,
-                    0,
-                ),
+                Body::Notice(title, text, color) => {
+                    message::render_activity_record(title, *color, text, width)
+                }
+                Body::Job(job) => {
+                    message::render_activity_record("Background job", job.color, &job.text, width)
+                }
                 Body::ModelError { .. } | Body::Retry { .. } => {
                     retry::render(&self.body, width, retry_heading, retry_end)
                         .expect("retry history or error body")
@@ -756,12 +860,29 @@ impl Record {
                 ),
                 Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
-                    || tool.render(width, mode, cache_key.in_timeline),
+                    || {
+                        tool.render(
+                            width,
+                            mode,
+                            cache_key.in_timeline,
+                            cache_key.script_detail,
+                            inline_output,
+                        )
+                    },
                     |card| card.render(width, mode, facts, cache_key.in_timeline),
                 ),
             };
             if let Some(summary) = &self.turn_summary {
-                lines.push(turn_summary::inline(summary, self.turn_number, width));
+                let frame = crate::theme::CardFrame::timeline(width);
+                if self.has_reply() && frame.bordered() {
+                    lines.truncate(lines.len().saturating_sub(2));
+                    lines.extend(turn_summary::footer(summary, self.turn_number, &frame));
+                } else {
+                    let metrics =
+                        turn_summary::inline(summary, self.turn_number, frame.content_width());
+                    lines.push(metrics.framed(&frame));
+                    lines.push(Row::plain(Line::default()));
+                }
             }
             self.rendered.preview = Some((cache_key, lines));
         }
@@ -790,6 +911,8 @@ struct PreviewLayout {
     mode: ToolDetails,
     in_timeline: bool,
     agent_revision: u64,
+    script_detail: Option<ScriptDetail>,
+    inline_output: Option<(u64, u64)>,
     retry_heading: bool,
     retry_end: bool,
     user_turn: Option<window::TurnHeading>,
@@ -812,17 +935,7 @@ fn render_rows(
 ) -> impl Iterator<Item = Row> {
     wrap_bounded(lines, width.saturating_sub(usize::from(inset)), limit)
         .into_iter()
-        .map(move |mut line| {
-            if inset > 0 && !line.spans.is_empty() {
-                line.spans
-                    .insert(0, Span::raw(" ".repeat(usize::from(inset))));
-            }
-            Row {
-                line,
-                inset,
-                links: Vec::new(),
-            }
-        })
+        .map(move |line| Row::plain(line).indented(inset))
 }
 
 fn capped(text: Option<&str>, bytes: usize) -> String {

@@ -9,20 +9,24 @@ use unicode_width::UnicodeWidthStr;
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, CardFrame, ACCENT, ERROR, MIN_TRANSCRIPT_INDENT_WIDTH, MODEL, MUTED, SURFACE_TEXT,
-    WARNING,
+    emphasis, tool_operation_color, tool_status, TranscriptTone, ACCENT, MODEL, MUTED,
+    SURFACE_TEXT, WARNING,
 };
 
 use super::agent::{AgentCard, AgentRequest};
+use super::details::{InlineOutput, ScriptDetail};
 use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails};
 
+mod activity;
 mod command;
 mod file_change;
+mod inspection;
 mod outcome;
 mod script;
 mod session;
 
 use file_change::FileChange;
+use file_change::OutputFormat;
 use outcome::{Outcome, State};
 use session::{is_session_read, query_target, Observation};
 
@@ -47,8 +51,10 @@ pub(crate) struct ToolView {
     pub(crate) details: String,
     pub(crate) diff: String,
     pub(crate) output_id: Option<String>,
+    pub(crate) output_range: Option<std::ops::Range<u64>>,
     pub(crate) evidence: String,
     pub(crate) inline_output_complete: bool,
+    pub(crate) format: OutputFormat,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -56,6 +62,8 @@ pub(super) struct Tool {
     name: String,
     invocation: String,
     arguments: String,
+    script_source: String,
+    script_source_lines: usize,
     request_title: String,
     start_summary: String,
     progress: String,
@@ -63,14 +71,11 @@ pub(super) struct Tool {
     agent_request: Option<AgentRequest>,
 }
 
-impl ToolView {
-    pub(crate) fn has_full_output(&self) -> bool {
-        self.output_id.is_some()
-            || (self.inline_output_complete && (!self.details.is_empty() || !self.diff.is_empty()))
-    }
-}
-
 impl Tool {
+    pub(super) fn positioned_at_result(&self) -> bool {
+        matches!(&self.state, State::Recorded(outcome) if outcome.receipt.is_none())
+    }
+
     pub(super) fn from_entry(entry: &HistoryEntry) -> Self {
         let name = capped(
             entry
@@ -91,7 +96,24 @@ impl Tool {
 
         let args = entry.details.get("args").unwrap_or(&Value::Null);
         let invocation = invocation(&name, args);
-        let arguments = arguments_json(args);
+        let script_code = if name == "run_js" {
+            args["code"].as_str()
+        } else {
+            None
+        };
+        let script_source = capped(script_code, MAX_DETAIL_BYTES);
+        let arguments = if script_source.is_empty() {
+            arguments_json(args)
+        } else {
+            let other_args = args
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(name, _)| name.as_str() != "code")
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            arguments_json(&Value::Object(other_args))
+        };
         let agent_request = AgentRequest::from_call(&name, args);
         let request_title = if matches!(name.as_str(), "run_command" | "run_js") {
             capped(args["title"].as_str().map(str::trim), MAX_LABEL_BYTES)
@@ -102,6 +124,8 @@ impl Tool {
             name,
             invocation,
             arguments,
+            script_source,
+            script_source_lines: script_code.map_or(0, |code| code.lines().count()),
             request_title,
             agent_request,
             ..Self::default()
@@ -123,6 +147,10 @@ impl Tool {
         }
         if !incoming.arguments.is_empty() {
             self.arguments = incoming.arguments;
+        }
+        if !incoming.script_source.is_empty() {
+            self.script_source = incoming.script_source;
+            self.script_source_lines = incoming.script_source_lines;
         }
         if incoming.agent_request.is_some() {
             self.agent_request = incoming.agent_request;
@@ -200,8 +228,10 @@ impl Tool {
             details: self.result().to_owned(),
             diff: self.diff().unwrap_or_default().to_owned(),
             output_id: outcome.and_then(|outcome| outcome.output_id.clone()),
+            output_range: None,
             evidence: outcome.map_or_else(String::new, Outcome::evidence),
             inline_output_complete: outcome.is_some_and(|outcome| outcome.inline_output_complete),
+            format: OutputFormat::Text,
         }
     }
 
@@ -240,14 +270,38 @@ impl Tool {
         let State::Recorded(outcome) = &self.state else {
             return None;
         };
-        (matches!(
-            self.name.as_str(),
+        if outcome.status != "ok"
+            || outcome.exit_code.is_some_and(|code| code != 0)
+            || outcome.attention
+            || self.observation().is_some_and(|value| value.attention)
+        {
+            return None;
+        }
+        let name = self.name();
+        match name {
             "read_file" | "find_files" | "search_text" | "list_agents" | "query_session"
-        ) && outcome.status == "ok"
-            && outcome.exit_code.is_none_or(|code| code == 0)
-            && !outcome.attention
-            && !self.observation().is_some_and(|value| value.attention))
-        .then_some(self.name.as_str())
+            | "stat_file" | "read_output" | "search_output" | "list_values" => Some(name),
+            "run_js"
+                if outcome
+                    .script
+                    .as_ref()
+                    .is_some_and(|script| script.read_only()) =>
+            {
+                Some(name)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn inspection_count(&self, operation: &str) -> u64 {
+        if let Some(script) = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.script.as_ref())
+        {
+            return script.inspection_count(operation);
+        }
+        u64::from(self.group_name() == Some(operation))
     }
 
     pub(super) fn checks_delegation(&self, sender: &str, recipient: &str) -> bool {
@@ -271,7 +325,7 @@ impl Tool {
     }
 
     pub(super) fn inspection_result(&self) -> Option<String> {
-        let result = match self.name.as_str() {
+        let result = match self.name() {
             "read_file" => self.file_caption()?,
             "find_files" | "search_text" => {
                 single_line(cap(self.search_summary()?, MAX_LABEL_BYTES))
@@ -298,7 +352,7 @@ impl Tool {
 
     pub(super) fn detail_choice(&self) -> (String, String) {
         let title = self.title();
-        let status = self.status_label().0;
+        let status = self.status_line().0.to_string();
         if let Some(caption) = self.session_caption() {
             let detail = self.session_detail();
             let summary = join_details([caption, detail.as_str()]);
@@ -320,41 +374,70 @@ impl Tool {
         (title.into_owned(), summary)
     }
 
-    pub(super) fn render(&self, width: usize, details: ToolDetails, in_group: bool) -> Vec<Row> {
+    fn render_body(
+        &self,
+        width: usize,
+        details: ToolDetails,
+        in_group: bool,
+        script_detail: Option<ScriptDetail>,
+        inline_output: Option<&InlineOutput>,
+    ) -> Vec<Row> {
+        if self.name() == "run_js" {
+            return self.render_script(width, details, script_detail, inline_output);
+        }
+        if let ToolDetails::ActivityPreview(count) = details {
+            return self.render_activity(width, count);
+        }
+        if details == ToolDetails::GroupMember
+            && self.workspace_activity()
+            && self.group_name().is_none()
+        {
+            return self.render_activity(width, 1);
+        }
+        if let Some(command) = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.command_preview.as_deref())
+        {
+            if matches!(
+                details,
+                ToolDetails::Inspection | ToolDetails::InspectionWithArguments
+            ) {
+                return self.render_command_inspection(
+                    command,
+                    width,
+                    in_group,
+                    details == ToolDetails::InspectionWithArguments,
+                    inline_output,
+                );
+            }
+            if command.concise() && command.body().lines().take(4).count() <= 3 {
+                return self.render_short_command(command, width, details);
+            }
+        }
+        if self.name() == "read_file"
+            && self
+                .state
+                .outcome()
+                .is_some_and(|outcome| outcome.status != "ok")
+        {
+            return self.render_failed_read(width, details);
+        }
         if details != ToolDetails::Inspection {
-            if let Some(rows) = self.render_agent_check(width, in_group) {
+            if let Some(rows) = self.render_agent_check(width) {
                 return rows;
             }
         }
-        let has_frame = self.name == "run_command"
-            || self.file_change().is_some()
-            || self
-                .state
-                .outcome()
-                .is_some_and(|outcome| outcome.command_preview.is_some());
-        if has_frame || in_group || width < MIN_TRANSCRIPT_INDENT_WIDTH {
-            return self.render_content(width, details);
+        if in_group && self.group_name() == Some("read_file") {
+            if let Some(rows) = self.render_read_details(width, details == ToolDetails::Inspection)
+            {
+                return rows;
+            }
         }
-        let frame = CardFrame::new(width);
-        let inner = frame.content_width().min(frame.title_width());
-        let mut content = self.render_content(inner, details);
-        content.pop();
-        let mut content = content.into_iter();
-        let Some(title) = content.next() else {
-            return Vec::new();
-        };
-        let mut rows = vec![Row::plain(frame.title_line(title.line))];
-        rows.extend(content.map(|row| row.framed(&frame)));
-        Row::pad_framed_body(&mut rows, &frame);
-        rows.extend(
-            frame
-                .bordered()
-                .then(|| Row::padding(frame.border('╰', '╯'), width)),
-        );
-        finish_card(rows)
+        self.render_content(width, details)
     }
 
-    fn render_agent_check(&self, width: usize, in_group: bool) -> Option<Vec<Row>> {
+    fn render_agent_check(&self, width: usize) -> Option<Vec<Row>> {
         let (summary, color) = match self.state.outcome() {
             None if self.name == "list_agents" && !self.invocation.is_empty() => (
                 format!("{} · Waiting", single_line(&self.invocation)),
@@ -367,12 +450,7 @@ impl Tool {
             }
             _ => return None,
         };
-        let inset = if in_group {
-            0
-        } else {
-            CardFrame::new(width).content_inset() as u16
-        };
-        let columns = width.saturating_sub(usize::from(inset));
+        let columns = width;
         let caption = "Agent check · ";
         let line = Line::from(vec![
             Span::styled(shorten(caption, columns), Style::new().fg(MUTED)),
@@ -381,49 +459,35 @@ impl Tool {
                 Style::new().fg(color),
             ),
         ]);
-        Some(render_rows(vec![line, Line::default()], width, 2, inset).collect())
+        Some(vec![Row::plain(line)])
     }
 
     fn render_content(&self, width: usize, details: ToolDetails) -> Vec<Row> {
         let inspecting = details == ToolDetails::Inspection;
         let expanded = inspecting || details == ToolDetails::Expanded;
-        let inset = body_inset(width);
+        let inset = 0;
         let caption = self.file_caption();
         if details == ToolDetails::GroupMember {
             let target = self.session_caption().map_or_else(
                 || caption.unwrap_or_else(|| single_line(cap(self.invocation(), MAX_LABEL_BYTES))),
                 |summary| join_details([self.invocation.as_str(), summary]),
             );
-            let mut label = self.title().into_owned();
-            if !target.is_empty() {
-                label.push_str(&format!(" · {target}"));
-            }
-            let mut line = Line::styled(shorten(&label, width), emphasis(ACCENT));
-            let room = width.saturating_sub(line.width());
-            if let Some(summary) = self
+            let action = self.title();
+            let summary = self
                 .search_summary()
-                .filter(|summary| *summary != target && room >= 12)
-            {
-                line.push_span(Span::styled(
-                    shorten(
-                        &format!(" · {}", single_line(cap(summary, MAX_LABEL_BYTES))),
-                        room,
-                    ),
-                    Style::new()
-                        .fg(MUTED)
-                        .remove_modifier(ratatui::style::Modifier::BOLD),
-                ));
-            }
-            let rows = render_rows(vec![line], width, 1, 0).collect();
-            return finish_card(rows);
+                .filter(|summary| *summary != target)
+                .map_or_else(String::new, |value| {
+                    single_line(cap(value, MAX_LABEL_BYTES))
+                });
+            let heading = if target.is_empty() {
+                Row::caption(&action, &summary, ACCENT, width)
+            } else {
+                Row::action(&format!("{action} · "), &target, &summary, ACCENT, width)
+            };
+            return vec![heading];
         }
         if let Some(change) = self.file_change() {
             return self.render_change(change, width, details);
-        }
-        if let Some(outcome) = self.state.outcome() {
-            if let Some(script) = &outcome.script {
-                return self.render_script(script, &outcome.status, width, inset, details);
-            }
         }
         if !inspecting {
             if let Some(caption) = self.session_caption() {
@@ -445,28 +509,22 @@ impl Tool {
         }
         let outcome = self.state.outcome();
         let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());
-        let frame = (self.name == "run_command" || command.is_some())
-            .then(|| crate::theme::CardFrame::new(width));
-        let width = frame
-            .as_ref()
-            .map_or(width, crate::theme::CardFrame::content_width);
-        let inset = if frame.is_some() { 0 } else { inset };
+        let is_command = self.name == "run_command" || command.is_some();
         let concise = !inspecting && command.is_some_and(|preview| preview.concise());
-        let mut rows = if let Some(frame) = &frame {
-            vec![self.command_heading(frame)]
+        let mut rows = if is_command {
+            self.command_heading(width)
+        } else if let Some(read) = outcome
+            .and_then(|outcome| outcome.file_read.as_ref())
+            .filter(|_| outcome.is_some_and(|outcome| outcome.status == "ok"))
+        {
+            vec![Row::read(
+                &single_line(self.invocation()),
+                read.caption_line(),
+                width,
+            )]
         } else {
             self.render_header(width, inset, caption.as_deref())
         };
-        if !inspecting && self.is_missing_read() {
-            rows.extend(render_preview(
-                self.result(),
-                ERROR,
-                width,
-                MAX_SUMMARY_ROWS,
-                inset,
-            ));
-            return finish_card(rows);
-        }
         let invocation = self.invocation();
         let command_summary = command.map(|preview| preview.summary());
         let summary = command_summary
@@ -475,10 +533,10 @@ impl Tool {
             .unwrap_or_else(|| self.summary());
         if expanded
             && caption.is_none()
-            && (frame.is_none() || inspecting || !self.request_title.is_empty())
+            && (!is_command || inspecting || !self.request_title.is_empty())
             && (!inspecting || invocation != self.arguments)
         {
-            if frame.is_some() && !inspecting && !invocation.is_empty() {
+            if is_command && !inspecting && !invocation.is_empty() {
                 let command = shorten(&single_line(cap(invocation, MAX_PREVIEW_BYTES)), width);
                 rows.push(Row::plain(Line::styled(command, Style::new().fg(MUTED))));
             } else {
@@ -494,7 +552,9 @@ impl Tool {
         if !concise
             && caption.is_none()
             && (!expanded || summary != invocation)
-            && (frame.is_none() || summary != self.command_title())
+            && (!is_command
+                || summary != self.command_title()
+                    && (outcome.is_some() || self.command_title() != invocation))
         {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, SURFACE_TEXT, width, limit, inset));
@@ -510,7 +570,7 @@ impl Tool {
                 render_excerpt(diff, render_diff)
             } else {
                 let text = command.map_or_else(|| self.result(), |preview| preview.body());
-                if text.is_empty() || text == summary || (frame.is_none() && text == invocation) {
+                if text.is_empty() || text == summary || (!is_command && text == invocation) {
                     Vec::new()
                 } else {
                     render_excerpt(text, |text| render_literal(text, Style::default()))
@@ -525,7 +585,7 @@ impl Tool {
             };
             rows.extend(render_rows(result, width, limit, inset));
             if !concise && outcome.is_some_and(|outcome| outcome.output_id.is_some()) {
-                rows.extend(render_preview("Saved output", ACCENT, width, 2, inset));
+                rows.push(Row::open_output(super::details::OutputTarget::Tool, width));
             }
         }
         if let Some(preview) = command {
@@ -537,10 +597,7 @@ impl Tool {
                 inset,
             ));
         }
-        match frame {
-            Some(frame) => command::finish(frame, rows, self.status_label()),
-            None => finish_card(rows),
-        }
+        finish_card(rows)
     }
 
     fn render_arguments(&self, rows: &mut Vec<Row>, width: usize, inset: u16) {
@@ -570,6 +627,13 @@ impl Tool {
             MAX_ARGUMENT_ROWS,
             inset,
         ));
+    }
+
+    pub(super) fn compact_file_change(&self) -> bool {
+        self.state
+            .outcome()
+            .is_some_and(|outcome| outcome.status == "ok" && !outcome.attention)
+            && self.file_change().is_some_and(|change| !change.unconfirmed)
     }
 
     fn file_change(&self) -> Option<&FileChange> {
@@ -626,7 +690,7 @@ impl Tool {
         }
     }
 
-    fn name(&self) -> &str {
+    pub(super) fn name(&self) -> &str {
         if !self.name.is_empty() {
             return &self.name;
         }
@@ -646,50 +710,47 @@ impl Tool {
         }
     }
 
-    fn is_missing_read(&self) -> bool {
-        let path = self.invocation.as_str();
-        self.name == "read_file"
-            && self
-                .state
-                .outcome()
-                .is_some_and(|outcome| outcome.status == "error")
-            && !path.is_empty()
-            && self.summary().strip_prefix("failed: path not found: ") == Some(path)
-            && self.result().strip_prefix("path does not exist: ") == Some(path)
-    }
-
-    fn status_label(&self) -> (String, Color) {
+    fn status_line(&self) -> (Line<'static>, Color) {
         let (status, color) = self.state.label();
-        let status = shorten(&single_line(status), 24);
-        let mut status = status;
+        let mut status = Line::from(Span::styled(
+            shorten(&single_line(status), 24),
+            tool_status(color),
+        ));
         if let Some(outcome) = self.state.outcome() {
             let command = outcome.command_preview.as_deref();
             if let Some(exit) = outcome.exit_code {
                 let label = command.map_or("exit", command::CommandPreview::exit_label);
-                status.push_str(&format!(" · {label} {exit}"));
+                status.extend(command::exit_metric(label, exit).spans);
             } else if let Some(signal) = command.and_then(command::CommandPreview::signal) {
-                status.push_str(&format!(" · signal {signal}"));
+                status.extend(
+                    Row::metric(
+                        " · signal ",
+                        signal.to_string(),
+                        "",
+                        TranscriptTone::Warning,
+                    )
+                    .spans,
+                );
             }
             if let Some(command) = command {
                 if command.has_stderr() {
-                    status.push_str(" · stderr");
+                    status.push_span(Span::styled(" · stderr", Style::new().fg(MUTED)));
                 }
-                status.push_str(" · ");
-                status.push_str(&command.elapsed());
+                status.extend(command.elapsed_metric().spans);
             }
         }
         (status, color)
     }
 
     fn render_header(&self, width: usize, detail_inset: u16, caption: Option<&str>) -> Vec<Row> {
-        let (status, color) = self.status_label();
+        let (status, _) = self.status_line();
         let title = self.title();
-        let style = emphasis(ACCENT);
-        let status_style = Style::default().fg(color);
+        let style = emphasis(tool_operation_color(self.name()));
         let mut title = Line::styled(shorten(&title, width), style);
         let status_inline = title.width() + status.width() + 3 <= width;
         if status_inline {
-            title.push_span(Span::styled(format!(" · {status}"), status_style));
+            title.push_span(Span::styled(" · ", Style::new().fg(MUTED)));
+            title.extend(status.spans.iter().cloned());
         }
         let separate_caption =
             caption.filter(|caption| !status_inline || title.width() + caption.width() + 3 > width);
@@ -698,7 +759,7 @@ impl Tool {
         }
         let mut lines = vec![title];
         if !status_inline {
-            lines.push(Line::styled(status, status_style));
+            lines.push(status);
         }
         let mut rows: Vec<_> = render_rows(lines, width, 4, 0).collect();
         if let Some(caption) = separate_caption {

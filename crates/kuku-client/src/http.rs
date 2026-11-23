@@ -437,6 +437,32 @@ impl Client {
         self.history_page(target, before, limit, false).await
     }
 
+    /// Read a bounded page of displayable history after an exclusive durable cursor.
+    pub async fn history_after(
+        &self,
+        target: &Target,
+        after: u64,
+        limit: usize,
+    ) -> Result<crate::ForwardHistoryPage, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+            after: u64,
+            limit: usize,
+        }
+        self.get(
+            ["sessions", &target.session_id, "history"],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
+                after,
+                limit,
+            },
+        )
+        .await
+    }
+
     /// Read previews of active user messages for the selected Agent.
     pub async fn user_history(
         &self,

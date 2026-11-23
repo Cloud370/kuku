@@ -232,7 +232,7 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
         first.command_id.clone(),
         Ok(queued_receipt(&first, 53)),
     ));
-    assert!(screen(&mut app, 92, 25).contains("Queued · steer"));
+    assert!(screen(&mut app, 92, 25).contains("Queued · next step"));
 
     app.pane_mut().draft.insert(text);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -257,12 +257,9 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
         Ok(queued_receipt(&second, 54)),
     ));
     let accepted = screen(&mut app, 92, 25);
-    assert!(
-        accepted.contains("Turn 1")
-            && accepted
-                .lines()
-                .any(|line| line.contains("│") && line.contains("You"))
-    );
+    assert!(accepted
+        .lines()
+        .any(|line| line.contains("You") && line.contains("Turn 1")));
     assert!(!accepted.contains("Pending inputs"));
     assert_eq!(2, accepted.matches(text).count());
 }
@@ -749,7 +746,7 @@ fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
 }
 
 #[test]
-fn short_and_wrapped_user_lines_share_a_flat_surface_to_the_right_margin() {
+fn user_card_keeps_its_surface_to_the_right_margin() {
     let mut app = app();
     app.pane_mut()
         .transcript
@@ -762,7 +759,7 @@ fn short_and_wrapped_user_lines_share_a_flat_surface_to_the_right_margin() {
     for token in ["甲", "乙"] {
         let (_, row) = cell(buffer, token);
         assert_eq!(buffer[(38, row)].bg, crate::theme::SURFACE);
-        assert_eq!(buffer[(38, row)].symbol(), " ");
+        assert_eq!(buffer[(38, row)].symbol(), "│");
     }
 }
 
@@ -832,6 +829,7 @@ fn mouse_drag_copies_sanitized_text_from_tool_output_popup() {
             output_id: None,
             evidence: String::new(),
             inline_output_complete: false,
+            ..ToolView::default()
         },
     ))));
     let mut terminal = Terminal::new(TestBackend::new(58, 18)).unwrap();

@@ -1,10 +1,10 @@
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::markup::{render_literal, wrap_bounded};
+use crate::markup::render_literal;
 use crate::text::shorten;
-use crate::theme::{card_padding, emphasis, surface, ACCENT, MUTED, WARNING};
+use crate::theme::{emphasis, CardFrame, MUTED, SURFACE_TEXT, WARNING};
 
 use super::window::TurnHeading;
 use super::{render_rows, Row, MAX_VISUAL_ROWS};
@@ -15,64 +15,20 @@ pub(super) fn render_user(
     width: usize,
     turn: Option<TurnHeading>,
 ) -> Vec<Row> {
-    let padding = card_padding(width);
-    let edge = user_edge(width);
-    let inset = edge.width() as u16;
-    let style = surface();
-    let content_width = width.saturating_sub(usize::from(inset + padding.right));
-    let decorate = |mut line: Line<'static>| {
-        line.style = style;
-        if inset > 0 {
-            line.spans
-                .insert(0, Span::styled(edge, Style::new().fg(ACCENT)));
-        }
-        Row {
-            line,
-            inset,
-            links: Vec::new(),
-        }
-    };
-    let spacer = || Row::padding(decorate(Line::default()).line, width);
+    let frame = CardFrame::timeline(width);
+    let width = frame.content_width();
     let title = turn.map_or_else(
-        || {
-            Line::styled(
-                shorten(title, content_width),
-                Style::new().add_modifier(Modifier::BOLD),
-            )
-        },
-        |turn| user_turn_title(turn, width.saturating_sub(usize::from(inset))),
+        || Line::styled(shorten(title, width), emphasis(SURFACE_TEXT)),
+        |turn| user_turn_title(turn, width),
     );
-    let mut rows = Vec::new();
-    if padding.top > 0 {
-        rows.push(spacer());
-    }
-    rows.push(decorate(title));
-    if padding.top > 0 {
-        rows.push(spacer());
-    }
-    rows.extend(
-        wrap_bounded(
-            render_literal(text, Style::new()),
-            content_width,
-            MAX_VISUAL_ROWS,
-        )
-        .into_iter()
-        .map(decorate),
-    );
-    if padding.bottom > 0 {
-        rows.push(spacer());
-    }
-    rows.push(Row::plain(Line::default()));
-    rows
-}
-
-fn user_edge(width: usize) -> &'static str {
-    match card_padding(width).left {
-        0 => "",
-        1 => "│ ",
-        2 => "│  ",
-        _ => "│   ",
-    }
+    let mut rows = vec![Row::plain(title)];
+    rows.extend(render_rows(
+        render_literal(text, Style::new()),
+        width,
+        MAX_VISUAL_ROWS,
+        0,
+    ));
+    Row::card(rows, &frame)
 }
 
 pub(super) fn render_assistant_source(text: &str, width: usize, interrupted: bool) -> Vec<Row> {
@@ -81,17 +37,15 @@ pub(super) fn render_assistant_source(text: &str, width: usize, interrupted: boo
     } else {
         ("Assistant · source", "Source", MUTED)
     };
-    let inset = super::body_inset(width);
-    render_record(
-        if width >= title.width() {
+    render_activity_record(
+        if width >= title.width() + 2 {
             title
         } else {
             short_title
         },
         color,
-        render_literal(text, Style::default()),
+        text,
         width,
-        inset,
     )
 }
 
@@ -101,27 +55,45 @@ pub(super) fn render_markdown_record(
     text: &str,
     width: usize,
 ) -> Vec<Row> {
-    let (lines, links) = crate::markup::linked_markdown(text, width, MAX_VISUAL_ROWS);
-    let mut rows = render_record(title, color, lines, width, 0);
-    for row in &mut rows {
-        row.links = links.resolve(&mut row.line);
-    }
-    rows
+    let frame = CardFrame::timeline(width);
+    let mut rows = vec![Row::caption(title, "", color, frame.content_width())];
+    rows.extend(markdown_body(text, frame.content_width()));
+    Row::card(rows, &frame)
 }
 
-pub(super) fn render_record(
+pub(super) fn markdown_body(text: &str, width: usize) -> Vec<Row> {
+    let (lines, links) = crate::markup::linked_markdown(text, width, MAX_VISUAL_ROWS);
+    render_rows(lines, width, MAX_VISUAL_ROWS, 0)
+        .map(|mut row| {
+            row.links = links.resolve(&mut row.line);
+            row
+        })
+        .collect()
+}
+
+pub(super) fn render_activity_record(
     title: &str,
     color: Color,
-    mut lines: Vec<Line<'static>>,
+    text: &str,
     width: usize,
-    inset: u16,
 ) -> Vec<Row> {
-    let title = Line::styled(title.to_owned(), emphasis(color));
-    if lines.last().is_some_and(|line| !line.spans.is_empty()) {
-        lines.push(Line::default());
+    let frame = CardFrame::timeline(width);
+    Row::card(
+        activity_rows(title, color, text, frame.content_width()),
+        &frame,
+    )
+}
+
+pub(super) fn activity_rows(title: &str, color: Color, text: &str, width: usize) -> Vec<Row> {
+    let mut rows = vec![Row::caption(title, "", color, width)];
+    if !text.is_empty() {
+        rows.extend(render_rows(
+            render_literal(text, Style::default()),
+            width,
+            MAX_VISUAL_ROWS,
+            0,
+        ));
     }
-    let mut rows: Vec<_> = render_rows(vec![title], width, MAX_VISUAL_ROWS, 0).collect();
-    rows.extend(render_rows(lines, width, MAX_VISUAL_ROWS, inset));
     rows
 }
 

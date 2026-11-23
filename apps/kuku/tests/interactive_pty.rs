@@ -23,9 +23,17 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Request {
-    Screen,
-    Resize { rows: NonZeroU16, cols: NonZeroU16 },
-    Write { text: String },
+    Screen {
+        #[serde(default)]
+        styled: bool,
+    },
+    Resize {
+        rows: NonZeroU16,
+        cols: NonZeroU16,
+    },
+    Write {
+        text: String,
+    },
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -116,7 +124,7 @@ fn host_terminal(
         )?;
         for line in io::stdin().lock().lines() {
             let response = match serde_json::from_str::<Request>(&line?)? {
-                Request::Screen => {
+                Request::Screen { styled } => {
                     let exit_code = child.try_wait()?.map(|status| status.exit_code());
                     let parser = viewport.lock().unwrap();
                     let screen = parser.callbacks().screen(parser.screen());
@@ -124,14 +132,18 @@ fn host_terminal(
                     let console_restored = before.is_some() && before == pair.master.get_termios();
                     #[cfg(windows)]
                     let console_restored = exit_code == Some(0);
-                    json!({
+                    let mut response = json!({
                         "screen": screen.rows(0, screen.size().1.get()).collect::<Vec<_>>().join("\n"),
                         "alternate_screen": screen.alternate_screen(),
                         "cursor_hidden": screen.hide_cursor(),
                         "bracketed_paste": screen.bracketed_paste(),
                         "console_restored": console_restored,
                         "exit_code": exit_code,
-                    })
+                    });
+                    if styled {
+                        response["styled"] = screen.contents_formatted().into();
+                    }
+                    response
                 }
                 Request::Resize { rows, cols } => {
                     viewport.lock().unwrap().set_size(rows, cols);

@@ -18,7 +18,9 @@ class CiPlanTests(TestCase):
         jobs, _, _ = plan("pull_request", paths=("crates/kuku-tui/src/interaction.rs",))
         self.assertEqual(1, len(jobs))
         self.assertEqual("selected", jobs[0]["installed"])
-        self.assertIn("keyboard-queue", jobs[0]["cases"].split(","))
+        cases = jobs[0]["cases"].split(",")
+        self.assertIn("keyboard-queue", cases)
+        self.assertIn("statusline", cases)
         self.assertFalse(jobs[0]["web"])
 
     def test_web_pr_runs_browser_only_and_checks_frontend_in_the_web_build(self):

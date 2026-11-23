@@ -1,55 +1,39 @@
 # Use Skills
 
-Skills load instructions into the current session.
+Skills load reusable task instructions into the current Session on demand.
 
 ## Add a Skill
 
-Place each skill directory in one of these locations:
+Create a directory containing a `SKILL.md` file in either location:
 
-- `~/.kuku/skills/<name>/`
-- `<workspace>/.kuku/skills/<name>/`
+- `~/.kuku/skills/<name>/` — personal workflows
+- `<workspace>/.kuku/skills/<name>/` — repository-specific workflows
 
-These are the conventional locations. With auto-discovery enabled, kuku also scans other user and project dot-directories for `skills/`, such as `.claude/skills`.
+With auto-discovery enabled, kuku also scans other user and project dot-directories for `skills/` (such as `.claude/skills/`). If a Skill needs to ship together with hooks or other extension assets, bundle it under `.kuku/packages/`. [Skill format](../reference/skill-format.md) · [Package format](../reference/package-format.md)
 
-Each skill directory must contain `SKILL.md`. The full format is in [Skill Format](../reference/skill-format.md).
-
-## Check Discovery
+## Check discovery
 
 ```bash
 kuku skills list
 kuku skills show <name>
 ```
 
-If a skill is missing, check `[discovery]` in [Config](../reference/config.md).
+If a Skill does not show up, check `[discovery]` in [Config](../reference/config.md).
 
-## Use Skills During a Run
+## Use Skills during a run
 
-When the default skill tool surface is enabled, kuku can:
+By default, the model can browse and load Skills using `list_skills`, `search_skills`, and `use_skill`.
 
-- use `list_skills` to browse the current catalog
-- use `search_skills` to find relevant workflows
-- use `use_skill` to load full skill instructions on demand
-
-You can also start `kuku run` with a slash-prefixed Skill name:
+You can also invoke a Skill directly from `kuku run` with a slash prefix — kuku loads the named Skill and passes the rest of the string as your prompt:
 
 ```bash
 kuku run "/tdd implement login"
 ```
 
-In that form, kuku loads the named Skill and sends the remaining text as the user prompt.
-
-To disable that for one run:
+To disable all Skill tools and slash-prefixed loading for one run:
 
 ```bash
 kuku run --no-skills "task"
 ```
 
-`--no-skills` disables the default skill tool surface, so `list_skills`, `search_skills`, `use_skill`, and slash-prefixed skill loading are all unavailable for that run.
-
-Skills can guide how the model works, but they do not expand permissions or bypass tool approval rules.
-
-## Decide Where a Skill Belongs
-
-- Use `~/.kuku/skills/` for personal workflows.
-- Use `<workspace>/.kuku/skills/` for repository-specific workflows.
-- Use `.kuku/packages/` when the skill must ship with hooks or other extension assets. See [Package Format](../reference/package-format.md).
+Skills guide how the model approaches work, but never expand permissions or bypass tool approvals.

@@ -14,14 +14,13 @@ use crossterm::{execute, queue};
 use futures_util::StreamExt;
 use kuku_client::{ConnectionOptions, Observation};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
-use ratatui::buffer::Cell;
-use ratatui::layout::{Position, Size};
+use ratatui::buffer::{Buffer, Cell, CellDiffOption, CellWidth};
+use ratatui::layout::{Position, Rect, Size};
 use ratatui::{CompletedFrame, Terminal};
 
 use crate::app::{Address, App};
 use crate::config::load_statusline;
 use crate::jobs::{Job, Jobs, Update};
-use crate::transcript::Anchor;
 use crate::ui::{self, ActivityClock, ActivityFrame};
 
 #[cfg(windows)]
@@ -176,7 +175,7 @@ fn dispatch(app: &mut App, jobs: &mut Jobs, clipboard: &mut Clipboard) {
 struct Screen {
     terminal: Terminal<FrameBackend<Stdout>>,
     painted_target: Address,
-    painted_anchor: Option<Anchor>,
+    wide_cells: WideCells,
     _restore: Restore,
 }
 
@@ -190,7 +189,7 @@ impl Screen {
         Ok(Self {
             terminal,
             painted_target,
-            painted_anchor: None,
+            wide_cells: WideCells::default(),
             _restore: restore,
         })
     }
@@ -204,22 +203,55 @@ impl Screen {
         if target_changed {
             self.painted_target.clone_from(&app.active);
         }
-        let anchor = app.pane().transcript.reading_anchor();
-        let scrolled = self.painted_anchor.as_ref() != anchor;
-        if scrolled {
-            self.painted_anchor = anchor.cloned();
-        }
-        let mut activity_visible = false;
-        let render = |frame: &mut ratatui::Frame<'_>| {
-            activity_visible = ui::render_at(frame, app, activity);
-        };
-        if target_changed || scrolled {
-            // NOTE: A scroll can move a wide glyph across an old table edge that a cell diff considers blank.
+        if target_changed {
             let area = self.terminal.current_buffer_mut().area;
             self.terminal.resize(area)?;
+            self.wide_cells.spans.clear();
         }
-        let frame = self.terminal.draw(render)?;
+        let mut activity_visible = false;
+        let wide_cells = &mut self.wide_cells;
+        let frame = self.terminal.draw(|frame| {
+            activity_visible = ui::render_at(frame, app, activity);
+            wide_cells.repair(frame.buffer_mut());
+        })?;
         Ok((frame, activity_visible))
+    }
+}
+
+#[derive(Default)]
+struct WideCells {
+    area: Rect,
+    spans: Vec<std::ops::Range<usize>>,
+}
+
+impl WideCells {
+    fn repair(&mut self, buffer: &mut Buffer) {
+        if self.area == buffer.area {
+            for span in self.spans.drain(..) {
+                let current_width = buffer.content[span.start].cell_width() as usize;
+                for cell in
+                    &mut buffer.content[(span.start + current_width.max(1)).min(span.end)..span.end]
+                {
+                    if cell.diff_option == CellDiffOption::None {
+                        cell.diff_option = CellDiffOption::AlwaysUpdate;
+                    }
+                }
+            }
+        } else {
+            self.spans.clear();
+        }
+        self.area = buffer.area;
+        let row_width = usize::from(self.area.width);
+        if row_width == 0 {
+            return;
+        }
+        for (index, cell) in buffer.content.iter().enumerate() {
+            let width = cell.cell_width() as usize;
+            if width > 1 {
+                let end = index + width.min(row_width - index % row_width);
+                self.spans.push(index..end);
+            }
+        }
     }
 }
 
@@ -423,6 +455,41 @@ mod tests {
     use ratatui::buffer::Cell;
 
     use super::{Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL};
+
+    #[test]
+    fn a_wide_glyph_moving_left_repaints_its_old_background() {
+        use std::num::NonZeroU16;
+
+        use ratatui::backend::{Backend, CrosstermBackend};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::style::{Modifier, Style};
+
+        let area = Rect::new(0, 0, 5, 1);
+        let blank = Buffer::empty(area);
+        let mut old = blank.clone();
+        let inverted = Style::new().add_modifier(Modifier::REVERSED);
+        old.set_string(1, 0, "雪", inverted);
+        let mut next = blank.clone();
+        next.set_string(0, 0, "雪", inverted);
+        let mut wide = super::WideCells::default();
+        wide.repair(&mut old);
+        let mut bytes = Vec::new();
+        let mut backend = CrosstermBackend::new(&mut bytes);
+        backend.draw(blank.diff_iter(&old)).unwrap();
+        wide.repair(&mut next);
+        backend.draw(old.diff_iter(&next)).unwrap();
+
+        let mut terminal = vt100::Parser::new(NonZeroU16::MIN, NonZeroU16::new(5).unwrap(), 0);
+        terminal.process(&bytes);
+        let screen = terminal.screen();
+        assert!(screen.cell(0, 0).unwrap().inverse());
+        assert!(
+            !screen.cell(0, 2).unwrap().inverse(),
+            "{:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
 
     #[test]
     fn streaming_bursts_share_frames_and_input_bypasses_the_render_budget() {
