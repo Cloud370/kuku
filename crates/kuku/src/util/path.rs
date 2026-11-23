@@ -11,12 +11,10 @@ pub(crate) fn normalize_path_sep(path: &str) -> String {
 }
 
 pub(crate) fn is_blocked_relative_path(path: &str) -> bool {
-    let normalized = normalize_path_sep(path);
-    normalized
-        .split('/')
+    path.split(['/', '\\'])
         .any(|part| part == ".git" || part == ".ssh")
-        || normalized
-            .rsplit('/')
+        || path
+            .rsplit(['/', '\\'])
             .next()
             .is_some_and(is_sensitive_file_name)
 }

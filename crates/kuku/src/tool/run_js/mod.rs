@@ -182,9 +182,9 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
 fn method_result(operation: ScriptOperation) -> &'static str {
     use ScriptOperation as Op;
     match operation {
-        Op::FindFiles => "find_files({path?,pattern?,max_depth?}) lists immediate entries or finds files recursively with a pattern. Read result.entries and result.entry_count. ",
+        Op::FindFiles => "find_files({path?,pattern?,max_depth?}) returns result.entries, entry_count and scan_complete. ",
         Op::ReadFile => "read_file({path,offset?,limit?}) returns result.raw_text, content_hash, start_byte, end_byte and is_full_file_snapshot. ",
-        Op::SearchText => "search_text({pattern,path?,include?,view?,offset?,limit?,context?}) returns result.matches, has_more and next_offset. ",
+        Op::SearchText => "search_text({pattern,path?,include?,view?,offset?,limit?,context?}) returns result.matches, scan_complete, has_more and next_offset. Narrow path or include when scan_complete is false. ",
         Op::EditFile => "edit_file({path,old_text,new_text,replace_all?,expected_version?,brief?}) returns result.replacement_count and content_hash_after. ",
         Op::WriteFile => "write_file({path,content,expected_version?,brief?}) returns result.content_hash_after and bytes_written. ",
         Op::StatFile => "stat_file({path,version?}) returns result.exists and entry_kind. Set version:true for a regular file's result.content_hash. ",

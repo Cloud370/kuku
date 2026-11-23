@@ -52,6 +52,7 @@ pub(super) fn spawn(
             tool_call_id: queued.tool_call.id.clone(),
             workspace: pending.workspace.clone(),
             preview_bytes: pending.query.runtime_limits.max_preview_bytes,
+            io_limits: pending.query.runtime_limits.workspace_io,
             max_command_seconds: pending.query.runtime_limits.max_command_seconds,
         },
         call_id: queued.tool_call.id.clone(),

@@ -4,9 +4,11 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use super::{ReadBy, ReadRequest};
-use crate::tool::builtin::common::{format_content_hash, FileCancellation, StableFile};
+use crate::tool::builtin::common::{
+    format_content_hash, invalid_utf8, valid_utf8_prefix, FileCancellation, IoLimit, LimitedReader,
+    StableFile, Utf8Reader, FILE_BUFFER_BYTES,
+};
 
-const READ_BUFFER_BYTES: usize = 64 * 1024;
 const LINE_SAMPLE_BYTES: usize = 256;
 
 pub(super) struct ReadView {
@@ -25,45 +27,31 @@ pub(super) fn scan(
     request: &ReadRequest<'_>,
     read_by: ReadBy,
     max_bytes: usize,
+    mut scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> io::Result<ReadView> {
     let mut file = StableFile::open(path, cancelled)?;
-    let mut buffer = [0; READ_BUFFER_BYTES];
-    let mut carry = 0;
+    let mut reader = Utf8Reader::new(LimitedReader::new(
+        &mut file,
+        &mut scan_bytes,
+        IoLimit("file scan byte budget exhausted"),
+    ));
+    let mut buffer = [0; FILE_BUFFER_BYTES];
     let mut hash = Sha256::new();
     let mut view = ViewBuilder::new(request, read_by, max_bytes);
     loop {
-        let read = match file.read(&mut buffer[carry..]) {
+        let read = match reader.read(&mut buffer) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,
         };
         if read == 0 {
             break;
         }
-        let end = carry + read;
-        hash.update(&buffer[carry..end]);
-        let valid = valid_prefix(&buffer[..end])?;
-        view.push(&buffer[carry..end])?;
-        buffer.copy_within(valid..end, 0);
-        carry = end - valid;
-    }
-    if carry != 0 {
-        return Err(invalid_utf8());
+        hash.update(&buffer[..read]);
+        view.push(&buffer[..read])?;
     }
     file.verify(path)?;
     view.finish(format_content_hash(hash))
-}
-
-fn valid_prefix(bytes: &[u8]) -> io::Result<usize> {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => Ok(bytes.len()),
-        Err(error) if error.error_len().is_none() => Ok(error.valid_up_to()),
-        Err(_) => Err(invalid_utf8()),
-    }
-}
-
-fn invalid_utf8() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "file is not valid UTF-8")
 }
 
 struct ViewBuilder {
@@ -99,7 +87,16 @@ impl ViewBuilder {
     }
 
     fn push(&mut self, bytes: &[u8]) -> io::Result<()> {
-        for part in bytes.split_inclusive(|byte| *byte == b'\n') {
+        let mut start = 0;
+        for end in memchr::memchr_iter(b'\n', bytes)
+            .map(|newline| newline + 1)
+            .chain(std::iter::once(bytes.len()))
+        {
+            if start == end {
+                break;
+            }
+            let part = &bytes[start..end];
+            start = end;
             if self.selects_current_line() && !self.view.truncated {
                 let buffer_limit = self.max_bytes.saturating_add(2);
                 if self.line.len().saturating_add(part.len()) > buffer_limit {
@@ -158,7 +155,7 @@ impl ViewBuilder {
         let number = self.offset.to_string();
         let max_prefix = (self.max_bytes - number.len() - 1).min(LINE_SAMPLE_BYTES);
         let bytes = &self.line[..self.line.len().min(max_prefix)];
-        let prefix = &bytes[..valid_prefix(bytes)?];
+        let prefix = &bytes[..valid_utf8_prefix(bytes)?];
         let line = std::str::from_utf8(prefix).map_err(|_| invalid_utf8())?;
         let _ = write!(self.view.model_content, "{number}\t{line}");
         Ok(())

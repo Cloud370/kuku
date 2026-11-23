@@ -138,6 +138,24 @@ async fn until<T>(mut probe: impl FnMut() -> Option<T>) -> T {
     .expect("public Session did not reach expected state")
 }
 
+#[tokio::test]
+async fn script_search_obeys_the_sessions_native_scan_budget() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("fixture.txt"), "needle\n".repeat(32)).unwrap();
+    let mut options = options(
+        &work,
+        &data,
+        "const r = await tools.search_text({pattern:'needle'}); return r.result.scan_complete;",
+    );
+    options.limits.workspace_io.scan_bytes = 8;
+
+    let session = start(options).await;
+    let facts = until(|| script_facts(&session)).await;
+    assert_eq!(facts.value, json!(false));
+    session.close().await.unwrap();
+}
+
 fn script_facts(session: &Session) -> Option<WorkspaceScriptFacts> {
     session
         .events(0, 256)

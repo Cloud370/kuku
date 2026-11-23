@@ -25,7 +25,7 @@ pub(crate) mod tool;
 pub mod util;
 pub mod wire;
 
-pub use session::runtime::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
+pub use session::runtime::{WorkspaceExecutionHost, WorkspaceExecutionMetrics, WorkspaceIoLimits};
 pub use tool::run_js::{
     WorkspaceScriptActionFacts, WorkspaceScriptActionStatus, WorkspaceScriptFacts,
     WorkspaceScriptLimits, WorkspaceScriptOperation, WorkspaceScriptResultKind,

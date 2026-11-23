@@ -485,23 +485,25 @@ pub(super) fn now_timestamp() -> Result<String> {
 
 pub(super) fn load_project_instruction_sources(
     workspace: &std::path::Path,
+    max_bytes: usize,
 ) -> Result<Vec<InstructionSource>> {
-    let load = |name, kind: &str| {
+    let load = |name, kind: &str| -> Result<_> {
         let path = workspace.join(name);
-        let content = std::fs::read_to_string(&path).ok()?;
-        Some(InstructionSource {
-            path: path.display().to_string(),
-            kind: kind.to_owned(),
-            hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
-            content,
-        })
+        Ok(
+            load_context_text(&path, max_bytes)?.map(|content| InstructionSource {
+                path: path.display().to_string(),
+                kind: kind.to_owned(),
+                hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
+                content,
+            }),
+        )
     };
     if let Some(source) =
-        load("AGENTS.override.md", "agents").filter(|source| !source.content.trim().is_empty())
+        load("AGENTS.override.md", "agents")?.filter(|source| !source.content.trim().is_empty())
     {
         return Ok(vec![source]);
     }
-    Ok([load("AGENTS.md", "agents"), load("CLAUDE.md", "claude")]
+    Ok([load("AGENTS.md", "agents")?, load("CLAUDE.md", "claude")?]
         .into_iter()
         .flatten()
         .collect())
@@ -510,25 +512,36 @@ pub(super) fn load_project_instruction_sources(
 pub(super) fn load_memory_sources(
     kuku_home: &std::path::Path,
     workspace: &std::path::Path,
+    max_bytes: usize,
 ) -> Result<(Option<MemorySource>, Option<MemorySource>)> {
-    let global_memory = std::fs::read_to_string(global_memory_path(kuku_home))
-        .ok()
-        .map(|content| MemorySource {
-            path: global_memory_path(kuku_home).display().to_string(),
-            hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
-            content,
-        });
+    let global_path = global_memory_path(kuku_home);
+    let global_memory = load_context_text(&global_path, max_bytes)?.map(|content| MemorySource {
+        path: global_path.display().to_string(),
+        hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
+        content,
+    });
 
     let project_path = project_memory_path(kuku_home, workspace)?;
-    let project_memory = std::fs::read_to_string(&project_path)
-        .ok()
-        .map(|content| MemorySource {
-            path: project_path.display().to_string(),
-            hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
-            content,
-        });
+    let project_memory = load_context_text(&project_path, max_bytes)?.map(|content| MemorySource {
+        path: project_path.display().to_string(),
+        hash: crate::tool::builtin::common::content_hash(content.as_bytes()),
+        content,
+    });
 
     Ok((global_memory, project_memory))
+}
+
+fn load_context_text(path: &std::path::Path, max_bytes: usize) -> Result<Option<String>> {
+    use crate::tool::builtin::common::{is_io_limit, read_context_file};
+
+    match read_context_file(path, max_bytes) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if is_io_limit(&error) => Err(crate::Error::InvalidArgument(format!(
+            "context file {} exceeds its {max_bytes}-byte budget",
+            path.display(),
+        ))),
+        Err(_) => Ok(None),
+    }
 }
 
 pub(super) fn last_input_tokens(
@@ -617,7 +630,11 @@ mod tests {
             if let Some(body) = override_body {
                 std::fs::write(&override_path, body).unwrap();
             }
-            let sources = super::load_project_instruction_sources(workspace.path()).unwrap();
+            let sources = super::load_project_instruction_sources(
+                workspace.path(),
+                crate::WorkspaceIoLimits::default().context_file_bytes,
+            )
+            .unwrap();
             assert_eq!(
                 sources
                     .iter()

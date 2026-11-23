@@ -5,10 +5,12 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::tool::ToolResultEnvelope;
+use crate::WorkspaceIoLimits;
 
 use super::common::{
-    bounded_lines, ensure_active, file_read_error, glob_match, is_default_excluded_dir,
-    relative_path, resolve_path, verify_directory, workspace_path_blocked, FileCancellation,
+    bounded_lines, charge_entry, ensure_active, file_read_error, glob_match,
+    is_default_excluded_dir, is_io_limit, relative_path, resolve_path, verify_directory,
+    workspace_path_blocked, FileCancellation, ScanDeadline,
 };
 
 const FIND_FILES_MAX_BYTES: usize = 8_000;
@@ -22,6 +24,9 @@ enum EntryKind {
 #[derive(Default)]
 struct Listing {
     count: usize,
+    entries_left: usize,
+    deadline: ScanDeadline,
+    first_bytes: usize,
     first: BinaryHeap<(EntryKind, usize, String)>,
 }
 
@@ -29,8 +34,14 @@ impl Listing {
     fn push(&mut self, path: String, kind: EntryKind) {
         let depth = path.bytes().filter(|byte| *byte == b'/').count();
         self.count += 1;
+        self.first_bytes += path.len() + 1;
         self.first.push((kind, depth, path));
-        if self.first.len() > FIND_FILES_MAX_BYTES {
+        while let Some((_, _, last)) = self.first.peek() {
+            let shorter = self.first_bytes - last.len() - 1;
+            if shorter <= FIND_FILES_MAX_BYTES {
+                break;
+            }
+            self.first_bytes = shorter;
             self.first.pop();
         }
     }
@@ -39,6 +50,7 @@ impl Listing {
 pub(crate) fn find_files(
     args: &Value,
     workspace: &Path,
+    limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
@@ -53,8 +65,12 @@ pub(crate) fn find_files(
         Err(result) => return result,
     };
 
-    let mut listing = Listing::default();
-    if let Err(error) = collect_entries(
+    let mut listing = Listing {
+        entries_left: limits.scan_entries,
+        deadline: ScanDeadline::new(limits.scan_timeout_ms),
+        ..Listing::default()
+    };
+    let budget_reason = match collect_entries(
         &root.path,
         &root.workspace,
         pattern,
@@ -63,8 +79,11 @@ pub(crate) fn find_files(
         &mut listing,
         cancelled,
     ) {
-        return file_read_error(Path::new(path), error);
-    }
+        Ok(()) => None,
+        Err(error) if is_io_limit(&error) => Some(error.to_string()),
+        Err(error) => return file_read_error(Path::new(path), error),
+    };
+    let scan_complete = budget_reason.is_none();
     let entry_count = listing.count;
     let entries: Vec<_> = listing
         .first
@@ -73,15 +92,17 @@ pub(crate) fn find_files(
         .map(|(_, _, path)| path)
         .collect();
     let mut visible = bounded_lines(&entries, FIND_FILES_MAX_BYTES);
-    let truncated = visible.len() < entry_count;
+    let truncated = visible.len() < entry_count || !scan_complete;
     let model_content = if truncated {
         let scope = if max_depth == 0 {
             "direct entries"
         } else {
             "entries in the search"
         };
-        let hint =
-            format!("Found {entry_count} {scope}. Listing shortened. Narrow the path or pattern.");
+        let hint = match &budget_reason {
+            None => format!("Found {entry_count} {scope}. Listing shortened. Narrow the path or pattern."),
+            Some(reason) => format!("Directory scan incomplete ({reason}). Found {entry_count} {scope}. Narrow the path or reduce max_depth."),
+        };
         visible = bounded_lines(&entries, FIND_FILES_MAX_BYTES - hint.len() - 1);
         if visible.is_empty() {
             hint
@@ -101,6 +122,8 @@ pub(crate) fn find_files(
         "path": path,
         "pattern": pattern,
         "entry_count": entry_count,
+        "scan_complete": scan_complete,
+        "scan_limit": budget_reason,
         "entries": visible,
     });
 
@@ -130,7 +153,8 @@ fn collect_entries(
     }
     verify_directory(root)?;
     for entry in fs::read_dir(root)? {
-        ensure_active(cancelled)?;
+        listing.deadline.check()?;
+        charge_entry(&mut listing.entries_left, cancelled)?;
         let entry = entry?;
         let file_type = entry.file_type()?;
         let file_name = entry.file_name();
@@ -217,7 +241,7 @@ mod tests {
     use super::*;
 
     fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
-        super::find_files(args, workspace, &|| false)
+        super::find_files(args, workspace, WorkspaceIoLimits::default(), &|| false)
     }
 
     #[test]
@@ -225,7 +249,12 @@ mod tests {
         let dir = workspace();
         let checks = AtomicUsize::new(0);
         let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
-        let result = super::find_files(&serde_json::json!({}), dir.path(), &stop);
+        let result = super::find_files(
+            &serde_json::json!({}),
+            dir.path(),
+            WorkspaceIoLimits::default(),
+            &stop,
+        );
 
         assert_eq!("cancelled", result.status);
         assert_eq!(3, checks.load(Ordering::Relaxed));

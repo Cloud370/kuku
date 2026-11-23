@@ -360,6 +360,7 @@ mod tests {
                 &serde_json::json!({"path":"README.md","offset":offset,"limit":limit}),
                 dir.path(),
                 80,
+                u64::MAX,
                 &|| false,
             )
             .1
@@ -391,6 +392,7 @@ mod tests {
                 &serde_json::json!({"path":"README.md"}),
                 dir.path(),
                 80,
+                u64::MAX,
                 &|| false,
             )
             .1

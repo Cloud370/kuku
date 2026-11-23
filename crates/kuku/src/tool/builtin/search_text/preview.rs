@@ -1,7 +1,8 @@
 use std::io;
+use std::path::Path;
 
-use super::{trim_search_line, SearchMatch};
-use crate::tool::builtin::common::{ensure_active, FileCancellation};
+use super::{trim_search_line, FileSearch, SearchMatch};
+use crate::tool::builtin::common::{is_cancellation, StableFile};
 
 struct ContextRow {
     before_match: usize,
@@ -23,14 +24,17 @@ impl ContextPreview {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn extend(
         &mut self,
-        path: &str,
-        content: &str,
+        relative: &str,
+        absolute: &Path,
+        input: &mut StableFile<'_>,
+        reader: &mut FileSearch,
+        bytes_left: &mut u64,
         matches: &[SearchMatch],
         first_match: usize,
         context: usize,
-        cancelled: &FileCancellation<'_>,
     ) -> io::Result<()> {
         if matches.is_empty() || self.truncated {
             return Ok(());
@@ -42,30 +46,43 @@ impl ContextPreview {
         let mut upcoming = matches.iter().map(|hit| hit.line_number).peekable();
         let mut before_match = first_match;
         let mut preceding = None;
-        for (index, line) in content.lines().enumerate().take(end) {
-            ensure_active(cancelled)?;
-            let number = index + 1;
+        let previous_rows = self.rows.len();
+        let remaining = self.remaining;
+        input.rewind()?;
+        let read = reader.scan(input, bytes_left, |number, line| {
+            if number > end {
+                return false;
+            }
             if number < start {
-                continue;
+                return true;
             }
             if upcoming.peek() == Some(&number) {
                 preceding = upcoming.next();
                 before_match += 1;
-                continue;
+                return true;
             }
             let close = upcoming.peek().is_some_and(|next| next - number <= context)
                 || preceding.is_some_and(|prior| number - prior <= context);
             if !close {
-                continue;
+                return true;
             }
             let nearby = trim_search_line(line, usize::MAX);
-            let text = format!("{path}:{number}- {nearby}");
+            let text = format!("{relative}:{number}- {nearby}");
             if text.len() + 1 > self.remaining {
                 self.truncated = true;
-                break;
+                return false;
             }
             self.remaining -= text.len() + 1;
             self.rows.push(ContextRow { before_match, text });
+            true
+        });
+        if let Err(error) = read.and_then(|()| input.verify(absolute)) {
+            if is_cancellation(&error) {
+                return Err(error);
+            }
+            self.rows.truncate(previous_rows);
+            self.remaining = remaining;
+            self.truncated = true;
         }
         Ok(())
     }

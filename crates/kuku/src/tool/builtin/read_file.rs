@@ -35,14 +35,15 @@ pub(crate) fn read_file(
     conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
-    preview_bytes: usize,
+    limits: &crate::RuntimeLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     read_file_impl(
         args,
         workspace,
         ReadBy::Model,
-        preview_bytes - PAGE_NOTICE_BYTES,
+        limits.max_preview_bytes - PAGE_NOTICE_BYTES,
+        limits.workspace_io.scan_bytes,
         Some((prior_events, conversation, read_event_id)),
         cancelled,
     )
@@ -53,6 +54,7 @@ pub(crate) fn read_file_for_executor(
     args: &Value,
     workspace: &Path,
     max_bytes: usize,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
     read_file_impl(
@@ -60,6 +62,7 @@ pub(crate) fn read_file_for_executor(
         workspace,
         ReadBy::Executor,
         max_bytes,
+        scan_bytes,
         None,
         cancelled,
     )
@@ -70,6 +73,7 @@ fn read_file_impl(
     workspace: &Path,
     read_by: ReadBy,
     max_bytes: usize,
+    scan_bytes: u64,
     model_history: Option<(&[StoredEvent], &ConversationAddress, u64)>,
     cancelled: &FileCancellation<'_>,
 ) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
@@ -81,7 +85,14 @@ fn read_file_impl(
         Ok(resolved) => resolved,
         Err(result) => return (result, None),
     };
-    let mut view = match scan::scan(&resolved.path, &request, read_by, max_bytes, cancelled) {
+    let mut view = match scan::scan(
+        &resolved.path,
+        &request,
+        read_by,
+        max_bytes,
+        scan_bytes,
+        cancelled,
+    ) {
         Ok(view) => view,
         Err(error) => {
             return (file_read_error(Path::new(&resolved.relative), error), None);
@@ -246,9 +257,16 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
             read_event_id,
-            TEST_PREVIEW_BYTES,
+            &test_limits(),
             &|| false,
         )
+    }
+
+    fn test_limits() -> crate::RuntimeLimits {
+        crate::RuntimeLimits {
+            max_preview_bytes: TEST_PREVIEW_BYTES,
+            ..crate::RuntimeLimits::default()
+        }
     }
 
     #[test]
@@ -520,7 +538,7 @@ mod tests {
 
         let args = serde_json::json!({"path": "sample.txt", "offset": 1, "limit": 1});
         let (local, observation) =
-            read_file_for_executor(&args, dir.path(), content.len(), &|| false);
+            read_file_for_executor(&args, dir.path(), content.len(), u64::MAX, &|| false);
         assert!(!local.truncated);
         let observation = observation.unwrap();
         assert_eq!(0..line.len() + 2, observation.range);
@@ -583,6 +601,7 @@ mod tests {
             &serde_json::json!({"path":"README.md","offset":2}),
             dir.path(),
             "第二行\r\n第三行\n".len(),
+            u64::MAX,
             &|| false,
         );
 
@@ -610,6 +629,7 @@ mod tests {
             &serde_json::json!({"path":"README.md","limit":1}),
             dir.path(),
             80,
+            u64::MAX,
             &|| false,
         );
 
@@ -644,7 +664,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             std::slice::from_ref(&review_read),
             18,
-            TEST_PREVIEW_BYTES,
+            &test_limits(),
             &|| false,
         );
         let review_result = super::read_file(
@@ -653,7 +673,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             &[review_read],
             19,
-            TEST_PREVIEW_BYTES,
+            &test_limits(),
             &|| false,
         );
 

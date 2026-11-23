@@ -1,10 +1,10 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata};
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, TryLockError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -12,7 +12,7 @@ use crate::execution::{FileCommitState, FileMutationFacts};
 use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 use crate::util::fs_sync;
 
-const HASH_BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const FILE_BUFFER_BYTES: usize = 64 * 1024;
 const MUTATION_LOCKS: usize = 64;
 const MUTATION_PREVIEW_BYTES: usize = 80_000;
 const MUTATION_LOCK_RETRY: Duration = Duration::from_millis(10);
@@ -78,12 +78,164 @@ impl<'a> StableFile<'a> {
         }
         Ok(())
     }
+
+    pub(crate) fn rewind(&mut self) -> io::Result<()> {
+        ensure_active(self.cancelled)?;
+        self.file.rewind()
+    }
 }
 
 impl Read for StableFile<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         ensure_active(self.cancelled)?;
         self.file.read(buffer)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IoLimit(pub(crate) &'static str);
+
+impl std::fmt::Display for IoLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for IoLimit {}
+
+pub(crate) fn is_io_limit(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| cause.is::<IoLimit>())
+        || error.kind() == io::ErrorKind::OutOfMemory
+}
+
+pub(crate) fn charge_entry(
+    remaining: &mut usize,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<()> {
+    ensure_active(cancelled)?;
+    *remaining = remaining
+        .checked_sub(1)
+        .ok_or_else(|| io::Error::other(IoLimit("directory entry budget exhausted")))?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ScanDeadline(Option<Instant>);
+
+impl ScanDeadline {
+    pub(crate) fn new(timeout_ms: Option<std::num::NonZeroU64>) -> Self {
+        Self(
+            timeout_ms
+                .and_then(|limit| Instant::now().checked_add(Duration::from_millis(limit.get()))),
+        )
+    }
+
+    pub(crate) fn check(self) -> io::Result<()> {
+        if self.0.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(io::Error::other(IoLimit(
+                "workspace scan time budget exhausted",
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct LimitedReader<'a, R> {
+    inner: R,
+    bytes_left: &'a mut u64,
+    limit: IoLimit,
+    deadline: ScanDeadline,
+}
+
+impl<'a, R> LimitedReader<'a, R> {
+    pub(crate) fn new(inner: R, bytes_left: &'a mut u64, limit: IoLimit) -> Self {
+        Self {
+            inner,
+            bytes_left,
+            limit,
+            deadline: ScanDeadline::default(),
+        }
+    }
+
+    pub(crate) fn with_deadline(mut self, deadline: ScanDeadline) -> Self {
+        self.deadline = deadline;
+        self
+    }
+}
+
+impl<R: Read> Read for LimitedReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.deadline.check()?;
+        let allowed = self.bytes_left.saturating_add(1).min(buffer.len() as u64) as usize;
+        let count = self.inner.read(&mut buffer[..allowed])?;
+        let Some(bytes_left) = self.bytes_left.checked_sub(count as u64) else {
+            *self.bytes_left = 0;
+            return Err(io::Error::other(self.limit));
+        };
+        *self.bytes_left = bytes_left;
+        Ok(count)
+    }
+}
+
+pub(crate) struct Utf8Reader<R> {
+    inner: R,
+    tail: [u8; 4],
+    tail_len: usize,
+}
+
+impl<R: Read> Utf8Reader<R> {
+    pub(crate) fn new(inner: R) -> Self {
+        Self {
+            inner,
+            tail: [0; 4],
+            tail_len: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for Utf8Reader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let count = self.inner.read(buffer)?;
+        let mut remaining = &buffer[..count];
+        if self.tail_len != 0 {
+            let width = match self.tail[0] {
+                0xc2..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf4 => 4,
+                _ => return Err(invalid_utf8()),
+            };
+            if count == 0 {
+                return Err(invalid_utf8());
+            }
+            let taken = (width - self.tail_len).min(count);
+            let end = self.tail_len + taken;
+            self.tail[self.tail_len..end].copy_from_slice(&remaining[..taken]);
+            self.tail_len = end - valid_utf8_prefix(&self.tail[..end])?;
+            if self.tail_len != 0 {
+                return Ok(count);
+            }
+            remaining = &remaining[taken..];
+        }
+        let prefix = valid_utf8_prefix(remaining)?;
+        let tail = &remaining[prefix..];
+        self.tail[..tail.len()].copy_from_slice(tail);
+        self.tail_len = tail.len();
+        Ok(count)
+    }
+}
+
+pub(crate) fn invalid_utf8() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "file is not valid UTF-8")
+}
+
+pub(crate) fn valid_utf8_prefix(bytes: &[u8]) -> io::Result<usize> {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => Ok(bytes.len()),
+        Err(error) if error.error_len().is_none() => Ok(error.valid_up_to()),
+        Err(_) => Err(invalid_utf8()),
     }
 }
 
@@ -97,18 +249,72 @@ pub(crate) fn format_content_hash(hash: Sha256) -> String {
     format!("sha256:{:x}", hash.finalize())
 }
 
-pub(crate) fn read_file_as_utf8(
+pub(crate) fn read_file_as_utf8_bounded(
     path: &Path,
+    max_bytes: usize,
     cancelled: &FileCancellation<'_>,
 ) -> Result<String, ToolResultEnvelope> {
-    let mut content = String::new();
-    let read = (|| -> io::Result<()> {
-        let mut file = StableFile::open(path, cancelled)?;
-        file.read_to_string(&mut content)?;
-        file.verify(path)
-    })();
-    read.map_err(|error| file_read_error(path, error))?;
-    Ok(content)
+    read_text_file(path, max_bytes, cancelled).map_err(|error| file_read_error(path, error))
+}
+
+pub(crate) fn read_context_file(path: &Path, max_bytes: usize) -> io::Result<String> {
+    read_text_file(&path.canonicalize()?, max_bytes, &|| false)
+}
+
+fn read_text_file(
+    path: &Path,
+    max_bytes: usize,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<String> {
+    let limit = IoLimit("text exceeds the file input budget");
+    let mut file = StableFile::open(path, cancelled)?;
+    if file.opened.len() > max_bytes as u64 {
+        return Err(io::Error::other(limit));
+    }
+    let mut bytes_left = max_bytes as u64;
+    let mut reader = Utf8Reader::new(LimitedReader::new(&mut file, &mut bytes_left, limit));
+    let mut content: Vec<u8> = Vec::new();
+    let mut buffer = [0; FILE_BUFFER_BYTES];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        if count > content.capacity() - content.len() {
+            let capacity = next_text_capacity(content.capacity(), content.len(), count, max_bytes)
+                .ok_or_else(|| io::Error::other(limit))?;
+            content
+                .try_reserve_exact(capacity - content.len())
+                .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        }
+        content.extend_from_slice(&buffer[..count]);
+    }
+    file.verify(path)?;
+    String::from_utf8(content).map_err(|_| invalid_utf8())
+}
+
+pub(crate) fn append_text(output: &mut String, part: &str, max_bytes: usize) -> io::Result<()> {
+    let capacity = next_text_capacity(output.capacity(), output.len(), part.len(), max_bytes)
+        .ok_or_else(|| io::Error::other(IoLimit("text exceeds the file output budget")))?;
+    if capacity > output.capacity() {
+        output
+            .try_reserve_exact(capacity - output.len())
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+    }
+    output.push_str(part);
+    Ok(())
+}
+
+fn next_text_capacity(current: usize, used: usize, add: usize, max: usize) -> Option<usize> {
+    let needed = used.checked_add(add).filter(|&needed| needed <= max)?;
+    Some(if needed <= current {
+        current
+    } else {
+        current.saturating_mul(2).max(needed).min(max)
+    })
 }
 
 pub(crate) fn file_version(
@@ -138,7 +344,7 @@ fn scan_file_version(
         .zip(usize::try_from(file.opened.len()).ok())
         .filter(|(limit, len)| len <= limit)
         .map(|(limit, len)| (limit, Vec::with_capacity(len)));
-    let mut buffer = [0; HASH_BUFFER_BYTES];
+    let mut buffer = [0; FILE_BUFFER_BYTES];
     loop {
         let count = match file.read(&mut buffer) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -174,7 +380,9 @@ pub(crate) fn file_read_error(path: &Path, error: io::Error) -> ToolResultEnvelo
     }
     let summary = format!("failed: {error}");
     let detail = format!("{}: {error}", path.display());
-    if error.kind() == io::ErrorKind::WouldBlock {
+    if is_io_limit(&error) {
+        ToolResultEnvelope::error_with_reason(summary, detail, ToolErrorReason::ResourceLimit)
+    } else if error.kind() == io::ErrorKind::WouldBlock {
         ToolResultEnvelope::error_with_reason(summary, detail, ToolErrorReason::SnapshotStale)
     } else {
         ToolResultEnvelope::error(summary, detail)
@@ -350,7 +558,7 @@ fn changed_during_read() -> io::Error {
     )
 }
 
-fn is_cancellation(error: &io::Error) -> bool {
+pub(crate) fn is_cancellation(error: &io::Error) -> bool {
     error.get_ref().is_some_and(|cause| cause.is::<Cancelled>())
 }
 
@@ -376,7 +584,7 @@ fn stage_file(
     let mut staged = tempfile::Builder::new()
         .prefix(".kuku-")
         .tempfile_in(parent)?;
-    for chunk in bytes.chunks(HASH_BUFFER_BYTES) {
+    for chunk in bytes.chunks(FILE_BUFFER_BYTES) {
         ensure_active(cancelled)?;
         staged.write_all(chunk)?;
     }
@@ -489,6 +697,19 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+
+    #[test]
+    fn expired_scan_deadline_consumes_no_source_bytes() {
+        let mut input = b"source".as_slice();
+        let mut bytes_left = 6;
+        let mut reader = LimitedReader::new(&mut input, &mut bytes_left, IoLimit("too large"))
+            .with_deadline(ScanDeadline(Some(Instant::now())));
+        let error = reader.read(&mut [0; 8]).unwrap_err();
+        assert!(is_io_limit(&error));
+        assert_eq!("workspace scan time budget exhausted", error.to_string());
+        assert_eq!(6, bytes_left);
+        assert_eq!(b"source", input);
+    }
 
     #[test]
     fn concurrent_publications_cannot_both_commit_the_same_version() {

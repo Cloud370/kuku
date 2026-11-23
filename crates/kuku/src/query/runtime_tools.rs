@@ -276,7 +276,7 @@ pub(super) async fn dispatch(
     let (slot, _) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
         capacity: runtime_session(&pending)?.workspace_execution_host(),
         workspace_access: workspace_access(&pending, &queued.tool_call.name),
-        preview_bytes: pending.query.runtime_limits.max_preview_bytes,
+        limits: pending.query.runtime_limits.clone(),
         output,
         tool_name: queued.tool_call.name.clone(),
         tool_id: queued.tool_call.id.clone(),

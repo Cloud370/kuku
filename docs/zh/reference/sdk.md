@@ -94,6 +94,18 @@ cargo run -p kuku --example session_task -- \
 
 ## 限额与用量
 
+`RuntimeLimits.workspace_io` 配置直接工具和 `run_js` 宿主动作共用的文件额度。每次操作获得自己的额度。需要共用 worker 和宿主动作容量的 Session 可使用同一 `WorkspaceExecutionHost` 的克隆。宿主容量独立于 Session 或 Agent 数量配置。
+
+| 工作区 I/O 额度 | 默认值 | 适用范围 |
+| --- | ---: | --- |
+| `scan_bytes` | 2 GiB | 一次搜索或文件扫描读取的源字节 |
+| `scan_entries` | 1,000,000 | 一次列目录或搜索检查的目录项 |
+| `scan_timeout_ms` | 30,000 | 遍历和搜索的耗时额度，在读入和目录项边界检查。宿主管理截止时间时可设为 `None`。 |
+| `search_path_bytes` | 64 MiB | 一次搜索为排序保留的候选路径 |
+| `search_line_bytes` | 1 MiB | 搜索单行可缓冲的源字节 |
+| `text_bytes` | 8 MiB | 一次编辑的源文本和替换结果 |
+| `context_file_bytes` | 256 KiB | 单份记忆或项目指引文件 |
+
 默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。宿主需要限制传输大小时，可通过 `RuntimeLimits::max_request_bytes` 设置序列化请求上限。预览至少 1 KiB，以保留完整引用和标志。
 
 `RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于 tier 配置，宿主上限适用于每个 Agent。Rust 的 `TierConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。详见[模型配置](config.md#modelname)。

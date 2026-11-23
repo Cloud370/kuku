@@ -52,7 +52,7 @@ pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CacheWarning, CostTotals,
     Input, InputSource, InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus,
     ModelUsageSample, PendingInput, QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary,
-    SessionOptions, TurnSummary, UsageTotals, Withdrawal,
+    SessionOptions, TurnSummary, UsageTotals, Withdrawal, WorkspaceIoLimits,
 };
 pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,

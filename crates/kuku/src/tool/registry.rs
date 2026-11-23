@@ -41,7 +41,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                 "properties": {
                     "path": {"type": "string", "description": "Search root relative to the workspace. Defaults to the workspace root."},
                     "pattern": {"type": "string", "description": "File glob pattern, e.g. *.md or docs/**/*.md."},
-                    "max_depth": {"type": "integer", "minimum": 0, "description": "How many levels below the selected directory to search. Defaults to 0 for a directory listing and unlimited with a pattern."}
+                    "max_depth": {"type": "integer", "minimum": 0, "description": "How many levels below the selected directory to search. Defaults to 0 for a listing. With a pattern, the default searches recursively within the traversal budget."}
                 }
             }),
             true,
@@ -66,7 +66,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "search_text",
-            "Search file contents with a regex. Use view=files, lines, or count. Use the returned offset to continue a bounded page.",
+            "Search file contents with a regex. Use view=files, lines, or count. Use path or include to reduce scan work. Use next_offset to continue a complete scan's results.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

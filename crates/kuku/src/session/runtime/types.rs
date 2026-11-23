@@ -175,12 +175,49 @@ impl SessionOptions {
     }
 }
 
+/// Per-operation budgets for native workspace I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceIoLimits {
+    /// Total source bytes read by one workspace scan.
+    pub scan_bytes: u64,
+    /// Directory entries examined by one traversal, including filtered entries.
+    pub scan_entries: usize,
+    /// Elapsed time available to a search or recursive listing, including traversal.
+    pub scan_timeout_ms: Option<std::num::NonZeroU64>,
+    /// Maximum resident bytes occupied by the candidate paths of one search.
+    pub search_path_bytes: usize,
+    /// Maximum source bytes buffered for a single line in a text search.
+    pub search_line_bytes: usize,
+    /// Maximum input and output bytes of a native text transformation.
+    pub text_bytes: usize,
+    /// Maximum bytes in one project instruction or memory file.
+    pub context_file_bytes: usize,
+}
+
+impl Default for WorkspaceIoLimits {
+    fn default() -> Self {
+        Self {
+            scan_bytes: 2 * 1024 * 1024 * 1024,
+            scan_entries: 1_000_000,
+            scan_timeout_ms: std::num::NonZeroU64::new(30_000),
+            search_path_bytes: 64 * 1024 * 1024,
+            search_line_bytes: 1024 * 1024,
+            text_bytes: 8 * 1024 * 1024,
+            context_file_bytes: 256 * 1024,
+        }
+    }
+}
+
 /// Hard bounds for input, model execution, tools, and observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeLimits {
     /// Limits applied to each embedded workspace script.
     #[serde(default)]
     pub workspace_script: crate::WorkspaceScriptLimits,
+    /// Budgets shared by direct workspace tools and workspace script actions.
+    #[serde(default)]
+    pub workspace_io: WorkspaceIoLimits,
     /// Maximum agents retained by this session.
     pub max_agents: usize,
     /// Maximum delivered inputs waiting for one agent.
@@ -228,6 +265,18 @@ impl RuntimeLimits {
         self.workspace_script
             .validate()
             .map_err(Error::InvalidArgument)?;
+        let io = self.workspace_io;
+        if io.scan_bytes == 0
+            || io.scan_entries == 0
+            || io.search_path_bytes == 0
+            || io.search_line_bytes == 0
+            || io.text_bytes == 0
+            || io.context_file_bytes == 0
+        {
+            return Err(Error::InvalidArgument(
+                "workspace I/O limits must be positive".into(),
+            ));
+        }
         if self.max_requests_per_open == Some(0) || self.max_output_tokens_per_request == Some(0) {
             return Err(Error::InvalidArgument(
                 "optional model request and output-token limits must be positive".into(),
@@ -275,6 +324,7 @@ impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
             workspace_script: crate::WorkspaceScriptLimits::default(),
+            workspace_io: WorkspaceIoLimits::default(),
             max_agents: 64,
             max_pending_inputs: 128,
             max_input_bytes: 65_536,

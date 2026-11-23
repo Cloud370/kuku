@@ -94,6 +94,18 @@ Use `--session-id` to reopen and `--command-id` to retry delivery after losing a
 
 ## Limits and accounting
 
+`RuntimeLimits.workspace_io` configures the file budgets used by direct tools and `run_js` host actions. Each operation gets its own budget. Clone a `WorkspaceExecutionHost` into the Sessions that should share worker and host operation capacity. Set that capacity for the execution host independently of its Session or Agent count.
+
+| Workspace I/O limit | Default | Applies to |
+| --- | ---: | --- |
+| `scan_bytes` | 2 GiB | Source bytes read by a search or file scan |
+| `scan_entries` | 1,000,000 | Directory entries examined by a listing or search |
+| `scan_timeout_ms` | 30,000 | Elapsed time for traversal and search, checked at read and directory entry boundaries. Set `None` for a host-managed deadline. |
+| `search_path_bytes` | 64 MiB | Candidate paths held for sorting one search |
+| `search_line_bytes` | 1 MiB | Source bytes buffered for one search line |
+| `text_bytes` | 8 MiB | Source and replacement text in an edit |
+| `context_file_bytes` | 256 KiB | Each memory or project instruction file |
+
 The default limits allow 64 Agents, 128 pending inputs per Agent, 65,536 input bytes, four simultaneous model streams, eight tools per Agent, 8 MiB per retained output, an 8 KiB first preview, and 128 transient observations. Set `RuntimeLimits::max_request_bytes` to cap serialized requests when the host needs a transport limit. Output previews require at least 1 KiB for a complete reference and flags.
 
 `RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent Turns and resets on reopen. `RuntimeLimits.max_output_tokens_per_request` optionally sets a host-wide ceiling on each response. Both default to `None`. An explicit Agent output setting overrides the tier setting. The host ceiling applies to every Agent. In Rust, `TierConfig.max_output_tokens`, `AgentSelection.max_output_tokens`, and `ModelSelection.max_output_tokens` are `Option<u32>`. An absent effective value delegates to the provider on protocols that allow it. The preparation record contains the value used for that request. `session_task --max-output-tokens N` sets both the host ceiling and the primary Agent's setting. See [model configuration](config.md#modelname).

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -13,15 +14,17 @@ mod snapshot;
 
 pub(super) use file_io::WorkspaceCommitError;
 pub(crate) use file_io::{
-    content_hash, ensure_active, file_read_error, file_version, file_version_with_text,
-    format_content_hash, mutation_preview, publish_file, read_file_as_utf8, remove_observed_file,
-    write_atomically, FileCancellation, StableFile,
+    append_text, charge_entry, content_hash, ensure_active, file_read_error, file_version,
+    file_version_with_text, format_content_hash, invalid_utf8, is_cancellation, is_io_limit,
+    mutation_preview, publish_file, read_context_file, read_file_as_utf8_bounded,
+    remove_observed_file, valid_utf8_prefix, write_atomically, FileCancellation, IoLimit,
+    LimitedReader, ScanDeadline, StableFile, Utf8Reader, FILE_BUFFER_BYTES,
 };
 #[cfg(test)]
 use snapshot::find_write_snapshot;
 pub(super) use snapshot::{
-    expected_version, find_covering_read, require_version, snapshot_stale_error,
-    text_match_offsets, WriteEvidence, WriteSnapshotLookup,
+    expected_version, find_covering_read, require_version, snapshot_stale_error, text_matches,
+    WriteEvidence, WriteSnapshotLookup,
 };
 pub(crate) use snapshot::{ExecutorObservation, ExecutorObservationSource};
 
@@ -309,7 +312,11 @@ pub(super) fn plural(count: usize) -> &'static str {
 // ---------- Glob ----------
 
 pub(super) fn glob_match(pattern: &str, path: &str) -> bool {
-    let normalized = normalize_path_sep(path);
+    let normalized = if path.contains('\\') {
+        Cow::Owned(normalize_path_sep(path))
+    } else {
+        Cow::Borrowed(path)
+    };
     if pattern == "*" {
         return true;
     }
@@ -317,14 +324,21 @@ pub(super) fn glob_match(pattern: &str, path: &str) -> bool {
         return normalized.ends_with(suffix);
     }
     if let Some((prefix, suffix)) = pattern.split_once("/**/*") {
-        return normalized.starts_with(&format!("{prefix}/")) && normalized.ends_with(suffix);
+        return normalized
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+            && normalized.ends_with(suffix);
     }
     if let Some(prefix) = pattern.strip_suffix("/**") {
-        return normalized == prefix || normalized.starts_with(&format!("{prefix}/"));
+        return normalized == prefix
+            || normalized
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'));
     }
     if let Some(prefix) = pattern.strip_suffix("/*") {
         return normalized
-            .strip_prefix(&format!("{prefix}/"))
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('/'))
             .is_some_and(|rest| !rest.contains('/'));
     }
     if let Some(suffix) = pattern.strip_prefix('*') {

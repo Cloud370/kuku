@@ -31,7 +31,7 @@ pub(crate) fn dispatch_workspace_file(
     prior_events: &[StoredEvent],
     result_event_id: u64,
     tool_call_id: Option<&str>,
-    preview_bytes: usize,
+    limits: &crate::RuntimeLimits,
     cancelled: &builtin::common::FileCancellation<'_>,
 ) -> Option<ToolResultEnvelope> {
     if matches!(name, "edit_file" | "write_file" | "remove_file")
@@ -40,19 +40,32 @@ pub(crate) fn dispatch_workspace_file(
         return Some(permission_denied(name));
     }
     let mut result = match name {
-        "find_files" => builtin::find_files(args, workspace, cancelled),
+        "find_files" => builtin::find_files(args, workspace, limits.workspace_io, cancelled),
         "read_file" => builtin::read_file(
             args,
             workspace,
             conversation,
             prior_events,
             result_event_id,
-            preview_bytes,
+            limits,
             cancelled,
         ),
-        "search_text" => builtin::search_text(args, workspace, preview_bytes, cancelled),
+        "search_text" => builtin::search_text(
+            args,
+            workspace,
+            limits.max_preview_bytes,
+            limits.workspace_io,
+            cancelled,
+        ),
         "stat_file" => builtin::stat_file(args, workspace, cancelled),
-        "edit_file" => builtin::edit_file(args, workspace, conversation, prior_events, cancelled),
+        "edit_file" => builtin::edit_file(
+            args,
+            workspace,
+            conversation,
+            prior_events,
+            limits.workspace_io.text_bytes,
+            cancelled,
+        ),
         "write_file" => builtin::write_file(args, workspace, conversation, prior_events, cancelled),
         "remove_file" => {
             builtin::remove_file(args, workspace, conversation, prior_events, cancelled)
@@ -122,6 +135,7 @@ pub(crate) async fn dispatch(
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
     events_path: &Path,
+    limits: &crate::RuntimeLimits,
 ) -> ToolResultEnvelope {
     if let Some(result) = dispatch_workspace_file(
         name,
@@ -131,7 +145,7 @@ pub(crate) async fn dispatch(
         prior_events,
         result_event_id,
         tool_call_id,
-        crate::RuntimeLimits::default().max_preview_bytes,
+        limits,
         &|| false,
     ) {
         return result;
@@ -147,8 +161,18 @@ pub(crate) async fn dispatch(
         {
             permission_denied(name)
         }
-        "remember_memory" => builtin::remember_memory_with_home(args, workspace, kuku_home),
-        "forget_memory" => builtin::forget_memory_with_home(args, workspace, kuku_home),
+        "remember_memory" => builtin::remember_memory_with_home(
+            args,
+            workspace,
+            kuku_home,
+            limits.workspace_io.context_file_bytes,
+        ),
+        "forget_memory" => builtin::forget_memory_with_home(
+            args,
+            workspace,
+            kuku_home,
+            limits.workspace_io.context_file_bytes,
+        ),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
         "query_session" => builtin::query_session(args, events_path),
         _ => ToolResultEnvelope::error(
@@ -207,6 +231,7 @@ mod tests {
             config,
             catalog,
             events_path,
+            &crate::RuntimeLimits::default(),
         )
         .await
     }
@@ -282,7 +307,7 @@ mod tests {
             &[call],
             2,
             Some("write"),
-            crate::RuntimeLimits::default().max_preview_bytes,
+            &crate::RuntimeLimits::default(),
             &|| false,
         )
         .unwrap();

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+use std::io;
 use std::path::Path;
 
 use serde_json::Value;
@@ -7,9 +9,10 @@ use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    content_hash, expected_version, mutation_preview, plural, publish_file, read_file_as_utf8,
-    require_version, resolve_path, snapshot_stale_error, text_match_offsets, ExecutorObservation,
-    FileCancellation, ResolvedPath, WriteEvidence, WriteSnapshotLookup,
+    append_text, content_hash, ensure_active, expected_version, file_read_error, mutation_preview,
+    plural, publish_file, read_file_as_utf8_bounded, require_version, resolve_path,
+    snapshot_stale_error, text_matches, ExecutorObservation, FileCancellation, IoLimit,
+    ResolvedPath, WriteEvidence, WriteSnapshotLookup,
 };
 
 use super::file_change;
@@ -18,21 +21,16 @@ pub(crate) fn line_change_counts(before: &str, after: &str) -> Option<(usize, us
     file_change::summarize(before, after).map(|change| (change.added_lines, change.removed_lines))
 }
 
-struct EditRequest {
-    path: String,
-    old_text: String,
-    new_text: String,
+struct EditRequest<'a> {
+    path: &'a str,
+    old_text: &'a str,
+    new_text: &'a str,
     replace_all: bool,
 }
 
-struct EditTextCandidate {
-    old_text: String,
-    new_text: String,
-}
-
-struct EditMatches<'a> {
-    candidate: &'a EditTextCandidate,
-    offsets: Vec<usize>,
+struct EditTextCandidate<'a> {
+    old_text: Cow<'a, str>,
+    new_text: Cow<'a, str>,
 }
 
 pub(crate) fn edit_file(
@@ -40,6 +38,7 @@ pub(crate) fn edit_file(
     workspace: &Path,
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
+    text_bytes: usize,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     edit_file_with_evidence(
@@ -49,6 +48,7 @@ pub(crate) fn edit_file(
             conversation,
             events: prior_events,
         },
+        text_bytes,
         cancelled,
     )
 }
@@ -57,15 +57,23 @@ pub(crate) fn edit_file_for_executor(
     args: &Value,
     workspace: &Path,
     reads: &[ExecutorObservation],
+    text_bytes: usize,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    edit_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
+    edit_file_with_evidence(
+        args,
+        workspace,
+        WriteEvidence::Executor(reads),
+        text_bytes,
+        cancelled,
+    )
 }
 
 fn edit_file_with_evidence(
     args: &Value,
     workspace: &Path,
     evidence: WriteEvidence<'_>,
+    text_bytes: usize,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let request = match edit_file_request(args) {
@@ -76,11 +84,15 @@ fn edit_file_with_evidence(
         Ok(expected) => expected,
         Err(result) => return result,
     };
-    let resolved = match resolve_path(workspace, &request.path) {
+    let resolved = match resolve_path(workspace, request.path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
-    let content = match read_file_as_utf8(&resolved.path, cancelled) {
+    if request.old_text.len() > text_bytes || request.new_text.len() > text_bytes {
+        let error = io::Error::other(IoLimit("edit arguments exceed the text budget"));
+        return file_read_error(Path::new(&resolved.relative), error);
+    }
+    let content = match read_file_as_utf8_bounded(&resolved.path, text_bytes, cancelled) {
         Ok(content) => content,
         Err(err) => return err,
     };
@@ -88,24 +100,44 @@ fn edit_file_with_evidence(
     if let Err(result) = require_version(&resolved.relative, expected, Some(&current_hash)) {
         return result;
     }
-    let text_candidates = edit_text_candidates(
-        &content,
-        request.old_text.as_str(),
-        request.new_text.as_str(),
-    );
-    let matches = match select_edit_matches(
-        &content,
-        &text_candidates,
-        &resolved,
-        &current_hash,
-        &evidence,
-        request.replace_all,
-    ) {
-        Ok(matches) => matches,
-        Err(result) => return result,
+    let text_candidates = match edit_text_candidates(&content, &request, text_bytes) {
+        Ok(candidates) => candidates,
+        Err(error) => return file_read_error(Path::new(&resolved.relative), error),
     };
-
-    let (edited, replacement_count) = replace_matches(&content, &matches);
+    let edited = if request.replace_all {
+        if let Err(result) = require_full_snapshot(&resolved, &current_hash, &evidence) {
+            return result;
+        }
+        replace_matches(
+            &content,
+            all_replacements(&content, &text_candidates),
+            text_bytes,
+            cancelled,
+        )
+    } else {
+        let replacement = match select_unique_replacement(
+            &content,
+            &text_candidates,
+            &resolved,
+            &current_hash,
+            &evidence,
+            cancelled,
+        ) {
+            Ok(replacement) => replacement,
+            Err(result) => return result,
+        };
+        replace_matches(
+            &content,
+            std::iter::once(replacement),
+            text_bytes,
+            cancelled,
+        )
+    };
+    let (edited, replacement_count) = match edited {
+        Ok((_, 0)) => return missing_old_text(&resolved),
+        Ok(result) => result,
+        Err(error) => return file_read_error(Path::new(&resolved.relative), error),
+    };
     let change = file_change::facts(&content, &edited);
     let publication = match publish_file(
         &resolved.path,
@@ -146,61 +178,63 @@ fn edit_file_with_evidence(
     )
 }
 
-fn select_edit_matches<'a>(
+type Replacement<'a> = (usize, usize, &'a str);
+
+fn select_unique_replacement<'a>(
     content: &str,
-    candidates: &'a [EditTextCandidate],
+    candidates: &'a [EditTextCandidate<'_>],
     resolved: &ResolvedPath,
     current_hash: &str,
     evidence: &WriteEvidence<'_>,
-    replace_all: bool,
-) -> Result<Vec<EditMatches<'a>>, ToolResultEnvelope> {
-    if replace_all {
-        require_full_snapshot(resolved, current_hash, evidence)?;
-    }
-    let mut matches = candidates
-        .iter()
-        .filter_map(|candidate| {
-            let offsets = text_match_offsets(content, &candidate.old_text, !replace_all);
-            (!offsets.is_empty()).then_some(EditMatches { candidate, offsets })
-        })
-        .collect::<Vec<_>>();
-    let match_count = matches
-        .iter()
-        .map(|entry| entry.offsets.len())
-        .sum::<usize>();
-    if match_count == 0 {
-        return Err(ToolResultEnvelope::error(
-            format!("failed: old_text not found in {}", resolved.relative),
-            "old_text was not found",
-        ));
-    }
-    if !replace_all && match_count > 1 {
-        for entry in &mut matches {
-            let old_text = &entry.candidate.old_text;
-            entry.offsets = match evidence.find(&resolved.path, false, Some(old_text), current_hash)
-            {
-                WriteSnapshotLookup::Found(snapshot) if snapshot.content_hash == current_hash => {
-                    snapshot.restrict_matches(content, old_text, std::mem::take(&mut entry.offsets))
-                }
-                _ => Vec::new(),
-            };
-        }
-        if matches
-            .iter()
-            .map(|entry| entry.offsets.len())
-            .sum::<usize>()
-            != 1
-        {
-            return Err(ToolResultEnvelope::error(
-                format!(
-                    "failed: old_text matched {match_count} times in {}",
-                    resolved.relative
-                ),
-                "old_text is not unique; provide more context or read the intended occurrence",
-            ));
+    cancelled: &FileCancellation<'_>,
+) -> Result<Replacement<'a>, ToolResultEnvelope> {
+    let mut found = None;
+    let mut count = 0;
+    for candidate in candidates {
+        for offset in text_matches(content, &candidate.old_text, true) {
+            ensure_active(cancelled)
+                .map_err(|error| file_read_error(Path::new(&resolved.relative), error))?;
+            count += 1;
+            found = Some(replacement(offset, candidate));
         }
     }
-    Ok(matches)
+    if count <= 1 {
+        return found.ok_or_else(|| missing_old_text(resolved));
+    }
+    let ambiguous = || {
+        ToolResultEnvelope::error(
+            format!(
+                "failed: old_text matched {count} times in {}",
+                resolved.relative
+            ),
+            "old_text is not unique; provide more context or read the intended occurrence",
+        )
+    };
+    let mut visible = None;
+    for candidate in candidates {
+        let text = &candidate.old_text;
+        let WriteSnapshotLookup::Found(snapshot) =
+            evidence.find(&resolved.path, false, Some(text), current_hash)
+        else {
+            continue;
+        };
+        if snapshot.content_hash != current_hash {
+            continue;
+        }
+        for offset in snapshot.visible_matches(content, text).take(2) {
+            if visible.replace(replacement(offset, candidate)).is_some() {
+                return Err(ambiguous());
+            }
+        }
+    }
+    visible.ok_or_else(ambiguous)
+}
+
+fn missing_old_text(resolved: &ResolvedPath) -> ToolResultEnvelope {
+    ToolResultEnvelope::error(
+        format!("failed: old_text not found in {}", resolved.relative),
+        "old_text was not found",
+    )
 }
 
 fn require_full_snapshot(
@@ -220,67 +254,107 @@ fn require_full_snapshot(
     }
 }
 
-fn replace_matches(content: &str, matches: &[EditMatches<'_>]) -> (String, usize) {
-    let mut replacements = matches
-        .iter()
-        .flat_map(|entry| {
-            let candidate = entry.candidate;
-            entry.offsets.iter().map(move |offset| {
-                (
-                    *offset,
-                    *offset + candidate.old_text.len(),
-                    candidate.new_text.as_str(),
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    replacements.sort_by_key(|(start, _, _)| *start);
+fn replacement<'a>(offset: usize, candidate: &'a EditTextCandidate<'_>) -> Replacement<'a> {
+    (
+        offset,
+        offset + candidate.old_text.len(),
+        &candidate.new_text,
+    )
+}
 
-    let mut edited = String::with_capacity(content.len());
+fn all_replacements<'a>(
+    content: &'a str,
+    candidates: &'a [EditTextCandidate<'_>],
+) -> impl Iterator<Item = Replacement<'a>> {
+    let stream = |candidate: &'a EditTextCandidate<'_>| {
+        text_matches(content, &candidate.old_text, false)
+            .map(move |offset| replacement(offset, candidate))
+    };
+    let mut left = stream(&candidates[0]).peekable();
+    let mut right = candidates.get(1).into_iter().flat_map(stream).peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(a), Some(b)) if a.0 > b.0 => right.next(),
+        (Some(_), _) => left.next(),
+        (None, _) => right.next(),
+    })
+}
+
+fn replace_matches<'a>(
+    content: &str,
+    replacements: impl Iterator<Item = Replacement<'a>>,
+    text_bytes: usize,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<(String, usize)> {
+    let mut edited = String::new();
     let mut cursor = 0;
     let mut replacement_count = 0;
     for (start, end, replacement) in replacements {
+        ensure_active(cancelled)?;
         if start < cursor {
             continue;
         }
-        edited.push_str(&content[cursor..start]);
-        edited.push_str(replacement);
+        append_text(&mut edited, &content[cursor..start], text_bytes)?;
+        append_text(&mut edited, replacement, text_bytes)?;
         cursor = end;
         replacement_count += 1;
     }
-    edited.push_str(&content[cursor..]);
-    (edited, replacement_count)
+    if replacement_count != 0 {
+        append_text(&mut edited, &content[cursor..], text_bytes)?;
+    }
+    Ok((edited, replacement_count))
 }
 
-fn edit_text_candidates(content: &str, old_text: &str, new_text: &str) -> Vec<EditTextCandidate> {
-    let file_uses_crlf =
-        content.contains("\r\n") && content.split("\r\n").all(|segment| !segment.contains('\n'));
-    let crlf_new_text = new_text.replace("\r\n", "\n").replace('\n', "\r\n");
+fn edit_text_candidates<'a>(
+    content: &str,
+    request: &EditRequest<'a>,
+    text_bytes: usize,
+) -> io::Result<Vec<EditTextCandidate<'a>>> {
+    let EditRequest {
+        old_text, new_text, ..
+    } = *request;
     if old_text.contains('\n') && !old_text.contains("\r\n") {
-        let crlf_old_text = old_text.replace('\n', "\r\n");
-        return vec![
+        return Ok(vec![
             EditTextCandidate {
-                old_text: crlf_old_text,
-                new_text: crlf_new_text.clone(),
+                old_text: crlf(old_text, text_bytes)?,
+                new_text: crlf(new_text, text_bytes)?,
             },
             EditTextCandidate {
-                old_text: old_text.to_string(),
-                new_text: new_text.to_string(),
+                old_text: Cow::Borrowed(old_text),
+                new_text: Cow::Borrowed(new_text),
             },
-        ];
+        ]);
     }
 
-    vec![EditTextCandidate {
-        old_text: old_text.to_string(),
+    let file_uses_crlf =
+        content.contains("\r\n") && content.split("\r\n").all(|segment| !segment.contains('\n'));
+    Ok(vec![EditTextCandidate {
+        old_text: Cow::Borrowed(old_text),
         new_text: if old_text.contains("\r\n") || file_uses_crlf {
-            crlf_new_text
+            crlf(new_text, text_bytes)?
         } else {
-            new_text.to_string()
+            Cow::Borrowed(new_text)
         },
-    }]
+    }])
 }
 
-fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
+fn crlf(text: &str, text_bytes: usize) -> io::Result<Cow<'_, str>> {
+    let needs_crlf = |line: &str| line.ends_with('\n') && !line.ends_with("\r\n");
+    if !text.split_inclusive('\n').any(needs_crlf) {
+        return Ok(Cow::Borrowed(text));
+    }
+    let mut result = String::new();
+    for line in text.split_inclusive('\n') {
+        if needs_crlf(line) {
+            append_text(&mut result, &line[..line.len() - 1], text_bytes)?;
+            append_text(&mut result, "\r\n", text_bytes)?;
+        } else {
+            append_text(&mut result, line, text_bytes)?;
+        }
+    }
+    Ok(Cow::Owned(result))
+}
+
+fn edit_file_request(args: &Value) -> Result<EditRequest<'_>, ToolResultEnvelope> {
     let Some(path) = args.get("path").and_then(Value::as_str) else {
         return Err(ToolResultEnvelope::error(
             "failed: missing path",
@@ -306,9 +380,9 @@ fn edit_file_request(args: &Value) -> Result<EditRequest, ToolResultEnvelope> {
         ));
     }
     Ok(EditRequest {
-        path: path.to_string(),
-        old_text: old_text.to_string(),
-        new_text: new_text.to_string(),
+        path,
+        old_text,
+        new_text,
         replace_all: args
             .get("replace_all")
             .and_then(Value::as_bool)

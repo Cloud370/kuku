@@ -7,6 +7,7 @@ fn edit_file(args: &Value, workspace: &Path, prior_events: &[StoredEvent]) -> To
         workspace,
         &crate::conversation::address::ConversationAddress::MAIN,
         prior_events,
+        crate::WorkspaceIoLimits::default().text_bytes,
         &|| false,
     )
 }
@@ -25,6 +26,30 @@ fn edit_file_replaces_unique_text_without_a_read() {
 
     assert_eq!("ok", result.status);
     assert_eq!("omega\nbeta\n", std::fs::read_to_string(path).unwrap());
+}
+
+#[test]
+fn replace_all_stops_at_the_output_budget_without_publishing() {
+    let dir = workspace();
+    let path = dir.path().join("README.md");
+    let original = "a\n".repeat(16);
+    std::fs::write(&path, &original).unwrap();
+    let (_, snapshot) = crate::tool::builtin::read_file_for_executor(
+        &serde_json::json!({"path":"README.md"}),
+        dir.path(),
+        128,
+        u64::MAX,
+        &|| false,
+    );
+    let result = edit_file_for_executor(
+        &serde_json::json!({"path":"README.md","old_text":"a","new_text":"more text","replace_all":true}),
+        dir.path(),
+        &[snapshot.unwrap()],
+        64,
+        &|| false,
+    );
+    assert_eq!(result.structured.unwrap()["reason_code"], "resource_limit");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 }
 
 #[test]
@@ -86,7 +111,10 @@ fn single_edit_rejects_overlapping_utf8_matches() {
 
 #[test]
 fn overlapping_search_skips_lf_inside_crlf_without_losing_the_next_match() {
-    assert_eq!(vec![2], text_match_offsets("\r\n\n\n", "\n\n", true));
+    assert_eq!(
+        vec![2],
+        text_matches("\r\n\n\n", "\n\n", true).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -683,6 +711,7 @@ fn executor_edit_targets_observed_occurrence_and_reports_committed_versions() {
         &serde_json::json!({"path":"README.md","offset":3,"limit":1}),
         dir.path(),
         80,
+        u64::MAX,
         &|| false,
     );
     let read = read.unwrap();
@@ -694,6 +723,7 @@ fn executor_edit_targets_observed_occurrence_and_reports_committed_versions() {
         }),
         dir.path(),
         std::slice::from_ref(&read),
+        crate::WorkspaceIoLimits::default().text_bytes,
         &|| false,
     );
 
@@ -725,12 +755,14 @@ fn executor_scope_cannot_disambiguate_unobserved_repeated_text() {
         &serde_json::json!({"path":"README.md","limit":1}),
         dir.path(),
         80,
+        u64::MAX,
         &|| false,
     );
     let result = edit_file_for_executor(
         &serde_json::json!({"path":"README.md","old_text":"private","new_text":"changed"}),
         dir.path(),
         &[read.unwrap()],
+        crate::WorkspaceIoLimits::default().text_bytes,
         &|| false,
     );
     assert_eq!("error", result.status);
@@ -750,12 +782,14 @@ fn mixed_line_ending_replacements_choose_leftmost_nonoverlapping_match() {
         &serde_json::json!({"path":"README.md"}),
         dir.path(),
         80,
+        u64::MAX,
         &|| false,
     );
     let result = edit_file_for_executor(
         &serde_json::json!({"path":"README.md","old_text":"x\nx","new_text":"changed","replace_all":true}),
         dir.path(),
         &[read.unwrap()],
+        crate::WorkspaceIoLimits::default().text_bytes,
         &|| false,
     );
     assert_eq!("ok", result.status);
