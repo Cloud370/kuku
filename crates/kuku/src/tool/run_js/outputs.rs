@@ -22,7 +22,7 @@ const COMMAND_SIGNATURE: &str = concat!(
 );
 
 const STREAM_SIGNATURE: &str = concat!(
-    "CommandStream.text() reads text and .json() parses JSON. Use for await to read .lines(). ",
+    "stdout and stderr are CommandStream readers. Use await r.stdout.text() for text, await r.stdout.json() for JSON, or for await to read r.stdout.lines(). ",
     "These readers require complete, decodable output. ",
 );
 

@@ -162,11 +162,18 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
     let methods =
         method_definitions(|op| tools.iter().find(|tool| tool.name == op.name()).cloned());
     let mut description = format!("{SCRIPT_DESCRIPTION}\n");
+    description.push_str("File and output host methods return {status,result,truncated,error?}. After checking status === 'ok', read their fields from result.\n");
+    if methods.iter().any(|method| method.name == "read_file") {
+        description.push_str("Read example: `const r = await tools.read_file({path:'README.md',limit:5}); return r.status === 'ok' ? r.result.raw_text : r.error;`.\n");
+    }
     if let Some(command) = methods.iter().find(|method| method.name == "run_command") {
         description.push_str(&command.description);
-        description.push_str("Example: `const r = await tools.run_command({program:'git',args:['status','--short']}); return {exit_code:r.exit_code, output_ref:r.output_ref};`.\n");
+        if methods.iter().any(|method| method.name == "read_output") {
+            description.push_str("Command example: `const r = await tools.run_command({program:'git',args:['status','--short']}); return {exit_code:r.exit_code, stdout:await r.stdout.text()};`.\n");
+        } else {
+            description.push_str("Command example: `const r = await tools.run_command({program:'git',args:['status','--short']}); return {exit_code:r.exit_code, output_ref:r.output_ref};`.\n");
+        }
     }
-    description.push_str("Other host methods return {status,result,truncated,error?}. Check status === 'ok' before reading result. ");
     description
         .push_str("If a returned value has an output_ref, use its ID to read the full value. ");
     for op in ScriptOperation::ALL {

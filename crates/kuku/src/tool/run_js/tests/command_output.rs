@@ -358,6 +358,7 @@ fn model_definition_advertises_only_selected_script_methods() {
     assert!(script
         .description
         .contains("read_file({path,offset?,limit?}) returns result.raw_text"));
+    assert!(script.description.contains("r.result.raw_text : r.error"));
     assert!(script
         .description
         .contains("create_output({}) returns result.id"));
