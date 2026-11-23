@@ -162,9 +162,6 @@ async fn cancelled_run_persists_tool_result_for_finished_active_slot() {
             job: None,
             label: "print hi".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
-            nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
         },
     );
     let mut run = Run {
@@ -242,7 +239,6 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
                 conversation: "main".to_string(),
                 text: "hello".to_string(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             })
             .unwrap();

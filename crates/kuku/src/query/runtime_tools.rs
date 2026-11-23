@@ -509,7 +509,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
         definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
         definition(
             "create_agent",
-            "Create an independent Agent. Send its task with send_message after creation.",
+            "Create an idle Agent with a standing role and tool settings. Read its successful creation receipt before calling send_message in a later step to assign work. Resolve creation errors before dispatch.",
             serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -517,7 +517,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                     "address": {"type": "string", "description": "Stable Session-local name."},
                     "instructions": {"type": "string", "description": "Standing role or constraints for this Agent."},
                     "tools": {"type": "array", "items": {"type":"string"}, "description":"Exact tool names. Omit to use defaults. An empty array means no tools."},
-                    "preset": {"type": "string", "description": "Configured Agent preset."},
+                    "preset": {"type": "string", "description": "Configured Agent preset name. Omit to use the Session defaults. An unknown name returns available examples."},
                     "tier": {"type": "string", "description": "Configured model tier from <kuku_models>. Omit to use the preset or Session default."},
                     "reasoning_effort": {"type": "string", "description": "Supported thinking value from the selected route in <kuku_models>."},
                     "service_tier": {"type": "string", "description": "Supported service tier from <kuku_models>. Omit to inherit. Set only at the user's explicit request."},
@@ -526,8 +526,8 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                 "required": ["address"]
             }),
         ),
-        definition("send_message", "Deliver a message and any selected value references to an existing agent. Returns a durable receipt; query or receive its later result separately.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]})),
-        definition("list_agents", "List compact Agent states. When you need a delegated result, pass wait_for with the recipient address once. Waits up to 30 seconds for its current execution and returns its settled reply and available model request facts, or current state.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1}}})),
+        definition("send_message", "Deliver a task or follow-up and any selected value references to an existing Agent. For a new Agent, first confirm its creation receipt. Delivery wakes an idle recipient by default. The receipt confirms delivery. Pass its event_id as receipt with wait_for in list_agents to retrieve the result for this delivery.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true and wakes an idle recipient. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]})),
+        definition("list_agents", "List compact Agent states. To retrieve a specific delegated result, set wait_for to the recipient address and receipt to the event_id returned by send_message. Waits up to 30 seconds while the recipient is running. Without receipt, wait_for returns the latest execution by address.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1},"receipt":{"type":"integer","minimum":1,"description":"event_id from your send_message delivery receipt."}}})),
     ]
 }
 
@@ -566,7 +566,16 @@ pub(super) async fn execute(
             let (address, config) = create_agent_input(&call.args)?;
             let preset = config.preset.clone();
             let mut receipt = serde_json::to_value(session.create_agent(&key, &address, config)?)?;
-            if let Ok(selection) = session.agent_selection(&address) {
+            let config = session.agent(&address)?.config;
+            receipt["initial_status"] = serde_json::json!(crate::AgentStatus::Idle);
+            receipt["workspace"] =
+                serde_json::json!(session.workspace_for(&config).to_string_lossy());
+            if let Ok(selection) = session.selection_for_config(&address, config) {
+                receipt["effective_tools"] = serde_json::json!(selection
+                    .tools
+                    .iter()
+                    .map(|tool| &tool.name)
+                    .collect::<Vec<_>>());
                 receipt["model_selection"] = serde_json::json!({
                     "preset": preset, "model": selection.model,
                     "reasoning_effort": selection.settings.reasoning_effort.or_else(|| selection.capabilities.reasoning_default.map(|level| level.value)),
@@ -595,6 +604,9 @@ pub(super) async fn execute(
             )?
         }
         "list_agents" => {
+            if call.args.get("receipt").is_some() && call.args.get("wait_for").is_none() {
+                return Err(Error::InvalidArgument("receipt requires wait_for".into()));
+            }
             if let Some(target) = call.args.get("wait_for") {
                 let address = target
                     .as_str()
@@ -607,9 +619,27 @@ pub(super) async fn execute(
                         "an Agent cannot wait for itself".into(),
                     ));
                 }
-                let waited = session.wait_for_agent(address).await;
-                let snapshot = current_agent_after_wait(waited, || session.agent(address))?;
-                serde_json::json!([agent_status::listing(snapshot, Some(session.events_path()))])
+                if let Some(receipt) = call.args.get("receipt") {
+                    let event_id = receipt.as_u64().filter(|id| *id > 0).ok_or_else(|| {
+                        Error::InvalidArgument("receipt requires a positive event_id".into())
+                    })?;
+                    let result = session
+                        .wait_for_delivery(
+                            pending.conversation.as_str(),
+                            address,
+                            event_id,
+                            std::time::Duration::from_secs(30),
+                        )
+                        .await?;
+                    serde_json::json!([result])
+                } else {
+                    let waited = session.wait_for_agent(address).await;
+                    let snapshot = current_agent_after_wait(waited, || session.agent(address))?;
+                    serde_json::json!([agent_status::listing(
+                        snapshot,
+                        Some(session.events_path())
+                    )])
+                }
             } else {
                 serde_json::Value::Array(
                     session

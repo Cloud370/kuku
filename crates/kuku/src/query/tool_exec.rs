@@ -125,7 +125,7 @@ fn inline_skill_tool_max_result_chars(pending: &PendingRun, tool_name: &str) -> 
             .find(|tool| tool.name == tool_name)
             .map(|tool| tool.max_result_chars);
     }
-    crate::tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
+    crate::tool::builtin_registry(!pending.query.disable_skills)
         .iter()
         .find(|tool| tool.name == tool_name)
         .map(|tool| tool.max_result_chars)
@@ -185,28 +185,13 @@ fn handle_use_skill(
         skill_names.sort();
     }
     let registry = current_skill_registry(pending);
-    let binding_sources =
-        crate::skill::session::binding_sources_for_skills(&registry, &skill_names);
-    let binding_id = crate::conversation::binding::skill_attachment_binding_id(
-        &pending.conversation,
-        pending.agent_binding_id.as_deref(),
-        &skill_names,
-        &binding_sources,
-    );
-    let mut store = EventStore::open(&pending.events_path)?;
-    store.append(EventPayload::ConversationBound {
-        ts: now_timestamp()?,
-        conversation: pending.conversation.as_str().to_string(),
-        binding_id: binding_id.clone(),
-    })?;
-    store.append(EventPayload::ContextSkills {
+    EventStore::open(&pending.events_path)?.append(EventPayload::ContextSkills {
         conversation: pending.conversation.as_str().to_string(),
         turn: pending.turn,
         ts: now_timestamp()?,
         registry: serde_json::to_value(&registry)?,
         bootstrap_loaded: skill_names,
     })?;
-    pending.agent_binding_id = Some(binding_id);
 
     Ok(crate::tool::ToolResultEnvelope {
         status: "ok".to_string(),
@@ -279,7 +264,6 @@ pub(super) async fn execute_tool_call(
                 job: None,
                 label: String::new(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
-                nested_permissions: Default::default(),
             },
             &result,
             &pending.events_path,
@@ -552,13 +536,10 @@ mod tests {
             resumed_permission_requests: std::collections::VecDeque::new(),
             config: Arc::new(test_config()),
             prompts_dir: None,
-            agent_registry: None,
             skill_registry: Some(skill_registry()),
             previous_skill_registry: None,
             bootstrap_skill: None,
             frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),
-            child_session_count: 0,
-            agent_binding_id: None,
             tool_registry_override: override_registry,
             catalog: crate::prompt::builtin_prompt_catalog(),
             pending_events: std::collections::VecDeque::new(),
@@ -665,16 +646,11 @@ mod tests {
             conversation: Some(
                 crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             ),
-            kind: crate::query::ToolKind::Agent {
-                conversation: crate::conversation::address::ConversationAddress::parse("review")
-                    .unwrap(),
-                binding_id: "binding:review".to_string(),
-            },
+            kind: crate::query::ToolKind::Simple,
             workspace_access: WorkspaceAccess::Independent,
             job: None,
             label: "read".to_string(),
             cancel: Arc::new(tokio::sync::Notify::new()),
-            nested_permissions: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         };
 
         let result = crate::tool::ToolResultEnvelope {

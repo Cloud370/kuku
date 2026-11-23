@@ -40,16 +40,9 @@ pub(crate) fn render_project_context(
 }
 
 pub(crate) fn render_runtime_date(catalog: &PromptCatalog, current_date: &str) -> Result<String> {
-    let builtin =
-        (!catalog.runtime.contains_key("current-date")).then(crate::prompt::builtin_prompt_catalog);
     let template = catalog
         .runtime
         .get("current-date")
-        .or_else(|| {
-            builtin
-                .as_ref()
-                .and_then(|catalog| catalog.runtime.get("current-date"))
-        })
         .ok_or_else(|| Error::PromptRender("missing current-date runtime template".into()))?;
     validate_placeholders(&template.text, &["current_date"])?;
     Ok(template.text.replace("{{current_date}}", current_date))

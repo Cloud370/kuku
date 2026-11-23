@@ -9,22 +9,10 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-09T00:00:00Z".into(),
-            schema_version: 1,
+            schema_version: 2,
             session_id: session_id.into(),
             created_at: "2026-06-09T00:00:00Z".into(),
             kuku_version: "test".into(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-09T00:00:01Z".into(),
-            conversation: "main".into(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-09T00:00:02Z".into(),
-            conversation: "review".into(),
         })
         .unwrap();
     store
@@ -34,7 +22,6 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
             turn: 1,
             text: "main message".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -45,7 +32,6 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
             turn: 1,
             text: "review message".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -131,9 +117,9 @@ async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
         .await
         .unwrap();
     let review_entries = review["events"].as_array().unwrap();
-    assert_eq!(4, review_entries.len());
+    assert_eq!(3, review_entries.len());
     assert_eq!("session.created", review_entries[0]["payload"]["kind"]);
-    assert_eq!("review message", review_entries[2]["payload"]["text"]);
+    assert_eq!("review message", review_entries[1]["payload"]["text"]);
 
     let main: serde_json::Value = server
         .session_request(id, "events", &[("agent", "main")])
@@ -144,7 +130,7 @@ async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
         .await
         .unwrap();
     let main_entries = main["events"].as_array().unwrap();
-    assert_eq!(6, main_entries.len());
+    assert_eq!(5, main_entries.len());
     assert!(main_entries
         .iter()
         .any(|entry| entry["payload"]["kind"] == "tool.result"));
@@ -175,8 +161,8 @@ async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
         .json()
         .await
         .unwrap();
-    assert_eq!(9, full["events"].as_array().unwrap().len());
-    assert_eq!(9, full["next_after"]);
+    assert_eq!(7, full["events"].as_array().unwrap().len());
+    assert_eq!(7, full["next_after"]);
 
     let page: serde_json::Value = server
         .session_request(id, "events", &[("reverse", "true"), ("limit", "2")])
@@ -186,15 +172,15 @@ async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
         .json()
         .await
         .unwrap();
-    assert_eq!(8, page["next_before"]);
-    assert_eq!(8, page["events"][0]["id"]);
-    assert_eq!(9, page["events"][1]["id"]);
+    assert_eq!(6, page["next_before"]);
+    assert_eq!(6, page["events"][0]["id"]);
+    assert_eq!(7, page["events"][1]["id"]);
 
     let older: serde_json::Value = server
         .session_request(
             id,
             "events",
-            &[("before", "8"), ("limit", "2"), ("agent", "missing")],
+            &[("before", "6"), ("limit", "2"), ("agent", "missing")],
         )
         .send()
         .await
@@ -202,7 +188,7 @@ async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
         .json()
         .await
         .unwrap();
-    assert_eq!(6, older["next_before"]);
+    assert_eq!(4, older["next_before"]);
     assert!(older["events"].as_array().unwrap().is_empty());
 }
 
@@ -221,7 +207,6 @@ async fn history_pages_are_bounded_by_the_requested_snapshot_cursor() {
             turn: 2,
             text: "message after the saved cursor".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -241,9 +226,9 @@ async fn history_pages_are_bounded_by_the_requested_snapshot_cursor() {
         .unwrap();
     assert_eq!("tool_call", page["entries"][0]["type"]);
     assert_eq!("tool_result", page["entries"][1]["type"]);
-    assert_eq!(7, page["next_before"]);
+    assert_eq!(5, page["next_before"]);
     let older: serde_json::Value = server
-        .session_request(id, "history", &[("before", "7"), ("limit", "3")])
+        .session_request(id, "history", &[("before", "5"), ("limit", "3")])
         .send()
         .await
         .unwrap()
@@ -318,22 +303,10 @@ fn write_rewind_group_events(
     store
         .append(EventPayload::SessionCreated {
             ts: "2026-06-10T00:00:00Z".into(),
-            schema_version: 1,
+            schema_version: 2,
             session_id: session_id.into(),
             created_at: "2026-06-10T00:00:00Z".into(),
             kuku_version: "test".into(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-10T00:00:01Z".into(),
-            conversation: "main".into(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-10T00:00:02Z".into(),
-            conversation: "reviewer".into(),
         })
         .unwrap();
     let old_target = append_group_user(&mut store, "main", 101, "old prompt");
@@ -366,7 +339,6 @@ fn append_group_user(store: &mut EventStore, agent: &str, turn: u64, text: &str)
             turn,
             text: text.into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();

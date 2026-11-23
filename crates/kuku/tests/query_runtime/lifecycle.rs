@@ -10,12 +10,10 @@ async fn start_creates_session_events_under_kuku_home() {
     let session_id = run.session_id().to_string();
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 5);
-    assert_eq!(events[0].id, 1);
-    assert_eq!(events[1].id, 2);
-    assert_eq!(events[2].id, 3);
-    assert_eq!(events[3].id, 4);
-    assert_eq!(events[4].id, 5);
+    assert_eq!(
+        events.iter().map(|event| event.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
 
     match &events[0].payload {
         EventPayload::SessionCreated {
@@ -35,14 +33,6 @@ async fn start_creates_session_events_under_kuku_home() {
     }
 
     match &events[1].payload {
-        EventPayload::ConversationOpened { conversation, ts } => {
-            assert_eq!(conversation, "main");
-            assert!(ts.ends_with('Z'));
-        }
-        other => panic!("expected conversation.opened, got {other:?}"),
-    }
-
-    match &events[2].payload {
         EventPayload::TurnStarted {
             conversation,
             turn,
@@ -55,7 +45,7 @@ async fn start_creates_session_events_under_kuku_home() {
         other => panic!("expected turn.started, got {other:?}"),
     }
 
-    match &events[3].payload {
+    match &events[2].payload {
         EventPayload::MessageUser {
             conversation,
             turn,
@@ -71,7 +61,7 @@ async fn start_creates_session_events_under_kuku_home() {
         other => panic!("expected message.user, got {other:?}"),
     }
 
-    match &events[4].payload {
+    match &events[3].payload {
         EventPayload::ContextSkills {
             turn,
             bootstrap_loaded,
@@ -85,124 +75,7 @@ async fn start_creates_session_events_under_kuku_home() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn conversation_rollback_is_scoped() {
-    let env = TestEnv::new();
-    let session_id = "s_conversation_rollback_scoped";
-    let events_path = env.events_path(session_id);
-    std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
-    let mut store = EventStore::open(&events_path).unwrap();
-    store
-        .append(EventPayload::SessionCreated {
-            ts: "2026-06-09T00:00:00Z".to_string(),
-            schema_version: 2,
-            session_id: session_id.to_string(),
-            created_at: "2026-06-09T00:00:00Z".to_string(),
-            kuku_version: env!("CARGO_PKG_VERSION").to_string(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-09T00:00:01Z".to_string(),
-            conversation: "main".to_string(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-09T00:00:01Z".to_string(),
-            conversation: "review".to_string(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::MessageUser {
-            ts: "2026-06-09T00:00:02Z".to_string(),
-            conversation: "main".to_string(),
-            turn: 1,
-            text: "main-1".to_string(),
-            from: None,
-            via_tool_call_id: None,
-            job_delivery: false,
-        })
-        .unwrap();
-    store
-        .append(EventPayload::MessageUser {
-            ts: "2026-06-09T00:00:03Z".to_string(),
-            conversation: "review".to_string(),
-            turn: 1,
-            text: "review-1".to_string(),
-            from: None,
-            via_tool_call_id: None,
-            job_delivery: false,
-        })
-        .unwrap();
-    store
-        .append(EventPayload::MessageUser {
-            ts: "2026-06-09T00:00:04Z".to_string(),
-            conversation: "review".to_string(),
-            turn: 2,
-            text: "review-2".to_string(),
-            from: None,
-            via_tool_call_id: None,
-            job_delivery: false,
-        })
-        .unwrap();
-    let rollback = store
-        .append(EventPayload::ConversationRollback {
-            ts: "2026-06-09T00:00:05Z".to_string(),
-            conversation: "review".to_string(),
-            to_turn: 1,
-            to_event_id: 5,
-            scope: kuku::event::RollbackScope::ConversationOnly,
-        })
-        .unwrap();
-    store
-        .append(EventPayload::MessageUser {
-            ts: "2026-06-09T00:00:06Z".to_string(),
-            conversation: "main".to_string(),
-            turn: 2,
-            text: "main-2".to_string(),
-            from: None,
-            via_tool_call_id: None,
-            job_delivery: false,
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationRollbackUndone {
-            ts: "2026-06-09T00:00:07Z".to_string(),
-            conversation: "review".to_string(),
-            rollback_event_id: rollback.id,
-        })
-        .unwrap();
-    let events = EventStore::replay(&events_path).unwrap();
-    let review = ConversationAddress::parse("review").unwrap();
-    let (_, review_history) = rebuild_history(&events, &review);
-    let (_, main_history) = rebuild_history(&events, &ConversationAddress::MAIN);
-    let review_texts: Vec<&str> = review_history
-        .iter()
-        .filter_map(|message| match message.blocks.first() {
-            Some(kuku::context::MessageBlock::Text(text)) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    let main_texts: Vec<&str> = main_history
-        .iter()
-        .filter_map(|message| match message.blocks.first() {
-            Some(kuku::context::MessageBlock::Text(text)) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(review_texts, vec!["review-1", "review-2"]);
-    assert_eq!(main_texts, vec!["main-1", "main-2"]);
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ConversationRollback { .. })));
-    assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::ConversationRollbackUndone { .. }
-    )));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn main_conversation_startup_writes_conversation_events() {
+async fn standalone_query_records_turn_and_user_input() {
     let env = TestEnv::new();
 
     let run = query("inspect this project")
@@ -221,7 +94,6 @@ async fn main_conversation_startup_writes_conversation_events() {
         kinds,
         vec![
             "session.created",
-            "conversation.opened",
             "turn.started",
             "message.user",
             "context.skills",
@@ -261,7 +133,7 @@ async fn start_persists_session_scoped_log_without_event_payload() {
     }));
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 5);
+    assert_eq!(events.len(), 4);
     assert!(!events.iter().any(|event| {
         let payload = serde_json::to_value(&event.payload).unwrap();
         payload.get("log").is_some() || payload.get("debug").is_some()
@@ -347,7 +219,7 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
         .unwrap();
 
     let events = EventStore::replay(env.events_path("s_continue")).unwrap();
-    assert_eq!(events.len(), 9);
+    assert_eq!(events.len(), 8);
     assert_eq!(
         events
             .iter()
@@ -355,47 +227,35 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
             .count(),
         1
     );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event.payload, EventPayload::ConversationOpened { ref conversation, .. } if conversation == "main"))
-            .count(),
-        1
-    );
-
     assert!(matches!(
         events[1].payload,
-        EventPayload::ConversationOpened { .. }
-    ));
-    assert!(matches!(
-        events[2].payload,
         EventPayload::TurnStarted { turn: 1, .. }
     ));
     assert!(matches!(
-        events[3].payload,
+        events[2].payload,
         EventPayload::MessageUser { turn: 1, .. }
     ));
     assert!(matches!(
-        events[4].payload,
+        events[3].payload,
         EventPayload::ContextSkills { turn: 1, .. }
     ));
     assert!(matches!(
-        events[5].payload,
+        events[4].payload,
         EventPayload::TurnInterrupted { turn: 1, .. }
     ));
     assert!(matches!(
-        events[6].payload,
+        events[5].payload,
         EventPayload::TurnStarted { turn: 2, .. }
     ));
     assert!(
-        !matches!(events[6].payload, EventPayload::MessageUser { .. }),
+        !matches!(events[5].payload, EventPayload::MessageUser { .. }),
         "expected turn.started, got second message.user position"
     );
     assert!(matches!(
-        events[7].payload,
+        events[6].payload,
         EventPayload::MessageUser { turn: 2, .. }
     ));
-    match &events[8].payload {
+    match &events[7].payload {
         EventPayload::ContextSkills {
             turn,
             bootstrap_loaded,
@@ -406,7 +266,7 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
         }
         other => panic!("expected second context.skills, got {other:?}"),
     }
-    match &events[7].payload {
+    match &events[6].payload {
         EventPayload::MessageUser {
             conversation,
             turn,
@@ -438,12 +298,6 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
         })
         .unwrap();
     store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-09T00:00:01Z".to_string(),
-            conversation: "main".to_string(),
-        })
-        .unwrap();
-    store
         .append(EventPayload::TurnStarted {
             ts: "2026-06-09T00:00:02Z".to_string(),
             conversation: "main".to_string(),
@@ -457,7 +311,6 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
             turn: 1,
             text: "first".to_string(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -479,7 +332,6 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
         kinds,
         vec![
             "session.created",
-            "conversation.opened",
             "turn.started",
             "message.user",
             "turn.interrupted",
@@ -489,7 +341,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
         ]
     );
     assert!(matches!(
-        &events[4].payload,
+        &events[3].payload,
         EventPayload::TurnInterrupted { conversation, turn: 1, .. } if conversation == "main"
     ));
 }

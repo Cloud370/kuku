@@ -538,6 +538,7 @@ fn escape_from_running_history_focus_interrupts_before_returning_to_composer() {
         serde_json::from_value(json!({
             "entries": [],
             "rewind_groups": [],
+            "rewind_groups": [],
             "next_before": null
         }))
         .unwrap(),

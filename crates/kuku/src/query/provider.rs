@@ -12,10 +12,10 @@ pub(super) use retry::{
 };
 
 use crate::context::{
-    assemble_context, rebuild_history_for_provider, restore_prompt_snapshot,
-    AgentRegistryProvenance, CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock,
-    PluginRegistryProvenance, PromptCapabilityMetadata, PromptRendererIdentity, Role,
-    SkillRegistryProvenance, ToolRegistryProvenance,
+    assemble_context, rebuild_history_for_provider, restore_prompt_snapshot, CanonicalMessage,
+    ContextInput, EnvironmentSource, MessageBlock, PluginRegistryProvenance,
+    PromptCapabilityMetadata, PromptRendererIdentity, Role, SkillRegistryProvenance,
+    ToolRegistryProvenance,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -70,12 +70,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         crate::prompt::builtin_prompt_catalog()
     };
 
-    let (catalog_text, skills_text, runtime_blocks) = build_runtime_blocks(
+    let tools = tool::to_tool_schemas(&registry);
+    let (skills_text, runtime_blocks) = build_runtime_blocks(
         &pending.workspace,
         pending.conversation.as_str(),
         pending.turn,
-        pending.agent_registry.as_ref(),
         pending.skill_registry.as_ref(),
+        &tools,
         pending.previous_skill_registry.as_ref(),
         &resolved_config,
         &existing_events,
@@ -121,17 +122,14 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             global_memory,
             project_memory,
             history,
-            tools: tool::to_tool_schemas(&registry),
+            tools,
             model_tiers,
             runtime_blocks,
             enable_memory: true,
-            agent_name: pending.conversation.root_contact().as_str().to_string(),
             agent_instructions: pending
-                .agent_registry
-                .as_ref()
-                .and_then(|r| r.get(pending.conversation.root_contact().as_str()))
-                .map(|d| d.instructions.clone())
-                .or_else(|| pending.query.agent_instructions.clone())
+                .query
+                .agent_instructions
+                .clone()
                 .or_else(|| catalog.agents.get("main").map(|a| a.text.clone()))
                 .unwrap_or_default(),
             response_contract: pending.query.response_contract.clone(),
@@ -165,16 +163,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         assembly.prelude_messages = frozen;
     }
 
-    // Layer 4: inject agent catalog + loaded skills into snapshot prelude (first turn only;
+    // Inject the skill catalog into the snapshot prelude (first turn only;
     // subsequent turns reuse the frozen snapshot)
     if is_first_request {
-        if let Some(catalog_text) = catalog_text {
-            if !catalog_text.is_empty() {
-                assembly
-                    .prelude_messages
-                    .push(CanonicalMessage::user_text(catalog_text));
-            }
-        }
         if let Some(skills_text) = skills_text {
             if !skills_text.is_empty() {
                 assembly
@@ -182,15 +173,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     .push(CanonicalMessage::user_text(skills_text));
             }
         }
-    }
-
-    if let Some(prefix) = pending
-        .query
-        .current_turn_prefix
-        .as_ref()
-        .filter(|value| !value.is_empty())
-    {
-        append_current_turn_prefix_once(&mut assembly.prelude_messages, prefix);
     }
 
     if let Some(skill) = pending.bootstrap_skill.as_ref() {
@@ -239,7 +221,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let prelude_snapshot = assembly.snapshot_prelude();
     let runtime_date_text = crate::prompt::render_runtime_date(&catalog, &current_date)?;
     let runtime_date = if contains_current_date(&assembly, &runtime_date_text)
-        || legacy_project_policy_has_date(&assembly, &catalog, &current_date)
+        || custom_project_policy_has_date(&assembly, &catalog, &current_date)
     {
         None
     } else {
@@ -264,16 +246,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .frozen_turn_prefix
             .replace(current_turn_prefix.clone());
     }
-    let current_body = pending
-        .query
-        .current_turn_body
-        .as_deref()
-        .unwrap_or(&pending.query.prompt);
-    let current_input = build_current_user_message(current_turn_prefix, current_body);
-    let current_user_index = if let Some(index) = replace_current_user_message(
+    let current_input = build_current_user_message(current_turn_prefix, &pending.query.prompt);
+    let current_user_index = if let Some(index) = replace_latest_user_message(
         &mut assembly.history,
         &pending.query.prompt,
-        current_body,
         current_input.clone(),
     ) {
         index
@@ -328,14 +304,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     .collect(),
                 tool_count: assembly.tools.len(),
             };
-            let agent_registry =
-                pending
-                    .agent_registry
-                    .as_ref()
-                    .map(|registry| AgentRegistryProvenance {
-                        hash: registry.hash().to_string(),
-                        names: registry.names().to_vec(),
-                    });
             let skill_registry =
                 pending
                     .skill_registry
@@ -356,10 +324,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             store.append(EventPayload::PromptSnapshot {
                 ts: now_timestamp()?,
                 conversation: pending.conversation.as_str().to_string(),
-                binding_id: pending
-                    .agent_binding_id
-                    .clone()
-                    .unwrap_or_else(|| pending.conversation.as_str().to_string()),
                 snapshot_id: format!(
                     "{}:{}:{}",
                     pending.conversation.as_str(),
@@ -404,7 +368,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     renderer: resolved_config.kind.as_str().to_string(),
                 },
                 tool_registry: Box::new(tool_registry),
-                agent_registry,
+                agent_registry: None,
                 skill_registry: Box::new(skill_registry),
                 plugin_registry: Box::new(plugin_registry),
                 capabilities: PromptCapabilityMetadata {
@@ -615,13 +579,13 @@ fn build_runtime_blocks(
     workspace: &std::path::Path,
     conversation: &str,
     turn: u64,
-    agent_registry: Option<&crate::agent::registry::AgentRegistry>,
     skill_registry: Option<&crate::skill::registry::SkillRegistry>,
+    tools: &[crate::context::ToolSchema],
     previous_skill_registry: Option<&crate::skill::registry::SkillRegistry>,
     resolved_config: &crate::provider::types::ResolvedProvider,
     existing_events: &[crate::event::StoredEvent],
     catalog: &crate::prompt::PromptCatalog,
-) -> Result<(Option<String>, Option<String>, Option<String>)> {
+) -> Result<(Option<String>, Option<String>)> {
     let estimated_input = last_input_tokens(&resolved_config.kind, existing_events, conversation);
     let thinking_overhead = resolved_config.think_level.overhead_tokens();
     let context_headroom = compute_context_headroom(
@@ -632,13 +596,10 @@ fn build_runtime_blocks(
         estimated_input,
     );
 
-    // Build agent catalog — this goes into snapshot prelude, not runtime_blocks
-    let catalog_text =
-        agent_registry.and_then(|reg| crate::agent::catalog::render_agent_catalog(reg, catalog));
-
     // Build skill catalog — this goes into snapshot prelude, not runtime_blocks
-    let skills_text = skill_registry.and_then(crate::skill::catalog::render_static_skill_catalog);
-    let skill_changes = if turn > 1 {
+    let skills_text = skill_registry
+        .and_then(|registry| crate::skill::catalog::render_static_skill_catalog(registry, tools));
+    let skill_changes = if turn > 1 && skills_text.is_some() {
         skill_registry.and_then(|skill_registry| {
             previous_skill_registry.and_then(|previous| {
                 crate::skill::registry::detect_skill_changes(previous, skill_registry)
@@ -648,33 +609,17 @@ fn build_runtime_blocks(
         None
     };
 
-    // Dynamic notices remain in runtime_blocks (conversations, inbox, drift)
+    // Dynamic notices remain in runtime_blocks.
     let mut notice_bodies: Vec<String> = Vec::new();
 
     if turn > 1 {
         let conversation = crate::conversation::address::ConversationAddress::parse(conversation)
             .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
-        let notice_events = existing_events
-            .iter()
-            .filter(|event| {
-                !matches!(
-                    &event.payload,
-                    crate::event::EventPayload::MessageUser {
-                        conversation: event_conversation,
-                        from: Some(_),
-                        via_tool_call_id: Some(_),
-                        ..
-                    } if event_conversation == conversation.as_str()
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
         let notices = build_runtime_notices(NoticeAssemblyInput {
             workspace,
-            events: &notice_events,
+            events: existing_events,
             context_budget_tier: context_headroom.tier,
             conversation: &conversation,
-            agent_registry,
         });
         for notice in &notices {
             if let Some(body) = render_notice_body(notice, catalog) {
@@ -702,7 +647,7 @@ fn build_runtime_blocks(
         Some(notice_bodies.join("\n\n"))
     };
 
-    Ok((catalog_text, skills_text, runtime_blocks))
+    Ok((skills_text, runtime_blocks))
 }
 
 fn assembly_runtime_prefix(
@@ -726,12 +671,10 @@ fn assembly_runtime_prefix(
     if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
         let tmpl = catalog
             .blocks
-            .get("conversation-inbox")
+            .get("skill-input")
             .map(|a| a.text.as_str())
-            .unwrap_or(
-                "<kuku_conversation_inbox>{{conversation_inbox_content}}</kuku_conversation_inbox>",
-            );
-        parts.push(tmpl.replace("{{conversation_inbox_content}}", skill_body));
+            .unwrap_or("<kuku_skill_input>{{skill_input_content}}</kuku_skill_input>");
+        parts.push(tmpl.replace("{{skill_input_content}}", skill_body));
     }
     if parts.is_empty() {
         None
@@ -752,7 +695,7 @@ fn contains_current_date(assembly: &crate::context::ContextAssembly, runtime_dat
         })
 }
 
-fn legacy_project_policy_has_date(
+fn custom_project_policy_has_date(
     assembly: &crate::context::ContextAssembly,
     catalog: &crate::prompt::PromptCatalog,
     current_date: &str,
@@ -779,15 +722,13 @@ pub(super) fn append_handoff_instruction(
             .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
         let inbox_tmpl = catalog
             .blocks
-            .get("conversation-inbox")
+            .get("skill-input")
             .map(|a| a.text.as_str())
-            .unwrap_or(
-                "<kuku_conversation_inbox>{{conversation_inbox_content}}</kuku_conversation_inbox>",
-            );
+            .unwrap_or("<kuku_skill_input>{{skill_input_content}}</kuku_skill_input>");
         return Some(format!(
             "{}\n{}",
             notices_tmpl.replace("{{runtime_notices_content}}", instruction),
-            inbox_tmpl.replace("{{conversation_inbox_content}}", ""),
+            inbox_tmpl.replace("{{skill_input_content}}", ""),
         ));
     };
 
@@ -829,36 +770,6 @@ fn replace_latest_user_message(
         }
     }
     None
-}
-
-fn replace_current_user_message(
-    history: &mut [CanonicalMessage],
-    raw_prompt: &str,
-    current_body: &str,
-    replacement: CanonicalMessage,
-) -> Option<usize> {
-    if current_body != raw_prompt {
-        if let Some(index) = replace_latest_user_message(history, current_body, replacement.clone())
-        {
-            return Some(index);
-        }
-    }
-    replace_latest_user_message(history, raw_prompt, replacement)
-}
-
-fn append_current_turn_prefix_once(messages: &mut Vec<CanonicalMessage>, prefix: &str) {
-    if messages.iter().any(|message| {
-        message.blocks.iter().any(|block| match block {
-            MessageBlock::Text(text) => text.contains(prefix),
-            MessageBlock::Thinking(_)
-            | MessageBlock::ToolUse(_)
-            | MessageBlock::ToolResult(_)
-            | MessageBlock::ProviderReplay { .. } => false,
-        })
-    }) {
-        return;
-    }
-    messages.push(CanonicalMessage::user_text(prefix.to_string()));
 }
 
 fn insert_current_turn_metadata_block(message: &mut CanonicalMessage, text: String) {

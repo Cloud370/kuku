@@ -35,7 +35,7 @@ pub(crate) fn event_owner_with<'a>(
     super::conversation_event_turn(&event.payload).and_then(turn_owner)
 }
 
-/// Resolve event ownership using explicit Agent addresses and legacy turn ownership.
+/// Resolve event ownership using explicit Agent addresses and current Turn ownership.
 pub fn event_owners(events: &[StoredEvent]) -> HashMap<u64, String> {
     let turn_owners = event_turn_owners(events);
     events

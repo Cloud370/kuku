@@ -3,7 +3,6 @@ use std::path::Path;
 
 use crate::config::DiscoveryConfig;
 use crate::context::revert::filter_rolled_back_events;
-use crate::conversation::binding::BindingSource;
 use crate::event::{EventPayload, StoredEvent};
 use crate::plugin::PluginRegistry;
 
@@ -132,26 +131,6 @@ pub(crate) fn loaded_skill_names(events: &[StoredEvent], conversation: &str) -> 
     loaded.into_iter().collect()
 }
 
-pub(crate) fn binding_sources_for_skills(
-    registry: &SkillRegistry,
-    skill_names: &[String],
-) -> Vec<BindingSource> {
-    skill_names
-        .iter()
-        .filter_map(|skill_name| {
-            let definition = registry.get(skill_name)?;
-            Some(BindingSource {
-                kind: "skill_definition".to_string(),
-                source: definition
-                    .source_path
-                    .clone()
-                    .unwrap_or_else(|| definition.name.clone()),
-                hash: definition.hash.clone(),
-            })
-        })
-        .collect()
-}
-
 fn restore_turn_snapshot_from_filtered(
     events: &[&StoredEvent],
     conversation: &str,
@@ -181,7 +160,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::event::RollbackScope;
     use crate::skill::definition::{SkillDefinition, SkillSource};
 
     fn definition(name: &str) -> SkillDefinition {
@@ -260,60 +238,6 @@ mod tests {
                 conversation: "main".to_string(),
                 registry: skill_registry(&["alpha"]),
                 bootstrap_loaded: vec!["bootstrap-alpha".to_string()],
-            })
-        );
-    }
-
-    #[test]
-    fn ignores_rolled_back_snapshots_when_restoring() {
-        let events = vec![
-            event(
-                1,
-                EventPayload::ContextSkills {
-                    conversation: "main".to_string(),
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    registry: registry(&["keep"]),
-                    bootstrap_loaded: vec!["keep".to_string()],
-                },
-            ),
-            event(
-                2,
-                EventPayload::TurnStarted {
-                    turn: 2,
-                    ts: "t2".to_string(),
-                    conversation: "main".to_string(),
-                },
-            ),
-            event(
-                3,
-                EventPayload::ContextSkills {
-                    conversation: "main".to_string(),
-                    turn: 2,
-                    ts: "t3".to_string(),
-                    registry: registry(&["rollback"]),
-                    bootstrap_loaded: vec!["rollback".to_string()],
-                },
-            ),
-            event(
-                4,
-                EventPayload::ConversationRollback {
-                    ts: "t4".to_string(),
-                    conversation: "main".to_string(),
-                    to_turn: 2,
-                    to_event_id: 3,
-                    scope: RollbackScope::ConversationOnly,
-                },
-            ),
-        ];
-
-        assert_eq!(restore_turn_snapshot(&events, "main", 2), None);
-        assert_eq!(
-            previous_snapshot_before_turn(&events, "main", 3),
-            Some(TurnSkillSnapshot {
-                conversation: "main".to_string(),
-                registry: skill_registry(&["keep"]),
-                bootstrap_loaded: vec!["keep".to_string()],
             })
         );
     }
@@ -619,76 +543,6 @@ mod tests {
                     index: 2,
                     tool: "use_skill".to_string(),
                     args: json!({ "skill_name": "gamma" }),
-                },
-            ),
-        ];
-
-        assert_eq!(
-            loaded_skill_names(&events, "main"),
-            vec!["alpha".to_string()]
-        );
-    }
-
-    #[test]
-    fn loaded_skill_names_ignore_trailing_rollback_admin_events() {
-        let events = vec![
-            event(
-                1,
-                EventPayload::ContextSkills {
-                    conversation: "main".to_string(),
-                    turn: 4,
-                    ts: "t1".to_string(),
-                    registry: registry(&["alpha"]),
-                    bootstrap_loaded: vec![],
-                },
-            ),
-            event(
-                2,
-                EventPayload::ToolCall {
-                    turn: 4,
-                    ts: "t2".to_string(),
-                    conversation: Some("main".to_string()),
-                    tool_call_id: "tool_alpha".to_string(),
-                    request_id: "req_4".to_string(),
-                    index: 0,
-                    tool: "use_skill".to_string(),
-                    args: json!({ "skill_name": "alpha" }),
-                },
-            ),
-            event(
-                3,
-                EventPayload::ToolResult {
-                    turn: 4,
-                    ts: "t3".to_string(),
-                    conversation: Some("main".to_string()),
-                    tool_call_id: "tool_alpha".to_string(),
-                    status: "ok".to_string(),
-                    summary: "loaded skill: alpha".to_string(),
-                    model_content: "alpha".to_string(),
-                    truncated: false,
-                    files_read: Vec::new(),
-                    files_changed: Vec::new(),
-                    commands_run: Vec::new(),
-                    memory_changed: None,
-                    structured: None,
-                },
-            ),
-            event(
-                4,
-                EventPayload::ConversationRollback {
-                    ts: "t4".to_string(),
-                    conversation: "main".to_string(),
-                    to_turn: 2,
-                    to_event_id: 3,
-                    scope: RollbackScope::ConversationOnly,
-                },
-            ),
-            event(
-                5,
-                EventPayload::ConversationRollbackUndone {
-                    ts: "t5".to_string(),
-                    conversation: "main".to_string(),
-                    rollback_event_id: 4,
                 },
             ),
         ];

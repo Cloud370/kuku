@@ -39,13 +39,13 @@ pub(super) const READ_PAGE_SIZE: usize = 64;
 const HEARTBEAT: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct EventsQuery {
     workspace: PathBuf,
     after: Option<u64>,
     before: Option<u64>,
     #[serde(default)]
     reverse: bool,
-    #[serde(alias = "conversation")]
     agent: Option<String>,
     limit: Option<usize>,
 }
@@ -706,7 +706,6 @@ mod tests {
                 turn: id,
                 text: text.into(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             },
         }

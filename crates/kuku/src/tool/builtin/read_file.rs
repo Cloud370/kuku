@@ -574,18 +574,29 @@ mod tests {
         assert_eq!("error", write(&[old_head, tail.clone()]).status);
         assert_eq!("error", write(std::slice::from_ref(&tail)).status);
 
-        let head = page(1, 3);
-        let rewind = StoredEvent {
-            id: 4,
-            payload: crate::event::EventPayload::ConversationRollback {
+        let query = StoredEvent {
+            id: 3,
+            payload: crate::event::EventPayload::MessageUser {
                 ts: "ts".into(),
+                turn: 1,
                 conversation: "main".into(),
-                to_turn: 1,
-                to_event_id: 3,
-                scope: crate::event::RollbackScope::ConversationOnly,
+                text: "Read the start of the file".into(),
+                from: None,
+                job_delivery: false,
             },
         };
-        assert_eq!("error", write(&[tail.clone(), head.clone(), rewind]).status);
+        let head = page(1, 4);
+        let rewind = StoredEvent {
+            id: 5,
+            payload: crate::event::EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.operation",
+                "record": {"operation": "message_rewind", "address": "main", "target_event_id": 3}
+            })),
+        };
+        assert_eq!(
+            "error",
+            write(&[tail.clone(), query, head.clone(), rewind]).status
+        );
         assert_eq!(changed, std::fs::read_to_string(&path).unwrap());
         assert_eq!("ok", write(&[tail, head]).status);
         assert_eq!("replacement\n", std::fs::read_to_string(path).unwrap());

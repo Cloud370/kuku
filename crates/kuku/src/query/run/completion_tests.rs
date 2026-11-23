@@ -24,9 +24,6 @@ async fn async_error_completion_is_counted_exactly_once() {
             job: None,
             label: "failing command".to_string(),
             cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
-            nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
         },
     );
     let mut run = Run {

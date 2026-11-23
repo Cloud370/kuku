@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::time::Instant;
 
 use serde_json::json;
@@ -9,7 +8,7 @@ use crate::context::runtime::{
     AdmittedMessage, CheckpointFileChanges, FrozenSegment, MessageOrigin, RouteSelectors,
 };
 use crate::context::{
-    CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource, MessageBlock, Role,
+    CanonicalMessage, ContextAssembly, ContextInput, EnvironmentSource, MessageBlock,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::prompt::PromptCatalog;
@@ -90,13 +89,6 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         .query
         .agent_instructions
         .clone()
-        .or_else(|| {
-            pending
-                .agent_registry
-                .as_ref()
-                .and_then(|registry| registry.get(pending.conversation.root_contact().as_str()))
-                .map(|definition| definition.instructions.clone())
-        })
         .or_else(|| catalog.agents.get("main").map(|asset| asset.text.clone()))
         .unwrap_or_default();
     let handoff = cursor
@@ -114,7 +106,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         handoff,
     )?;
     let previous = cursor.segment.clone();
-    let snapshot = previous
+    let route_changed = previous
         .as_ref()
         .map(|segment| {
             check_route_snapshot(
@@ -125,25 +117,11 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
                 &route_selectors,
             )
         })
-        .transpose()?;
-    let (legacy_segment, route_changed) = match snapshot {
-        Some(RouteSnapshot::Legacy) => (true, false),
-        Some(RouteSnapshot::Current { route_changed }) => (false, route_changed),
-        None => (false, false),
-    };
-    let legacy_signature_for_comparison = if legacy_segment {
-        Some(legacy_signature(
-            pending, &resolved, &tools, &behavior, handoff,
-        )?)
-    } else {
-        None
-    };
-    let signature_for_comparison = legacy_signature_for_comparison
-        .as_deref()
-        .unwrap_or(&current_signature);
+        .transpose()?
+        .unwrap_or(false);
     let new_segment = previous
         .as_ref()
-        .is_none_or(|segment| segment.signature.as_str() != signature_for_comparison);
+        .is_none_or(|segment| segment.signature != current_signature);
     let handoff_changed = previous
         .as_ref()
         .map_or(cursor.handoff.is_some(), |segment| {
@@ -152,13 +130,28 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
     let workspace_changed = previous
         .as_ref()
         .is_some_and(|segment| segment.workspace != pending.workspace.to_string_lossy());
+    let tool_names_changed = previous.as_ref().is_some_and(|segment| {
+        !segment
+            .tools
+            .iter()
+            .map(|tool| &tool.name)
+            .eq(tools.iter().map(|tool| &tool.name))
+    });
     let mut messages = cursor.history(&pending.conversation);
     let mut segment = match previous.as_ref() {
         Some(segment) => segment.clone(),
         None => initial_segment(pending, &catalog, &tools, &behavior)?,
     };
-    if workspace_changed {
+    if workspace_changed || tool_names_changed {
         segment = initial_segment(pending, &catalog, &tools, &behavior)?;
+        if let Some(summary) = previous.as_ref().and_then(|segment| {
+            segment
+                .handoff_prelude
+                .and_then(|index| segment.prelude.get(index))
+        }) {
+            segment.handoff_prelude = Some(segment.prelude.len());
+            segment.prelude.push(summary.clone());
+        }
     }
     if handoff_changed || route_changed || workspace_changed {
         let (turn, keep) = match cursor
@@ -177,9 +170,6 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         };
         select_turns(&mut messages, turn, keep);
     }
-    if legacy_segment {
-        reject_ambiguous_legacy_replay(pending.conversation.as_str(), &messages)?;
-    }
     if route_changed {
         for admitted in &mut messages {
             admitted.message.blocks.retain(|block| {
@@ -195,7 +185,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         CanonicalMessage::user_text(crate::prompt::render_runtime_date(&catalog, &current_date)?);
     let date_already_admitted = messages.iter().any(|admitted| {
         admitted.origin == MessageOrigin::Runtime && admitted.message == date_message
-    }) || legacy_project_policy_has_date(&segment, &current_date);
+    }) || custom_project_policy_has_date(&segment, &current_date);
     if new_segment {
         replace_behavior(&mut segment, &behavior)?;
         segment.signature = current_signature;
@@ -208,6 +198,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         segment.capabilities = Some(resolved.capabilities.clone());
         segment.route_selectors = Some(route_selectors.clone());
         segment.tools = tools;
+        adapt_new_segment_tools(&resolved, &mut segment.tools);
         if handoff_changed {
             if let Some(EventPayload::Handoff { summary, .. }) =
                 cursor.handoff.as_ref().map(|event| &event.payload)
@@ -247,6 +238,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
             admitted.origin == MessageOrigin::Input
                 && (admitted.turn == pending.turn || admitted.turn == source_turn)
         });
+        let mut source_sender = None;
         let admitted_at = if input_is_present {
             0
         } else {
@@ -255,23 +247,35 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
                 &pending.events_path,
                 source_turn.saturating_sub(1),
                 |event| {
-                    if admitted_at.is_none()
-                        && matches!(&event.payload, EventPayload::MessageUser { turn, conversation, text, .. }
-                            if *turn == source_turn && conversation == pending.conversation.as_str()
-                                && text == &pending.query.prompt)
+                    if let EventPayload::MessageUser {
+                        turn,
+                        conversation,
+                        text,
+                        from,
+                        ..
+                    } = event.payload
                     {
-                        admitted_at = Some(event.id);
+                        if admitted_at.is_none()
+                            && turn == source_turn
+                            && conversation == pending.conversation.as_str()
+                            && text == pending.query.prompt
+                        {
+                            admitted_at = Some(event.id);
+                            source_sender = from;
+                        }
                     }
                     Ok(())
                 },
             )?;
             admitted_at.unwrap_or(cursor.after)
         };
+        let prompt = source_sender
+            .map(|from| crate::context::replay::render_agent_message(&pending.query.prompt, &from));
         resumed_current_input(
             &mut messages,
             pending.turn,
             pending.query.resume_input_turn,
-            &pending.query.prompt,
+            prompt.as_deref().unwrap_or(&pending.query.prompt),
             admitted_at,
         )
     } else {
@@ -380,6 +384,35 @@ pub(super) fn record_prepared(
     Ok(())
 }
 
+// Keep this out of the signature and provider serializer so an admitted segment
+// reuses its original declaration, including when reopened by a newer binary.
+fn adapt_new_segment_tools(
+    resolved: &crate::provider::types::ResolvedProvider,
+    tools: &mut [crate::context::ToolSchema],
+) {
+    use crate::provider::{prepare, types::ProviderKind};
+
+    if resolved.kind != ProviderKind::OpenAiCompatible
+        || !resolved.model.starts_with("google/gemini-")
+        || !prepare::request_url(resolved)
+            .ok()
+            .and_then(|url| url::Url::parse(&url).ok())
+            .is_some_and(|url| prepare::is_official_openrouter(&url))
+    {
+        return;
+    }
+    // OpenRouter's Gemini conversion turns a root oneOf into a required "input"
+    // object. Keep the properties flat; the tool handlers still enforce exactly
+    // one selector before accessing or creating any retained output.
+    for tool in tools {
+        if matches!(tool.name.as_str(), "read_output" | "save_value") {
+            if let Some(schema) = tool.input_schema.as_object_mut() {
+                schema.remove("oneOf");
+            }
+        }
+    }
+}
+
 fn initial_segment(
     pending: &PendingRun,
     catalog: &PromptCatalog,
@@ -404,24 +437,22 @@ fn initial_segment(
         model_tiers: super::provider::usable_model_routes(&pending.config),
         runtime_blocks: None,
         enable_memory: true,
-        agent_name: pending.conversation.as_str().into(),
         agent_instructions: behavior.into(),
         response_contract: pending.query.response_contract.clone(),
     };
     let (mut assembly, slot) = assemble_segment_context(input, catalog)?;
-    if let Some(text) = pending
-        .agent_registry
-        .as_ref()
-        .and_then(|registry| crate::agent::catalog::render_agent_catalog(registry, catalog))
-    {
+    if !pending.conversation.is_main() {
         assembly
             .prelude_messages
-            .push(CanonicalMessage::user_text(text));
+            .push(CanonicalMessage::user_text(format!(
+                "<kuku_agent_identity>\nYour Session Agent address is {}.\n</kuku_agent_identity>",
+                pending.conversation.as_str()
+            )));
     }
     if let Some(text) = pending
         .skill_registry
         .as_ref()
-        .and_then(crate::skill::catalog::render_static_skill_catalog)
+        .and_then(|registry| crate::skill::catalog::render_static_skill_catalog(registry, tools))
     {
         assembly
             .prelude_messages
@@ -493,70 +524,6 @@ fn signature(
     ))
 }
 
-fn legacy_signature(
-    pending: &PendingRun,
-    resolved: &ResolvedProvider,
-    tools: &[crate::context::ToolSchema],
-    behavior: &str,
-    handoff: u64,
-) -> Result<String> {
-    let serialized = legacy_signature_bytes((
-        resolved.kind.as_str(),
-        &resolved.connection_name,
-        &resolved.base_url,
-        &resolved.model,
-        &resolved.settings,
-        resolved.max_context_tokens,
-        resolved.max_output_tokens,
-        pending.query.temperature,
-        &pending.workspace,
-        tools,
-        behavior,
-        handoff,
-    ))?;
-    Ok(format!("{:x}", Sha256::digest(serialized)))
-}
-
-type LegacySignatureParts<'a> = (
-    &'a str,
-    &'a str,
-    &'a str,
-    &'a str,
-    &'a crate::provider::types::ProviderSettings,
-    u32,
-    Option<u32>,
-    Option<f32>,
-    &'a PathBuf,
-    &'a [crate::context::ToolSchema],
-    &'a str,
-    u64,
-);
-
-fn legacy_signature_bytes(parts: LegacySignatureParts<'_>) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec(&parts)?)
-}
-
-fn reject_ambiguous_legacy_replay(agent: &str, messages: &[AdmittedMessage]) -> Result<()> {
-    if messages.iter().any(|admitted| {
-        admitted.message.role == Role::Assistant
-            && admitted
-                .message
-                .blocks
-                .iter()
-                .any(|block| matches!(block, MessageBlock::Thinking(_)))
-            && !admitted
-                .message
-                .blocks
-                .iter()
-                .any(|block| matches!(block, MessageBlock::ProviderReplay { .. }))
-    }) {
-        return Err(Error::MissingProviderConfig(format!(
-            "agent '{agent}' has legacy assistant thinking without a durable provider replay decision; refusing ambiguous continuation under the active provider profile. Start a new Session with fresh context."
-        )));
-    }
-    Ok(())
-}
-
 fn replace_behavior(segment: &mut FrozenSegment, behavior: &str) -> Result<()> {
     if segment.behavior == behavior {
         return Ok(());
@@ -591,19 +558,13 @@ fn replace_behavior(segment: &mut FrozenSegment, behavior: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
-enum RouteSnapshot {
-    Legacy,
-    Current { route_changed: bool },
-}
-
 fn check_route_snapshot(
     agent: &str,
     segment: &FrozenSegment,
     configured: u64,
     resolved: &ResolvedProvider,
     selectors: &RouteSelectors,
-) -> Result<RouteSnapshot> {
+) -> Result<bool> {
     let connection_changed = segment.connection != resolved.connection_name;
     let protocol_changed = segment.protocol != resolved.kind.as_str();
     let model_changed = segment.model != resolved.model;
@@ -614,18 +575,10 @@ fn check_route_snapshot(
         segment.capabilities.as_ref(),
         segment.route_selectors.as_ref(),
     ) {
-        (None, None) => {
-            if effective_route_changed {
-                return Err(Error::MissingProviderConfig(format!(
-                    "agent '{agent}' has a legacy context segment whose recorded effective connection, protocol, model, or endpoint differs from the active route; restore the recorded route or start a new Session"
-                )));
-            }
-            return Ok(RouteSnapshot::Legacy);
-        }
         (Some(capabilities), Some(recorded_selectors)) => (capabilities, recorded_selectors),
         _ => {
             return Err(Error::MissingProviderConfig(format!(
-                "agent '{agent}' has an inconsistent partial provider route snapshot; restore the recorded configuration or start a new Session"
+                "agent '{agent}' has no complete provider route snapshot; start a new Session"
             )));
         }
     };
@@ -638,7 +591,7 @@ fn check_route_snapshot(
             "agent '{agent}' has a frozen provider route or capabilities that differ from the active configuration; restore the recorded route/profile, explicitly configure a different connection, model, or tier with configure_agent, or start a new Session"
         )));
     }
-    Ok(RouteSnapshot::Current { route_changed })
+    Ok(route_changed)
 }
 
 fn append_dynamic(
@@ -653,18 +606,6 @@ fn append_dynamic(
         .rev()
         .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
         .map_or(0, |message| message.admitted_at);
-    for admitted in messages
-        .iter_mut()
-        .skip(frozen_head)
-        .filter(|admitted| admitted.turn == pending.turn && admitted.origin == MessageOrigin::Input)
-    {
-        if let Some(prefix) = &pending.query.current_turn_prefix {
-            admitted
-                .message
-                .blocks
-                .insert(0, MessageBlock::Text(prefix.clone()));
-        }
-    }
     if let Some(date_message) = date_message {
         insert_runtime_date(
             messages,
@@ -749,7 +690,7 @@ fn resumed_current_input(
     Some(messages.len() - 1)
 }
 
-fn legacy_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
+fn custom_project_policy_has_date(segment: &FrozenSegment, current_date: &str) -> bool {
     segment.catalog.blocks.get("project-policy").is_some_and(|template| {
         segment.prelude.iter().any(|message| {
             message.blocks.iter().any(|block| {
@@ -816,6 +757,38 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn new_openrouter_gemini_segments_keep_retained_output_selectors_flat() {
+        let (mut frozen, mut route, _) = snapshot_fixture();
+        let registry = super::super::runtime_tools::definitions();
+        frozen.tools = crate::tool::to_tool_schemas(&registry);
+        let frozen_bytes = serde_json::to_vec(&frozen.tools).unwrap();
+        let original_prefix = segment_prefix_hash(&frozen).unwrap();
+
+        route.model = "google/gemini-4-neon".into();
+        let mut declarations = frozen.tools.clone();
+        adapt_new_segment_tools(&route, &mut declarations);
+        assert_eq!(
+            frozen.tools, declarations,
+            "other gateways keep their schemas"
+        );
+
+        route.base_url = "https://openrouter.ai/api/v1".into();
+        adapt_new_segment_tools(&route, &mut declarations);
+        for (before, after) in frozen.tools.iter().zip(&declarations) {
+            assert_eq!(before.name, after.name);
+            if matches!(before.name.as_str(), "read_output" | "save_value") {
+                let mut expected = before.input_schema.clone();
+                assert!(expected.as_object_mut().unwrap().remove("oneOf").is_some());
+                assert_eq!(expected, after.input_schema);
+            } else {
+                assert_eq!(before, after);
+            }
+        }
+        assert_eq!(frozen_bytes, serde_json::to_vec(&frozen.tools).unwrap());
+        assert_eq!(original_prefix, segment_prefix_hash(&frozen).unwrap());
+    }
+
+    #[test]
     fn capability_drift_requires_a_changed_route_selector() {
         let (segment, mut resolved, selectors) = snapshot_fixture();
         resolved.capabilities.profile = ProviderProfile::Anthropic;
@@ -836,19 +809,14 @@ mod snapshot_tests {
             query_model: Some("test-model".into()),
             query_tier: Some("balanced".into()),
         };
-        assert!(matches!(
-            check_route_snapshot(
-                "main",
-                &segment,
-                segment.configuration + 1,
-                &resolved,
-                &selectors,
-            )
-            .unwrap(),
-            RouteSnapshot::Current {
-                route_changed: true
-            }
-        ));
+        assert!(check_route_snapshot(
+            "main",
+            &segment,
+            segment.configuration + 1,
+            &resolved,
+            &selectors,
+        )
+        .unwrap());
     }
 
     #[test]
@@ -862,55 +830,13 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn legacy_segment_matches_only_the_recorded_effective_route() {
-        let (mut segment, mut resolved, selectors) = snapshot_fixture();
+    fn provider_route_snapshot_requires_capabilities_and_selectors() {
+        let (mut segment, route, selectors) = snapshot_fixture();
         segment.capabilities = None;
         segment.route_selectors = None;
-        assert!(matches!(
-            check_route_snapshot("main", &segment, 0, &resolved, &selectors).unwrap(),
-            RouteSnapshot::Legacy
-        ));
-
-        resolved.base_url = "https://changed.example".into();
-        let error = check_route_snapshot("main", &segment, 0, &resolved, &selectors)
+        let error = check_route_snapshot("main", &segment, 0, &route, &selectors)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("restore the recorded route"));
-    }
-
-    #[test]
-    fn partial_legacy_route_snapshot_is_rejected() {
-        let (mut segment, resolved, selectors) = snapshot_fixture();
-        segment.capabilities = None;
-        let error = check_route_snapshot("main", &segment, 0, &resolved, &selectors)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("inconsistent partial provider route snapshot"));
-    }
-
-    #[test]
-    fn legacy_signature_uses_the_exact_pre_snapshot_tuple() {
-        let settings = crate::provider::types::ProviderSettings::default();
-        let workspace = std::path::PathBuf::from("workspace");
-        let tools = Vec::<crate::context::ToolSchema>::new();
-        let bytes = legacy_signature_bytes((
-            "anthropic",
-            "conn",
-            "https://endpoint",
-            "model",
-            &settings,
-            100_000,
-            Some(2048),
-            Some(0.5),
-            &workspace,
-            &tools,
-            "behavior",
-            7,
-        ))
-        .unwrap();
-        assert_eq!(
-            br#"["anthropic","conn","https://endpoint","model",{"requested_reasoning_effort":null,"reasoning_effort":null,"requested_service_tier":null,"service_tier":null},100000,2048,0.5,"workspace",[],"behavior",7]"#,
-            bytes.as_slice()
-        );
+        assert!(error.contains("no complete provider route snapshot"));
     }
 }

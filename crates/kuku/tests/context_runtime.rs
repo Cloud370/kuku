@@ -270,10 +270,11 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
 }
 
 #[tokio::test]
-async fn main_and_explore_share_the_pre_identity_prefix_with_distinct_tools() {
+async fn provider_context_reflects_each_agents_tools_and_keeps_main_frozen() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("AGENTS.md"), "PROJECT_POLICY_MARKER").unwrap();
     let (original, path) = options(&server, workspace.path(), data.path());
     let model = server
         .mock_async(|when, then| {
@@ -285,50 +286,230 @@ async fn main_and_explore_share_the_pre_identity_prefix_with_distinct_tools() {
         })
         .await;
     let session = Session::open(original).await.unwrap();
-    for (address, preset) in [("main", None), ("explore", Some("explore"))] {
+    for (address, tools) in [
+        ("main", None),
+        (
+            "reader",
+            Some(vec!["read_output".into(), "list_values".into()]),
+        ),
+        ("tool-free", Some(vec![])),
+    ] {
         session
             .create_agent(
                 &format!("create-{address}"),
                 address,
                 AgentConfig {
-                    preset: preset.map(str::to_string),
-                    tier: Some("balanced".into()),
-                    no_skills: true,
+                    tools,
+                    instructions: Some(format!("ROLE_{address}")),
                     ..Default::default()
                 },
             )
             .unwrap();
-        session
-            .send(Input::new(
-                format!("input-{address}"),
-                address,
-                "inspect files",
-            ))
-            .unwrap();
+        let mut input = Input::new(format!("input-{address}"), address, "reply to this task");
+        if address != "main" {
+            input.source = kuku::InputSource::Agent("main".into());
+        }
+        session.send(input).unwrap();
         idle(&session, address).await;
     }
-    session.close().await.unwrap();
-    model.assert_hits_async(2).await;
-    let bodies = common::take_http_requests(&path);
-    assert_eq!(2, bodies.len());
-    let main_messages = bodies[0]["messages"].as_array().unwrap();
-    let explore_messages = bodies[1]["messages"].as_array().unwrap();
-    assert_eq!(&main_messages[..2], &explore_messages[..2]);
-    assert_ne!(bodies[0]["messages"][2], bodies[1]["messages"][2]);
-    let platform = format!(
-        "Platform: {} ({}",
-        std::env::consts::OS,
-        std::env::consts::ARCH
+    let mut reader = session.agent("reader").unwrap().config;
+    reader.tools = Some(vec![]);
+    session
+        .configure_agent("restrict-reader", "reader", reader)
+        .unwrap();
+    session
+        .send(Input::new("reader-restricted", "reader", "reply directly"))
+        .unwrap();
+    idle(&session, "reader").await;
+    session
+        .send(Input::new("input-main-again", "main", "follow up"))
+        .unwrap();
+    idle(&session, "main").await;
+    let prepared = facts(
+        &session.events(0, 256).unwrap(),
+        "runtime.step_prepared",
+        "main",
     );
-    for body in &bodies {
-        assert!(body["messages"].to_string().contains(&platform));
+    session.close().await.unwrap();
+    model.assert_hits_async(5).await;
+    let bodies = common::take_http_requests(&path);
+    let main = bodies[0]["messages"].to_string();
+    assert!(main.contains("<kuku_models>"));
+    assert!(main.contains("<kuku_delegation>"));
+    assert!(main.contains("Use list_skills"));
+    assert!(main.contains("Use search_skills"));
+    assert!(request_tool_names(&bodies[0]).contains(&"create_agent".into()));
+    for (body, address) in bodies[1..3].iter().zip(["reader", "tool-free"]) {
+        let messages = body["messages"].to_string();
+        assert!(messages.contains("PROJECT_POLICY_MARKER"));
+        assert!(messages.contains(&format!("ROLE_{address}")));
+        assert!(messages.contains(&format!("Your Session Agent address is {address}.")));
+        assert!(body["messages"].as_array().unwrap().iter().any(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with(r#"<kuku_agent_message from="main">"#))
+        }));
+        for marker in [
+            "<kuku_models>",
+            "<kuku_skills>",
+            "<kuku_delegation>",
+            "<kuku_memory_guidance>",
+            "run_command",
+            "edit_file",
+        ] {
+            assert!(!messages.contains(marker), "{address} saw {marker}");
+        }
     }
-    let main_tools = request_tool_names(&bodies[0]);
-    let explore_tools = request_tool_names(&bodies[1]);
-    assert!(main_tools.iter().any(|name| name == "read_file"));
-    assert!(explore_tools.iter().any(|name| name == "read_file"));
-    assert!(main_tools.iter().any(|name| name == "edit_file"));
-    assert!(!explore_tools.iter().any(|name| name == "edit_file"));
+    assert_eq!(
+        request_tool_names(&bodies[1]),
+        ["read_output", "list_values"]
+    );
+    assert!(bodies[2]["tools"].is_null() || request_tool_names(&bodies[2]).is_empty());
+    assert!(bodies[2]["messages"]
+        .to_string()
+        .contains("put the content in your reply"));
+    assert!(!bodies[2]["messages"]
+        .to_string()
+        .contains("<kuku_tool_guidance>"));
+    assert!(bodies[3]["tools"].is_null() || request_tool_names(&bodies[3]).is_empty());
+    assert!(!bodies[3]["messages"]
+        .to_string()
+        .contains("<kuku_tool_guidance>"));
+    assert_eq!(
+        serde_json::to_vec(&bodies[0]["tools"]).unwrap(),
+        serde_json::to_vec(&bodies[4]["tools"]).unwrap()
+    );
+    let before = bodies[0]["messages"].as_array().unwrap();
+    let after = bodies[4]["messages"].as_array().unwrap();
+    assert_eq!(
+        serde_json::to_vec(before).unwrap(),
+        serde_json::to_vec(&after[..before.len()]).unwrap()
+    );
+    assert_eq!(prepared[0]["prefix_hash"], prepared[1]["prefix_hash"]);
+}
+
+#[tokio::test]
+async fn agent_senders_remain_attached_to_each_input_in_one_turn_and_after_reopen() {
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut original, path) = options(&server, workspace.path(), data.path());
+    for (before, after, id) in [
+        ("", "peer step one", "first"),
+        ("peer step one", "peer step two", "second"),
+    ] {
+        let path = path.clone();
+        let marker = if before.is_empty() {
+            "begin worker turn"
+        } else {
+            before
+        };
+        server
+            .mock_async(move |when, then| {
+                when.method(POST)
+                    .path(&path)
+                    .matches(common::capture_http_request)
+                    .body_contains(marker)
+                    .matches(if after == "peer step one" {
+                        |request| tool_count(request) == 0
+                    } else {
+                        |request| tool_count(request) == 1
+                    });
+                then.status(200).delay(Duration::from_millis(150)).body(response(json!({
+                "tool_calls":[{
+                    "id":id, "type":"function", "function":{"name":"list_values","arguments":"{}"}
+                }]
+            }), "tool_calls"));
+            })
+            .await;
+    }
+    let last = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(&path)
+                .matches(common::capture_http_request)
+                .body_contains("peer step two");
+            then.status(200)
+                .body(response(json!({"content":"done"}), "stop"));
+        })
+        .await;
+    let session = Session::open(original.clone()).await.unwrap();
+    for address in ["main", "helper", "worker"] {
+        session
+            .create_agent(
+                address,
+                address,
+                AgentConfig {
+                    tools: Some(vec!["list_values".into()]),
+                    ..agent()
+                },
+            )
+            .unwrap();
+    }
+    session
+        .send(Input::new("start", "worker", "begin worker turn"))
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !common::take_http_requests(&path).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the first provider request started");
+    for (sender, text) in [("main", "peer step one"), ("helper", "peer step two")] {
+        let mut input = Input::new(format!("delivery-{sender}"), "worker", text);
+        input.source = kuku::InputSource::Agent(sender.into());
+        input.activation = kuku::Activation::Enqueue;
+        session.send(input).unwrap();
+    }
+    idle(&session, "worker").await;
+    last.assert_hits_async(1).await;
+    let messages = session
+        .events(0, 256)
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::MessageUser {
+                turn,
+                from: Some(sender),
+                text,
+                ..
+            } => Some((turn, sender, text)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let turn = messages[0].0;
+    assert_eq!(
+        messages,
+        [
+            (turn, "main".into(), "peer step one".into()),
+            (turn, "helper".into(), "peer step two".into()),
+        ]
+    );
+    let before = common::take_http_requests(&path).pop().unwrap();
+    original.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+    let reopened = Session::open(original).await.unwrap();
+    reopened
+        .send(Input::new("after", "worker", "continue after reopen"))
+        .unwrap();
+    idle(&reopened, "worker").await;
+    let after = common::take_http_requests(&path).pop().unwrap();
+    let prefix = before["messages"].as_array().unwrap();
+    let history = after["messages"].as_array().unwrap();
+    assert_eq!(
+        serde_json::to_vec(prefix).unwrap(),
+        serde_json::to_vec(&history[..prefix.len()]).unwrap()
+    );
+    for (sender, text) in [("main", "peer step one"), ("helper", "peer step two")] {
+        let expected =
+            format!("<kuku_agent_message from=\"{sender}\">\n{text}\n</kuku_agent_message>");
+        assert!(history.iter().any(|message| message["content"] == expected));
+    }
+    reopened.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -508,7 +689,6 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
                 turn,
                 text: "retry-input".into(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             })
             .unwrap()

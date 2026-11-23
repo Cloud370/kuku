@@ -14,7 +14,6 @@ use crate::context::provenance::{
 
 pub use super::model_stop_reason::ModelStopReason;
 pub use super::stored_event::StoredEvent;
-pub use super::turn::RollbackScope;
 
 /// A single message in a frozen prelude snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,19 +142,9 @@ pub enum EventPayload {
         created_at: String,
         kuku_version: String,
     },
-    ConversationOpened {
-        ts: String,
-        conversation: String,
-    },
-    ConversationBound {
-        ts: String,
-        conversation: String,
-        binding_id: String,
-    },
     PromptSnapshot {
         ts: String,
         conversation: String,
-        binding_id: String,
         snapshot_id: String,
         turn: u64,
         messages: Vec<ContextMessage>,
@@ -179,7 +168,6 @@ pub enum EventPayload {
         turn: u64,
         text: String,
         from: Option<String>,
-        via_tool_call_id: Option<String>,
         job_delivery: bool,
     },
     MessageAssistant {
@@ -213,18 +201,6 @@ pub enum EventPayload {
         reason: String,
         partial_reply: Option<PartialReply>,
     },
-    ConversationRollback {
-        ts: String,
-        conversation: String,
-        to_turn: u64,
-        to_event_id: u64,
-        scope: RollbackScope,
-    },
-    ConversationRollbackUndone {
-        ts: String,
-        conversation: String,
-        rollback_event_id: u64,
-    },
     Unknown(Value),
 }
 
@@ -250,8 +226,6 @@ impl EventPayload {
             Self::ToolResult { .. } => "tool.result",
             Self::Handoff { .. } => "handoff",
             Self::SessionCreated { .. } => "session.created",
-            Self::ConversationOpened { .. } => "conversation.opened",
-            Self::ConversationBound { .. } => "conversation.bound",
             Self::PromptSnapshot { .. } => "prompt.snapshot",
             Self::MessageUser { .. } => "message.user",
             Self::MessageAssistant { .. } => "message.assistant",
@@ -259,8 +233,6 @@ impl EventPayload {
             Self::TurnCompleted { .. } => "turn.completed",
             Self::TurnCancelled { .. } => "turn.cancelled",
             Self::TurnInterrupted { .. } => "turn.interrupted",
-            Self::ConversationRollback { .. } => "conversation.rollback",
-            Self::ConversationRollbackUndone { .. } => "conversation.rollback.undone",
             Self::Unknown(value) => value
                 .get("kind")
                 .and_then(Value::as_str)
@@ -397,19 +369,9 @@ impl EventPayload {
                 created_at: string_field(object, "created_at")?,
                 kuku_version: string_field(object, "kuku_version")?,
             }),
-            "conversation.opened" => Some(Self::ConversationOpened {
-                ts: string_field(object, "ts")?,
-                conversation: string_field(object, "conversation")?,
-            }),
-            "conversation.bound" => Some(Self::ConversationBound {
-                ts: string_field(object, "ts")?,
-                conversation: string_field(object, "conversation")?,
-                binding_id: string_field(object, "binding_id")?,
-            }),
             "prompt.snapshot" => Some(Self::PromptSnapshot {
                 ts: string_field(object, "ts")?,
                 conversation: string_field(object, "conversation")?,
-                binding_id: string_field(object, "binding_id")?,
                 snapshot_id: string_field(object, "snapshot_id")?,
                 turn: u64_field(object, "turn")?,
                 messages: serde_json::from_value(object.get("messages")?.clone()).ok()?,
@@ -450,7 +412,6 @@ impl EventPayload {
                 turn: u64_field(object, "turn")?,
                 text: string_field(object, "text")?,
                 from: optional_string_field(object, "from"),
-                via_tool_call_id: optional_string_field(object, "via_tool_call_id"),
                 job_delivery: object
                     .get("job_delivery")
                     .and_then(Value::as_bool)
@@ -488,18 +449,6 @@ impl EventPayload {
                 partial_reply: object
                     .get("partial_reply")
                     .and_then(|value| serde_json::from_value(value.clone()).ok()),
-            }),
-            "conversation.rollback" => Some(Self::ConversationRollback {
-                ts: string_field(object, "ts")?,
-                conversation: string_field(object, "conversation")?,
-                to_turn: u64_field(object, "to_turn")?,
-                to_event_id: u64_field(object, "to_event_id")?,
-                scope: serde_json::from_value(object.get("scope")?.clone()).ok()?,
-            }),
-            "conversation.rollback.undone" => Some(Self::ConversationRollbackUndone {
-                ts: string_field(object, "ts")?,
-                conversation: string_field(object, "conversation")?,
-                rollback_event_id: u64_field(object, "rollback_event_id")?,
             }),
             _ => Some(Self::Unknown(value)),
         }
@@ -572,7 +521,6 @@ impl EventPayload {
                 text,
                 conversation,
                 from,
-                via_tool_call_id,
                 job_delivery,
             } => {
                 let mut map = Map::new();
@@ -584,12 +532,6 @@ impl EventPayload {
                 map.insert("conversation".into(), Value::from(conversation.clone()));
                 if let Some(from) = from {
                     map.insert("from".into(), Value::from(from.clone()));
-                }
-                if let Some(via_tool_call_id) = via_tool_call_id {
-                    map.insert(
-                        "via_tool_call_id".into(),
-                        Value::from(via_tool_call_id.clone()),
-                    );
                 }
                 if *job_delivery {
                     map.insert("job_delivery".into(), Value::Bool(true));
@@ -848,27 +790,9 @@ impl EventPayload {
                 map.insert("conversation".into(), Value::from(conversation.clone()));
                 Ok(Value::Object(map))
             }
-            Self::ConversationOpened { ts, conversation } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "conversation.opened",
-                "conversation": conversation,
-            })),
-            Self::ConversationBound {
-                ts,
-                conversation,
-                binding_id,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "conversation.bound",
-                "conversation": conversation,
-                "binding_id": binding_id,
-            })),
             Self::PromptSnapshot {
                 ts,
                 conversation,
-                binding_id,
                 snapshot_id,
                 turn,
                 messages,
@@ -890,7 +814,6 @@ impl EventPayload {
                 "ts": ts,
                 "kind": "prompt.snapshot",
                 "conversation": conversation,
-                "binding_id": binding_id,
                 "snapshot_id": snapshot_id,
                 "turn": turn,
                 "messages": messages,
@@ -957,32 +880,6 @@ impl EventPayload {
                 reason,
                 partial_reply.as_ref(),
             ),
-            Self::ConversationRollback {
-                ts,
-                conversation,
-                to_turn,
-                to_event_id,
-                scope,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "conversation.rollback",
-                "conversation": conversation,
-                "to_turn": to_turn,
-                "to_event_id": to_event_id,
-                "scope": scope,
-            })),
-            Self::ConversationRollbackUndone {
-                ts,
-                conversation,
-                rollback_event_id,
-            } => Ok(serde_json::json!({
-                "id": id,
-                "ts": ts,
-                "kind": "conversation.rollback.undone",
-                "conversation": conversation,
-                "rollback_event_id": rollback_event_id,
-            })),
         }
     }
 }

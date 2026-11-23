@@ -53,10 +53,10 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
     } else if pending.query.runtime.is_some() {
         tool::registry::session_registry(!pending.query.disable_skills)
     } else {
-        tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
+        tool::builtin_registry(!pending.query.disable_skills)
     };
     if pending.query.runtime.is_some() {
-        registry.retain(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"));
+        registry.retain(|tool| tool.name != "fetch_web");
         if pending.query.tool_registry_override.is_none() {
             registry.extend(
                 crate::query::runtime_tools::definitions()

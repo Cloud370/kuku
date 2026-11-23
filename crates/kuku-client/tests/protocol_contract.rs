@@ -39,7 +39,7 @@ async fn ledger_events_decode_known_and_unknown_payloads_from_the_server_envelop
         Json(json!({"events":[
             {"id":9,"payload":EventPayload::MessageUser {
                 ts:"2026-11-20T00:00:00Z".into(),conversation:"main".into(),turn:7,
-                text:"retained input".into(),from:None,via_tool_call_id:None,
+                text:"retained input".into(),from:None,
                 job_delivery: false,
             }},
             {"id":10,"payload":EventPayload::Unknown(json!({
@@ -191,17 +191,6 @@ fn shared_protocol_fixture_decodes_history_receipts_observation_and_errors() {
 }
 
 #[test]
-fn legacy_history_page_defaults_to_empty_rewind_groups() {
-    let history: HistoryPage = serde_json::from_value(json!({
-        "entries": [],
-        "next_before": null
-    }))
-    .unwrap();
-
-    assert!(history.rewind_groups.is_empty());
-}
-
-#[test]
 fn retry_history_and_snapshot_decode_phases_attempts_and_unknown_values() {
     let history: HistoryPage = serde_json::from_value(json!({
         "entries":[{
@@ -212,7 +201,7 @@ fn retry_history_and_snapshot_decode_phases_attempts_and_unknown_values() {
                 "request_id":"req-1","delay_ms":5000,"ts":"2025-01-01T00:00:00Z",
                 "will_retry":true,"status":429
             }
-        }],"next_before":null
+        }],"rewind_groups":[],"next_before":null
     }))
     .unwrap();
     assert_eq!(HistoryKind::Retry, history.entries[0].kind);
@@ -225,13 +214,6 @@ fn retry_history_and_snapshot_decode_phases_attempts_and_unknown_values() {
     assert_eq!(Some(RetryFailureKind::RateLimited), retry.failed_kind);
     assert_eq!(Some("req-1"), retry.request_id.as_deref());
     assert_eq!(Some(429), retry.status);
-    let legacy: kuku_client::RetryMetadata = serde_json::from_value(json!({
-        "source":"runtime.model_retry","attempt":2
-    }))
-    .unwrap();
-    assert_eq!(RetryPhase::Started, legacy.phase);
-    assert!(legacy.will_retry.is_none());
-
     let stopped: AgentProgress = serde_json::from_value(json!({
         "phase":"retry_stopped",
         "retry":{

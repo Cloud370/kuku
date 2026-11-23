@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::{mpsc, watch, Notify};
@@ -109,7 +108,6 @@ pub(super) fn spawn_tool(
         workspace_access,
         label,
         cancel,
-        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
         job: None,
     }
 }

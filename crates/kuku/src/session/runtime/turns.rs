@@ -148,6 +148,11 @@ impl TurnIndex {
         self.summaries.get(&event_id).cloned()
     }
 
+    pub(super) fn settlement(&self, address: &str, turn: u64) -> Option<(u64, TurnSummary)> {
+        let end = self.indexed(address, turn)?.1.end.as_ref()?;
+        Some((end.event_id, self.summaries.get(&end.event_id)?.1.clone()))
+    }
+
     /// Return whether the Turn ended with a committed explicit stop.
     pub fn explicitly_stopped(&self, address: &str, turn: u64) -> bool {
         self.indexed(address, turn)

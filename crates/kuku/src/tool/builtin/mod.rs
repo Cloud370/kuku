@@ -32,34 +32,6 @@ pub(crate) use stat_file::stat_file;
 pub(crate) use view_image::{read_image, view_image_definition};
 pub(crate) use write_file::{write_file, write_file_for_executor};
 
-pub(crate) fn agent_definition() -> crate::tool::ToolDefinition {
-    crate::tool::ToolDefinition {
-        name: "agent".to_string(),
-        description: "Delegate a task to a named agent contact in a separate conversation. Use this for work that benefits from isolated context: explore search, code review, plan exploration.".to_string(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "description": "Conversation address to send to, such as review or review/api"
-                },
-                "message": {
-                    "type": "string",
-                    "description": "The task to delegate, with enough context for the agent to work independently"
-                },
-                "tier": {
-                    "type": "string",
-                    "description": "Optional model tier to use when first binding this conversation"
-                }
-            },
-            "required": ["to", "message"]
-        }),
-        read_only: false,
-        max_result_chars: 20_000,
-        risk: "read".to_string(),
-    }
-}
-
 pub(crate) fn use_skill_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {
         name: "use_skill".to_string(),

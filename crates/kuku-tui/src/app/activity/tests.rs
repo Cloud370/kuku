@@ -134,7 +134,15 @@ fn only_observed_reasoning_sets_thinking_and_visible_text_sets_streaming() {
         .lines
         .iter()
         .any(|line| line.to_string().contains("legacy reasoning marker")));
-    committed(&mut app, 10, "runtime.model_retry", json!({}));
+    committed(
+        &mut app,
+        10,
+        "runtime.model_retry",
+        json!({"entry":{
+            "id":10, "agent":"main", "type":"retry",
+            "retry":{"source":"runtime.model_retry","phase":"started","will_retry":true},
+        }}),
+    );
     assert_eq!(Activity::RetryingModel, app.pane().activity());
 }
 

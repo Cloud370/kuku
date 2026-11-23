@@ -417,6 +417,10 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && context.contains("service provider default, service options flex, priority")
                 && context.contains("only when the user explicitly asks for that tier")
                 && context.contains("collect its reply with list_agents")
+                && create["function"]["description"].as_str().is_some_and(|text| {
+                    text.contains("idle Agent") && text.contains("successful creation receipt")
+                })
+                && context.contains("Handle a creation error before dispatch")
         },
         response(
             json!({"tool_calls":[
@@ -429,7 +433,8 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                     "address":"blocked-reviewer","no_agents":true,"tools":["read_file","send_message"]
                 })),
                 tool("denied", "create_agent", json!({"address":"unauthorized-reviewer","tier":""})),
-                tool("invalid-address", "create_agent", json!({"address":"review/team","tier":""}))
+                tool("invalid-address", "create_agent", json!({"address":"review/team","tier":""})),
+                tool("unknown-preset", "create_agent", json!({"address":"no-preset","preset":"unknown"}))
             ]}),
             "tool_calls",
         ),
@@ -447,21 +452,51 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                     .and_then(|message| message["content"].as_str())
                     .unwrap_or_default()
             };
-            tool_count(request) == 5
+            let created = serde_json::from_str::<Value>(content("default")).unwrap_or_default();
+            tool_count(request) == 6
+                && created["initial_status"] == "idle"
+                && created["workspace"].is_string()
+                && created["effective_tools"] == json!(["read_file", "send_message"])
+                && content("unknown-preset").contains("Available examples:")
+                && content("unknown-preset").contains("review")
                 && content("wrong-route").contains("unknown field `connection`")
                 && content("conflicting-tools").contains("unknown field `no_agents`")
                 && content("invalid-address").contains("must be flat")
                 && content("denied").contains("not dispatched")
         },
         response(
-            json!({"tool_calls":[tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced","reasoning_effort":"high","service_tier":"flex"}))]}),
+            json!({"tool_calls":[
+                tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced","reasoning_effort":"high","service_tier":"flex"})),
+                tool("review-preset", "create_agent", json!({"address":"preset-reviewer","preset":"review"}))
+            ]}),
             "tool_calls",
         ),
     )
     .await;
     let last = fixture(
         &server,
-        |request| tool_count(request) == 6,
+        |request| {
+            let body = request_body(request);
+            let parsed = |id| {
+                body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["tool_call_id"] == id)
+                    .and_then(|item| serde_json::from_str::<Value>(item["content"].as_str()?).ok())
+                    .unwrap_or_default()
+            };
+            let defaults = parsed("correct-route");
+            let preset = parsed("review-preset");
+            tool_count(request) == 8
+                && defaults["effective_tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.contains(&json!("create_agent")))
+                && preset["model_selection"]["preset"] == "review"
+                && preset["effective_tools"].as_array().is_some_and(|tools| {
+                    tools.contains(&json!("read_file")) && !tools.contains(&json!("send_message"))
+                })
+        },
         response(json!({"content":"Reviewers configured."}), "stop"),
     )
     .await;
@@ -521,6 +556,8 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
         assert_eq!("openai", selected.connection);
     }
     let reviewer = session.agent("reviewer").unwrap();
+    assert_eq!(AgentStatus::Idle, reviewer.status);
+    assert_eq!(0, reviewer.pending_inputs);
     assert_eq!(
         None,
         session

@@ -1,7 +1,6 @@
 mod deferred;
 
 pub(crate) use deferred::AwaitingAction;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -115,7 +114,6 @@ pub(super) fn spawn(
         label: queued.display_summary.clone(),
         cancel,
         job: Some(job),
-        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     })
 }
 
@@ -192,7 +190,7 @@ impl WorkspaceHost {
         execution: Arc<ScriptExecution>,
     ) -> Result<ToolResultEnvelope> {
         if self.has_step_input()? {
-            execution.stop();
+            execution.stop_for_new_input();
             return Ok(ToolResultEnvelope::cancelled(
                 "new input arrived at the workspace action boundary",
             ));
@@ -286,7 +284,7 @@ impl WorkspaceHost {
             &action,
         )?;
         if self.has_step_input()? {
-            execution.stop();
+            execution.stop_for_new_input();
         }
         if execution.is_cancelled() {
             return Ok(ToolResultEnvelope::cancelled(

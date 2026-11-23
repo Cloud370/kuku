@@ -140,12 +140,6 @@ fn tool_kind_to_wire(kind: &crate::query::ToolKind) -> serde_json::Value {
     use crate::query::ToolKind;
     match kind {
         ToolKind::Simple => json!("simple"),
-        ToolKind::Agent {
-            conversation,
-            binding_id,
-        } => {
-            json!({"agent": {"conversation": conversation.as_str(), "binding_id": binding_id}})
-        }
         ToolKind::Command { pid } => json!({"command": {"pid": pid}}),
     }
 }
@@ -153,46 +147,8 @@ fn tool_kind_to_wire(kind: &crate::query::ToolKind) -> serde_json::Value {
 fn tool_event_to_wire(event: &crate::query::ToolEvent) -> serde_json::Value {
     use crate::query::ToolEvent;
     match event {
-        ToolEvent::TextDelta { text } => json!({"text": text}),
-        ToolEvent::ThinkingDelta { text } => json!({"thinking": text}),
-        ToolEvent::ToolStart {
-            id,
-            tool,
-            summary,
-            kind,
-        } => {
-            json!({"tool_start": {"id": id, "tool": tool, "summary": summary, "kind": tool_kind_to_wire(kind)}})
-        }
-        ToolEvent::ToolOutput { id, event } => {
-            json!({"tool_output": {"id": id, "event": tool_event_to_wire(event)}})
-        }
-        ToolEvent::ToolEnd {
-            id,
-            status,
-            summary,
-        } => {
-            json!({"tool_end": {"id": id, "status": status, "summary": summary}})
-        }
         ToolEvent::Stdout { text } => json!({"stdout": text}),
         ToolEvent::Stderr { text } => json!({"stderr": text}),
-        ToolEvent::PermissionRequested { request } => {
-            json!({"permission": {"id": request.id, "tool_call_id": request.tool_call_id, "tool": request.tool, "risk": request.risk, "summary": request.summary, "candidate": request.candidate, "source": request.source}})
-        }
-        ToolEvent::Error { code, message } => json!({"error": {"code": code, "message": message}}),
-        ToolEvent::ModelRequest {
-            conversation,
-            turn,
-            request_id,
-            request_ordinal,
-        } => json!({
-            "model_request": {
-                "conversation": conversation,
-                "turn": turn,
-                "request_id": request_id,
-                "request_ordinal": request_ordinal,
-            }
-        }),
-        ToolEvent::ModelRecovery { info } => json!({"model_recovery": info}),
     }
 }
 
@@ -241,20 +197,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(cmd["kind"]["command"]["pid"], 42);
-
-        let agent = to_wire(&UiEvent::ToolStart {
-            id: "t3".into(),
-            tool: "agent".into(),
-            summary: "code-review".into(),
-            kind: ToolKind::Agent {
-                conversation: crate::conversation::address::ConversationAddress::parse("review")
-                    .unwrap(),
-                binding_id: "sha256:abc".into(),
-            },
-        })
-        .unwrap();
-        assert_eq!(agent["kind"]["agent"]["conversation"], "review");
-        assert_eq!(agent["kind"]["agent"]["binding_id"], "sha256:abc");
     }
 
     #[test]
@@ -317,28 +259,6 @@ mod tests {
         assert_eq!(wire["tool_call_id"], "tc_1");
         assert_eq!(wire["candidate"], "cargo test");
         assert_eq!(wire["source"], "default_ask");
-    }
-
-    #[test]
-    fn nested_permission_wire_format_includes_full_request_fields() {
-        let wire = tool_event_to_wire(&ToolEvent::PermissionRequested {
-            request: PermissionRequest {
-                id: "req_2".to_string(),
-                conversation: crate::conversation::address::ConversationAddress::MAIN,
-                turn: 1,
-                tool_call_id: "tc_2".to_string(),
-                tool: "write_file".to_string(),
-                risk: "filesystem".to_string(),
-                summary: "write config".to_string(),
-                candidate: "config.toml".to_string(),
-                source: "policy".to_string(),
-            },
-        });
-
-        assert_eq!(wire["permission"]["id"], "req_2");
-        assert_eq!(wire["permission"]["tool_call_id"], "tc_2");
-        assert_eq!(wire["permission"]["candidate"], "config.toml");
-        assert_eq!(wire["permission"]["source"], "policy");
     }
 
     #[test]

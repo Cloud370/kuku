@@ -14,7 +14,7 @@ kuku events SESSION_ID --limit 20 --json
 
 | 类型或分组 | 记录内容 |
 |---|---|
-| `session.created`、`conversation.opened` | Session 元数据及打开某个 Agent 的对话流。 |
+| `session.created` | Session 元数据。 |
 | `runtime.operation` | 按 `record.operation` 区分的持久状态变更：`session_claimed`、`agent_created`、`agent_configured`、`input_delivered`、`inputs_accepted`、`input_withdrawal`、`turn_settled`、`execution_started`、`agent_stopped`、`agent_resumed`，以及待决请求与回复。 |
 | `turn.started`、`message.user`、`model.response`、`model.error` | Turn 输入与模型结果（带 `job_delivery: true` 的 `message.user` 表示后台 Job 反馈）。`turn.completed`、`turn.interrupted`、`turn.cancelled` 表示终态。 |
 | `runtime.context_segment`、`runtime.context_admitted`、`runtime.step_prepared` | 冻结的静态上下文、新接纳消息与确认边界的 Step 准备记录（`body_hash` 标识编码后的请求）。 |
@@ -38,7 +38,7 @@ kuku events SESSION_ID --limit 20 --json
 | `agent`、`request_id` | 字符串 | Agent 地址与已准备请求 ID。 |
 | `turn` | 整数 | 所属 Turn。 |
 | `failed_kind` | 枚举 | `authentication`、`permission_denied`、`quota_exhausted`、`context_too_large`、`invalid_request`、`rate_limited`、`timeout`、`provider_unavailable`、`transport`、`internal`、`unknown` 或 `invalid_response`。 |
-| `phase` | 枚举（旧记录可省） | `waiting`（休眠前写入）、`started`（重派发前写入）或 `stopped`；旧记录缺省按 `started` 解释。 |
+| `phase` | 枚举 | `waiting`（休眠前写入）、`started`（重派发前写入）或 `stopped`。 |
 | `failed_attempt`、`max_attempts`、`attempt` | 整数 | 从 1 开始的计数。`waiting`/`started` 中 `attempt` 为即将进行的尝试，`stopped` 中为最终失败的尝试；`failed_attempt` 重试时指前一次失败调用，停止时指当前失败调用。 |
 | `delay_ms` | 整数 | `waiting` 中的实际退避时长；`started` 和 `stopped` 为 `0`。 |
 | `will_retry` | 布尔值 | `waiting`/`started` 为 `true`，`stopped` 为 `false`。 |
@@ -47,7 +47,7 @@ kuku events SESSION_ID --limit 20 --json
 | `stop_reason` | 枚举或 null | `non_retryable`、`attempt_limit`、`request_budget`、`disabled` 或 `stream_started`；停止前为 `null`。 |
 | `ts` | 时间戳字符串 | 事件时间戳。 |
 
-尝试次数统计只计入 `started` 行（及缺少 `phase` 的旧记录），`waiting` 和 `stopped` 不增加尝试次数。
+尝试次数统计只计入 `started` 行，`waiting` 和 `stopped` 不增加尝试次数。
 
 ## 实时增量与已提交记录
 

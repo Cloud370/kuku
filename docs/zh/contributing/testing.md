@@ -43,7 +43,7 @@ cargo test --workspace --no-fail-fast --features kuku/test_support
 不带 `test_support` 的旧默认测试命令不会选择所有套件。只检查受 feature 控制的运行时集成时使用：
 
 ```bash
-cargo test -p kuku --features test_support --test provider_integration --test query_runtime --test cache_runtime_notices
+cargo test -p kuku --features test_support --test provider_integration --test query_runtime
 ```
 
 显式选择受影响的 feature 套件，并报告实际运行范围。被忽略的真实测试需要显式选择，并提供对应凭据与启用配置。跳过或未选择的测试不算覆盖。测试归属变化时，同步更新实际入口、CI 选择和本参考页。

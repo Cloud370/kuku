@@ -529,6 +529,35 @@ async fn cancellation_waits_for_host_cleanup_and_keeps_the_observed_result() {
 }
 
 #[tokio::test]
+async fn steering_cancellation_explains_completed_and_cancelled_actions() {
+    let result = run(
+        "await tools.read_file({path:'first'}); await tools.read_file({path:'second'});",
+        TestHost {
+            operations: vec![ScriptOperation::ReadFile],
+            callback: |call: ScriptCall, execution: Arc<ScriptExecution>| async move {
+                if call.args["path"] == "first" {
+                    return ToolResultEnvelope::ok("first read", "first", json!({}));
+                }
+                execution.stop_for_new_input();
+                ToolResultEnvelope::cancelled("new input arrived at the workspace action boundary")
+            },
+        },
+        WorkspaceScriptLimits::default(),
+    )
+    .await;
+    assert_eq!("cancelled", result.status);
+    assert!(result.model_content.contains("because new input arrived"));
+    assert!(result.model_content.contains("completed: 1. Cancelled: 1."));
+    let facts = facts(&result);
+    assert_eq!(2, facts.actions.len());
+    assert_eq!(WorkspaceScriptActionStatus::Ok, facts.actions[0].status);
+    assert_eq!(
+        WorkspaceScriptActionStatus::Cancelled,
+        facts.actions[1].status
+    );
+}
+
+#[tokio::test]
 async fn returning_with_pending_host_work_cancels_it_and_waits_for_cleanup() {
     let entered = Arc::new(Notify::new());
     let result = run(

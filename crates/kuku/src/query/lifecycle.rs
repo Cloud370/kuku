@@ -159,8 +159,6 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             EventPayload::SessionCreated { .. }
             | EventPayload::ContextSources { .. }
             | EventPayload::ContextSkills { .. }
-            | EventPayload::ConversationOpened { .. }
-            | EventPayload::ConversationBound { .. }
             | EventPayload::PromptSnapshot { .. }
             | EventPayload::TurnStarted { .. }
             | EventPayload::MessageUser { .. }
@@ -172,8 +170,6 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
             | EventPayload::TurnCompleted { .. }
             | EventPayload::TurnCancelled { .. }
             | EventPayload::TurnInterrupted { .. }
-            | EventPayload::ConversationRollback { .. }
-            | EventPayload::ConversationRollbackUndone { .. }
             | EventPayload::Unknown(_) => {}
         }
     }
@@ -281,7 +277,7 @@ mod tests {
     use serde_json::json;
 
     use super::{reduce_lifecycle, OpenToolKind};
-    use crate::event::{EventPayload, RollbackScope, StoredEvent};
+    use crate::event::{EventPayload, StoredEvent};
 
     fn event(id: u64, payload: EventPayload) -> StoredEvent {
         StoredEvent { id, payload }
@@ -402,21 +398,6 @@ mod tests {
         )
     }
 
-    fn rollback(id: u64, turn: u64, target_turn: u64) -> StoredEvent {
-        event(
-            id,
-            EventPayload::ConversationRollback {
-                ts: "ts".to_string(),
-                conversation: crate::conversation::address::ConversationAddress::MAIN
-                    .as_str()
-                    .to_string(),
-                to_turn: target_turn,
-                to_event_id: turn,
-                scope: RollbackScope::ConversationOnly,
-            },
-        )
-    }
-
     #[test]
     fn pending_permission_keeps_tool_call_and_request_fields() {
         let state = reduce_lifecycle(&[
@@ -505,21 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_filtered_pending_permission_is_ignored() {
-        let state = reduce_lifecycle(&[
-            turn_start(1, 1),
-            tool_call(2, 1, "old", 0),
-            permission_requested(3, 1, "old"),
-            turn_start(4, 2),
-            rollback(5, 2, 1),
-        ]);
-
-        assert!(state.open_tools.is_empty());
-        assert!(state.pending_permissions.is_empty());
-    }
-
-    #[test]
-    fn legacy_tool_without_result_is_open_interrupted() {
+    fn tool_without_result_is_open_interrupted() {
         let state = reduce_lifecycle(&[turn_start(1, 1), tool_call(2, 1, "tc_1", 0)]);
 
         assert_eq!(state.pending_permissions.len(), 0);

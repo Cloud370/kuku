@@ -12,8 +12,8 @@ use super::jobs::{JobCompletion, JobIndex, JOB_DELIVERY_PREFIX};
 use super::observe::ReplyPreview;
 use super::retention::{CaptureOrigin, OutputStore};
 use super::types::{
-    AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputStatus, PendingInput,
-    QuestionRequest, Receipt, UsageTotals,
+    AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource, InputStatus,
+    PendingInput, QuestionRequest, Receipt, UsageTotals,
 };
 use super::usage::{AgentUsage, SummaryRequest};
 use super::values::{NamedBinding, ValueState};
@@ -324,6 +324,13 @@ impl AgentState {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct DelegatedDelivery {
+    pub(super) sender: String,
+    pub(super) command_id: String,
+    pub(super) turn: Option<u64>,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct State {
     pub(super) agents: BTreeMap<String, AgentState>,
@@ -331,6 +338,8 @@ pub(super) struct State {
     pub(super) commands: HashMap<String, (String, Receipt)>,
     pub(super) message_rewind_warnings: HashMap<String, Vec<String>>,
     pub(super) deliveries: HashMap<String, InputStatus>,
+    // Missing in older recovery checkpoints. Rebuild from the journal in that case.
+    pub(super) delegated_deliveries: HashMap<u64, DelegatedDelivery>,
     pub(super) withdrawals: HashMap<String, InputStatus>,
     pub(super) creation: Option<CreationClaim>,
     pub(super) closing: bool,
@@ -625,9 +634,9 @@ impl State {
                 for id in &input_ids {
                     self.deliveries.insert(id.clone(), InputStatus::Accepted);
                 }
-                let agent = self.agent_mut(&address)?;
                 let mut turn_preview = None;
                 for id in input_ids {
+                    let agent = self.agent_mut(&address)?;
                     let index = agent
                         .inbox
                         .iter()
@@ -652,8 +661,13 @@ impl State {
                             agent.snapshot.admitted_task = Some(preview);
                         }
                     }
+                    let receipt_id = input.receipt.event_id;
                     agent.accepted.push(input);
+                    if let Some(delivery) = self.delegated_deliveries.get_mut(&receipt_id) {
+                        delivery.turn.get_or_insert(admitted_turn);
+                    }
                 }
+                let agent = self.agent_mut(&address)?;
                 agent.update_inbox();
                 agent.snapshot.status = AgentStatus::Running;
                 agent.snapshot.turn = Some(admitted_turn);
@@ -672,7 +686,7 @@ impl State {
                 output,
                 error,
                 turn,
-                usage,
+                usage: _,
             } => {
                 if !matches!(status, AgentStatus::Waiting | AgentStatus::Interrupted) {
                     self.values
@@ -695,9 +709,7 @@ impl State {
                 if turn.is_some() {
                     agent.snapshot.turn = turn;
                 }
-                agent
-                    .model_usage
-                    .settle(agent.snapshot.turn, &mut agent.snapshot.usage, usage)?;
+                agent.model_usage.settle(agent.snapshot.turn);
                 if status != AgentStatus::Interrupted {
                     agent.accepted.clear();
                 }
@@ -944,6 +956,16 @@ impl State {
         self.deliveries
             .insert(input.command_id.clone(), InputStatus::Queued);
         let receipt = self.commands[&input.command_id].1.clone();
+        if let InputSource::Agent(sender) = &input.source {
+            self.delegated_deliveries.insert(
+                event_id,
+                DelegatedDelivery {
+                    sender: sender.clone(),
+                    command_id: input.command_id.clone(),
+                    turn: None,
+                },
+            );
+        }
         self.values.grant(&input.target, &values);
         let agent = self.agent_mut(&input.target)?;
         agent.inbox.push_back(QueuedDelivery {

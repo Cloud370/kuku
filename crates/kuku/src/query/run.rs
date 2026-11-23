@@ -620,28 +620,12 @@ impl Run {
     }
 
     /// Apply a permission decision for a pending tool call.
-    /// `parent_tool_id`: `None` for top-level, `Some(id)` for delegated permission.
     pub async fn decide(
         &mut self,
         request_id: &str,
         choice: PermissionChoice,
-        parent_tool_id: Option<&str>,
     ) -> Result<Option<UiEvent>> {
-        if let Some(tool_id) = parent_tool_id {
-            let slot = self
-                .slots
-                .get_mut(tool_id)
-                .ok_or_else(|| Error::PermissionRequestNotPending(request_id.to_string()))?;
-            let mut map = slot.nested_permissions.lock().unwrap();
-            let tx = map
-                .remove(request_id)
-                .ok_or_else(|| Error::PermissionRequestNotPending(request_id.to_string()))?;
-            drop(map);
-            let _ = tx.send(choice);
-            Ok(None)
-        } else {
-            self.apply_choice(request_id, choice, "host").await
-        }
+        self.apply_choice(request_id, choice, "host").await
     }
 
     /// Cancel a single running tool by its tool_call_id.

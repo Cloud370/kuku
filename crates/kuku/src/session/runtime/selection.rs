@@ -14,7 +14,7 @@ pub(super) fn register_tools(options: &SessionOptions) -> Result<BTreeMap<String
             "at most 128 host tools are supported".into(),
         ));
     }
-    let reserved = crate::tool::builtin_registry(true, true)
+    let reserved = crate::tool::builtin_registry(true)
         .into_iter()
         .chain(crate::query::runtime_tool_definitions())
         .map(|tool| tool.name)
@@ -86,6 +86,13 @@ pub(super) fn validate_initial_model(options: &SessionOptions, config: &AgentCon
 }
 
 impl Session {
+    pub(crate) fn workspace_for<'a>(&'a self, config: &'a AgentConfig) -> &'a std::path::Path {
+        config
+            .workspace
+            .as_deref()
+            .unwrap_or(&self.inner.options.workspace)
+    }
+
     /// Inspect model settings available locally and final tools without dispatching work.
     pub fn agent_selection(&self, address: &str) -> Result<AgentSelection> {
         let agent = self.agent(address)?;
@@ -154,7 +161,7 @@ impl Session {
                     .values()
                     .map(|tool| tool.spec.definition()),
             )
-            .filter(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"))
+            .filter(|tool| tool.name != "fetch_web")
             .filter(|tool| !disabled_collaboration_tool(tool.name.as_str()))
             .filter(|tool| {
                 crate::query::runtime_tool_supported(
@@ -265,9 +272,23 @@ fn resolve_defaults(
             &options.config.discovery,
         )?
         .build();
-    let definition = registry
-        .get(preset)
-        .ok_or_else(|| Error::InvalidArgument(format!("preset '{preset}' was not found")))?;
+    let definition = registry.get(preset).ok_or_else(|| {
+        let guidance = if registry.is_empty() {
+            "No Agent presets are available. Omit preset to use defaults.".into()
+        } else {
+            let examples = registry
+                .names()
+                .iter()
+                .take(8)
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            format!(
+                "Available examples: {}. Omit preset to use defaults.",
+                examples.join(", ")
+            )
+        };
+        Error::InvalidArgument(format!("preset '{preset}' was not found. {guidance}"))
+    })?;
     config
         .instructions
         .get_or_insert_with(|| definition.instructions.clone());
@@ -287,7 +308,7 @@ fn resolve_defaults(
                     .collect()
             })
             .into_iter()
-            .filter(|name| !matches!(name.as_str(), "agent" | "fetch_web"))
+            .filter(|name| name != "fetch_web")
             .collect()
     });
     Ok(config)

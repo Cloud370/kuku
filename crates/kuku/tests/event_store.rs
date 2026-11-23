@@ -9,22 +9,18 @@ use kuku::context::FileSource;
 use kuku::error::Error;
 use kuku::event::{EventPayload, EventStore, StoredEvent};
 
-fn new_event_lines() -> Vec<&'static str> {
+fn current_event_lines() -> Vec<&'static str> {
     vec![
         r#"{"id":1,"ts":"2026-06-09T00:00:00Z","kind":"session.created","session_id":"s_001","created_at":"2026-06-09T00:00:00Z","kuku_version":"0.1.0","schema_version":2}"#,
-        r#"{"id":2,"ts":"2026-06-09T00:00:01Z","kind":"conversation.opened","conversation":"session://s_001/conversations/c_main"}"#,
-        r#"{"id":3,"ts":"2026-06-09T00:00:02Z","kind":"conversation.bound","conversation":"session://s_001/conversations/c_main","binding_id":"binding:main"}"#,
-        r#"{"id":4,"ts":"2026-06-09T00:00:03Z","kind":"prompt.snapshot","conversation":"session://s_001/conversations/c_main","binding_id":"binding:main","snapshot_id":"snapshot:main:1","turn":1,"messages":[{"role":"system","content":"You are kuku."},{"role":"user","content":"Please inspect src/lib.rs and summarize changes."}],"project_instruction_sources":[{"path":"/workspace/AGENTS.md","hash":"sha256:agents"}],"memory_sources":[{"path":"/home/user/.kuku/memory.md","hash":"sha256:memory"}],"prompt_asset_sources":[],"skills":{"names":["using-superpowers","test-driven-development"],"hash":"sha256:skills"},"bootstrap_loaded":["using-superpowers","test-driven-development"],"provider":"anthropic","model":"claude-sonnet-4-6","renderer":{"provider":"anthropic","renderer":"anthropic"},"tool_registry":{"hash":"sha256:tools","names":[],"tool_count":0},"capabilities":{"context_budget_tier":"normal","max_context_tokens":200000,"remaining_input_tokens":180000}}"#,
-        r#"{"id":5,"ts":"2026-06-09T00:00:04Z","kind":"message.user","conversation":"session://s_001/conversations/c_main","turn":1,"text":"Please inspect src/lib.rs and summarize changes."}"#,
-        r#"{"id":6,"ts":"2026-06-09T00:00:05Z","kind":"message.assistant","conversation":"session://s_001/conversations/c_main","turn":1,"message_id":"msg_001","text":"I am checking the file now."}"#,
-        r#"{"id":7,"ts":"2026-06-09T00:00:06Z","kind":"tool.call","conversation":"session://s_001/conversations/c_main","turn":1,"tool_call_id":"toolu_read_1","request_id":"req_1","index":0,"tool":"read_file","args":{"path":"src/lib.rs"}}"#,
-        r#"{"id":8,"ts":"2026-06-09T00:00:07Z","kind":"tool.result","conversation":"session://s_001/conversations/c_main","turn":1,"tool_call_id":"toolu_read_1","status":"ok","summary":"Read src/lib.rs","model_content":"Read complete","truncated":false,"files_read":["src/lib.rs"],"files_changed":["src/lib.rs"],"commands_run":["cargo check -p kuku"],"memory_changed":{"scope":"project","action":"remember","count":1},"structured":{"kind":"file_content","path":"src/lib.rs"}}"#,
-        r#"{"id":9,"ts":"2026-06-09T00:00:08Z","kind":"turn.started","conversation":"session://s_001/conversations/c_main","turn":1}"#,
-        r#"{"id":10,"ts":"2026-06-09T00:00:09Z","kind":"turn.completed","conversation":"session://s_001/conversations/c_main","turn":1}"#,
-        r#"{"id":11,"ts":"2026-06-09T00:00:10Z","kind":"turn.cancelled","conversation":"session://s_001/conversations/c_main","turn":2,"reason":"user_cancelled"}"#,
-        r#"{"id":12,"ts":"2026-06-09T00:00:11Z","kind":"turn.interrupted","conversation":"session://s_001/conversations/c_main","turn":3,"reason":"approval_required"}"#,
-        r#"{"id":13,"ts":"2026-06-09T00:00:12Z","kind":"conversation.rollback","conversation":"session://s_001/conversations/c_main","to_turn":2,"to_event_id":12,"scope":"messages"}"#,
-        r#"{"id":14,"ts":"2026-06-09T00:00:13Z","kind":"conversation.rollback.undone","conversation":"session://s_001/conversations/c_main","rollback_event_id":13}"#,
+        r#"{"id":4,"ts":"2026-06-09T00:00:03Z","kind":"prompt.snapshot","conversation":"main","snapshot_id":"snapshot:main:1","turn":1,"messages":[{"role":"system","content":"You are kuku."},{"role":"user","content":"Please inspect src/lib.rs and summarize changes."}],"project_instruction_sources":[{"path":"/workspace/AGENTS.md","hash":"sha256:agents"}],"memory_sources":[{"path":"/home/user/.kuku/memory.md","hash":"sha256:memory"}],"prompt_asset_sources":[],"skills":{"names":["using-superpowers","test-driven-development"],"hash":"sha256:skills"},"bootstrap_loaded":["using-superpowers","test-driven-development"],"provider":"anthropic","model":"claude-sonnet-4-6","renderer":{"provider":"anthropic","renderer":"anthropic"},"tool_registry":{"hash":"sha256:tools","names":[],"tool_count":0},"capabilities":{"context_budget_tier":"normal","max_context_tokens":200000,"remaining_input_tokens":180000}}"#,
+        r#"{"id":5,"ts":"2026-06-09T00:00:04Z","kind":"message.user","conversation":"main","turn":1,"text":"Please inspect src/lib.rs and summarize changes."}"#,
+        r#"{"id":6,"ts":"2026-06-09T00:00:05Z","kind":"message.assistant","conversation":"main","turn":1,"message_id":"msg_001","text":"I am checking the file now."}"#,
+        r#"{"id":7,"ts":"2026-06-09T00:00:06Z","kind":"tool.call","conversation":"main","turn":1,"tool_call_id":"toolu_read_1","request_id":"req_1","index":0,"tool":"read_file","args":{"path":"src/lib.rs"}}"#,
+        r#"{"id":8,"ts":"2026-06-09T00:00:07Z","kind":"tool.result","conversation":"main","turn":1,"tool_call_id":"toolu_read_1","status":"ok","summary":"Read src/lib.rs","model_content":"Read complete","truncated":false,"files_read":["src/lib.rs"],"files_changed":["src/lib.rs"],"commands_run":["cargo check -p kuku"],"memory_changed":{"scope":"project","action":"remember","count":1},"structured":{"kind":"file_content","path":"src/lib.rs"}}"#,
+        r#"{"id":9,"ts":"2026-06-09T00:00:08Z","kind":"turn.started","conversation":"main","turn":1}"#,
+        r#"{"id":10,"ts":"2026-06-09T00:00:09Z","kind":"turn.completed","conversation":"main","turn":1}"#,
+        r#"{"id":11,"ts":"2026-06-09T00:00:10Z","kind":"turn.cancelled","conversation":"main","turn":2,"reason":"user_cancelled"}"#,
+        r#"{"id":12,"ts":"2026-06-09T00:00:11Z","kind":"turn.interrupted","conversation":"main","turn":3,"reason":"approval_required"}"#,
     ]
 }
 
@@ -42,7 +38,6 @@ fn prompt_snapshot(turn: u64, content: &str) -> EventPayload {
     EventPayload::PromptSnapshot {
         ts: "2026-05-13T00:00:00Z".to_string(),
         conversation: "main".to_string(),
-        binding_id: "binding:main".to_string(),
         snapshot_id: format!("snapshot:main:{turn}"),
         turn,
         messages: vec![kuku::event::types::ContextMessage {
@@ -336,12 +331,6 @@ fn fact_only_events_roundtrip_without_observability_fields() {
 
     store.append(session_created()).unwrap();
     store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-05-13T00:00:00Z".to_string(),
-            conversation: "main".to_string(),
-        })
-        .unwrap();
-    store
         .append(prompt_snapshot(
             1,
             "<kuku_execution_context>workspace: /tmp</kuku_execution_context>",
@@ -387,9 +376,9 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
-    assert_eq!(replayed.len(), 6);
+    assert_eq!(replayed.len(), 5);
 
-    match &replayed[2].payload {
+    match &replayed[1].payload {
         EventPayload::PromptSnapshot { messages, .. } => {
             assert_eq!(messages.len(), 1);
             assert!(messages[0].content.contains("<kuku_execution_context>"));
@@ -397,7 +386,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected prompt.snapshot, got {other:?}"),
     }
 
-    match &replayed[3].payload {
+    match &replayed[2].payload {
         EventPayload::ContextSources {
             request_id,
             project_instruction_sources,
@@ -411,7 +400,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected context.sources, got {other:?}"),
     }
 
-    match &replayed[4].payload {
+    match &replayed[3].payload {
         EventPayload::ModelError { kind, message, .. } => {
             panic!("expected model.response before model.error, got model.error kind={kind} message={message}");
         }
@@ -428,7 +417,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected model.response, got {other:?}"),
     }
 
-    match &replayed[5].payload {
+    match &replayed[4].payload {
         EventPayload::ModelError { kind, message, .. } => {
             assert_eq!(kind, "RateLimited");
             assert_eq!(message, "HTTP 429: rate limited");
@@ -462,7 +451,6 @@ fn fact_event_json_omits_removed_observability_fields() {
         payload: EventPayload::PromptSnapshot {
             ts: "2026-05-18T00:01:00Z".to_string(),
             conversation: "main".to_string(),
-            binding_id: "binding:main".to_string(),
             snapshot_id: "snapshot:main:2".to_string(),
             turn: 2,
             messages: vec![ContextMessage {
@@ -555,7 +543,7 @@ fn new_writes_use_kind_not_type_at_top_level() {
             "id": 8,
             "ts": "2026-06-09T00:00:07Z",
             "kind": "tool.result",
-            "conversation": "session://s_001/conversations/c_main",
+            "conversation": "main",
             "turn": 1,
             "tool_call_id": "toolu_read_1",
             "status": "ok",
@@ -579,15 +567,15 @@ fn new_writes_use_kind_not_type_at_top_level() {
 }
 
 #[test]
-fn replay_recognizes_every_new_event_kind() {
+fn replay_recognizes_current_event_kinds() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
-    let contents = format!("{}\n", new_event_lines().join("\n"));
+    let contents = format!("{}\n", current_event_lines().join("\n"));
     std::fs::write(&path, contents).unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
 
-    assert_eq!(14, replayed.len());
+    assert_eq!(10, replayed.len());
     for event in &replayed {
         assert!(
             !matches!(event.payload, EventPayload::Unknown(_)),
@@ -599,42 +587,12 @@ fn replay_recognizes_every_new_event_kind() {
 }
 
 #[test]
-fn top_level_type_is_not_an_event_tag() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("events.jsonl");
-    std::fs::write(
-        &path,
-        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"type\":\"user.input\",\"turn\":1,\"text\":\"ignored\"}\n",
-    )
-    .unwrap();
-
-    let replayed = EventStore::replay(&path).unwrap();
-
-    assert!(matches!(&replayed[0].payload, EventPayload::Unknown(_)));
-}
-
-#[test]
-fn rollback_scope_alias_is_not_accepted() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("events.jsonl");
-    std::fs::write(
-        &path,
-        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"kind\":\"turn.rollback\",\"turn\":3,\"target_turn\":1,\"scope\":\"conversation_only\"}\n",
-    )
-    .unwrap();
-
-    let replayed = EventStore::replay(&path).unwrap();
-
-    assert!(matches!(&replayed[0].payload, EventPayload::Unknown(_)));
-}
-
-#[test]
 fn unknown_kind_stays_readable() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
     std::fs::write(
         &path,
-        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"kind\":\"future.event\",\"conversation\":\"session://s_001/conversations/c_main\",\"turn\":1,\"custom\":\"x\"}\n",
+        "{\"id\":1,\"ts\":\"2026-06-09T00:00:00Z\",\"kind\":\"future.event\",\"conversation\":\"main\",\"turn\":1,\"custom\":\"x\"}\n",
     )
     .unwrap();
 

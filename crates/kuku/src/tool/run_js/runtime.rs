@@ -345,7 +345,12 @@ fn result(
     execution: &ScriptExecution,
     can_read_output: bool,
 ) -> ToolResultEnvelope {
-    let (mut actions, dispatched) = execution.facts();
+    let (mut actions, counts) = execution.facts();
+    let dispatched = counts.dispatched;
+    let not_dispatched = execution
+        .accepted
+        .load(Ordering::Acquire)
+        .saturating_sub(dispatched);
     let failures = actions
         .iter()
         .filter(|action| {
@@ -391,6 +396,14 @@ fn result(
         }
         Finish::Failed(error) => ToolResultEnvelope::error("run_js failed", error),
         Finish::Blocked(error) => ToolResultEnvelope::blocked("run_js capacity unavailable", error),
+        Finish::Cancelled | Finish::HostStopped if execution.stopped_for_new_input() => {
+            let mut result = ToolResultEnvelope::cancelled("run_js cancelled after new input");
+            result.model_content = format!(
+                "run_js was cancelled because new input arrived. Host actions completed: {}. Cancelled: {}. Skipped before dispatch: {not_dispatched}.",
+                counts.completed, counts.cancelled
+            );
+            result
+        }
         Finish::Cancelled | Finish::HostStopped => ToolResultEnvelope::cancelled("run_js stopped"),
         Finish::TimedOut => ToolResultEnvelope::error(
             "run_js timed out",
@@ -430,10 +443,7 @@ fn result(
         actions,
         timed_out,
         cleanup_incomplete: faults.cleanup_incomplete,
-        not_dispatched: execution
-            .accepted
-            .load(Ordering::Acquire)
-            .saturating_sub(dispatched),
+        not_dispatched,
     };
     result.faults = faults;
     result.structured = Some(serde_json::to_value(facts).expect("script facts serialize to JSON"));

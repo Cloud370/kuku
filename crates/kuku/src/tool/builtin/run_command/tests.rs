@@ -406,7 +406,7 @@ async fn controlled_path_schema_omits_unavailable_shells_and_explicit_launch_rep
 #[tokio::test]
 #[ignore = "subprocess fixture for shell discovery with a controlled PATH"]
 async fn unavailable_shell_fixture() {
-    let registry = crate::tool::builtin_registry(false, false);
+    let registry = crate::tool::builtin_registry(false);
     let tool = registry
         .iter()
         .find(|tool| tool.name == "run_command")

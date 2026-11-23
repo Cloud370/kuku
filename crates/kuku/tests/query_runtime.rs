@@ -7,13 +7,11 @@ mod query_runtime_mutator_ordering;
 
 use common::{anthropic_sse_response, test_config, TestEnv};
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
-use kuku::agent::registry::AgentRegistry;
+use httpmock::prelude::{HttpMockRequest, MockServer};
 use kuku::context::replay::rebuild_history;
 use kuku::conversation::address::ConversationAddress;
 use kuku::event::{EventPayload, EventStore};
 use kuku::log::{LogLevel, LogRecord, LogScope};
-use kuku::prompt::builtin_prompt_catalog;
 use kuku::{query, Error, PermissionChoice, PermissionRequest, Provider, Run, UiEvent};
 
 async fn next_permission_request(run: &mut Run) -> PermissionRequest {
@@ -34,27 +32,6 @@ async fn next_tool_end(run: &mut Run, tool_call_id: &str) -> UiEvent {
             return event;
         }
     }
-}
-
-fn anthro_with_agents(query_text: &str, server: &MockServer) -> kuku::query::Query {
-    query(query_text)
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .agents(
-            AgentRegistry::builder()
-                .builtins(&builtin_prompt_catalog())
-                .build(),
-        )
-}
-
-fn request_body_contains(req: &HttpMockRequest, text: &str) -> bool {
-    req.body.as_ref().is_some_and(|body| {
-        body.windows(text.len())
-            .any(|window| window == text.as_bytes())
-    })
 }
 
 fn assert_failed_turn_facts(events: &[kuku::event::StoredEvent], turn: u64) {
@@ -126,6 +103,5 @@ fn list_event_files(kuku_home: &std::path::Path) -> Vec<std::path::PathBuf> {
 include!("query_runtime/lifecycle.rs");
 include!("query_runtime/context.rs");
 include!("query_runtime/diagnostics.rs");
-include!("query_runtime/agents.rs");
 include!("query_runtime/permissions.rs");
 include!("query_runtime/permission_recovery.rs");

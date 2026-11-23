@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -50,7 +50,7 @@ pub(crate) struct ScriptExecution {
     pub(super) failed_persistence: AtomicBool,
     pub(super) cleanup_incomplete: AtomicBool,
     pub(super) accepted: AtomicUsize,
-    stopped: AtomicBool,
+    stopped: OnceLock<StopReason>,
     cancelling: Arc<Notify>,
     host_operations: Arc<Semaphore>,
     facts: Mutex<BTreeMap<usize, WorkspaceScriptActionFacts>>,
@@ -59,13 +59,26 @@ pub(crate) struct ScriptExecution {
     pub(super) outputs: super::outputs::DerivedOutputs,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StopReason {
+    Stopped,
+    NewInput,
+}
+
+#[derive(Default)]
+pub(super) struct ActionCounts {
+    pub(super) dispatched: usize,
+    pub(super) completed: usize,
+    pub(super) cancelled: usize,
+}
+
 impl ScriptExecution {
     pub(crate) fn cancellation(&self) -> Arc<Notify> {
         self.cancelling.clone()
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.stopped.load(Ordering::Acquire)
+        self.stopped.get().is_some()
     }
 
     pub(crate) async fn cancelled(&self) {
@@ -79,7 +92,7 @@ impl ScriptExecution {
         Self {
             outputs: super::outputs::DerivedOutputs::new(limits.clone()),
             limits,
-            stopped: AtomicBool::new(false),
+            stopped: OnceLock::new(),
             failed_persistence: AtomicBool::new(false),
             cleanup_incomplete: AtomicBool::new(false),
             accepted: AtomicUsize::new(0),
@@ -92,7 +105,19 @@ impl ScriptExecution {
     }
 
     pub(crate) fn stop(&self) {
-        if !self.stopped.swap(true, Ordering::AcqRel) {
+        self.stop_with_reason(StopReason::Stopped);
+    }
+
+    pub(crate) fn stop_for_new_input(&self) {
+        self.stop_with_reason(StopReason::NewInput);
+    }
+
+    pub(super) fn stopped_for_new_input(&self) -> bool {
+        self.stopped.get() == Some(&StopReason::NewInput)
+    }
+
+    fn stop_with_reason(&self, reason: StopReason) {
+        if self.stopped.set(reason).is_ok() {
             self.cancelling.notify_waiters();
             self.cancelling.notify_one();
         }
@@ -155,10 +180,16 @@ impl ScriptExecution {
             .remove(&action_id(ordinal))
     }
 
-    pub(super) fn facts(&self) -> (Vec<WorkspaceScriptActionFacts>, usize) {
+    pub(super) fn facts(&self) -> (Vec<WorkspaceScriptActionFacts>, ActionCounts) {
         let facts = self.facts.lock().unwrap();
+        let mut counts = ActionCounts {
+            dispatched: facts.len(),
+            ..Default::default()
+        };
         let mut combined: Vec<WorkspaceScriptActionFacts> = Vec::with_capacity(facts.len());
         for fact in facts.values() {
+            counts.completed += usize::from(fact.status == WorkspaceScriptActionStatus::Ok);
+            counts.cancelled += usize::from(fact.status == WorkspaceScriptActionStatus::Cancelled);
             if combined
                 .last_mut()
                 .is_some_and(|last| merge_output_read(last, fact))
@@ -167,7 +198,7 @@ impl ScriptExecution {
             }
             combined.push(fact.clone());
         }
-        (combined, facts.len())
+        (combined, counts)
     }
 
     async fn dispatch(

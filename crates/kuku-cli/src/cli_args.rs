@@ -381,7 +381,7 @@ pub struct ShowArgs {
     pub session_id: String,
 
     /// Stable agent address (defaults to main)
-    #[arg(long = "agent", alias = "conversation")]
+    #[arg(long = "agent")]
     pub conversation: Option<String>,
     /// Emit the durable Agent snapshot, including pending requests
     #[arg(long)]
@@ -401,7 +401,7 @@ pub struct EventsArgs {
     pub file: Option<PathBuf>,
 
     /// Stable agent address (defaults to the full ledger)
-    #[arg(long = "agent", alias = "conversation")]
+    #[arg(long = "agent")]
     pub conversation: Option<String>,
 
     /// Return events after this exclusive cursor, oldest first

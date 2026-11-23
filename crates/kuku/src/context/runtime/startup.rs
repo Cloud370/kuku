@@ -121,9 +121,7 @@ enum StartupOwner<'a> {
 
 fn startup_owner(payload: &EventPayload) -> Option<StartupOwner<'_>> {
     match payload {
-        EventPayload::ConversationOpened { conversation, .. }
-        | EventPayload::ConversationBound { conversation, .. }
-        | EventPayload::PromptSnapshot { conversation, .. }
+        EventPayload::PromptSnapshot { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. }
         | EventPayload::MessageUser { conversation, .. }
         | EventPayload::TurnStarted { conversation, .. }
@@ -211,12 +209,6 @@ impl Selection {
         let mut changed = false;
         let key = match &event.payload {
             EventPayload::SessionCreated { .. } => Some("session".into()),
-            EventPayload::ConversationOpened { conversation, .. } if conversation == agent => {
-                Some("opened".into())
-            }
-            EventPayload::ConversationBound { conversation, .. } if conversation == agent => {
-                Some("bound".into())
-            }
             EventPayload::PromptSnapshot { conversation, .. } if conversation == agent => {
                 Some("prompt".into())
             }

@@ -125,7 +125,7 @@ async fn decide_pre_hook_block_persists_blocked_tool_result() {
     run.state = RunState::WaitingForPermission(Box::new(waiting));
 
     let event = run
-        .decide("tool_queued", PermissionChoice::Once, None)
+        .decide("tool_queued", PermissionChoice::Once)
         .await
         .unwrap();
 

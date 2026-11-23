@@ -27,18 +27,7 @@ fn message_user(turn: u64, text: &str) -> EventPayload {
         conversation: "main".into(),
         text: text.into(),
         from: None,
-        via_tool_call_id: None,
         job_delivery: false,
-    }
-}
-
-fn conversation_rollback(to_turn: u64, to_event_id: u64) -> EventPayload {
-    EventPayload::ConversationRollback {
-        ts: ts("t"),
-        conversation: "main".into(),
-        to_turn,
-        to_event_id,
-        scope: crate::event::RollbackScope::ConversationOnly,
     }
 }
 
@@ -155,7 +144,6 @@ fn query_session_turn_filtering() {
                 conversation: "main".into(),
                 text: "first turn".into(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             },
             EventPayload::TurnCompleted {
@@ -169,7 +157,6 @@ fn query_session_turn_filtering() {
                 conversation: "main".into(),
                 text: "second turn".into(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             },
             EventPayload::TurnCompleted {
@@ -223,137 +210,6 @@ fn query_session_output_cap_drops_earliest_events() {
         result.model_content.len()
     );
     assert!(result.truncated);
-}
-
-#[test]
-fn query_session_skip_rolled_back_filters_events() {
-    let dir = tempdir().unwrap();
-    let path = write_events(
-        dir.path(),
-        &[
-            EventPayload::TurnStarted {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::MessageUser {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-                text: "original".into(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-            EventPayload::TurnCompleted {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::TurnStarted {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::MessageUser {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-                text: "rolled back".into(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-            EventPayload::TurnCompleted {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            conversation_rollback(2, 6),
-        ],
-    );
-    let result = query_session(&json!({"skip_rolled_back": true}), &path);
-    assert_eq!(result.status, "ok");
-    assert!(result.model_content.contains("original"));
-    assert!(!result.model_content.contains("rolled back"));
-}
-
-#[test]
-fn query_session_skip_rolled_back_false_returns_all() {
-    let dir = tempdir().unwrap();
-    let path = write_events(
-        dir.path(),
-        &[
-            EventPayload::TurnStarted {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::MessageUser {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-                text: "original".into(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-            EventPayload::TurnCompleted {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::TurnStarted {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::MessageUser {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-                text: "rolled back".into(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-            EventPayload::TurnCompleted {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            conversation_rollback(2, 6),
-        ],
-    );
-    let result = query_session(&json!({"skip_rolled_back": false}), &path);
-    assert_eq!(result.status, "ok");
-    assert!(result.model_content.contains("original"));
-    assert!(result.model_content.contains("rolled back"));
-}
-
-#[test]
-fn query_session_kind_filter_conversation_rollback() {
-    let dir = tempdir().unwrap();
-    let path = write_events(
-        dir.path(),
-        &[
-            message_user(1, "hello"),
-            EventPayload::ConversationRollback {
-                ts: ts("t"),
-                conversation: "main".into(),
-                to_turn: 1,
-                to_event_id: 1,
-                scope: crate::event::RollbackScope::Both,
-            },
-        ],
-    );
-    let result = query_session(
-        &json!({"kind": "conversation.rollback", "skip_rolled_back": false}),
-        &path,
-    );
-    assert_eq!(result.status, "ok");
-    assert!(result.model_content.contains("conversation.rollback"));
-    assert!(!result.model_content.contains("hello"));
 }
 
 #[test]
@@ -427,105 +283,18 @@ fn query_session_type_filter_permission_allow_and_deny() {
 }
 
 #[test]
-fn query_session_turn_filtering_respects_skip_rolled_back_stream() {
-    let dir = tempdir().unwrap();
-    let path = write_events(
-        dir.path(),
-        &[
-            EventPayload::TurnStarted {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::MessageUser {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-                text: "first".into(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-            EventPayload::TurnCompleted {
-                turn: 1,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::TurnStarted {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::MessageUser {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-                text: "second active".into(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-            EventPayload::TurnCompleted {
-                turn: 2,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::TurnStarted {
-                turn: 3,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            EventPayload::MessageUser {
-                turn: 3,
-                ts: ts("t"),
-                conversation: "main".into(),
-                text: "third rolled back".into(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-            EventPayload::TurnCompleted {
-                turn: 3,
-                ts: ts("t"),
-                conversation: "main".into(),
-            },
-            conversation_rollback(3, 9),
-        ],
-    );
-
-    let result = query_session(
-        &json!({"skip_rolled_back": true, "from_turn": 1, "to_turn": 1}),
-        &path,
-    );
-
-    assert_eq!(result.status, "ok");
-    assert!(result.model_content.contains("first"));
-    assert!(!result.model_content.contains("second active"));
-    assert!(!result.model_content.contains("third rolled back"));
-}
-
-#[test]
 fn query_session_filters_single_conversation() {
     let dir = tempdir().unwrap();
     let path = write_events(
         dir.path(),
         &[
-            EventPayload::ConversationOpened {
-                ts: ts("t"),
-                conversation: "review".into(),
-            },
             EventPayload::MessageUser {
                 ts: ts("t"),
                 conversation: "review".into(),
                 turn: 1,
                 text: "review text".into(),
                 from: Some("main".into()),
-                via_tool_call_id: None,
                 job_delivery: false,
-            },
-            EventPayload::ConversationOpened {
-                ts: ts("t"),
-                conversation: "explore".into(),
             },
             EventPayload::MessageUser {
                 ts: ts("t"),
@@ -533,7 +302,6 @@ fn query_session_filters_single_conversation() {
                 turn: 1,
                 text: "explore text".into(),
                 from: Some("main".into()),
-                via_tool_call_id: None,
                 job_delivery: false,
             },
         ],

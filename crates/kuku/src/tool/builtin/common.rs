@@ -379,7 +379,7 @@ pub(super) fn requested_line_count(
 mod tests {
     use super::*;
     use crate::conversation::address::ConversationAddress;
-    use crate::event::{EventPayload, RollbackScope, StoredEvent};
+    use crate::event::{EventPayload, StoredEvent};
     use crate::tool::builtin::test_helpers::stored_read_event;
     use snapshot::WriteSnapshot;
 
@@ -566,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_truncated_snapshot_does_not_authorize_raw_text_past_visible_line_count() {
+    fn truncated_snapshot_does_not_authorize_raw_text_past_visible_line_count() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("visible.txt");
         std::fs::write(&path, "alpha\nhidden tail\n").unwrap();
@@ -604,27 +604,6 @@ mod tests {
         let snapshot = snapshot_event(1, 1, Some("review"), &path);
 
         assert!(find_write_snapshot(&[snapshot], &path, false, Some("alpha")).is_none());
-    }
-
-    #[test]
-    fn rolled_back_snapshot_cannot_authorize_main_edit() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("visible.txt");
-        std::fs::write(&path, "alpha\n").unwrap();
-        let path = path.canonicalize().unwrap();
-        let snapshot = snapshot_event(1, 2, None, &path);
-        let rollback = StoredEvent {
-            id: 2,
-            payload: EventPayload::ConversationRollback {
-                ts: "ts".to_string(),
-                conversation: "main".to_string(),
-                to_turn: 2,
-                to_event_id: 1,
-                scope: RollbackScope::ConversationOnly,
-            },
-        };
-
-        assert!(find_write_snapshot(&[snapshot, rollback], &path, false, Some("alpha")).is_none());
     }
 
     #[test]

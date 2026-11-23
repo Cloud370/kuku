@@ -43,7 +43,7 @@ Format the edited Rust scope after its writers have stopped, before the read-onl
 The old default test command without `test_support` does not select every suite. To focus just the gated runtime integrations:
 
 ```bash
-cargo test -p kuku --features test_support --test provider_integration --test query_runtime --test cache_runtime_notices
+cargo test -p kuku --features test_support --test provider_integration --test query_runtime
 ```
 
 Select the affected feature-gated suites explicitly and report which ran. Ignored live tests require both explicit selection and their credential/opt-in configuration. A skipped or unselected test is not coverage. When test ownership changes, update the actual entrypoints, CI selection, and this reference together.
