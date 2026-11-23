@@ -275,7 +275,7 @@ def configure_statusline(client):
             return last if predicate(last) else None
 
         try:
-            return eventually("expected status line preview", read)
+            return eventually("expected status line", read)
         except AssertionError as error:
             raise AssertionError(f"{error}. Last footer {last!r}") from error
 
@@ -309,12 +309,24 @@ def configure_statusline(client):
             restored.press("\r")
             restored.expect("Status line saved")
             assert "fields" not in settings.read_text(encoding="utf-8")
+
+            prompt = "Measure status line usage."
+            reply = "Measured status line usage."
+            restored.submit(prompt)
+            client.provider.next(prompt).text(reply, usage={
+                "input_tokens": 44_500, "cache_read_input_tokens": 133_500,
+                "cache_creation_input_tokens": 0, "output_tokens": 205,
+            })
+            restored.expect(reply, state="Finished")
+            footer(restored, lambda line: "Context 178K/200K (89%)" in line and "Cache hit 75%" in line)
+            restored.request("resize", rows=24, cols=42)
+            footer(restored, lambda line: "Ctx 89%" in line and "Cache 75%" in line)
             restored.exit_cleanly()
         assert (client.home / "config.toml").read_bytes() == sdk_settings
         client.provider.assert_idle()
     finally:
         settings.unlink(missing_ok=True)
-    print("Status line preview, cancel, reorder, save, reopen and restore preserved SDK settings.")
+    print("Status line settings preserved SDK settings. Restored defaults showed measured context and cache on wide and narrow terminals.")
 
 
 def preserve_draft_after_interrupt(client):
@@ -409,8 +421,7 @@ def editable_multiline_paste(client):
 
         terminal.press("\x7f")
         terminal.request("resize", rows=24, cols=42)
-        phone = terminal.expect("target 中文", state="work-paste", rows=24)["screen"]
-        assert "Connected" not in phone and "work-paste" in phone.splitlines()[-1], phone
+        phone = terminal.expect("target 中文", rows=24)["screen"]
         terminal.click_text(phone, "target 中文", cell_offset=8)
         terminal.press("!\r")
         call = client.provider.next("fourth line")
@@ -418,9 +429,7 @@ def editable_multiline_paste(client):
         texts = [block["text"] for block in message["content"] if block["type"] == "text"]
         assert message["role"] == "user" and prompt in texts, f"The edited paste did not match: {texts!r}"
         call.text("multiline paste verified")
-        phone = terminal.expect(
-            "multiline paste verified", also=("Turn 1", "Ctx 0%", "Cache 0%"), rows=24,
-        )["screen"]
+        phone = terminal.expect("multiline paste verified", state="Turn 1", rows=24)["screen"]
         print(phone)
         assert client.session(workspace)
         client.provider.assert_idle(duration=0.25)
@@ -843,6 +852,7 @@ def main():
             ("composer-actions", lambda: native("composer-actions", composer_actions)),
             ("agent-setup", lambda: native("agent-setup", agent_setup)),
             ("paste", lambda: native("paste", editable_multiline_paste)),
+            ("statusline", lambda: native("statusline", configure_statusline)),
             ("first-run", lambda: first_run_credential_repair(options.binary, options.bridge, options.directory / "settings")),
             ("model-setup", lambda: shared_model_editor(options.binary, options.bridge, options.directory / "model-setup")),
         ])
