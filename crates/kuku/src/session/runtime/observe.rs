@@ -9,7 +9,7 @@ use crate::query::{ModelPhase, UiEvent};
 use crate::Result;
 
 use super::receipts::validate_key;
-use super::record::State;
+use super::record::{Record, State};
 use super::{
     load_state, AgentSnapshot, AgentStatus, AgentView, InputStatus, PendingInput, Receipt, Session,
     TurnSummary,
@@ -291,6 +291,100 @@ impl Session {
             .commands
             .get(command_id)
             .map(|(_, receipt)| (receipt.clone(), state.deliveries.get(command_id).copied())))
+    }
+
+    pub(crate) async fn wait_for_delivery(
+        &self,
+        sender: &str,
+        address: &str,
+        event_id: u64,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value> {
+        let changed = EventStore::open(self.events_path())?.changed();
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut timed_out = false;
+        loop {
+            let notified = changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let (state, agent_status, turn, settlement) = {
+                let state = self.inner.state.lock().unwrap();
+                let delivery = state
+                    .delegated_deliveries
+                    .get(&event_id)
+                    .filter(|delivery| delivery.sender == sender)
+                    .ok_or_else(|| {
+                        crate::Error::InvalidArgument(format!(
+                            "no message delivery receipt {event_id} from '{sender}'"
+                        ))
+                    })?;
+                let input = state.input_status(address, &delivery.command_id)?;
+                let agent_status = state.agent(address)?.snapshot.status;
+                let turn = delivery.turn;
+                let settlement = turn.and_then(|turn| state.turns.settlement(address, turn));
+                (input, agent_status, turn, settlement)
+            };
+            let mut result = serde_json::json!({
+                "address": address,
+                "receipt": event_id,
+                "input_status": state,
+            });
+            if let Some(turn) = turn {
+                result["turn"] = turn.into();
+            }
+            if let Some((terminal, summary)) = settlement {
+                let mut events = EventStore::read_page(self.events_path(), terminal - 1, 1)?;
+                let record = events
+                    .pop()
+                    .filter(|event| event.id == terminal)
+                    .map(|event| Record::from_event(&event))
+                    .transpose()?
+                    .flatten();
+                match record {
+                    Some(Record::TurnSettled {
+                        status,
+                        output,
+                        error,
+                        ..
+                    }) => {
+                        result["status"] = if status == AgentStatus::Idle {
+                            "completed".into()
+                        } else {
+                            serde_json::json!(status)
+                        };
+                        if let Some(output) = output {
+                            result["output"] = output.into();
+                        }
+                        if let Some(error) = error {
+                            result["error"] = error.into();
+                        }
+                    }
+                    Some(Record::AgentStopped { .. }) => result["status"] = "stopped".into(),
+                    _ => {
+                        return Err(crate::Error::InvalidEventStream(format!(
+                            "turn settlement {terminal} is missing"
+                        )))
+                    }
+                }
+                result["settlement"] = terminal.into();
+                result["summary"] = serde_json::to_value(summary)?;
+                return Ok(result);
+            }
+            result["agent_status"] = serde_json::json!(agent_status);
+            if state == InputStatus::Withdrawn {
+                result["status"] = "withdrawn".into();
+                return Ok(result);
+            }
+            if agent_status != AgentStatus::Running {
+                result["status"] = "pending".into();
+                return Ok(result);
+            }
+            if timed_out {
+                result["status"] = "timed_out".into();
+                return Ok(result);
+            }
+            timed_out = tokio::time::timeout_at(deadline, notified).await.is_err();
+        }
     }
 
     /// List retractable deliveries awaiting acceptance in receipt order.

@@ -517,8 +517,8 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                 "required": ["address"]
             }),
         ),
-        definition("send_message", "Deliver a task or follow-up and any selected value references to an existing Agent. For a new Agent, first confirm its creation receipt. Delivery wakes an idle recipient by default. The receipt confirms delivery. Use list_agents to check progress or collect the result.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true and wakes an idle recipient. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]})),
-        definition("list_agents", "List compact Agent states. When you need a delegated result, pass wait_for with the recipient address once. Waits up to 30 seconds for its current execution and returns its settled reply and available model request facts, or current state.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1}}})),
+        definition("send_message", "Deliver a task or follow-up and any selected value references to an existing Agent. For a new Agent, first confirm its creation receipt. Delivery wakes an idle recipient by default. The receipt confirms delivery. Pass its event_id as receipt with wait_for in list_agents to retrieve the result for this delivery.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true and wakes an idle recipient. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]})),
+        definition("list_agents", "List compact Agent states. To retrieve a specific delegated result, set wait_for to the recipient address and receipt to the event_id returned by send_message. Waits up to 30 seconds while the recipient is running. Without receipt, wait_for returns the latest execution by address.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1},"receipt":{"type":"integer","minimum":1,"description":"event_id from your send_message delivery receipt."}}})),
     ]
 }
 
@@ -595,6 +595,9 @@ pub(super) async fn execute(
             )?
         }
         "list_agents" => {
+            if call.args.get("receipt").is_some() && call.args.get("wait_for").is_none() {
+                return Err(Error::InvalidArgument("receipt requires wait_for".into()));
+            }
             if let Some(target) = call.args.get("wait_for") {
                 let address = target
                     .as_str()
@@ -607,9 +610,27 @@ pub(super) async fn execute(
                         "an Agent cannot wait for itself".into(),
                     ));
                 }
-                let waited = session.wait_for_agent(address).await;
-                let snapshot = current_agent_after_wait(waited, || session.agent(address))?;
-                serde_json::json!([agent_status::listing(snapshot, Some(session.events_path()))])
+                if let Some(receipt) = call.args.get("receipt") {
+                    let event_id = receipt.as_u64().filter(|id| *id > 0).ok_or_else(|| {
+                        Error::InvalidArgument("receipt requires a positive event_id".into())
+                    })?;
+                    let result = session
+                        .wait_for_delivery(
+                            pending.conversation.as_str(),
+                            address,
+                            event_id,
+                            std::time::Duration::from_secs(30),
+                        )
+                        .await?;
+                    serde_json::json!([result])
+                } else {
+                    let waited = session.wait_for_agent(address).await;
+                    let snapshot = current_agent_after_wait(waited, || session.agent(address))?;
+                    serde_json::json!([agent_status::listing(
+                        snapshot,
+                        Some(session.events_path())
+                    )])
+                }
             } else {
                 serde_json::Value::Array(
                     session
