@@ -12,6 +12,7 @@ pub(crate) const MUTED: Color = Color::Rgb(133, 146, 157);
 pub(crate) const SURFACE: Color = Color::Rgb(38, 48, 58);
 pub(crate) const SUBAGENT_SURFACE: Color = Color::Rgb(30, 37, 50);
 pub(crate) const SURFACE_TEXT: Color = Color::Rgb(229, 236, 240);
+pub(crate) const MARKDOWN_EMPHASIS: Color = Color::Rgb(184, 170, 216);
 pub(crate) const SUCCESS: Color = Color::Rgb(152, 202, 162);
 pub(crate) const WARNING: Color = Color::Rgb(232, 191, 122);
 pub(crate) const ERROR: Color = Color::Rgb(243, 145, 145);
