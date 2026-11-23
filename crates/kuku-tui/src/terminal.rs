@@ -6,6 +6,7 @@ use crossterm::cursor::{Hide, MoveTo, Show};
 #[cfg(not(windows))]
 use crossterm::event::EventStream;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::style::Colored;
 use crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -16,6 +17,7 @@ use kuku_client::{ConnectionOptions, Observation};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell, CellDiffOption, CellWidth};
 use ratatui::layout::{Position, Rect, Size};
+use ratatui::style::Color;
 use ratatui::{CompletedFrame, Terminal};
 
 use crate::app::{Address, App};
@@ -212,9 +214,19 @@ impl Screen {
         let wide_cells = &mut self.wide_cells;
         let frame = self.terminal.draw(|frame| {
             activity_visible = ui::render_at(frame, app, activity);
+            if Colored::ansi_color_disabled_memoized() {
+                strip_cell_colors(frame.buffer_mut());
+            }
             wide_cells.repair(frame.buffer_mut());
         })?;
         Ok((frame, activity_visible))
+    }
+}
+
+fn strip_cell_colors(buffer: &mut Buffer) {
+    // Crossterm 0.29 writes empty SGR parameters for suppressed colors, resetting attributes.
+    for cell in &mut buffer.content {
+        cell.set_fg(Color::Reset).set_bg(Color::Reset);
     }
 }
 
@@ -454,7 +466,39 @@ mod tests {
     use ratatui::backend::{Backend, ClearType};
     use ratatui::buffer::Cell;
 
-    use super::{Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL};
+    use super::{
+        strip_cell_colors, Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL,
+    };
+
+    #[test]
+    fn color_suppression_preserves_attributes_across_color_changes() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::style::{Color, Style};
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
+        buffer.set_string(0, 0, "X", Style::new().fg(Color::Yellow).bg(Color::Blue));
+        buffer.set_string(
+            1,
+            0,
+            "Y",
+            Style::new().fg(Color::Green).bg(Color::Blue).underlined(),
+        );
+        strip_cell_colors(&mut buffer);
+
+        let mut backend = FrameBackend::new(Vec::new());
+        backend
+            .draw(
+                buffer
+                    .content
+                    .iter()
+                    .enumerate()
+                    .map(|(x, cell)| (x as u16, 0, cell)),
+            )
+            .unwrap();
+        backend.flush().unwrap();
+        assert!(String::from_utf8_lossy(&backend.output).contains("X\x1b[4mY"));
+    }
 
     #[test]
     fn a_wide_glyph_moving_left_repaints_its_old_background() {
