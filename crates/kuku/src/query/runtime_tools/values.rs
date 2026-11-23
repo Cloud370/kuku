@@ -15,7 +15,7 @@ const MAX_RESULT_BYTES: usize = 16 * 1024;
 pub(super) fn save_definition() -> ToolDefinition {
     ToolDefinition {
         name: "save_value".into(),
-        description: "Bind an exact local name to an existing output ID without copying it, or save a small literal value. Set replace to true to change an existing binding. Returns a retained reference.".into(),
+        description: "Give an existing output or a small JSON value a name. Use replace to change a saved name.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -37,7 +37,8 @@ pub(super) fn save_definition() -> ToolDefinition {
 pub(super) fn list_definition() -> ToolDefinition {
     ToolDefinition {
         name: "list_values".into(),
-        description: "List your named values and their immutable references without reading their contents. Use next_after to fetch another page.".into(),
+        description: "List your saved names and their output references. Use next_after for more."
+            .into(),
         input_schema: json!({
             "type": "object",
             "properties": {

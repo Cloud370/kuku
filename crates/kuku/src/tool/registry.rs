@@ -41,7 +41,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                 "properties": {
                     "path": {"type": "string", "description": "Search root relative to the workspace. Defaults to the workspace root."},
                     "pattern": {"type": "string", "description": "File glob pattern, e.g. *.md or docs/**/*.md."},
-                    "max_depth": {"type": "integer", "minimum": 0, "description": "How many levels below the selected directory to search. Defaults to 0 for a listing. With a pattern, the default searches recursively within the traversal budget."}
+                    "max_depth": {"type": "integer", "minimum": 0, "description": "How many levels below the selected directory to look. Defaults to 0 for a listing. With a pattern, the default searches recursively."}
                 }
             }),
             true,
@@ -50,7 +50,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "read_file",
-            "Read a bounded page of a workspace file with line numbers. Use the returned offset to continue, or search_text to locate specific lines.",
+            "Read lines from a file. Use the returned offset to continue reading.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -185,7 +185,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         run_command_definition(&shells, session),
         tool(
             "fetch_url",
-            "Download an HTTP(S) response and return its metadata. In a Session, use read_output with the returned output ID to read its body. Standalone queries receive a temporary file path.",
+            "Download a URL. Use read_output with the returned output ID when available.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -199,7 +199,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "fetch_web",
-            "Fetch a URL and return its content converted to Markdown for LLM consumption. Large pages are summarized using the specified model tier.",
+            "Read a web page as Markdown. A large page may return a summary.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -269,7 +269,7 @@ pub(crate) fn run_command_definition(shells: &[CommandShell], session: bool) -> 
         schema["properties"]["title"] = action_title_schema();
         return tool(
             "run_command",
-            r#"Run a program with literal arguments, for example {"program":"git","args":["status"]}. To run a shell script, specify its interpreter as program. The host controls process deadlines. Returns exit status, elapsed time and output evidence. Long captures are available through read_output."#,
+            r#"Run a program, for example {"program":"git","args":["status"]}. To run a shell script, pass its interpreter as program. The host controls process deadlines. A Job means the command is still running. Check the exit code when it finishes. Use read_output for more output."#,
             schema,
             false,
             80_000,

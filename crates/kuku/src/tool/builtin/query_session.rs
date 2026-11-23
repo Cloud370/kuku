@@ -22,13 +22,13 @@ const DEFAULT_LIMIT: usize = 20;
 pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {
         name: "query_session".to_string(),
-        description: "Recall events outside your visible conversation. Filter by Agent, event kind, text or Turn range.".to_string(),
+        description: "Look up earlier Session events, such as an Agent's tool calls.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "search": { "type": "string", "description": "Text to search for in event content" },
                 "kind": { "type": "string", "description": "Filter by event kind" },
-                "conversation": { "type": "string", "description": "Filter by conversation address" },
+                "conversation": { "type": "string", "description": "Filter by Agent address" },
                 "after": { "type": "integer", "description": "Return events with id greater than this value" },
                 "from_turn": { "type": "integer", "description": "Start from N turns ago (0 = most recent)" },
                 "to_turn": { "type": "integer", "description": "Up to N turns ago (inclusive)" },

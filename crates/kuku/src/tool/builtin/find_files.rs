@@ -111,18 +111,22 @@ pub(crate) fn find_files(
         };
         let hint = match &budget_reason {
             None => format!("Found {entry_count} {scope}. Listing shortened. Narrow the path or pattern."),
-            Some(reason) => format!("Directory scan incomplete ({reason}). Found {entry_count} {scope}. Narrow the path or reduce max_depth."),
+            Some(reason) => format!("Directory scan incomplete ({reason}). Found {entry_count} {scope} so far. List a smaller folder with path."),
         };
         visible = bounded_lines(&entries, FIND_FILES_MAX_BYTES - hint.len() - 1);
         if visible.is_empty() {
             hint
+        } else if !scan_complete {
+            format!("{hint}\n{}", visible.join("\n"))
         } else {
             format!("{}\n{hint}", visible.join("\n"))
         }
     } else {
         visible.join("\n")
     };
-    let summary = if truncated {
+    let summary = if !scan_complete {
+        format!("Incomplete directory scan with {entry_count} entries found so far")
+    } else if truncated {
         format!("found {entry_count} entries under {path}, results truncated")
     } else {
         format!("found {entry_count} entries under {path}")
@@ -268,6 +272,30 @@ mod tests {
 
         assert_eq!("cancelled", result.status);
         assert_eq!(3, checks.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn directory_listing_reports_incomplete_coverage_before_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["first.txt", "second.txt"] {
+            fs::write(dir.path().join(file), "").unwrap();
+        }
+        let result = super::find_files(
+            &serde_json::json!({}),
+            dir.path(),
+            WorkspaceIoLimits {
+                scan_entries: 1,
+                ..Default::default()
+            },
+            &|| false,
+        );
+        assert!(result
+            .model_content
+            .starts_with("Directory scan incomplete"));
+        assert!(result
+            .model_content
+            .contains("List a smaller folder with path"));
+        assert_eq!(result.structured.unwrap()["scan_complete"], false);
     }
 
     #[test]

@@ -27,9 +27,8 @@ const MAX_SCRIPT_ACTIONS: usize = 2048;
 const MAX_SCRIPT_RESULT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_OUTPUT_TEXT_BYTES: usize = 1024 * 1024;
 const SCRIPT_DESCRIPTION: &str = concat!(
-    "Compose dependent tool calls in JavaScript with top-level await and return a small JSON value. ",
-    "Inside the script, call tools.<name>(args). tools.methods lists the available host methods and their input schemas. ",
-    "Standard JavaScript built-ins are available. Node and browser APIs are unavailable. Slow scripts become Session Jobs."
+    "Combine tools or process their results in JavaScript. Call await tools.<name>(args) and return a small JSON value. ",
+    "tools.methods shows the available tools and their inputs. Use JavaScript built-ins. Slow scripts return a Job."
 );
 
 /// Bounds one disposable workspace JavaScript worker and its host operations.
@@ -165,10 +164,11 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
     let mut description = format!("{SCRIPT_DESCRIPTION}\n");
     if let Some(command) = methods.iter().find(|method| method.name == "run_command") {
         description.push_str(&command.description);
-        description.push_str("Example: `const r = await tools.run_command({program:'git',args:['status','--porcelain']}); return {exit_code:r.exit_code, output_ref:r.output_ref, lines:r.exit_code === 0 && r.capture_complete ? (await r.stdout.text()).split('\\n').filter(Boolean).length : null};`.\n");
+        description.push_str("Example: `const r = await tools.run_command({program:'git',args:['status','--short']}); return {exit_code:r.exit_code, output_ref:r.output_ref};`.\n");
     }
     description.push_str("Other host methods return {status,result,truncated,error?}. Check status === 'ok' before reading result. ");
-    description.push_str("A JSON return above the inline limit is saved when output quota allows. Read its output_ref by ID if you need the full value. ");
+    description
+        .push_str("If a returned value has an output_ref, use its ID to read the full value. ");
     for op in ScriptOperation::ALL {
         let contract = method_result(op);
         if !contract.is_empty() && methods.iter().any(|method| method.name == op.name()) {

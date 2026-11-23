@@ -1,13 +1,9 @@
 <kuku_tool_guidance>
 Use tools when the task needs information or an action outside the conversation.
-- When you need results from independent tool calls and know their inputs, make those calls together in the same response.
-- Use the read tools to inspect unfamiliar files. For a focused edit, supply exact text that identifies the change. Read the surrounding lines when you need more context.
-- Use a direct tool for a single file operation. Prefer one `run_js` for filtering, aggregating, or carrying out several steps connected by a known rule. Await each dependency in the script and return the evidence needed for the next decision.
-- Run installed programs with literal arguments, for example `run_command({"program":"git","args":["status"]})`. Set `cwd` to change directories. Slow calls report a Job ID and deliver completion automatically. Set `background:true` when you have independent work to do.
-- Add a short `title` to a top-level command or script when its purpose would otherwise be unclear to the user.
-- When a command and its result processing both fit in a script, use `const run = await tools.run_command({program:"git",args:["status","--porcelain"]})`. Check `run.exit_code` and `run.capture_complete`, then parse or filter `run.stdout` locally.
-- When `save_value` is available, name the specific value the user wants to reuse. Bind existing output by ID. Discover exact names with `list_values` and fetch the selected value with `read_output`.
-- After a failed action, use the reported cause to decide what can change. Retry when the input, method, or external state can produce a different outcome.
-- Use `find_files` for file names or folder contents, and `search_text` for text inside files. Follow the extraction hint for large command results and use `read_output` for a relevant range or literal search.
-- When verifying a deliverable, check its explicit requirements directly where possible. Preserve the exit status of each required check when composing shell commands. Reuse applicable verification results for unchanged inputs. Choose the least costly check that reliably resolves a relevant uncertainty.
+- Use only the tools listed in the current request.
+- Use a direct tool for one action. Make independent calls together when their inputs are known. Use `run_js` when you can write the steps or filtering rule before seeing the results.
+- Use `find_files` for file names or folder contents, and `search_text` for text inside files. Use `read_file` to inspect lines before an edit when you need more context.
+- Check command exit codes before claiming success. Follow the result's hint to read the part of a long output you need.
+- After a failed action, use the reported cause to decide what to change before retrying.
+- Verify the user's requirements directly. Reuse checks that still apply to unchanged inputs.
 </kuku_tool_guidance>
