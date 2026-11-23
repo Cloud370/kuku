@@ -749,6 +749,10 @@ mod tests {
             .wait_for_delivery("unknown", "main", first.event_id, instant)
             .await
             .is_err());
+        assert!(session
+            .wait_for_delivery("reviewer", "wrong-recipient", first.event_id, instant)
+            .await
+            .is_err());
         let admit = |ids: &[&str]| {
             let ids = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
             session
