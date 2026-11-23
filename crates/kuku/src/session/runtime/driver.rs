@@ -728,6 +728,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delivery_wait_resolves_the_matching_turn_after_newer_work_and_reopen() {
+        let (directory, session) = session_with_agent().await;
+        let make_input = |id| {
+            let mut input = Input::new(id, "main", "delegated work");
+            input.source = crate::InputSource::Agent("reviewer".into());
+            input.activation = crate::Activation::Enqueue;
+            input
+        };
+        let first = session.send(make_input("first-delivery")).unwrap();
+        let companion = session.send(make_input("companion-delivery")).unwrap();
+        let second = session.send(make_input("second-delivery")).unwrap();
+        let instant = Duration::ZERO;
+        let pending = session
+            .wait_for_delivery("reviewer", "main", first.event_id, instant)
+            .await
+            .unwrap();
+        assert_eq!(pending["status"], "pending");
+        assert!(session
+            .wait_for_delivery("unknown", "main", first.event_id, instant)
+            .await
+            .is_err());
+        let admit = |ids: &[&str]| {
+            let ids = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+            session
+                .commit(
+                    &mut session.inner.state.lock().unwrap(),
+                    Record::InputsAccepted {
+                        address: "main".into(),
+                        message_input_ids: ids.clone(),
+                        input_ids: ids,
+                        turn: None,
+                    },
+                )
+                .unwrap()
+        };
+        let settle = |turn, output: &str| {
+            session
+                .commit(
+                    &mut session.inner.state.lock().unwrap(),
+                    Record::TurnSettled {
+                        address: "main".into(),
+                        status: AgentStatus::Idle,
+                        output: Some(output.into()),
+                        error: None,
+                        turn: Some(turn),
+                        usage: Default::default(),
+                    },
+                )
+                .unwrap()
+        };
+        let first_turn = admit(&["first-delivery", "companion-delivery"]);
+        let short_wait = session
+            .wait_for_delivery("reviewer", "main", first.event_id, instant)
+            .await
+            .unwrap();
+        assert_eq!(short_wait["status"], "timed_out");
+        assert_eq!(short_wait["turn"], first_turn);
+        let expected = {
+            let waiting = session.wait_for_delivery(
+                "reviewer",
+                "main",
+                first.event_id,
+                Duration::from_secs(2),
+            );
+            tokio::pin!(waiting);
+            tokio::select! {
+                biased;
+                result = &mut waiting => panic!("wait returned before settlement: {result:?}"),
+                _ = tokio::task::yield_now() => {}
+            }
+            settle(first_turn, "first result");
+            waiting.await.unwrap()
+        };
+        assert_eq!(expected["status"], "completed");
+        assert_eq!(expected["output"], "first result");
+        assert_eq!(expected["summary"]["tool_calls"], 0);
+        assert_eq!(
+            session
+                .wait_for_delivery("reviewer", "main", companion.event_id, instant)
+                .await
+                .unwrap()["turn"],
+            first_turn
+        );
+        let second_turn = admit(&["second-delivery"]);
+        settle(second_turn, "second result");
+        assert_eq!(
+            session
+                .wait_for_delivery("reviewer", "main", second.event_id, instant)
+                .await
+                .unwrap()["output"],
+            "second result"
+        );
+        assert_eq!(
+            session
+                .wait_for_delivery("reviewer", "main", first.event_id, instant)
+                .await
+                .unwrap(),
+            expected
+        );
+
+        let mut options = SessionOptions::new(
+            directory.path(),
+            directory.path().join("data"),
+            model_config(),
+        );
+        options.session_id = Some(session.id().into());
+        session.close().await.unwrap();
+        let reopened = Session::open(options).await.unwrap();
+        assert_eq!(
+            reopened
+                .wait_for_delivery("reviewer", "main", first.event_id, instant)
+                .await
+                .unwrap(),
+            expected
+        );
+        reopened.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn wait_for_agent_returns_snapshot_when_agent_is_idle() {
         let (_directory, session) = session_with_agent().await;
         let snapshot = session.wait_for_agent("main").await.unwrap();
