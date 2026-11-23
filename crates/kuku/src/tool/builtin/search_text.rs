@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 
 use serde::Serialize;
@@ -13,14 +13,17 @@ use crate::WorkspaceIoLimits;
 use super::common::{
     charge_entry, ensure_active, file_read_error, glob_match, is_cancellation,
     is_default_excluded_dir, is_io_limit, optional_positive_usize, relative_path, resolve_path,
-    verify_directory, workspace_path_blocked, FileCancellation, IoLimit, ScanDeadline, StableFile,
+    verify_directory, workspace_path_blocked, FileCancellation, IoLimit, ScanDeadline,
+    WorkspaceFiles,
 };
 
 mod preview;
 mod scan;
+mod workspace_scan;
 
 use preview::ContextPreview;
 use scan::FileSearch;
+use workspace_scan::{ScanStats, WorkspaceScan};
 
 const SEARCH_MATCH_BYTES: usize = 80_000;
 const PAGE_NOTICE_BYTES: usize = 320;
@@ -40,12 +43,10 @@ struct CollectedFile {
 }
 
 impl CollectedFile {
-    fn absolute(&self, workspace: &Path) -> PathBuf {
-        workspace.join(
-            self.original
-                .as_deref()
-                .unwrap_or(Path::new(&self.relative)),
-        )
+    fn path(&self) -> &Path {
+        self.original
+            .as_deref()
+            .unwrap_or(Path::new(&self.relative))
     }
 }
 
@@ -99,33 +100,56 @@ impl SearchPage {
     }
 
     fn add_match(&mut self, path: &str, line_number: usize, source: &str) {
+        let prefix_bytes = self.row_prefix_bytes(path, line_number);
+        let line = (self.view == SearchView::Lines)
+            .then(|| trim_search_line(source, self.body_budget.saturating_sub(prefix_bytes)));
+        let line_truncated = line.as_deref().is_some_and(|line| line != source);
+        self.push_match(
+            SearchMatch {
+                path: path.to_owned(),
+                line_number,
+                line,
+                line_truncated,
+            },
+            prefix_bytes,
+        );
+    }
+
+    fn row_prefix_bytes(&self, path: &str, line_number: usize) -> usize {
         let new_file = self.matches.last().is_none_or(|hit| hit.path != path);
-        let prefix_bytes = match self.view {
+        match self.view {
             SearchView::Lines => line_row_bytes(path, line_number),
             SearchView::Files if new_file => path.len() + 1,
             SearchView::Count if new_file => path.len() + usize::MAX.ilog10() as usize + 4,
             SearchView::Files | SearchView::Count => 0,
-        };
-        let line = (self.view == SearchView::Lines)
-            .then(|| trim_search_line(source, self.body_budget.saturating_sub(prefix_bytes)));
-        let line_bytes = line.as_ref().map_or(0, String::len);
+        }
+    }
+
+    fn push_match(&mut self, hit: SearchMatch, prefix_bytes: usize) {
+        let line_bytes = hit.line.as_ref().map_or(0, String::len);
         let body_bytes = prefix_bytes + line_bytes;
-        let match_bytes = path.len() + line_bytes + 64;
+        let match_bytes = hit.path.len() + line_bytes + 64;
         if body_bytes > self.body_budget - self.progress.body_bytes
             || match_bytes > SEARCH_MATCH_BYTES - self.progress.match_bytes
         {
             self.progress.full = true;
             return;
         }
-        let line_truncated = line.as_deref().is_some_and(|line| line != source);
-        self.matches.push(SearchMatch {
-            path: path.to_owned(),
-            line_number,
-            line,
-            line_truncated,
-        });
+        self.matches.push(hit);
         self.progress.body_bytes += body_bytes;
         self.progress.match_bytes += match_bytes;
+    }
+
+    fn append_page(&mut self, page: Self) {
+        self.progress.total += page.progress.total;
+        for hit in page.matches {
+            if self.progress.full || self.matches.len() == self.limit {
+                break;
+            }
+            let prefix = self.row_prefix_bytes(&hit.path, hit.line_number);
+            self.push_match(hit, prefix);
+        }
+        self.progress.full |= page.progress.full;
     }
 }
 
@@ -172,7 +196,7 @@ pub(crate) fn search_text(
         }
     };
     let deadline = ScanDeadline::new(limits.scan_timeout_ms);
-    let mut search = match FileSearch::new(pattern, limits.search_line_bytes, deadline) {
+    let search = match FileSearch::new(pattern, limits.search_line_bytes, deadline) {
         Ok(search) => search,
         Err(error) => {
             return ToolResultEnvelope::error(
@@ -198,7 +222,7 @@ pub(crate) fn search_text(
         deadline,
         cancelled,
     };
-    let mut budget_reason = match candidates.collect(&resolved.path) {
+    let collection_limit = match candidates.collect(&resolved.path) {
         Ok(()) => None,
         Err(error) if is_io_limit(&error) => Some(error.to_string()),
         Err(error) => return file_read_error(Path::new(path), error),
@@ -221,73 +245,28 @@ pub(crate) fn search_text(
     let body_budget = preview_bytes - PAGE_NOTICE_BYTES;
     let mut page = SearchPage::new(offset, limit, view_kind, body_budget);
     let mut preview = ContextPreview::new(body_budget);
-    let mut context_reader = (context > 0 && view_kind == SearchView::Lines).then(|| {
-        FileSearch::new("^", limits.search_line_bytes, deadline).expect("valid line matcher")
-    });
-    let mut bytes_left = limits.scan_bytes;
-    let mut context_bytes_left = 16 * 1024 * 1024;
-    let mut skipped_file_count = 0_usize;
-    let mut searched_file_count = 0_usize;
-    for file in &files {
-        if let Err(error) = deadline.check() {
-            budget_reason = Some(error.to_string());
-            break;
-        }
-        let absolute = file.absolute(&resolved.workspace);
-        let mut input = match StableFile::open(&absolute, cancelled) {
-            Ok(input) => input,
-            Err(error) if is_cancellation(&error) => {
-                return file_read_error(Path::new(path), error);
-            }
-            Err(_) => {
-                skipped_file_count += 1;
-                continue;
-            }
-        };
-        let previous_count = page.matches.len();
-        let previous_progress = page.progress;
-        let scan = search
-            .scan(&mut input, &mut bytes_left, |number, line| {
-                page.matched(&file.relative, number, line)
-            })
-            .and_then(|()| input.verify(&absolute));
-        if let Err(error) = scan {
-            if is_cancellation(&error) {
-                return file_read_error(Path::new(path), error);
-            }
-            page.progress = previous_progress;
-            page.matches.truncate(previous_count);
-            skipped_file_count += 1;
-            if is_io_limit(&error) {
-                budget_reason.get_or_insert_with(|| error.to_string());
-                if bytes_left == 0 {
-                    break;
-                }
-            }
-            continue;
-        }
-        searched_file_count += 1;
-        if let Some(reader) = &mut context_reader {
-            let mut context_allowance = context_bytes_left.min(bytes_left);
-            let available = context_allowance;
-            if let Err(error) = preview.extend(
-                &file.relative,
-                &absolute,
-                &mut input,
-                reader,
-                &mut context_allowance,
-                &page.matches[previous_count..],
-                previous_count,
-                context,
-            ) {
-                return file_read_error(Path::new(path), error);
-            }
-            let consumed = available - context_allowance;
-            context_bytes_left -= consumed;
-            bytes_left -= consumed;
-        }
-    }
+    let source = match WorkspaceFiles::new(&resolved.workspace) {
+        Ok(source) => source,
+        Err(error) => return file_read_error(Path::new(path), error),
+    };
+    let scan = WorkspaceScan {
+        source: &source,
+        deadline,
+        cancelled,
+    };
+    let ScanStats {
+        searched: searched_file_count,
+        skipped: skipped_file_count,
+        limit: scan_limit,
+    } = match scan.run(search, &files, &mut page, &mut preview, context, limits) {
+        Ok(stats) => stats,
+        Err(error) => return file_read_error(Path::new(path), error),
+    };
+    let budget_reason = collection_limit.or(scan_limit);
 
+    if let Err(error) = source.verify_root() {
+        return file_read_error(Path::new(path), error);
+    }
     let total_match_count = page.progress.total;
     let sliced = page.matches;
     let next_offset = offset.saturating_add(sliced.len());

@@ -39,6 +39,115 @@ pub(crate) struct StableFile<'a> {
     cancelled: &'a FileCancellation<'a>,
 }
 
+pub(crate) struct WorkspaceFiles<'a> {
+    path: &'a Path,
+    #[cfg(target_os = "linux")]
+    directory: Option<File>,
+}
+
+impl<'a> WorkspaceFiles<'a> {
+    pub(crate) fn new(path: &'a Path) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let directory = {
+            use rustix::fs::{openat2, Mode, OFlags, ResolveFlags, CWD};
+            use rustix::io::Errno;
+
+            match openat2(
+                CWD,
+                path,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            ) {
+                Ok(directory) => Some(File::from(directory)),
+                Err(Errno::NOSYS | Errno::INVAL | Errno::PERM | Errno::OPNOTSUPP) => None,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        Ok(Self {
+            path,
+            #[cfg(target_os = "linux")]
+            directory,
+        })
+    }
+
+    pub(crate) fn open<'b>(
+        &self,
+        relative: &Path,
+        cancelled: &'b FileCancellation<'b>,
+    ) -> io::Result<StableFile<'b>> {
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = &self.directory {
+            use rustix::fs::OFlags;
+
+            ensure_active(cancelled)?;
+            let file = open_in_workspace(directory, relative, OFlags::RDONLY | OFlags::NONBLOCK)?;
+            let opened = file.metadata()?;
+            if !opened.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "path is not a file",
+                ));
+            }
+            return Ok(StableFile {
+                file,
+                opened,
+                cancelled,
+            });
+        }
+        StableFile::open(&self.path.join(relative), cancelled)
+    }
+
+    pub(crate) fn verify(&self, relative: &Path, file: &StableFile<'_>) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = &self.directory {
+            use rustix::fs::OFlags;
+
+            ensure_active(file.cancelled)?;
+            let current = open_in_workspace(directory, relative, OFlags::PATH)?.metadata()?;
+            if !same_version_marker(&file.opened, &current) {
+                return Err(changed_during_read());
+            }
+            return Ok(());
+        }
+        file.verify(&self.path.join(relative))
+    }
+
+    pub(crate) fn verify_root(&self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = &self.directory {
+            use std::os::unix::fs::MetadataExt;
+
+            let opened = directory.metadata()?;
+            let current = fs::symlink_metadata(self.path)?;
+            if !current.is_dir()
+                || (current.dev(), current.ino()) != (opened.dev(), opened.ino())
+                || self.path.canonicalize()? != self.path
+            {
+                return Err(changed_during_read());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_in_workspace(
+    directory: &File,
+    path: &Path,
+    oflags: rustix::fs::OFlags,
+) -> io::Result<File> {
+    use rustix::fs::{openat2, Mode, OFlags, ResolveFlags};
+
+    Ok(File::from(openat2(
+        directory,
+        path,
+        oflags | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+    )?))
+}
+
 impl<'a> StableFile<'a> {
     pub(crate) fn open(path: &Path, cancelled: &'a FileCancellation<'a>) -> io::Result<Self> {
         ensure_active(cancelled)?;
@@ -784,6 +893,38 @@ mod tests {
             Err(WorkspaceCommitError::Conflict)
         ));
         assert_eq!(b"current", fs::read(path).unwrap().as_slice());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_file_verification_detects_moved_and_replaced_paths() {
+        use std::os::unix::fs::symlink;
+        use std::path::Path;
+
+        use super::WorkspaceFiles;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        let folder = workspace.join("folder");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("item.txt"), b"original").unwrap();
+        let source = WorkspaceFiles::new(&workspace).unwrap();
+        let relative = Path::new("folder/item.txt");
+        let old = source.open(relative, &|| false).unwrap();
+        source.verify(relative, &old).unwrap();
+
+        let moved = root.join("moved");
+        fs::rename(folder, &moved).unwrap();
+        symlink(&moved, workspace.join("folder")).unwrap();
+        assert!(source.open(relative, &|| false).is_err());
+        assert!(source.verify(relative, &old).is_err());
+
+        fs::rename(&workspace, root.join("old-workspace")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        if source.directory.is_some() {
+            assert!(source.verify_root().is_err());
+        }
     }
 
     #[test]

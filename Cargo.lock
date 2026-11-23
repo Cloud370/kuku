@@ -1830,6 +1830,7 @@ dependencies = [
  "regex-syntax",
  "rpds",
  "rquickjs",
+ "rustix",
  "serde",
  "serde_json",
  "serde_yaml",

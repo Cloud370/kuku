@@ -34,6 +34,16 @@ impl Listing {
     fn push(&mut self, path: String, kind: EntryKind) {
         let depth = path.bytes().filter(|byte| *byte == b'/').count();
         self.count += 1;
+        if self.first_bytes > FIND_FILES_MAX_BYTES
+            && self
+                .first
+                .peek()
+                .is_some_and(|(tail_kind, tail_depth, tail_path)| {
+                    (kind, depth, path.as_str()) >= (*tail_kind, *tail_depth, tail_path.as_str())
+                })
+        {
+            return;
+        }
         self.first_bytes += path.len() + 1;
         self.first.push((kind, depth, path));
         while let Some((_, _, last)) = self.first.peek() {

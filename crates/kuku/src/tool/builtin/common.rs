@@ -18,7 +18,8 @@ pub(crate) use file_io::{
     file_version_with_text, format_content_hash, invalid_utf8, is_cancellation, is_io_limit,
     mutation_preview, path_lock, publish_file, read_context_file, read_file_as_utf8_bounded,
     remove_observed_file, valid_utf8_prefix, write_atomically, FileCancellation, IoLimit,
-    LimitedReader, ScanDeadline, StableFile, Utf8Reader, FILE_BUFFER_BYTES, FILE_SCAN_BYTES,
+    LimitedReader, ScanDeadline, StableFile, Utf8Reader, WorkspaceFiles, FILE_BUFFER_BYTES,
+    FILE_SCAN_BYTES,
 };
 #[cfg(test)]
 use snapshot::find_write_snapshot;

@@ -11,6 +11,7 @@ use crate::tool::builtin::common::{
 pub(super) const SCAN_BYTES: IoLimit = IoLimit("search input byte budget exhausted");
 const LINE_BYTES: IoLimit = IoLimit("a line exceeds the search buffer budget");
 
+#[derive(Clone)]
 pub(super) struct FileSearch {
     regex: Regex,
     filter: Option<ByteRegex>,
@@ -46,11 +47,18 @@ impl FileSearch {
         &mut self,
         input: &mut impl Read,
         bytes_left: &mut u64,
+        matched: impl FnMut(usize, &str) -> bool,
+    ) -> io::Result<()> {
+        let reader = LimitedReader::new(input, bytes_left, SCAN_BYTES).with_deadline(self.deadline);
+        self.scan_reader(reader, matched)
+    }
+
+    pub(super) fn scan_reader(
+        &mut self,
+        input: impl Read,
         mut matched: impl FnMut(usize, &str) -> bool,
     ) -> io::Result<()> {
-        let mut reader = Utf8Reader::new(
-            LimitedReader::new(input, bytes_left, SCAN_BYTES).with_deadline(self.deadline),
-        );
+        let mut reader = Utf8Reader::new(input);
         let mut line_number = 1;
         let mut end = 0;
         loop {

@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 
 use super::{trim_search_line, FileSearch, SearchMatch};
-use crate::tool::builtin::common::{is_cancellation, StableFile};
+use crate::tool::builtin::common::{is_cancellation, StableFile, WorkspaceFiles};
 
 struct ContextRow {
     before_match: usize,
@@ -28,7 +28,8 @@ impl ContextPreview {
     pub(super) fn extend(
         &mut self,
         relative: &str,
-        absolute: &Path,
+        path: &Path,
+        source: &WorkspaceFiles<'_>,
         input: &mut StableFile<'_>,
         reader: &mut FileSearch,
         bytes_left: &mut u64,
@@ -76,7 +77,7 @@ impl ContextPreview {
             self.rows.push(ContextRow { before_match, text });
             true
         });
-        if let Err(error) = read.and_then(|()| input.verify(absolute)) {
+        if let Err(error) = read.and_then(|()| source.verify(path, input)) {
             if is_cancellation(&error) {
                 return Err(error);
             }
