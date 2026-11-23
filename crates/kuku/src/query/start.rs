@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-use crate::conversation::address::ConversationAddress;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::log::{
@@ -209,29 +208,7 @@ impl Query {
                 kuku_version: env!("CARGO_PKG_VERSION").to_string(),
             })?;
         }
-        let has_conversation = existing_events.iter().any(|event| {
-            matches!(
-                &event.payload,
-                EventPayload::ConversationOpened { conversation, .. }
-                    if conversation == self.conversation.as_str()
-            )
-        });
-        if !has_conversation {
-            store.append(EventPayload::ConversationOpened {
-                ts: now_timestamp()?,
-                conversation: self.conversation.as_str().to_string(),
-            })?;
-            if let Some(binding_id) = self.agent_binding_id.as_ref() {
-                store.append(EventPayload::ConversationBound {
-                    ts: now_timestamp()?,
-                    conversation: self.conversation.as_str().to_string(),
-                    binding_id: binding_id.clone(),
-                })?;
-            }
-        }
-
         let prompts_dir = self.prompts_dir.take();
-        let agent_registry = self.agent_registry.clone();
         let tool_registry_override = self.tool_registry_override.clone();
 
         let plugin_registry_opt = if config.plugin.enabled && !compact_only {
@@ -258,11 +235,7 @@ impl Query {
                     &conversation,
                     turn,
                     &self.prompt,
-                    self.message_from
-                        .as_ref()
-                        .map(ConversationAddress::as_str)
-                        .or_else(|| self.input_source.agent_address()),
-                    self.via_tool_call_id.as_deref(),
+                    self.input_source.agent_address(),
                     &self.input_source,
                 )?;
             }
@@ -445,7 +418,6 @@ impl Query {
                 }
             }
         }
-        let agent_binding_id = self.agent_binding_id.clone();
         let (admitted_tool_call_ids, tool_rounds) =
             resumed_tools(&existing_events, turn, &conversation);
 
@@ -472,13 +444,10 @@ impl Query {
             waiting_for_job_input: false,
             config,
             prompts_dir,
-            agent_registry,
             bootstrap_skill,
             skill_registry,
             previous_skill_registry,
-            child_session_count: 0,
             frozen_turn_prefix: super::types::TurnPrefixFreeze::default(),
-            agent_binding_id,
             tool_registry_override,
             catalog,
             cancel_token: cancel_token.clone(),
@@ -550,7 +519,7 @@ impl Query {
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { request }) => {
-                    run.decide(&request.id, choice, None).await?;
+                    run.decide(&request.id, choice).await?;
                 }
                 Some(UiEvent::Done { output, .. }) => return Ok(output),
                 Some(_) => continue,

@@ -57,32 +57,12 @@ struct ModelAttempt {
 }
 
 impl AgentUsage {
-    pub(super) fn settle(
-        &mut self,
-        turn: Option<u64>,
-        total: &mut UsageTotals,
-        mut legacy: UsageTotals,
-    ) -> Result<()> {
-        if !self.has_turn(turn) {
-            if legacy.model_requests > 0 {
-                total.latest_request = None;
-            }
-            if legacy.unreported_requests == 0 {
-                if legacy.input_tokens.is_some() {
-                    legacy.input_reported_requests = legacy.model_requests;
-                }
-                if legacy.output_tokens.is_some() {
-                    legacy.output_reported_requests = legacy.model_requests;
-                }
-            }
-            add_totals(total, &legacy)?;
-        }
+    pub(super) fn settle(&mut self, turn: Option<u64>) {
         *self = Self {
             turn,
             settled: true,
             ..Self::default()
         };
-        Ok(())
     }
 
     pub(super) fn turn_totals(&self, turn: Option<u64>) -> UsageTotals {
@@ -360,9 +340,7 @@ pub(super) fn reduce_model_fact(state: &mut State, payload: &EventPayload) -> Re
             usage,
         ),
         "runtime.model_retry" => match value.get("phase").and_then(Value::as_str) {
-            None | Some("started") => {
-                ledger.retry(request, value["attempt"].as_u64().unwrap_or(2), usage)
-            }
+            Some("started") => ledger.retry(request, value["attempt"].as_u64().unwrap_or(2), usage),
             _ => Ok(()),
         },
         "runtime.model_usage" => {
@@ -547,30 +525,15 @@ mod tests {
     }
 
     #[test]
-    fn replay_accepts_legacy_totals_and_counts_each_request_attempt_once() {
+    fn replay_counts_each_request_attempt_once() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let mut store = EventStore::open(&path).unwrap();
         create_agent(&mut store, "main");
-        let legacy = begin_turn(&mut store, "main");
-        settle_turn(
-            &mut store,
-            "main",
-            legacy,
-            json!({"input_tokens":17,"output_tokens":9,"cache_read_input_tokens":10,
-                "model_requests":1,"unreported_requests":0}),
-        );
-        let loaded = Session::read_view(&path, "main").unwrap().snapshot.usage;
-        assert_eq!(Some(17), loaded.input_tokens);
-        assert!(loaded.input_tokens_complete() && loaded.output_tokens_complete());
-        assert_eq!(None, loaded.cache_hit_percent());
-        assert_eq!(None, loaded.latest_request);
-        assert_eq!(None, loaded.average_output_tokens_per_second());
-
         let turn = begin_turn(&mut store, "main");
         let model_facts = [
             json!({"kind":"runtime.step_prepared","context_window_tokens":100}),
-            json!({"kind":"runtime.model_retry","attempt":2}),
+            json!({"kind":"runtime.model_retry","phase":"started","attempt":2}),
             json!({"kind":"runtime.model_usage","usage":{"input_tokens":8,"cache_read_input_tokens":3}}),
         ];
         for fact in model_facts {
@@ -578,10 +541,10 @@ mod tests {
             model_fact(&mut store, "main", turn, "req_1", fact);
         }
         let before = Session::read_view(&path, "main").unwrap().snapshot.usage;
-        assert_eq!(3, before.model_requests);
+        assert_eq!(2, before.model_requests);
         assert_eq!(2, before.unreported_requests);
-        assert_eq!(Some(25), before.input_tokens);
-        assert_eq!(Some(9), before.output_tokens);
+        assert_eq!(Some(8), before.input_tokens);
+        assert_eq!(None, before.output_tokens);
         assert!(!before.input_tokens_complete() && !before.output_tokens_complete());
         assert_eq!(Some(8.0), before.context_percent());
         assert_eq!(None, before.output_tokens_per_second());
@@ -601,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_usage_counts_started_and_legacy_events_but_not_waiting_or_stopped() {
+    fn retry_usage_counts_only_started_events() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let mut store = EventStore::open(&path).unwrap();
@@ -639,15 +602,8 @@ mod tests {
             "req_1",
             json!({"kind":"runtime.model_retry","phase":"started","attempt":2}),
         );
-        model_fact(
-            &mut store,
-            "main",
-            turn,
-            "req_1",
-            json!({"kind":"runtime.model_retry","attempt":3}),
-        );
         assert_eq!(
-            3,
+            2,
             Session::read_view(&path, "main")
                 .unwrap()
                 .snapshot
@@ -689,8 +645,11 @@ mod tests {
         settle_turn(&mut store, "main", turn, json!(previous));
 
         let next = begin_turn(&mut store, "main");
-        for kind in ["runtime.step_prepared", "runtime.model_retry"] {
-            model_fact(&mut store, "main", next, "unreported", json!({"kind":kind}));
+        for fact in [
+            json!({"kind":"runtime.step_prepared"}),
+            json!({"kind":"runtime.model_retry","phase":"started","attempt":2}),
+        ] {
+            model_fact(&mut store, "main", next, "unreported", fact);
         }
         let reopened = Session::read_view(&path, "main").unwrap().snapshot.usage;
         assert_eq!(8, reopened.model_requests);

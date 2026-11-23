@@ -339,9 +339,6 @@ mod tests {
                 job: None,
                 label: "active command".to_string(),
                 cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
-                nested_permissions: std::sync::Arc::new(std::sync::Mutex::new(
-                    std::collections::HashMap::new(),
-                )),
             },
         );
         let mut run = Run {

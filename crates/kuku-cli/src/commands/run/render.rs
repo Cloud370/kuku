@@ -35,9 +35,7 @@ enum Preview {
         #[serde(flatten)]
         info: ModelRecoveryInfo,
     },
-    ToolOutput {
-        event: Value,
-    },
+    ToolOutput,
     Error {
         code: String,
         message: String,
@@ -132,10 +130,8 @@ impl RunRenderer {
                 }
             }
             Preview::ModelRecovery { info } => self.recovery(info)?,
-            Preview::ToolOutput { event: nested } => {
-                if let Some(info) = nested_model_recovery(&nested) {
-                    self.recovery(info)?;
-                } else if self.stream_json && nested.get("permission").is_none() {
+            Preview::ToolOutput => {
+                if self.stream_json {
                     write_json(&event)?;
                 }
             }
@@ -304,8 +300,4 @@ pub(super) fn tool_record(entry: &HistoryEntry) -> Option<OutputLine> {
         | HistoryKind::Other => return None,
     };
     Some(record.with_conversation(Some(entry.agent.clone())))
-}
-
-pub(super) fn nested_model_recovery(event: &Value) -> Option<ModelRecoveryInfo> {
-    serde_json::from_value(event.get("model_recovery")?.clone()).ok()
 }

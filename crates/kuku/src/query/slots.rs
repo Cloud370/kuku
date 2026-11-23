@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Notify};
 
@@ -10,10 +9,8 @@ use crate::tool::ToolResultEnvelope;
 
 use super::job_slots::ForegroundJob;
 use super::types::{
-    ExecSlot, PendingRun, PermissionChoice, QueuedToolCall, SlotEvent, ToolEvent, ToolKind,
-    WorkspaceAccess,
+    ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolEvent, ToolKind, WorkspaceAccess,
 };
-use super::UiEvent;
 
 pub(crate) fn workspace_access(tool_name: &str) -> WorkspaceAccess {
     match tool_name {
@@ -21,7 +18,7 @@ pub(crate) fn workspace_access(tool_name: &str) -> WorkspaceAccess {
             WorkspaceAccess::Read
         }
         "run_js" | "remove_file" | "edit_file" | "write_file" | "remember_memory"
-        | "forget_memory" | "run_command" | "agent" => WorkspaceAccess::Exclusive,
+        | "forget_memory" | "run_command" => WorkspaceAccess::Exclusive,
         _ => WorkspaceAccess::Independent,
     }
 }
@@ -121,141 +118,6 @@ pub(crate) fn spawn_simple_slot(
         label: summary,
         cancel,
         job: None,
-        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_agent_slot(
-    tool_call_id: String,
-    conversation: Option<crate::conversation::address::ConversationAddress>,
-    dispatch: crate::agent::runtime::PreparedDispatch,
-    summary: String,
-    workspace: std::path::PathBuf,
-    kuku_home: std::path::PathBuf,
-    config: Arc<crate::config::Config>,
-    prompts_dir: Option<std::path::PathBuf>,
-    event_tx: mpsc::Sender<(String, SlotEvent)>,
-) -> ExecSlot {
-    let cancel = Arc::new(Notify::new());
-    let nested_permissions: Arc<Mutex<HashMap<String, oneshot::Sender<PermissionChoice>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
-    let cancel_clone = cancel.clone();
-    let cp = nested_permissions.clone();
-    let tc_id = tool_call_id.clone();
-    let tool_kind = ToolKind::Agent {
-        conversation: dispatch.conversation.clone(),
-        binding_id: dispatch.binding.binding_id.clone(),
-    };
-    let dispatch_for_slot = dispatch.clone();
-
-    tokio::spawn(async move {
-        let mut child_run = match crate::agent::runtime::start_run(
-            dispatch_for_slot,
-            &workspace,
-            &kuku_home,
-            config,
-            prompts_dir.as_deref(),
-        )
-        .await
-        {
-            Ok(run) => run,
-            Err(_) => {
-                let _ = event_tx
-                    .send((
-                        tc_id.clone(),
-                        agent_error_event("agent: failed to start conversation".to_string()),
-                    ))
-                    .await;
-                return;
-            }
-        };
-
-        loop {
-            let event = tokio::select! {
-                biased;
-                _ = cancel_clone.notified() => {
-                    child_run.cancel();
-                    let _ = event_tx.send((tc_id.clone(), cancelled_slot(format!("{} cancelled", dispatch.conversation.as_str())))).await;
-                    return;
-                }
-                result = child_run.next() => result,
-            };
-            match event {
-                Ok(Some(UiEvent::Done { output, .. })) => {
-                    let output_text = output.text.clone();
-                    let _ = event_tx
-                        .send((
-                            tc_id.clone(),
-                            SlotEvent::Done(ToolResultEnvelope::ok(
-                                format!(
-                                    "{} completed in {} turns",
-                                    dispatch.conversation.as_str(),
-                                    output.turn
-                                ),
-                                output.text,
-                                serde_json::json!({
-                                    "kind": "agent_result",
-                                    "conversation": dispatch.conversation.as_str(),
-                                    "binding_id": dispatch.binding.binding_id,
-                                    "turns_completed": output.turn,
-                                    "text": output_text,
-                                }),
-                            )),
-                        ))
-                        .await;
-                    return;
-                }
-                Ok(Some(UiEvent::PermissionRequested { request })) => {
-                    let request_id = request.id.clone();
-                    let (ptx, prx) = oneshot::channel();
-                    cp.lock().unwrap().insert(request_id.clone(), ptx);
-                    let _ = event_tx
-                        .send((
-                            tc_id.clone(),
-                            SlotEvent::Output(ToolEvent::PermissionRequested { request }),
-                        ))
-                        .await;
-                    let choice = prx.await.unwrap_or(PermissionChoice::Deny);
-                    let _ = child_run.decide(&request_id, choice, None).await;
-                }
-                Ok(Some(child_event)) => {
-                    if let Some(te) = map_ui_to_tool_event(child_event) {
-                        if event_tx
-                            .send((tc_id.clone(), SlotEvent::Output(te)))
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                }
-                Ok(None) | Err(_) => {
-                    let _ = event_tx
-                        .send((
-                            tc_id.clone(),
-                            agent_error_event(format!(
-                                "{}: stream ended unexpectedly",
-                                dispatch.conversation.as_str()
-                            )),
-                        ))
-                        .await;
-                    return;
-                }
-            }
-        }
-    });
-
-    ExecSlot {
-        tool_call_id,
-        conversation,
-        kind: tool_kind,
-        workspace_access: WorkspaceAccess::Exclusive,
-        label: summary,
-        cancel,
-        job: None,
-        nested_permissions,
     }
 }
 
@@ -365,7 +227,6 @@ pub(super) fn spawn_command_slot(
         label: summary,
         cancel,
         job,
-        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
 }
 
@@ -417,7 +278,6 @@ pub(super) fn spawn_job_control(
         label: queued.display_summary.clone(),
         cancel,
         job: None,
-        nested_permissions: Default::default(),
     }
 }
 
@@ -512,68 +372,7 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
         label: summary,
         cancel,
         job: None,
-        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     }
-}
-
-pub(crate) fn map_ui_to_tool_event(event: crate::query::UiEvent) -> Option<ToolEvent> {
-    use crate::query::UiEvent;
-    match event {
-        UiEvent::TextDelta { text } => Some(ToolEvent::TextDelta { text }),
-        UiEvent::ThinkingDelta { text } => Some(ToolEvent::ThinkingDelta { text }),
-        UiEvent::ToolStart {
-            id,
-            tool,
-            summary,
-            kind,
-        } => Some(ToolEvent::ToolStart {
-            id,
-            tool,
-            summary,
-            kind,
-        }),
-        UiEvent::ToolOutput { id, event } => Some(ToolEvent::ToolOutput {
-            id,
-            event: Box::new(event),
-        }),
-        UiEvent::ToolEnd {
-            id,
-            status,
-            summary,
-            ..
-        } => Some(ToolEvent::ToolEnd {
-            id,
-            status,
-            summary,
-        }),
-        UiEvent::PermissionRequested { request } => {
-            Some(ToolEvent::PermissionRequested { request })
-        }
-        UiEvent::Error { code, message } => Some(ToolEvent::Error { code, message }),
-        UiEvent::ModelRequest {
-            conversation,
-            turn,
-            request_id,
-            request_ordinal,
-            ..
-        } => Some(ToolEvent::ModelRequest {
-            conversation,
-            turn,
-            request_id,
-            request_ordinal,
-        }),
-        UiEvent::ModelRecovery { info } => Some(ToolEvent::ModelRecovery { info }),
-        UiEvent::Done { .. } => None,
-        UiEvent::TurnStart { .. }
-        | UiEvent::Log { .. }
-        | UiEvent::Cancelled { .. }
-        | UiEvent::ModelProgress { .. }
-        | UiEvent::ModelOutputUsage { .. } => None,
-    }
-}
-
-fn agent_error_event(summary: String) -> SlotEvent {
-    SlotEvent::Done(ToolResultEnvelope::error(summary, ""))
 }
 
 fn cancelled_slot(summary: impl Into<String>) -> SlotEvent {
@@ -650,7 +449,6 @@ mod tests {
             "remember_memory",
             "forget_memory",
             "run_command",
-            "agent",
         ] {
             assert_eq!(
                 workspace_access(tool_name),
@@ -665,20 +463,6 @@ mod tests {
                 "{tool_name}"
             );
         }
-    }
-
-    #[test]
-    fn agent_error_event_has_stable_structured_marker() {
-        let SlotEvent::Done(result) = agent_error_event("agent failed".to_string()) else {
-            panic!("expected terminal agent event");
-        };
-
-        assert_eq!("error", result.status);
-        assert!(!result.truncated);
-        assert_eq!(
-            Some(serde_json::json!({"kind": "error"})),
-            result.structured
-        );
     }
 
     #[tokio::test]

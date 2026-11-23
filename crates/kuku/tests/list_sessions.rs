@@ -8,7 +8,6 @@ fn session_events(session_id: &str, created_at: &str, prompt: &str) -> String {
     format!(
         concat!(
             "{{\"id\":1,\"ts\":\"{created_at}\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"{session_id}\",\"created_at\":\"{created_at}\",\"kuku_version\":\"0.1.0\"}}\n",
-            "{{\"id\":2,\"ts\":\"{created_at}\",\"kind\":\"conversation.opened\",\"conversation\":\"main\"}}\n",
             "{{\"id\":3,\"ts\":\"{created_at}\",\"kind\":\"message.user\",\"conversation\":\"main\",\"turn\":1,\"text\":\"{prompt}\"}}\n",
             "{{\"id\":4,\"ts\":\"{created_at}\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}}\n",
             "{{\"id\":5,\"ts\":\"{created_at}\",\"kind\":\"turn.completed\",\"conversation\":\"main\",\"turn\":1}}\n"
@@ -181,7 +180,6 @@ fn pruning_logs_does_not_break_session_listing() {
     );
     let events_path = sessions_dir.join("s_keep/events.jsonl");
     let before = EventStore::replay(&events_path).unwrap();
-    assert_eq!(before.len(), 5);
 
     let logs = home.join("logs/runtime");
     std::fs::create_dir_all(&logs).unwrap();
@@ -207,7 +205,7 @@ fn pruning_logs_does_not_break_session_listing() {
     assert_eq!(sessions[0].status, SessionStatus::Done);
     assert!(events_path.exists());
     let replayed = EventStore::replay(&events_path).unwrap();
-    assert_eq!(replayed.len(), 5);
+    assert_eq!(before, replayed);
     assert!(matches!(
         &replayed[0].payload,
         EventPayload::SessionCreated { session_id, .. } if session_id == "s_keep"
@@ -227,7 +225,7 @@ fn oversized_final_event_line_still_marks_session_done() {
         &sessions_dir,
         "s_large_tail",
         &format!(
-            "{{\"id\":1,\"ts\":\"2026-05-01T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_large_tail\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}}\n{{\"id\":2,\"ts\":\"2026-05-01T00:00:00Z\",\"kind\":\"conversation.opened\",\"conversation\":\"main\"}}\n{{\"id\":3,\"ts\":\"2026-05-01T00:00:01Z\",\"kind\":\"message.user\",\"conversation\":\"main\",\"turn\":1,\"text\":\"hello\"}}\n{{\"id\":4,\"ts\":\"2026-05-01T00:00:01Z\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}}\n{{\"id\":5,\"ts\":\"2026-05-01T00:00:02Z\",\"kind\":\"turn.completed\",\"conversation\":\"main\",\"turn\":1,\"summary\":\"{}\"}}\n",
+            "{{\"id\":1,\"ts\":\"2026-05-01T00:00:00Z\",\"kind\":\"session.created\",\"schema_version\":2,\"session_id\":\"s_large_tail\",\"created_at\":\"2026-05-01T00:00:00Z\",\"kuku_version\":\"0.1.0\"}}\n{{\"id\":3,\"ts\":\"2026-05-01T00:00:01Z\",\"kind\":\"message.user\",\"conversation\":\"main\",\"turn\":1,\"text\":\"hello\"}}\n{{\"id\":4,\"ts\":\"2026-05-01T00:00:01Z\",\"kind\":\"turn.started\",\"conversation\":\"main\",\"turn\":1}}\n{{\"id\":5,\"ts\":\"2026-05-01T00:00:02Z\",\"kind\":\"turn.completed\",\"conversation\":\"main\",\"turn\":1,\"summary\":\"{}\"}}\n",
             large_text
         ),
     );

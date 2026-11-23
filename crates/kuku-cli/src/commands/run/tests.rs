@@ -1,12 +1,12 @@
 use clap::Parser;
 use kuku::conversation::address::ConversationAddress;
-use kuku::{PermissionRequest, ToolEvent, UiEvent};
+use kuku::PermissionRequest;
 use kuku_client::HistoryEntry;
 use serde_json::{json, Value};
 
 use crate::cli_args::{Cli, Command};
 
-use super::render::{nested_model_recovery, tool_record};
+use super::render::tool_record;
 use super::{
     parse_slash_command, permission_ask_line, permission_decision_line, run_input,
     slash_command_candidate,
@@ -58,25 +58,6 @@ fn script_connection_flags_remain_available_on_the_run_command() {
     );
     assert_eq!(["inspect", "--a-prompt-flag"], args.prompt.as_slice());
     assert!(args.json);
-}
-
-#[test]
-fn nested_model_recovery_exposes_child_invalidation_boundary() {
-    let info = kuku::query::ModelRecoveryInfo {
-        conversation: ConversationAddress::parse("review").unwrap(),
-        turn: 2,
-        from_request_id: "req_1".into(),
-        to_request_id: "req_2".into(),
-        reason: kuku::event::ModelStopReason::Length,
-        attempt: 1,
-        max_attempts: 1,
-    };
-    let event = UiEvent::ToolOutput {
-        id: "toolu_agent_parent".into(),
-        event: ToolEvent::ModelRecovery { info: info.clone() },
-    };
-    let wire = kuku::wire::to_wire(&event).unwrap();
-    assert_eq!(Some(info), nested_model_recovery(&wire["event"]));
 }
 
 #[test]

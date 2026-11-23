@@ -1,10 +1,6 @@
-//! Conversation domain types.
+//! Agent-addressed event routing.
 
 pub mod address;
-pub mod binding;
 pub mod reducer;
 
-pub use reducer::{
-    active_turn, completed_turns, conversation_events, reduce_conversations, ConversationState,
-    TurnState, TurnTerminal,
-};
+pub use reducer::{active_turn, conversation_events, TurnState};

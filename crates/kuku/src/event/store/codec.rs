@@ -35,7 +35,7 @@ macro_rules! probe_fields {
 }
 
 fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_json::Result<()> {
-    // NOTE: Probe borrowed fields before the legacy codec can clone them into JSON values.
+    // Probe borrowed fields before generic JSON decoding allocates owned values.
     probe_fields!(
         payload,
         writer,
@@ -155,16 +155,9 @@ fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_jso
             created_at,
             kuku_version
         },
-        ConversationOpened { ts, conversation },
-        ConversationBound {
-            ts,
-            conversation,
-            binding_id
-        },
         PromptSnapshot {
             ts,
             conversation,
-            binding_id,
             snapshot_id,
             turn,
             messages,
@@ -188,7 +181,6 @@ fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_jso
             turn,
             text,
             from,
-            via_tool_call_id,
             job_delivery
         },
         MessageAssistant {
@@ -221,18 +213,6 @@ fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_jso
             turn,
             reason,
             partial_reply
-        },
-        ConversationRollback {
-            ts,
-            conversation,
-            to_turn,
-            to_event_id,
-            scope
-        },
-        ConversationRollbackUndone {
-            ts,
-            conversation,
-            rollback_event_id
         },
     )
 }

@@ -2,16 +2,12 @@ use std::path::{Path, PathBuf};
 
 use sha2::Digest;
 
-use crate::agent::catalog::render_agent_directory;
-use crate::agent::registry::AgentRegistry;
 use crate::conversation::address::ConversationAddress;
-use crate::conversation::reducer::{conversation_events, reduce_conversations, TurnTerminal};
 use crate::event::{EventPayload, StoredEvent};
 use crate::skill::session::loaded_skill_names;
 
 use super::types::{
-    ContextBudgetTier, ContextDriftEntry, ContextDriftStatus, ConversationInboxMessage, Notice,
-    NoticeKind, NoticeSeverity, OpenConversationEntry,
+    ContextBudgetTier, ContextDriftEntry, ContextDriftStatus, Notice, NoticeKind, NoticeSeverity,
 };
 
 pub(crate) struct NoticeAssemblyInput<'a> {
@@ -19,24 +15,10 @@ pub(crate) struct NoticeAssemblyInput<'a> {
     pub(crate) events: &'a [StoredEvent],
     pub(crate) context_budget_tier: ContextBudgetTier,
     pub(crate) conversation: &'a ConversationAddress,
-    pub(crate) agent_registry: Option<&'a AgentRegistry>,
 }
 
 pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notice> {
     let mut notices = Vec::new();
-
-    if input.conversation.is_main() {
-        if let Some(notice) = build_agent_directory_notice(input.agent_registry, input.events) {
-            notices.push(notice);
-        }
-        if let Some(notice) = build_open_conversations_notice(input.events, input.conversation) {
-            notices.push(notice);
-        }
-    }
-
-    if let Some(notice) = build_inbox_notice(input.events, input.conversation) {
-        notices.push(notice);
-    }
 
     if let Some(notice) = build_loaded_skills_notice(input.events, input.conversation) {
         notices.push(notice);
@@ -55,82 +37,6 @@ pub(crate) fn build_runtime_notices(input: NoticeAssemblyInput<'_>) -> Vec<Notic
     }
 
     notices
-}
-
-fn build_agent_directory_notice(
-    registry: Option<&AgentRegistry>,
-    events: &[StoredEvent],
-) -> Option<Notice> {
-    let registry = registry?;
-    let open_conversations = reduce_conversations(events)
-        .into_iter()
-        .filter(|state| !state.address.is_main())
-        .count();
-    let directory = render_agent_directory(registry, open_conversations)?;
-    Some(Notice {
-        kind: NoticeKind::AgentDirectory { directory },
-        severity: NoticeSeverity::Info,
-    })
-}
-
-fn build_open_conversations_notice(
-    events: &[StoredEvent],
-    target: &ConversationAddress,
-) -> Option<Notice> {
-    let entries = reduce_conversations(events)
-        .into_iter()
-        .filter(|state| !state.address.is_main() && &state.address != target)
-        .map(|state| OpenConversationEntry {
-            conversation: state.address,
-            summary: match state.last_terminal {
-                Some((turn, TurnTerminal::Completed)) => format!("turn {turn} completed"),
-                Some((turn, TurnTerminal::Cancelled)) => format!("turn {turn} cancelled"),
-                Some((turn, TurnTerminal::Interrupted)) => format!("turn {turn} interrupted"),
-                None if state.active_turn.is_some() => "turn in progress".to_string(),
-                None => "opened".to_string(),
-            },
-        })
-        .collect::<Vec<_>>();
-
-    if entries.is_empty() {
-        None
-    } else {
-        Some(Notice {
-            kind: NoticeKind::OpenConversations { entries },
-            severity: NoticeSeverity::Info,
-        })
-    }
-}
-
-fn build_inbox_notice(events: &[StoredEvent], target: &ConversationAddress) -> Option<Notice> {
-    let messages = conversation_events(events, target)
-        .into_iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::MessageUser {
-                conversation,
-                text,
-                from,
-                ..
-            } if conversation == target.as_str() && from.is_some() => {
-                Some(ConversationInboxMessage {
-                    from: from
-                        .as_deref()
-                        .and_then(|value| ConversationAddress::parse(value).ok()),
-                    text: text.clone(),
-                })
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    if messages.is_empty() {
-        None
-    } else {
-        Some(Notice {
-            kind: NoticeKind::ConversationInbox { messages },
-            severity: NoticeSeverity::Info,
-        })
-    }
 }
 
 fn build_loaded_skills_notice(
@@ -287,66 +193,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn host_input_is_not_rendered_as_conversation_inbox_notice() {
-        let events = vec![StoredEvent {
-            id: 1,
-            payload: EventPayload::MessageUser {
-                ts: "t1".to_string(),
-                conversation: "main".to_string(),
-                turn: 1,
-                text: "current host input".to_string(),
-                from: None,
-                via_tool_call_id: None,
-                job_delivery: false,
-            },
-        }];
-
-        let notices = build_runtime_notices(NoticeAssemblyInput {
-            workspace: Path::new("."),
-            events: &events,
-            context_budget_tier: ContextBudgetTier::Normal,
-            conversation: &ConversationAddress::MAIN,
-            agent_registry: None,
-        });
-
-        assert!(!notices
-            .iter()
-            .any(|notice| matches!(notice.kind, NoticeKind::ConversationInbox { .. })));
-    }
-
-    #[test]
-    fn forwarded_message_is_rendered_as_conversation_inbox_notice() {
-        let review = ConversationAddress::parse("review").unwrap();
-        let events = vec![StoredEvent {
-            id: 1,
-            payload: EventPayload::MessageUser {
-                ts: "t1".to_string(),
-                conversation: "review".to_string(),
-                turn: 1,
-                text: "delegated input".to_string(),
-                from: Some("main".to_string()),
-                via_tool_call_id: Some("toolu_agent_review".to_string()),
-                job_delivery: false,
-            },
-        }];
-
-        let notices = build_runtime_notices(NoticeAssemblyInput {
-            workspace: Path::new("."),
-            events: &events,
-            context_budget_tier: ContextBudgetTier::Normal,
-            conversation: &review,
-            agent_registry: None,
-        });
-
-        let catalog = builtin_prompt_catalog();
-        let rendered = notices
-            .iter()
-            .find_map(|n| render_notice_body(n, &catalog))
-            .expect("inbox notice should render");
-        assert!(rendered.contains("from main: delegated input"));
-    }
-
     fn make_prompt_snapshot(
         id: u64,
         conversation: &str,
@@ -358,7 +204,6 @@ mod tests {
             payload: EventPayload::PromptSnapshot {
                 ts: "2026-01-01T00:00:00Z".to_string(),
                 conversation: conversation.to_string(),
-                binding_id: conversation.to_string(),
                 snapshot_id: "snap_1".to_string(),
                 turn: 1,
                 messages: vec![],
@@ -373,12 +218,12 @@ mod tests {
                     provider: "test".to_string(),
                     renderer: "test".to_string(),
                 },
+                agent_registry: None,
                 tool_registry: Box::new(crate::context::provenance::ToolRegistryProvenance {
                     hash: "count:0".to_string(),
                     names: vec![],
                     tool_count: 0,
                 }),
-                agent_registry: None,
                 skill_registry: Box::new(None),
                 plugin_registry: Box::new(None),
                 capabilities: crate::context::provenance::PromptCapabilityMetadata {
@@ -413,7 +258,6 @@ mod tests {
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
-            agent_registry: None,
         });
         let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
@@ -442,7 +286,6 @@ mod tests {
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
-            agent_registry: None,
         });
 
         assert!(notices.is_empty(), "no drift when hashes match");
@@ -468,7 +311,6 @@ mod tests {
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
-            agent_registry: None,
         });
         let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 
@@ -499,7 +341,6 @@ mod tests {
             events: &events,
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
-            agent_registry: None,
         });
         let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
 

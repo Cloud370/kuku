@@ -14,7 +14,7 @@ pub(super) fn register_tools(options: &SessionOptions) -> Result<BTreeMap<String
             "at most 128 host tools are supported".into(),
         ));
     }
-    let reserved = crate::tool::builtin_registry(true, true)
+    let reserved = crate::tool::builtin_registry(true)
         .into_iter()
         .chain(crate::query::runtime_tool_definitions())
         .map(|tool| tool.name)
@@ -160,7 +160,7 @@ impl Session {
                     .values()
                     .map(|tool| tool.spec.definition()),
             )
-            .filter(|tool| !matches!(tool.name.as_str(), "agent" | "fetch_web"))
+            .filter(|tool| tool.name != "fetch_web")
             .filter(|tool| !disabled_collaboration_tool(tool.name.as_str()))
             .filter(|tool| {
                 crate::query::runtime_tool_supported(
@@ -307,7 +307,7 @@ fn resolve_defaults(
                     .collect()
             })
             .into_iter()
-            .filter(|name| !matches!(name.as_str(), "agent" | "fetch_web"))
+            .filter(|name| name != "fetch_web")
             .collect()
     });
     Ok(config)

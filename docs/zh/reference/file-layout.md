@@ -41,7 +41,7 @@ $KUKU_HOME/p/code/my-app/
 
 - `events.jsonl` 是唯一权威账本；`events.jsonl.lock` 用于单写者操作系统锁（关闭后锁文件可留在磁盘）。
 - `outputs/` 存放有界帧格式的命令输出、派生输出与命名值字节，命名和分享元数据记在日志里。
-- Agent 在日志内使用扁平地址，没有按 Agent 拆分的子目录或隐藏别名（旧 Session 里可能留有历史回滚备份）。
+- Agent 在日志内使用扁平地址，没有按 Agent 拆分的子目录或隐藏别名。
 - 日志默认以纯 JSONL 写入。[满足条件的正常关闭](../how-it-works/sessions.md#日志何时压缩)会把较早历史封存为带内嵌检查点的独立 gzip 帧，新事件继续以 JSONL 追加到同一文件尾部。`kuku events --file <path> --all --json` 对两种布局透明读取。[Session 事件](events.md) · [Session 机制](../how-it-works/sessions.md) · [SDK](sdk.md)
 
 ## 目录创建意图文件（Unix）

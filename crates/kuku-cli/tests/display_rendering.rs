@@ -313,7 +313,6 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
                 turn: 1,
                 text: "review message".into(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             },
         },
@@ -343,24 +342,6 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
 }
 
 #[test]
-fn event_brief_renders_conversation_address_for_conversation_opened() {
-    let event = kuku::event::StoredEvent {
-        id: 2,
-        payload: kuku::event::EventPayload::Unknown(serde_json::json!({
-            "id": 2,
-            "ts": "2026-06-09T00:00:01Z",
-            "kind": "conversation.opened",
-            "conversation": "session://s_001/conversations/c_main"
-        })),
-    };
-
-    let line = render_event_brief(&event, true);
-
-    assert!(line.contains("conversation.opened"));
-    assert!(line.contains("session://s_001/conversations/c_main"));
-}
-
-#[test]
 fn event_brief_renders_terminal_turn_states() {
     let cancelled = kuku::event::StoredEvent {
         id: 11,
@@ -368,7 +349,7 @@ fn event_brief_renders_terminal_turn_states() {
             "id": 11,
             "ts": "2026-06-09T00:00:10Z",
             "kind": "turn.cancelled",
-            "conversation": "session://s_001/conversations/c_main",
+            "conversation": "main",
             "turn": 2,
             "reason": "user_cancelled"
         })),
@@ -379,7 +360,7 @@ fn event_brief_renders_terminal_turn_states() {
             "id": 12,
             "ts": "2026-06-09T00:00:11Z",
             "kind": "turn.interrupted",
-            "conversation": "session://s_001/conversations/c_main",
+            "conversation": "main",
             "turn": 3,
             "reason": "approval_required"
         })),

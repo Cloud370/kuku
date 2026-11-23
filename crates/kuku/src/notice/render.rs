@@ -1,9 +1,6 @@
-use crate::conversation::address::ConversationAddress;
 use crate::prompt::PromptCatalog;
 
-use super::types::{
-    ContextDriftStatus, ConversationInboxMessage, Notice, NoticeKind, OpenConversationEntry,
-};
+use super::types::{ContextDriftStatus, Notice, NoticeKind};
 
 /// Get a block template from the catalog, falling back to an inline string.
 fn block_tmpl<'a>(catalog: &'a PromptCatalog, name: &str, fallback: &'a str) -> &'a str {
@@ -40,46 +37,6 @@ pub(crate) fn render_notice_body(notice: &Notice, catalog: &PromptCatalog) -> Op
             );
             Some(wrapper.replace("{{notice_body}}", &format!("{body}{NOTICE_IGNORE_HINT}")))
         }
-        NoticeKind::AgentDirectory { directory } => {
-            let tmpl = block_tmpl(
-                catalog,
-                "notice-agent-directory",
-                "<kuku_system_notice>\nThis conversation can route work to specialist agents.\n{{agent_list}}\nUse exact agent names when delegating.\n</kuku_system_notice>",
-            );
-            Some(tmpl.replace("{{agent_list}}", directory))
-        }
-        NoticeKind::OpenConversations { entries } => {
-            if entries.is_empty() {
-                return None;
-            }
-            let list = entries
-                .iter()
-                .map(render_open_conversation_entry)
-                .collect::<Vec<_>>()
-                .join("\n");
-            let tmpl = block_tmpl(
-                catalog,
-                "notice-open-conversations",
-                "<kuku_system_notice>\nOpen conversations:\n{{conversation_list}}\n</kuku_system_notice>",
-            );
-            Some(tmpl.replace("{{conversation_list}}", &list))
-        }
-        NoticeKind::ConversationInbox { messages } => {
-            if messages.is_empty() {
-                return None;
-            }
-            let list = messages
-                .iter()
-                .map(render_inbox_message)
-                .collect::<Vec<_>>()
-                .join("\n");
-            let tmpl = block_tmpl(
-                catalog,
-                "notice-inbox",
-                "<kuku_system_notice>\nUnread messages:\n{{inbox_messages}}\n</kuku_system_notice>",
-            );
-            Some(tmpl.replace("{{inbox_messages}}", &list))
-        }
         NoticeKind::LoadedSkills { skills } => {
             if skills.is_empty() {
                 return None;
@@ -102,33 +59,10 @@ fn render_context_drift_entry(entry: &super::types::ContextDriftEntry) -> String
     format!("- {} ({})", entry.path, status)
 }
 
-fn render_open_conversation_entry(entry: &OpenConversationEntry) -> String {
-    format!(
-        "- {}: {}",
-        render_conversation(&entry.conversation),
-        entry.summary
-    )
-}
-
-fn render_inbox_message(message: &ConversationInboxMessage) -> String {
-    let from = message
-        .from
-        .as_ref()
-        .map(render_conversation)
-        .unwrap_or("host".to_string());
-    format!("- from {}: {}", from, message.text)
-}
-
-fn render_conversation(conversation: &ConversationAddress) -> String {
-    conversation.as_str().to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notice::types::{
-        ContextDriftEntry, ContextDriftStatus, NoticeSeverity, OpenConversationEntry,
-    };
+    use crate::notice::types::{ContextDriftEntry, ContextDriftStatus, NoticeSeverity};
     use crate::prompt::builtin_prompt_catalog;
 
     fn test_catalog() -> PromptCatalog {
@@ -163,25 +97,6 @@ mod tests {
         assert!(!rendered.contains("line 17"));
         assert!(!rendered.contains("current preview:"));
         // Now wrapped with system-notice template
-        assert!(rendered.contains("<kuku_system_notice>"));
-    }
-
-    #[test]
-    fn renders_open_conversation_summary_body() {
-        let catalog = test_catalog();
-        let notice = Notice {
-            kind: NoticeKind::OpenConversations {
-                entries: vec![OpenConversationEntry {
-                    conversation: ConversationAddress::parse("review").unwrap(),
-                    summary: "waiting on response".to_string(),
-                }],
-            },
-            severity: NoticeSeverity::Info,
-        };
-
-        let rendered = render_notice_body(&notice, &catalog).expect("should render");
-        assert!(rendered.contains("Open conversations:"));
-        assert!(rendered.contains("review: waiting on response"));
         assert!(rendered.contains("<kuku_system_notice>"));
     }
 }

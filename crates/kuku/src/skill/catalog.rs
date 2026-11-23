@@ -13,11 +13,31 @@ pub fn render_skill_catalog(
     loaded_skill_names: &[String],
     changes: Option<&SkillChanges>,
 ) -> Option<String> {
-    render_skill_catalog_state(registry, loaded_skill_names, changes, true)
+    render_skill_catalog_state(
+        registry,
+        loaded_skill_names,
+        changes,
+        true,
+        &[HINT_LIST_SKILLS, HINT_SEARCH_SKILLS],
+    )
 }
 
-pub fn render_static_skill_catalog(registry: &SkillRegistry) -> Option<String> {
-    render_skill_catalog_state(registry, &[], None, false)
+pub fn render_static_skill_catalog(
+    registry: &SkillRegistry,
+    tools: &[crate::context::ToolSchema],
+) -> Option<String> {
+    let has_tool = |name: &str| tools.iter().any(|tool| tool.name == name);
+    let hints = [
+        ("list_skills", HINT_LIST_SKILLS),
+        ("search_skills", HINT_SEARCH_SKILLS),
+    ]
+    .into_iter()
+    .filter_map(|(tool, hint)| has_tool(tool).then_some(hint))
+    .collect::<Vec<_>>();
+    if hints.is_empty() && !has_tool("use_skill") {
+        return None;
+    }
+    render_skill_catalog_state(registry, &[], None, false, &hints)
 }
 
 pub(crate) fn render_skill_change_notice(changes: &SkillChanges) -> Option<String> {
@@ -29,12 +49,12 @@ fn render_skill_catalog_state(
     loaded_skill_names: &[String],
     changes: Option<&SkillChanges>,
     include_runtime_state: bool,
+    hint_lines: &[&str],
 ) -> Option<String> {
     let change_line = include_runtime_state
         .then(|| changes.and_then(render_skill_changes))
         .flatten();
     let total_line = format!("Available skills: {} total", registry.len());
-    let hint_lines = [HINT_LIST_SKILLS.to_string(), HINT_SEARCH_SKILLS.to_string()];
 
     let mut header_lines = Vec::new();
     if let Some(change_line) = change_line {
@@ -52,7 +72,7 @@ fn render_skill_catalog_state(
             render_preview_line(definition.name.as_str(), definition.description.as_str())
         })
         .collect::<Vec<_>>();
-    let block = pack_skill_block(&header_lines, &preview_candidates, &hint_lines);
+    let block = pack_skill_block(&header_lines, &preview_candidates, hint_lines);
 
     debug_assert!(block.len() <= MAX_SKILLS_BLOCK_BYTES);
     Some(block)
@@ -61,7 +81,7 @@ fn render_skill_catalog_state(
 fn pack_skill_block(
     header_lines: &[String],
     preview_candidates: &[String],
-    hint_lines: &[String; 2],
+    hint_lines: &[&str],
 ) -> String {
     let mut preview_lines = Vec::new();
     let mut best_block = assemble_skill_block(
@@ -99,7 +119,7 @@ fn assemble_skill_block(
     header_lines: &[String],
     preview_lines: &[String],
     overflow_line: Option<&str>,
-    hint_lines: &[String; 2],
+    hint_lines: &[&str],
 ) -> String {
     let mut lines = Vec::new();
     lines.push("<kuku_skills>".to_string());
@@ -108,7 +128,7 @@ fn assemble_skill_block(
     if let Some(overflow_line) = overflow_line {
         lines.push(overflow_line.to_string());
     }
-    lines.extend(hint_lines.iter().cloned());
+    lines.extend(hint_lines.iter().map(|hint| (*hint).to_owned()));
     lines.push("</kuku_skills>".to_string());
     lines.join("\n")
 }
@@ -287,7 +307,15 @@ mod tests {
             .with_definition(skill_definition("tdd", "Write tests first"))
             .build();
 
-        let catalog = render_static_skill_catalog(&registry).expect("should render");
+        let tools = [crate::context::ToolSchema {
+            name: "list_skills".into(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+        }];
+        assert!(render_static_skill_catalog(&registry, &[]).is_none());
+        let catalog = render_static_skill_catalog(&registry, &tools).expect("should render");
+        assert!(catalog.contains("Use list_skills"));
+        assert!(!catalog.contains("search_skills"));
 
         assert!(catalog.contains("Available skills: 1 total"));
         assert!(catalog.contains("tdd - Write tests first"));
@@ -346,9 +374,9 @@ mod tests {
             "Available skills: 15 total".to_string(),
         ];
         let preview_candidates = vec!["p".repeat(320); 15];
-        let hint_lines = [HINT_LIST_SKILLS.to_string(), HINT_SEARCH_SKILLS.to_string()];
 
-        let block = pack_skill_block(&header_lines, &preview_candidates, &hint_lines);
+        let hints = [HINT_LIST_SKILLS, HINT_SEARCH_SKILLS];
+        let block = pack_skill_block(&header_lines, &preview_candidates, &hints);
 
         assert!(block.len() <= MAX_SKILLS_BLOCK_BYTES);
         assert!(block.contains("... +11 more"));
@@ -362,9 +390,9 @@ mod tests {
             "Available skills: 12 total".to_string(),
         ];
         let preview_candidates = vec![render_preview_line("skill", &"界".repeat(400)); 12];
-        let hint_lines = [HINT_LIST_SKILLS.to_string(), HINT_SEARCH_SKILLS.to_string()];
 
-        let block = pack_skill_block(&header_lines, &preview_candidates, &hint_lines);
+        let hints = [HINT_LIST_SKILLS, HINT_SEARCH_SKILLS];
+        let block = pack_skill_block(&header_lines, &preview_candidates, &hints);
 
         assert!(block.len() <= MAX_SKILLS_BLOCK_BYTES);
         assert!(block.contains("... +"));

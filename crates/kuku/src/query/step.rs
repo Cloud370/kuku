@@ -5,9 +5,7 @@ use super::helpers::{
     resolved_tool_available,
 };
 use super::run::find_tool_definition;
-use super::slots::{
-    dispatch_tool_slot, query_workspace_access, spawn_agent_slot, SlotDispatchArgs,
-};
+use super::slots::{dispatch_tool_slot, query_workspace_access, SlotDispatchArgs};
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::tool_response::{self, validate_tool_calls, ToolResponseError};
 use super::types::{
@@ -57,55 +55,6 @@ fn return_blocked_tool(
         summary: reason.to_string(),
         model_content: None,
         result: Some(blocked),
-    });
-    Ok(PendingStep::Pending {
-        pending: Box::new(pending),
-        slot: None,
-        event: Some(UiEvent::ToolStart {
-            id: id.to_string(),
-            tool: tool_name.to_string(),
-            summary: display_summary.to_string(),
-            kind,
-        }),
-    })
-}
-
-fn return_tool_result(
-    mut pending: PendingRun,
-    id: &str,
-    tool_name: &str,
-    display_summary: &str,
-    kind: super::types::ToolKind,
-    status: &str,
-    summary: &str,
-) -> Result<PendingStep> {
-    let mut store = EventStore::open(&pending.events_path)?;
-    store.append(EventPayload::ToolResult {
-        turn: pending.turn,
-        ts: now_timestamp()?,
-        conversation: None,
-        tool_call_id: id.to_string(),
-        status: status.to_string(),
-        summary: summary.to_string(),
-        model_content: String::new(),
-        truncated: false,
-        files_read: Vec::new(),
-        files_changed: Vec::new(),
-        commands_run: Vec::new(),
-        memory_changed: None,
-        structured: None,
-    })?;
-    if status == "error" {
-        pending.record_tool_error(tool_name);
-    } else {
-        pending.record_tool_call(tool_name);
-    }
-    pending.pending_events.push_back(UiEvent::ToolEnd {
-        id: id.to_string(),
-        status: status.to_string(),
-        summary: summary.to_string(),
-        model_content: None,
-        result: None,
     });
     Ok(PendingStep::Pending {
         pending: Box::new(pending),
@@ -624,117 +573,7 @@ pub(super) async fn advance_pending(
         let id = queued.tool_call.id.clone();
         let summary = queued.display_summary.clone();
 
-        if queued.tool_call.name == "agent" {
-            // --- Agent call ---
-            let target = queued
-                .tool_call
-                .args
-                .get("to")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let prompt = queued
-                .tool_call
-                .args
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let tier = queued
-                .tool_call
-                .args
-                .get("tier")
-                .and_then(|v| v.as_str())
-                .map(ToOwned::to_owned);
-
-            let dispatch = match crate::agent::runtime::prepare_dispatch(
-                pending.agent_registry.as_ref(),
-                &EventStore::replay(&pending.events_path)?,
-                &pending.conversation,
-                target,
-                prompt,
-                tier,
-                &id,
-            ) {
-                Ok(dispatch) => dispatch,
-                Err(error) => {
-                    return return_tool_result(
-                        pending,
-                        &id,
-                        "agent",
-                        &summary,
-                        super::types::ToolKind::Simple,
-                        "error",
-                        &error,
-                    );
-                }
-            };
-
-            if pending.child_session_count >= 2 {
-                return return_blocked_tool(
-                    pending,
-                    &id,
-                    "agent",
-                    &summary,
-                    super::types::ToolKind::Simple,
-                    "blocked: maximum agent delegation depth (2) reached",
-                );
-            }
-
-            if active_slot_count >= 32 {
-                return return_blocked_tool(
-                    pending,
-                    &id,
-                    "agent",
-                    &summary,
-                    super::types::ToolKind::Simple,
-                    "blocked: maximum concurrent slots (32) reached",
-                );
-            }
-
-            let hook_result =
-                run_tool_pre_hooks(&mut pending, "agent", &queued.tool_call.args, &id).await?;
-            if let Some(block) = hook_result.block {
-                return return_blocked_tool(
-                    pending,
-                    &id,
-                    "agent",
-                    &summary,
-                    super::types::ToolKind::Simple,
-                    &block.reason,
-                );
-            }
-
-            pending.child_session_count += 1;
-            let label = format!(
-                "{} · {}",
-                dispatch.conversation.as_str(),
-                truncate_summary(prompt, 60)
-            );
-            let slot = spawn_agent_slot(
-                id.clone(),
-                (!pending.conversation.is_main()).then(|| pending.conversation.clone()),
-                dispatch,
-                label,
-                pending.workspace.clone(),
-                pending.kuku_home.clone(),
-                pending.config.clone(),
-                pending.prompts_dir.clone(),
-                slot_event_tx,
-            );
-
-            let kind = slot.kind.clone();
-
-            pending.record_tool_call("agent");
-            return Ok(PendingStep::Pending {
-                pending: Box::new(pending),
-                slot: Some(slot),
-                event: Some(UiEvent::ToolStart {
-                    id: id.clone(),
-                    tool: "agent".to_string(),
-                    summary: summary.clone(),
-                    kind,
-                }),
-            });
-        } else if is_inline_skill_tool(&queued.tool_call.name)
+        if is_inline_skill_tool(&queued.tool_call.name)
             && resolved_tool_available(&pending, &queued.tool_call.name)
         {
             let hook_result = run_tool_pre_hooks(
@@ -972,34 +811,4 @@ pub(super) fn cancellation_step(mut pending: PendingRun) -> Result<PendingStep> 
         None,
         pending.turn,
     ))
-}
-
-fn truncate_summary(s: &str, max: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
-        format!("{}...", &s[..end])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncate_summary_handles_multibyte() {
-        let s = "这是中文测试字符串";
-        let result = truncate_summary(s, 8);
-        assert!(result.ends_with("..."));
-        assert!(result.len() <= 27);
-    }
-
-    #[test]
-    fn truncate_summary_short_string_unchanged() {
-        let s = "hello";
-        let result = truncate_summary(s, 60);
-        assert_eq!(result, "hello");
-    }
 }

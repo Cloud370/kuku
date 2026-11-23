@@ -69,13 +69,10 @@ pub(super) fn make_test_pending(
         resumed_permission_requests: std::collections::VecDeque::new(),
         config: std::sync::Arc::new(test_config()),
         prompts_dir: None,
-        agent_registry: None,
         skill_registry: None,
         previous_skill_registry: None,
         bootstrap_skill: None,
         frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),
-        child_session_count: 0,
-        agent_binding_id: None,
         tool_registry_override: None,
         pending_events: std::collections::VecDeque::new(),
         pending_error: None,
@@ -287,7 +284,6 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     ts: "t".into(),
                     text: "rewound target input".into(),
                     from: None,
-                    via_tool_call_id: None,
                     job_delivery: false,
                 })
                 .unwrap(),
@@ -321,7 +317,6 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     ts: "t".into(),
                     text: "rewound target input".into(),
                     from: None,
-                    via_tool_call_id: None,
                     job_delivery: false,
                 })
                 .unwrap()
@@ -366,7 +361,6 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
             ts: "t".into(),
             text: "new input after rewind".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();

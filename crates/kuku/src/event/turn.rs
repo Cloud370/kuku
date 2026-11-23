@@ -22,29 +22,6 @@ impl PartialReply {
     }
 }
 
-/// Scope of a turn rollback operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RollbackScope {
-    #[serde(rename = "messages")]
-    ConversationOnly,
-    #[serde(rename = "file_changes")]
-    FilesOnly,
-    #[serde(rename = "both")]
-    Both,
-}
-
-impl RollbackScope {
-    /// Whether this scope skips conversation events during rebuild.
-    pub fn affects_conversation(&self) -> bool {
-        matches!(self, Self::ConversationOnly | Self::Both)
-    }
-
-    /// Whether this scope triggers file revert operations.
-    pub fn affects_files(&self) -> bool {
-        matches!(self, Self::FilesOnly | Self::Both)
-    }
-}
-
 pub(super) fn encode_interruption(
     id: u64,
     ts: &str,

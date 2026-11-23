@@ -152,7 +152,7 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
         UiEvent::PermissionRequested { request } => request,
         _ => unreachable!(),
     };
-    run.decide(&request.id, kuku::query::PermissionChoice::Session, None)
+    run.decide(&request.id, kuku::query::PermissionChoice::Session)
         .await
         .unwrap();
     let mut event = run.next().await.unwrap().expect("event");

@@ -1,8 +1,7 @@
 use super::{
-    apply_file_revert, compute_file_revert_plan, compute_message_rewind_plan,
-    filter_rolled_back_events, message_rewind_file_read, message_rewind_file_read_with_flags,
-    message_rewind_file_write, plan_file_rewind, te, tool_result_read_with_flags, tr, ts, ui,
-    FileRestore, RevertPlan,
+    apply_message_rewind_files, compute_message_rewind_plan, filter_rolled_back_events,
+    message_rewind_file_read, message_rewind_file_read_with_flags, message_rewind_file_write,
+    plan_file_rewind, te, ts, ui, FileRestore, RevertPlan,
 };
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
@@ -151,7 +150,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
     assert_eq!(plan.restores[0].new_content_on_plan, "after edit\n");
     assert!(plan.deletes.is_empty());
     assert!(plan.unrecoverable.is_empty());
-    apply_file_revert(&plan, workspace_alias, session_dir, 7).unwrap();
+    apply_message_rewind_files(&plan, workspace_alias, session_dir, 7).unwrap();
 
     assert_eq!(std::fs::read(&canonical_file).unwrap(), b"before\n");
     assert_eq!(std::fs::read(&file_alias).unwrap(), b"before\n");
@@ -159,63 +158,6 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         std::fs::read(session_dir.join("pre-revert-7/rewind.txt")).unwrap(),
         b"after edit\n"
     );
-}
-
-fn assert_real_legacy_file_revert(workspace_alias: &Path, session_dir: &Path) {
-    let conversation = ConversationAddress::MAIN;
-    let file_alias = workspace_alias.join("legacy-rewind.txt");
-    std::fs::write(&file_alias, b"before\n").unwrap();
-    let canonical_file = file_alias.canonicalize().unwrap();
-    let mut events = vec![ts(1, 1), ui(2, 1, "rewind real file tools")];
-
-    let read = builtin::read_file(
-        &json!({"path": "legacy-rewind.txt"}),
-        workspace_alias,
-        &conversation,
-        &events,
-        3,
-        crate::RuntimeLimits::default().max_preview_bytes,
-        &never_cancelled,
-    );
-    assert_eq!(read.status, "ok");
-    assert_eq!(
-        read.structured.as_ref().unwrap()["canonical_path"].as_str(),
-        Some(canonical_file.to_string_lossy().as_ref())
-    );
-    events.push(tool_result_event(3, 1, &conversation, "legacy-read", read));
-    events.push(te(4, 1));
-    events.push(ts(5, 2));
-
-    let write = builtin::write_file(
-        &json!({"path": "legacy-rewind.txt", "content": "after\n"}),
-        workspace_alias,
-        &conversation,
-        &events,
-        &never_cancelled,
-    );
-    assert_eq!(write.status, "ok");
-    assert_eq!(
-        write.structured.as_ref().unwrap()["canonical_path"].as_str(),
-        Some(canonical_file.to_string_lossy().as_ref())
-    );
-    events.push(tool_result_event(
-        6,
-        2,
-        &conversation,
-        "legacy-write",
-        write,
-    ));
-
-    let plan = compute_file_revert_plan(&events, 1, workspace_alias);
-    assert_eq!(
-        plan.restores.len(),
-        1,
-        "unrecoverable={:?}",
-        plan.unrecoverable
-    );
-    assert_eq!(plan.restores[0].old_content, "before\n");
-    apply_file_revert(&plan, workspace_alias, session_dir, 7).unwrap();
-    assert_eq!(std::fs::read(&file_alias).unwrap(), b"before\n");
 }
 
 fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path) {
@@ -347,30 +289,8 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
     );
     assert_eq!(plan.restores[0].old_content, "after edit\n");
     assert_eq!(plan.restores[0].new_content_on_plan, "after target\n");
-    apply_file_revert(&plan, workspace_alias, session_dir, 12).unwrap();
+    apply_message_rewind_files(&plan, workspace_alias, session_dir, 12).unwrap();
     assert_eq!(std::fs::read(&file_alias).unwrap(), b"after edit\n");
-}
-
-#[test]
-fn cached_read_only_marks_unrecoverable_without_mutating_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let session_dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("b.txt"), "changed").unwrap();
-    let events = vec![
-        ts(1, 1),
-        tool_result_read_with_flags(2, 1, "b.txt", "cached", true, true),
-        te(3, 1),
-        ts(4, 2),
-        tr(5, 2, "tc2", "file_write", "b.txt", "changed"),
-        te(6, 2),
-    ];
-    let plan = compute_file_revert_plan(&events, 1, dir.path());
-    assert_eq!(plan.unrecoverable.len(), 1);
-    apply_file_revert(&plan, dir.path(), session_dir.path(), 10).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
-        "changed"
-    );
 }
 
 fn assert_message_rewind_ignores_invalid_read(full: bool, cached: bool) {
@@ -395,7 +315,7 @@ fn assert_message_rewind_ignores_invalid_read(full: bool, cached: bool) {
     let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
     assert!(plan.restores.is_empty());
     assert_eq!(plan.unrecoverable, vec![file.clone()]);
-    apply_file_revert(&plan, workspace.path(), session_dir.path(), 10).unwrap();
+    apply_message_rewind_files(&plan, workspace.path(), session_dir.path(), 10).unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), b"changed");
 }
 
@@ -441,7 +361,7 @@ fn assert_real_created_file_deletion(workspace_alias: &Path, session_dir: &Path)
     let plan = compute_message_rewind_plan(&events, "main", 2, workspace_alias).unwrap();
     assert_eq!(plan.deletes, vec![canonical_file.clone()]);
     assert!(plan.unrecoverable.is_empty());
-    apply_file_revert(&plan, workspace_alias, session_dir, 4).unwrap();
+    apply_message_rewind_files(&plan, workspace_alias, session_dir, 4).unwrap();
     assert!(!canonical_file.exists());
 }
 
@@ -544,7 +464,7 @@ fn message_rewind_prefers_canonical_path_for_agent_subdirectory() {
     ];
 
     let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
-    apply_file_revert(&plan, workspace.path(), session_dir.path(), 4).unwrap();
+    apply_message_rewind_files(&plan, workspace.path(), session_dir.path(), 4).unwrap();
 
     assert_eq!(
         "root",
@@ -591,7 +511,7 @@ fn message_rewind_ignores_disjoint_external_agent_workspace_changes() {
     ];
 
     let plan = compute_message_rewind_plan(&events, "main", 1, workspace.path()).unwrap();
-    apply_file_revert(&plan, workspace.path(), session_dir.path(), 5).unwrap();
+    apply_message_rewind_files(&plan, workspace.path(), session_dir.path(), 5).unwrap();
 
     assert_eq!(
         "selected before",
@@ -617,7 +537,6 @@ fn message_rewind_accepts_a_symlink_workspace_with_real_file_tool_events() {
     let session_dir = tempfile::tempdir().unwrap();
 
     assert_real_tool_rewind(&workspace_alias, session_dir.path());
-    assert_real_legacy_file_revert(&workspace_alias, session_dir.path());
 }
 
 #[test]
@@ -626,14 +545,6 @@ fn message_rewind_with_real_file_tool_events_restores_in_a_direct_workspace() {
     let session_dir = tempfile::tempdir().unwrap();
 
     assert_real_tool_rewind(workspace.path(), session_dir.path());
-}
-
-#[test]
-fn file_revert_with_real_file_tool_events_restores_in_a_direct_workspace() {
-    let workspace = tempfile::tempdir().unwrap();
-    let session_dir = tempfile::tempdir().unwrap();
-
-    assert_real_legacy_file_revert(workspace.path(), session_dir.path());
 }
 
 #[test]
@@ -665,7 +576,6 @@ fn message_rewind_accepts_macos_temp_aliases_with_real_file_tool_events() {
         let session_dir = tempfile::tempdir().unwrap();
 
         assert_real_tool_rewind(workspace_alias, session_dir.path());
-        assert_real_legacy_file_revert(workspace_alias, session_dir.path());
     }
 }
 

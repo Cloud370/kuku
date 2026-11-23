@@ -231,7 +231,6 @@ mod tests {
                 turn: 1,
                 text: "a".repeat(20_000),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             })
             .unwrap();

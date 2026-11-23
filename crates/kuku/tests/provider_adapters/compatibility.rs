@@ -25,9 +25,6 @@ mod retry;
 #[path = "session_context_snapshot.rs"]
 mod session_context_snapshot;
 
-#[path = "legacy_context_snapshot.rs"]
-mod legacy_context_snapshot;
-
 #[path = "concurrent_context_snapshot.rs"]
 mod concurrent_context_snapshot;
 

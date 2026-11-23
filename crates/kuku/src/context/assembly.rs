@@ -59,7 +59,6 @@ pub struct ContextInput {
     /// These go into the runtime_context wrapper in the current user turn.
     pub runtime_blocks: Option<String>,
     pub enable_memory: bool,
-    pub agent_name: String,
     pub agent_instructions: String,
     pub response_contract: Option<HostResponseContract>,
 }
@@ -135,7 +134,7 @@ pub fn restore_prompt_snapshot(
     )
 }
 
-/// Assemble context using the legacy snapshot prelude order.
+/// Assemble the prelude for a standalone Query.
 pub fn assemble_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
@@ -143,7 +142,7 @@ pub fn assemble_context(
     assemble_context_inner(input, catalog, false).map(|(assembly, _)| assembly)
 }
 
-pub(crate) fn render_project_policy(
+fn render_project_policy(
     input: &ContextInput,
     catalog: &crate::prompt::PromptCatalog,
 ) -> Result<String> {
@@ -158,7 +157,13 @@ pub(crate) fn render_project_policy(
             .join("\n\n")
     };
 
-    let model_tiers_text = if input.model_tiers.is_empty() {
+    let can_select_model = input
+        .tools
+        .iter()
+        .any(|tool| matches!(tool.name.as_str(), "create_agent" | "fetch_web"));
+    let model_tiers_text = if !can_select_model {
+        String::new()
+    } else if input.model_tiers.is_empty() {
         "No model tiers configured.".to_string()
     } else {
         input
@@ -190,8 +195,18 @@ pub(crate) fn render_project_policy(
     let project_policy = catalog.blocks.get("project-policy").ok_or_else(|| {
         crate::error::Error::PromptRender("missing project-policy template".into())
     })?;
+    let without_models;
+    let template = if can_select_model {
+        &project_policy.text
+    } else {
+        without_models = project_policy.text.replace(
+            "\n<kuku_models>\n{{model_tiers_rendered}}\n</kuku_models>\n",
+            "",
+        );
+        &without_models
+    };
     render_project_context(
-        &project_policy.text,
+        template,
         &ProjectContextInput {
             workspace_root: input.environment.workspace_path.clone(),
             platform: input.environment.platform.clone(),
@@ -302,7 +317,22 @@ fn assemble_context_inner(
             .get(*key)
             .filter(|asset| !asset.text.is_empty())
         {
-            prelude.push(CanonicalMessage::user_text(asset.text.clone()));
+            let text = if *key == "tool-guidance" {
+                asset
+                    .text
+                    .split_inclusive('\n')
+                    .filter_map(|line| {
+                        let Some(rest) = line.strip_prefix("<!-- tools: ") else {
+                            return Some(line);
+                        };
+                        let (names, text) = rest.split_once(" -->")?;
+                        names.split_whitespace().all(has_tool).then_some(text)
+                    })
+                    .collect()
+            } else {
+                asset.text.clone()
+            };
+            prelude.push(CanonicalMessage::user_text(text));
         }
     }
     let identity_slot = if common_first {
@@ -431,7 +461,6 @@ mod tests {
                 model_tiers: vec![],
                 runtime_blocks: None,
                 enable_memory: true,
-                agent_name: "main".into(),
                 agent_instructions: String::new(),
                 response_contract: None,
             },
@@ -500,7 +529,6 @@ mod tests {
                 model_tiers: vec![],
                 runtime_blocks: None,
                 enable_memory: false,
-                agent_name: "main".into(),
                 agent_instructions: String::new(),
                 response_contract: None,
             },
@@ -528,7 +556,6 @@ mod tests {
                 model_tiers: vec![],
                 runtime_blocks: None,
                 enable_memory: false,
-                agent_name: "review".into(),
                 agent_instructions: "<kuku_identity>code reviewer</kuku_identity>".into(),
                 response_contract: None,
             },
@@ -565,7 +592,6 @@ mod tests {
                     "<kuku_agent_catalog><agent name=\"r\"/></kuku_agent_catalog>".into(),
                 ),
                 enable_memory: false,
-                agent_name: "main".into(),
                 agent_instructions: String::new(),
                 response_contract: None,
             },
@@ -613,7 +639,6 @@ mod tests {
                 model_tiers: vec![],
                 runtime_blocks: None,
                 enable_memory: false,
-                agent_name: "main".into(),
                 agent_instructions: String::new(),
                 response_contract: None,
             },

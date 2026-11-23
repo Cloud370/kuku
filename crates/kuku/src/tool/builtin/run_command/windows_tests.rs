@@ -56,7 +56,7 @@ async fn windows_system_interpreters_are_found_without_path_entries() {
 #[tokio::test]
 #[ignore = "subprocess fixture for Windows system shells with a controlled PATH"]
 async fn system_shell_fixture() {
-    let registry = crate::tool::builtin_registry(false, false);
+    let registry = crate::tool::builtin_registry(false);
     let tool = registry
         .iter()
         .find(|tool| tool.name == "run_command")

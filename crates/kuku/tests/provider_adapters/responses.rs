@@ -63,7 +63,7 @@ fn render_responses_body_maps_current_user_blocks_to_content_parts() {
     );
     assert_eq!(
         content[1],
-        json!({"type": "input_text", "text": "<kuku_conversation_inbox>inbox</kuku_conversation_inbox>"})
+        json!({"type": "input_text", "text": "<kuku_skill_input>inbox</kuku_skill_input>"})
     );
     assert_eq!(
         content[2],

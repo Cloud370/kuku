@@ -141,7 +141,6 @@ impl Session {
                     } else {
                         PermissionChoice::Deny
                     },
-                    None,
                 )
                 .await?;
             }

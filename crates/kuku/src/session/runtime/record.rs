@@ -686,7 +686,7 @@ impl State {
                 output,
                 error,
                 turn,
-                usage,
+                usage: _,
             } => {
                 if !matches!(status, AgentStatus::Waiting | AgentStatus::Interrupted) {
                     self.values
@@ -709,9 +709,7 @@ impl State {
                 if turn.is_some() {
                     agent.snapshot.turn = turn;
                 }
-                agent
-                    .model_usage
-                    .settle(agent.snapshot.turn, &mut agent.snapshot.usage, usage)?;
+                agent.model_usage.settle(agent.snapshot.turn);
                 if status != AgentStatus::Interrupted {
                     agent.accepted.clear();
                 }

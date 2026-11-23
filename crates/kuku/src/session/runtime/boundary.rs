@@ -85,7 +85,6 @@ impl Session {
             conversation: address.into(),
             text: source.message_text(input_text(inputs)),
             from: source.agent_address().map(str::to_owned),
-            via_tool_call_id: None,
             job_delivery: source.is_job_delivery(),
         })?;
         Ok(Some(source))

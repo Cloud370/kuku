@@ -26,7 +26,7 @@ pub(super) fn resolved_tool_available(pending: &PendingRun, name: &str) -> bool 
     if let Some(registry) = pending.tool_registry_override.as_ref() {
         return registry.iter().any(|tool| tool.name == name);
     }
-    crate::tool::builtin_registry(!pending.query.disable_agents, !pending.query.disable_skills)
+    crate::tool::builtin_registry(!pending.query.disable_skills)
         .iter()
         .any(|tool| tool.name == name)
 }
@@ -234,7 +234,6 @@ pub(super) fn append_message_user_with_sender(
     turn: u64,
     text: &str,
     from: Option<&str>,
-    via_tool_call_id: Option<&str>,
     source: &crate::session::InputSource,
 ) -> Result<()> {
     append_event(
@@ -245,7 +244,6 @@ pub(super) fn append_message_user_with_sender(
             conversation: conversation.as_str().to_string(),
             text: source.message_text(text.to_owned()),
             from: from.map(str::to_owned),
-            via_tool_call_id: via_tool_call_id.map(ToOwned::to_owned),
             job_delivery: source.is_job_delivery(),
         },
     )

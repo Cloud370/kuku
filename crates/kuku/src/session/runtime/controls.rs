@@ -879,7 +879,6 @@ mod rewind_guard_tests {
                     turn: 1,
                     text: "same prompt".into(),
                     from: None,
-                    via_tool_call_id: None,
                     job_delivery: false,
                 },
             },

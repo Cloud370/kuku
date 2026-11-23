@@ -23,7 +23,7 @@
 | `config/` | 配置解析、校验、默认值、patch | — | provider 逻辑、tool 执行 |
 | `skill/` | skill 定义、loader、registry、loaded-skill 恢复 | `prompt/`, `event/` | provider 逻辑、host 传输 |
 | `plugin/` | package 发现、manifest、hook 执行、registry | `event/`, `config/`, `skill/` | provider 逻辑、permission 逻辑 |
-| `notice/` | inbox、中断、open conversations、drift 等 runtime notices | `event/`, `conversation/`, `prompt/`, `skill/`, `agent/` | provider 逻辑 |
+| `notice/` | Skill 和上下文漂移通知 | `event/`, `conversation/`, `prompt/`, `skill/`, `agent/` | provider 逻辑 |
 
 ## Important Boundaries
 

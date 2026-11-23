@@ -38,7 +38,7 @@ OUTPUT = ROOT / "benchmarks" / "acceptance"
 LOG_BYTES = 65536
 PROTOCOL_TESTS = (
     "provider_adapters", "provider_config", "provider_error", "provider_integration",
-    "provider_trace_integration", "cache_runtime_notices",
+    "provider_trace_integration",
 )
 
 

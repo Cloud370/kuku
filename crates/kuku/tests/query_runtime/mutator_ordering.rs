@@ -130,7 +130,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     let command_request = next_permission_request(&mut run).await;
     assert_eq!(command_request.tool_call_id, "toolu_command");
     let command_start = run
-        .decide(&command_request.id, PermissionChoice::Once, None)
+        .decide(&command_request.id, PermissionChoice::Once)
         .await
         .unwrap();
     assert!(
@@ -225,7 +225,7 @@ async fn command_mutation_finishes_before_same_run_memory_write_starts() {
     let command_request = next_permission_request(&mut run).await;
     assert_eq!(command_request.tool_call_id, "toolu_memory_command");
     let command_start = run
-        .decide(&command_request.id, PermissionChoice::Once, None)
+        .decide(&command_request.id, PermissionChoice::Once)
         .await
         .unwrap();
     assert!(
@@ -315,7 +315,7 @@ async fn read_only_tool_starts_while_ordered_tool_waits_for_active_mutation() {
     let command_request = next_permission_request(&mut run).await;
     assert_eq!(command_request.tool_call_id, "toolu_blocking_command");
     let command_start = run
-        .decide(&command_request.id, PermissionChoice::Once, None)
+        .decide(&command_request.id, PermissionChoice::Once)
         .await
         .unwrap();
     assert!(

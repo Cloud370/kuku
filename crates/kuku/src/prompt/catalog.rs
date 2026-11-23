@@ -13,9 +13,8 @@ pub struct PromptAsset {
 pub struct PromptCatalog {
     pub system: PromptAsset,
     /// block templates: "project-policy", "tool-guidance", "memory",
-    /// "agent-catalog", "system-notice", "hook-context",
-    /// "notice-agent-directory", "notice-open-conversations",
-    /// "notice-inbox", "notice-loaded-skills", "notice-skill-changes", "notice-context-drift"
+    /// "system-notice", "hook-context",
+    /// "notice-loaded-skills", "notice-skill-changes", "notice-context-drift"
     pub blocks: BTreeMap<String, PromptAsset>,
     /// agent identity files: "main", "review", "explore", + user-defined
     pub agents: BTreeMap<String, PromptAsset>,
@@ -86,18 +85,8 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
             m.insert("delegation".into(), p!("blocks", "delegation"));
             m.insert("tool-guidance".into(), p!("blocks", "tool-guidance"));
             m.insert("memory".into(), p!("blocks", "memory"));
-            m.insert("agent-catalog".into(), p!("blocks", "agent-catalog"));
             m.insert("system-notice".into(), p!("blocks", "system-notice"));
             m.insert("hook-context".into(), p!("blocks", "hook-context"));
-            m.insert(
-                "notice-agent-directory".into(),
-                p!("blocks", "notice-agent-directory"),
-            );
-            m.insert(
-                "notice-open-conversations".into(),
-                p!("blocks", "notice-open-conversations"),
-            );
-            m.insert("notice-inbox".into(), p!("blocks", "notice-inbox"));
             m.insert(
                 "notice-loaded-skills".into(),
                 p!("blocks", "notice-loaded-skills"),
@@ -111,10 +100,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
                 p!("blocks", "notice-context-drift"),
             );
             m.insert("runtime-notices".into(), p!("blocks", "runtime-notices"));
-            m.insert(
-                "conversation-inbox".into(),
-                p!("blocks", "conversation-inbox"),
-            );
+            m.insert("skill-input".into(), p!("blocks", "skill-input"));
             m
         },
         agents: {

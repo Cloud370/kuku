@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch, Notify};
 use tokio_stream::StreamExt;
@@ -96,7 +95,6 @@ pub(super) fn spawn_tool(
         workspace_access,
         label,
         cancel,
-        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
         job: None,
     }
 }
