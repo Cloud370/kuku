@@ -257,6 +257,7 @@ pub(crate) fn search_text(
     let ScanStats {
         searched: searched_file_count,
         skipped: skipped_file_count,
+        unverified: unverified_file_count,
         limit: scan_limit,
     } = match scan.run(search, &files, &mut page, &mut preview, context, limits) {
         Ok(stats) => stats,
@@ -270,10 +271,11 @@ pub(crate) fn search_text(
     let total_match_count = page.progress.total;
     let sliced = page.matches;
     let next_offset = offset.saturating_add(sliced.len());
-    let scan_complete = budget_reason.is_none() && unreadable_entries == 0;
+    let scan_complete =
+        budget_reason.is_none() && unreadable_entries == 0 && unverified_file_count == 0;
     let page_has_more = next_offset < total_match_count;
     let has_more = scan_complete && page_has_more;
-    if page_has_more && sliced.is_empty() {
+    if has_more && sliced.is_empty() {
         return ToolResultEnvelope::error(
             "search match does not fit within the preview limit",
             "The next search match exceeds the preview limit. Try the search in run_js to access a larger local result.",
@@ -296,20 +298,25 @@ pub(crate) fn search_text(
             "\nSome context lines were omitted. Lower limit or use read_file around a hit.",
         );
     }
-    if unreadable_entries > 0 {
-        model_content.push_str("\nSome directory entries could not be read.");
-    }
-    if let Some(reason) = &budget_reason {
-        use std::fmt::Write;
-        let _ = write!(
-            model_content,
-            "\nSearch budget reached ({reason}). Narrow path or include."
+    if !scan_complete {
+        let reason = budget_reason
+            .as_deref()
+            .unwrap_or("some files or directory entries could not be verified");
+        let notice = format!(
+            "Search incomplete ({reason}). {total_match_count} matches in the part searched. Search a smaller folder with path, or restrict file types with include."
         );
+        model_content = if model_content.is_empty() {
+            notice
+        } else {
+            format!("{notice}\n{model_content}")
+        };
     }
     let file_count = sliced
         .chunk_by(|left, right| left.path == right.path)
         .count();
-    let summary = if has_more {
+    let summary = if !scan_complete {
+        format!("Incomplete search with {total_match_count} matches in the part searched")
+    } else if has_more {
         format!(
             "Showing {} of {} matches in {} files, view={}",
             sliced.len(),
@@ -343,6 +350,7 @@ pub(crate) fn search_text(
         "file_count": file_count,
         "searched_file_count": searched_file_count,
         "skipped_file_count": skipped_file_count,
+        "unverified_file_count": unverified_file_count,
         "blocked_file_count": blocked_file_count,
         "unreadable_entry_count": unreadable_entries,
         "offset": offset,
@@ -558,6 +566,7 @@ mod tests {
         let facts = result.structured.unwrap();
         assert_eq!(facts["total_match_count"], 1);
         assert_eq!(facts["skipped_file_count"], 1);
+        assert_eq!(facts["scan_complete"], true);
         assert_eq!(result.model_content, "good.txt");
     }
 
@@ -582,7 +591,35 @@ mod tests {
         assert_eq!(facts["total_match_count"], 1);
         assert_eq!(facts["skipped_file_count"], 1);
         assert!(result.truncated);
-        assert!(result.model_content.contains("Search budget reached"));
+        assert!(result.summary.starts_with("Incomplete search"));
+        assert!(result.model_content.starts_with("Search incomplete"));
+        assert!(result
+            .model_content
+            .contains("Search a smaller folder with path"));
+        assert_eq!(facts["next_offset"], Value::Null);
+    }
+
+    #[test]
+    fn zero_matches_in_an_incomplete_search_are_reported_as_partial() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("large.txt"), "ordinary\n".repeat(1024)).unwrap();
+        let result = super::search_text(
+            &serde_json::json!({"pattern":"needle"}),
+            dir.path(),
+            1024,
+            WorkspaceIoLimits {
+                scan_bytes: 32,
+                ..Default::default()
+            },
+            &|| false,
+        );
+        assert!(result.model_content.starts_with("Search incomplete"));
+        assert!(result
+            .model_content
+            .contains("0 matches in the part searched"));
+        let facts = result.structured.unwrap();
+        assert_eq!(facts["scan_complete"], false);
+        assert_eq!(facts["next_offset"], Value::Null);
     }
 
     #[test]

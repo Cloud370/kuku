@@ -25,6 +25,7 @@ pub(super) struct WorkspaceScan<'a, 'w> {
 pub(super) struct ScanStats {
     pub searched: usize,
     pub skipped: usize,
+    pub unverified: usize,
     pub limit: Option<String>,
 }
 
@@ -32,6 +33,7 @@ impl ScanStats {
     fn append(&mut self, stats: Self) {
         self.searched += stats.searched;
         self.skipped += stats.skipped;
+        self.unverified += stats.unverified;
         self.limit = self.limit.take().or(stats.limit);
     }
 }
@@ -171,6 +173,7 @@ impl WorkspaceScan<'_, '_> {
                 Err(error) if is_cancellation(&error) => return Err(error),
                 Err(_) => {
                     stats.skipped += 1;
+                    stats.unverified += 1;
                     continue;
                 }
             };
@@ -200,6 +203,8 @@ impl WorkspaceScan<'_, '_> {
                     if bytes.exhausted() {
                         break;
                     }
+                } else if error.kind() != io::ErrorKind::InvalidData {
+                    stats.unverified += 1;
                 }
                 continue;
             }
@@ -397,7 +402,9 @@ mod tests {
             } else {
                 &b"hit alpha\nother\nhit beta\n"[..]
             };
-            fs::write(path.join(&relative), content).unwrap();
+            if index != 3 {
+                fs::write(path.join(&relative), content).unwrap();
+            }
             files.push(CollectedFile {
                 relative,
                 original: None,
@@ -424,6 +431,7 @@ mod tests {
                 (expected.searched, expected.skipped, expected.limit),
                 (actual.searched, actual.skipped, actual.limit)
             );
+            assert_eq!((expected.unverified, actual.unverified), (1, 1));
             assert_eq!(serial.progress.total, parallel.progress.total);
             assert_eq!(serial.progress.full, parallel.progress.full);
             assert_eq!(

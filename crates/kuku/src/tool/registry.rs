@@ -35,7 +35,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
     let mut tools = vec![
         tool(
             "find_files",
-            "List immediate directory entries or find files recursively with a glob pattern. Directories end in /. Common build and dependency directories are skipped.",
+            "Find files by name using a glob, or omit the pattern to see the immediate files and folders. Directories end in /. Common build and dependency directories are skipped.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -66,16 +66,16 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "search_text",
-            "Search file contents with a regex. Use view=files, lines, or count. Use path or include to reduce scan work. Use next_offset to continue a complete scan's results.",
+            "Find text inside workspace files. Use a known folder or file as path, or use include to restrict file types. If a search is incomplete, search a smaller scope. When next_offset is returned, use it to see more matches from the same search.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Regular expression pattern to search for."},
-                    "path": {"type": "string", "description": "Search scope relative to the workspace. Defaults to workspace root."},
-                    "include": {"type": "string", "description": "File-name glob filter."},
+                    "path": {"type": "string", "description": "Folder or file to search. Defaults to the workspace root."},
+                    "include": {"type": "string", "description": "Only search files matching this glob, such as **/*.rs."},
                     "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."},
                     "offset": {"type": "integer", "description": "Skip the first N matches (default: 0)."},
-                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum matches to return (default: 100)."},
+                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum matches shown on the page (default: 100). Use path or include to search fewer files."},
                     "context": {"type": "integer", "description": "Nearby lines before and after each match, as space allows (view=lines only, default: 0)."}
                 },
                 "required": ["pattern"]
