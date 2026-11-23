@@ -119,7 +119,7 @@ pub(crate) fn request_url(config: &ResolvedProvider) -> Result<String, ProviderF
     .map_err(|error| invalid_request(&error.to_string()))
 }
 
-pub(super) fn is_official_openrouter(url: &url::Url) -> bool {
+pub(crate) fn is_official_openrouter(url: &url::Url) -> bool {
     url.scheme() == "https"
         && matches!(
             url.host_str(),

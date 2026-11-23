@@ -208,6 +208,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         segment.capabilities = Some(resolved.capabilities.clone());
         segment.route_selectors = Some(route_selectors.clone());
         segment.tools = tools;
+        adapt_new_segment_tools(&resolved, &mut segment.tools);
         if handoff_changed {
             if let Some(EventPayload::Handoff { summary, .. }) =
                 cursor.handoff.as_ref().map(|event| &event.payload)
@@ -378,6 +379,35 @@ pub(super) fn record_prepared(
         "input_skills":context.input_skills});
     commit_context(pending, context, payload, false)?;
     Ok(())
+}
+
+// Keep this out of the signature and provider serializer so an admitted segment
+// reuses its original declaration, including when reopened by a newer binary.
+fn adapt_new_segment_tools(
+    resolved: &crate::provider::types::ResolvedProvider,
+    tools: &mut [crate::context::ToolSchema],
+) {
+    use crate::provider::{prepare, types::ProviderKind};
+
+    if resolved.kind != ProviderKind::OpenAiCompatible
+        || !resolved.model.starts_with("google/gemini-")
+        || !prepare::request_url(resolved)
+            .ok()
+            .and_then(|url| url::Url::parse(&url).ok())
+            .is_some_and(|url| prepare::is_official_openrouter(&url))
+    {
+        return;
+    }
+    // OpenRouter's Gemini conversion turns a root oneOf into a required "input"
+    // object. Keep the properties flat; the tool handlers still enforce exactly
+    // one selector before accessing or creating any retained output.
+    for tool in tools {
+        if matches!(tool.name.as_str(), "read_output" | "save_value") {
+            if let Some(schema) = tool.input_schema.as_object_mut() {
+                schema.remove("oneOf");
+            }
+        }
+    }
 }
 
 fn initial_segment(
@@ -812,6 +842,38 @@ mod snapshot_tests {
             workspace: String::new(),
         };
         (segment, resolved, selectors)
+    }
+
+    #[test]
+    fn new_openrouter_gemini_segments_keep_retained_output_selectors_flat() {
+        let (mut frozen, mut route, _) = snapshot_fixture();
+        let registry = super::super::runtime_tools::definitions();
+        frozen.tools = crate::tool::to_tool_schemas(&registry);
+        let frozen_bytes = serde_json::to_vec(&frozen.tools).unwrap();
+        let original_prefix = segment_prefix_hash(&frozen).unwrap();
+
+        route.model = "google/gemini-4-neon".into();
+        let mut declarations = frozen.tools.clone();
+        adapt_new_segment_tools(&route, &mut declarations);
+        assert_eq!(
+            frozen.tools, declarations,
+            "other gateways keep their schemas"
+        );
+
+        route.base_url = "https://openrouter.ai/api/v1".into();
+        adapt_new_segment_tools(&route, &mut declarations);
+        for (before, after) in frozen.tools.iter().zip(&declarations) {
+            assert_eq!(before.name, after.name);
+            if matches!(before.name.as_str(), "read_output" | "save_value") {
+                let mut expected = before.input_schema.clone();
+                assert!(expected.as_object_mut().unwrap().remove("oneOf").is_some());
+                assert_eq!(expected, after.input_schema);
+            } else {
+                assert_eq!(before, after);
+            }
+        }
+        assert_eq!(frozen_bytes, serde_json::to_vec(&frozen.tools).unwrap());
+        assert_eq!(original_prefix, segment_prefix_hash(&frozen).unwrap());
     }
 
     #[test]
