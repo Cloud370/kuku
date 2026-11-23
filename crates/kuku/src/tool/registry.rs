@@ -66,7 +66,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
         ),
         tool(
             "search_text",
-            "Find text inside workspace files. Use a known folder or file as path, or use include to restrict file types. If a search is incomplete, search a smaller scope. When next_offset is returned, use it to see more matches from the same search.",
+            "Find text inside workspace files using a regex.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -75,7 +75,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                     "include": {"type": "string", "description": "Only search files matching this glob, such as **/*.rs."},
                     "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."},
                     "offset": {"type": "integer", "description": "Skip the first N matches (default: 0)."},
-                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum matches shown on the page (default: 100). Use path or include to search fewer files."},
+                    "limit": {"type": "integer", "minimum": 1, "description": "Maximum matches shown on the page (default: 100)."},
                     "context": {"type": "integer", "description": "Nearby lines before and after each match, as space allows (view=lines only, default: 0)."}
                 },
                 "required": ["pattern"]
