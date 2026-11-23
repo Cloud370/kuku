@@ -162,9 +162,11 @@ When a script's JSON return exceeds the inline limit, kuku saves the complete va
 
 `read_output` reads retained output by ID or the current Agent's named value by exact name. With a running command's output ID, it returns the complete capture frames available at the time of the read. Every call passes host authorization. The limits below apply to the direct tool. For the script reader's schema, see `tools.methods`.
 
+Retained outputs use Session-local IDs such as `out_42`. The number comes from the durable reservation event. The same ID follows the capture into a Job, named value or Agent handoff, and stays assigned to that capture after reopening the Session.
+
 | Argument | Contract |
 |---|---|
-| `id` | Output ID of 1–128 ASCII letters, digits, `-`, or `_`. Use exactly one of `id` and `name`. |
+| `id` | Exact output ID from a tool result, such as `out_42`. Use exactly one of `id` and `name`. |
 | `name` | Exact name of a saved value owned by the Agent |
 | `offset` | Nonnegative raw byte offset across stdout and stderr in capture order; defaults to `0` |
 | `limit` | Positive raw byte budget. Defaults to `4096` and is capped at `8192`. |

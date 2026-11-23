@@ -670,8 +670,8 @@ fn claimed_output_id(session: &Session) -> String {
                 return None;
             };
             let record = &value["record"];
-            (value["kind"] == "runtime.operation" && record["operation"] == "output_owned")
-                .then(|| record["id"].as_str().unwrap().to_owned())
+            (value["kind"] == "runtime.operation" && record["operation"] == "output_reserved")
+                .then(|| format!("out_{}", event.id))
         })
         .expect("the Session reserved an output for the running fetch")
 }

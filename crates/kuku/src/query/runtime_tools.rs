@@ -323,6 +323,7 @@ fn start_job_capable_slot(
             Err(error) => return output_admission_failed(pending, queued, error),
         };
         mark_dispatched(&pending, &queued)?;
+        let job = ForegroundJob::start(&pending, &queued, Some(output.id.clone()));
         super::slots::spawn_command_slot(
             queued.tool_call.id.clone(),
             Some(pending.conversation.clone()),
@@ -332,11 +333,15 @@ fn start_job_capable_slot(
             event_tx,
             Some(output),
             session.workspace_execution_host(),
-            Some(ForegroundJob::start(&pending, &queued)),
+            Some(job),
         )
     } else {
         mark_dispatched(&pending, &queued)?;
-        super::run_js::spawn(&pending, &queued, ForegroundJob::start(&pending, &queued))?
+        super::run_js::spawn(
+            &pending,
+            &queued,
+            ForegroundJob::start(&pending, &queued, None),
+        )?
     };
     start_slot(pending, queued, slot)
 }
@@ -441,17 +446,14 @@ fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedO
     use crate::tool::builtin::run_command::ModelOutputAccess;
 
     let agent = pending.conversation.as_str();
-    let output_id = crate::session::runtime::command_output_id(agent, pending.turn, id);
-    let mut retention =
-        runtime_session(pending)?.reserve_output(agent, pending.turn, id, &output_id)?;
-    retention.discard_on_drop();
+    let retention = runtime_session(pending)?.reserve_output(agent, pending.turn, id)?;
     Ok(super::slots::RetainedOutputSpec {
         dir: pending
             .events_path
             .parent()
             .expect("session events has a parent")
             .join("outputs"),
-        id: output_id,
+        id: retention.id().into(),
         limits: crate::tool::builtin::run_command::output::OutputLimits {
             max_output_bytes: retention.max_bytes(),
             max_preview_bytes: pending.query.runtime_limits.max_preview_bytes,

@@ -162,9 +162,11 @@ return {exit_code, duration_ms, entries, output_ref};
 
 `read_output` 按输出 ID 或当前 Agent 的准确值名读取 Session 保留数据。使用运行中命令的输出 ID 时，返回读取时已经写完的捕获帧。每次调用都须经过宿主授权。下表是直接工具的限额，脚本读取器的参数定义见 `tools.methods`。
 
+保留输出使用 Session 内的短 ID，例如 `out_42`。数字来自持久化的输出预留事件。同一份输出转为 Job、保存为命名值、交给其他 Agent 或在 Session 重开后，仍使用同一个 ID。
+
 | Argument | Contract |
 |---|---|
-| `id` | 由 1–128 个 ASCII 字母、数字、`-` 或 `_` 组成的输出 ID。`id` 和 `name` 二选一。 |
+| `id` | 工具结果中的准确输出 ID，例如 `out_42`。`id` 和 `name` 二选一。 |
 | `name` | Agent 持有的保存值的准确名称 |
 | `offset` | 按捕获顺序跨 stdout 和 stderr 的非负原始字节偏移；默认 `0` |
 | `limit` | 扫描的原始字节数预算，必须为正整数。默认 `4096`，最多扫描 `8192` 字节。 |

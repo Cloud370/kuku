@@ -197,9 +197,24 @@ async fn captured(
             _ => None,
         })
         .expect("real command did not retain an output ID");
+    assert_eq!(first_reserved_id(&session), id);
     first.assert_hits_async(1).await;
     second.assert_hits_async(1).await;
     (session, id)
+}
+
+fn first_reserved_id(session: &Session) -> String {
+    let event = session
+        .events(0, 256)
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            matches!(&event.payload, EventPayload::Unknown(value)
+                if value["kind"] == "runtime.operation"
+                    && value["record"]["operation"] == "output_reserved")
+        })
+        .expect("output reservation was recorded");
+    format!("out_{}", event.id)
 }
 
 fn chunk(
@@ -786,6 +801,7 @@ async fn model_reads_a_running_job_through_direct_and_script_tools() {
     idle(&session).await;
     let receipt = stored_result(&session, "command").2.unwrap();
     let id = receipt["output_id"].as_str().unwrap();
+    assert_eq!(first_reserved_id(&session), id);
     let job = receipt["job_id"].as_str().unwrap();
     let read = json!({"id":id});
     let code = format!(
@@ -907,5 +923,20 @@ async fn naming_command_output_reuses_its_file_and_replaced_body_can_expire() {
     assert!(reopened.events(0, 256).unwrap().iter().any(|event| {
         matches!(&event.payload, EventPayload::ToolResult { structured: Some(facts), .. } if facts["output_ref"]["id"] == id)
     }));
+    let recreated = reopened
+        .save_named_value(
+            "main",
+            "recreated",
+            NamedValueSource::Text("retained evidence".into()),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_ne!(recreated.reference.id, id);
+    assert_ne!(recreated.reference.id, replacement.reference.id);
+    assert!(matches!(
+        reopened.read_output(&id, &OutputRead::default()),
+        Err(Error::OutputUnavailable(_))
+    ));
     reopened.close().await.unwrap();
 }

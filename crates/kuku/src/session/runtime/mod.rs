@@ -24,7 +24,7 @@ pub(crate) use workspace_host::WorkspaceWorkerPermit;
 pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
 
 pub(crate) use jobs::{JobControl, JobRequest};
-pub(crate) use retention::{command_output_id, OutputReservation};
+pub(crate) use retention::OutputReservation;
 pub(crate) use selection::resolve_agent_model;
 pub(crate) use values::OutputSelector;
 
@@ -958,6 +958,5 @@ fn reduce_event(
         state.reduce(event.id, record)?;
     }
     job_replay.observe(state, &event)?;
-    state.outputs.observe_dispatch(&event.payload);
     usage::reduce_model_fact(state, &event.payload)
 }

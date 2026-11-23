@@ -91,7 +91,6 @@ impl DerivedOutputs {
         &self,
         op: ScriptOperation,
         actions: &WorkspaceActions,
-        action_output_id: &str,
         args: &Value,
     ) -> Result<Value> {
         let mut drafts = self.state.lock().await;
@@ -102,8 +101,8 @@ impl DerivedOutputs {
                         "script derived output count exceeded".into(),
                     ));
                 }
-                let mut reservation = actions.reserve_output(action_output_id)?;
-                reservation.discard_on_drop();
+                let reservation = actions.reserve_output()?;
+                let id = reservation.id().to_owned();
                 let dir = actions
                     .session
                     .events_path()
@@ -112,7 +111,7 @@ impl DerivedOutputs {
                     .join("outputs");
                 let writer = OutputWriter::create(
                     &dir,
-                    action_output_id,
+                    &id,
                     OutputLimits {
                         max_output_bytes: reservation.max_bytes(),
                         max_preview_bytes: 0,
@@ -120,14 +119,14 @@ impl DerivedOutputs {
                 )
                 .await?;
                 drafts.open.insert(
-                    action_output_id.into(),
+                    id.clone(),
                     Draft {
                         writer,
                         reservation,
                     },
                 );
                 drafts.created += 1;
-                Ok(json!({"id":action_output_id,"complete":false}))
+                Ok(json!({"id":id,"complete":false}))
             }
             ScriptOperation::AppendOutput => {
                 let (id, text) = (string_arg(args, "id")?, string_arg(args, "text")?);

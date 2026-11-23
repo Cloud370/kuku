@@ -308,7 +308,7 @@ impl Session {
         replace: bool,
     ) -> Result<NamedValue> {
         let digest = format!("{:x}", Sha256::digest(bytes));
-        let id = {
+        {
             let state = self.inner.state.lock().unwrap();
             ensure_open(&state)?;
             state.agent(agent)?;
@@ -319,16 +319,10 @@ impl Session {
                 }
             }
             self.require_binding_slot(&state, agent, name, replace)?;
-            let writer = self.inner.writer.lock().unwrap();
-            let event_id = writer
-                .as_ref()
-                .expect("open session owns its writer")
-                .next_id();
-            let identity = Sha256::digest(format!("{}:{event_id}:{digest}", self.id()).as_bytes());
-            format!("value_{identity:x}")
-        };
+        }
         let mut reservation =
-            self.reserve_retained_output(agent, &id, Some(framed_bytes(bytes.len() as u64)), None)?;
+            self.reserve_retained_output(agent, Some(framed_bytes(bytes.len() as u64)), None)?;
+        let id = reservation.id().to_owned();
         let mut writer = OutputWriter::create(
             &output_dir(self.events_path())?,
             &id,
@@ -344,13 +338,14 @@ impl Session {
         let metadata = writer.finish(false).await?;
         let mut state = self.inner.state.lock().unwrap();
         ensure_open(&state)?;
-        reservation.keep();
         let reference = OutputReference {
             id,
             offset: 0,
             bytes: metadata.stored_bytes,
         };
-        self.commit_binding(&mut state, agent, kind, name, reference, Some(digest))
+        let value = self.commit_binding(&mut state, agent, kind, name, reference, Some(digest))?;
+        reservation.keep();
+        Ok(value)
     }
 
     fn output_reference(&self, state: &State, agent: &str, id: &str) -> Result<OutputReference> {

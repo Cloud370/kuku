@@ -17,6 +17,7 @@ const BACKGROUND_OBSERVATION: Duration = Duration::from_secs(1);
 
 pub(super) struct ForegroundJob {
     tool: String,
+    output_id: Option<String>,
     background: bool,
     started: Instant,
     deadline: Instant,
@@ -28,6 +29,7 @@ impl ForegroundJob {
     pub(super) fn start(
         pending: &PendingRun,
         queued: &QueuedToolCall,
+        output_id: Option<String>,
     ) -> (Box<Self>, oneshot::Sender<SlotEvent>) {
         let (sender, receiver) = oneshot::channel();
         let background = queued.tool_call.args["background"] == true;
@@ -39,6 +41,7 @@ impl ForegroundJob {
         let started = Instant::now();
         let job = Self {
             tool: queued.tool_call.name.clone(),
+            output_id,
             background,
             started,
             deadline: started + observation,
@@ -220,6 +223,7 @@ impl Run {
                 turn: pending.turn,
                 tool_call_id: id.to_owned(),
                 tool: job.tool.clone(),
+                output_id: job.output_id.clone(),
                 summary: slot.label.clone(),
                 started: job.started,
                 wait_tool_available: super::helpers::resolved_tool_available(pending, "wait_job"),

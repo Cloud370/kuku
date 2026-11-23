@@ -385,8 +385,6 @@ impl WorkspaceHost {
     ) -> Result<ToolResultEnvelope> {
         let id = format!("{}/{local_id}", self.call_id);
         let name = operation.name();
-        let output_id =
-            crate::session::runtime::command_output_id(&self.actions.agent, self.turn, &id);
         let target = args
             .get("path")
             .or(args.get("id"))
@@ -453,7 +451,7 @@ impl WorkspaceHost {
             ),
             _ => {
                 self.actions
-                    .execute(operation, local_id, args, &output_id, execution)
+                    .execute(operation, local_id, args, execution)
                     .await
             }
         };
