@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
+use std::num::NonZeroU64;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -67,6 +68,37 @@ impl NativeExec {
             libc::ENOENT
         }))
     }
+}
+
+pub(super) fn configure_memory(command: &mut Command, bytes: Option<NonZeroU64>) -> io::Result<()> {
+    let Some(bytes) = bytes else {
+        return Ok(());
+    };
+    let mut parent = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // The pointer is valid for a single rlimit. Do preparation in the parent.
+    if unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut parent) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let requested = u128::from(bytes.get()).min(u128::from(libc::rlim_t::MAX)) as libc::rlim_t;
+    let limit = parent.rlim_cur.min(parent.rlim_max).min(requested);
+    let child = libc::rlimit {
+        rlim_cur: limit,
+        rlim_max: limit,
+    };
+    // The callback uses only a prepared rlimit and a syscall before exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setrlimit(libc::RLIMIT_AS, &child) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn configure(command: &mut Command) -> io::Result<Vec<PathBuf>> {

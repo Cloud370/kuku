@@ -261,9 +261,12 @@ impl Run {
         &mut self,
         pending: Box<super::types::PendingRun>,
     ) -> Result<Option<UiEvent>> {
-        let step =
-            super::step::advance_pending(*pending, self.slot_event_tx.clone(), self.slots.len())
-                .await?;
+        let step = Box::pin(super::step::advance_pending(
+            *pending,
+            self.slot_event_tx.clone(),
+            self.slots.len(),
+        ))
+        .await?;
         self.apply_pending_step(step).await
     }
 

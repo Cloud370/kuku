@@ -80,6 +80,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(write.status, "ok");
@@ -192,6 +193,7 @@ fn assert_real_legacy_file_revert(workspace_alias: &Path, session_dir: &Path) {
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(write.status, "ok");
@@ -249,6 +251,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(write.status, "ok");
@@ -329,6 +332,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(target_write.status, "ok");
@@ -423,6 +427,7 @@ fn assert_real_created_file_deletion(workspace_alias: &Path, session_dir: &Path)
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(write.status, "ok");

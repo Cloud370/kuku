@@ -225,7 +225,7 @@ pub(crate) fn search_text(
         FileSearch::new("^", limits.search_line_bytes, deadline).expect("valid line matcher")
     });
     let mut bytes_left = limits.scan_bytes;
-    let mut context_bytes_left = limits.scan_bytes.min(16 * 1024 * 1024);
+    let mut context_bytes_left = 16 * 1024 * 1024;
     let mut skipped_file_count = 0_usize;
     let mut searched_file_count = 0_usize;
     for file in &files {
@@ -268,18 +268,23 @@ pub(crate) fn search_text(
         }
         searched_file_count += 1;
         if let Some(reader) = &mut context_reader {
+            let mut context_allowance = context_bytes_left.min(bytes_left);
+            let available = context_allowance;
             if let Err(error) = preview.extend(
                 &file.relative,
                 &absolute,
                 &mut input,
                 reader,
-                &mut context_bytes_left,
+                &mut context_allowance,
                 &page.matches[previous_count..],
                 previous_count,
                 context,
             ) {
                 return file_read_error(Path::new(path), error);
             }
+            let consumed = available - context_allowance;
+            context_bytes_left -= consumed;
+            bytes_left -= consumed;
         }
     }
 

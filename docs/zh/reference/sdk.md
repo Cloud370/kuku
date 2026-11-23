@@ -66,6 +66,8 @@
 
 `RuntimeLimits.job_foreground_wait_ms` 控制顶层命令和脚本的前台观察窗口。`RuntimeLimits.max_command_seconds` 可为每条命令设置独立的进程截止时间，包括 `run_js` 内启动的命令和作为 Job 运行的命令。默认值为 `None`。
 
+通过 `RuntimeLimits.max_command_memory_bytes` 给直接命令和 `run_js` 启动的命令设置操作系统内存上限，默认是 `None`。Unix 限制单个进程的地址空间，子进程继承该限制。Windows 限制现有进程 Job Object 的提交内存。命令结果的 `memory_limit_bytes` 记录请求的上限。
+
 `run_js` 的结果类型为 `kind: "workspace_script_result"`，可以用 `kuku::WorkspaceScriptFacts::from_structured` 解码。结果包含脚本内联返回的 `value` 及已观察到的宿主 `actions`。完整 JSON 单独保留时，`value` 为空，`output_ref` 提供读取位置。每个动作记录 ID、工具、状态、摘要、截断情况及有界结果。动作状态 `unknown` 表示宿主未能确认最终结果。即使脚本失败，也可以结合整次调用的 `timed_out`、`cleanup_incomplete` 和 `not_dispatched` 核对部分完成的工作。见[脚本方法](tools.md#javascript-组合工具)。
 
 用 `kuku::execution::WorkspaceActionReceipt::from_event` 解码 `workspace.action` 事件，读取日志中脚本内动作的派发和结果事实。在父 `tool_call_id` 内按 `action_id` 关联记录。派发记录缺少对应结果时，副作用仍然未知。
@@ -94,16 +96,18 @@ cargo run -p kuku --example session_task -- \
 
 ## 限额与用量
 
+注册的 `ToolAdapter` 调用共用宿主动作容量。可覆盖 `ToolAdapter::execute_with_limits`，在自己的执行器中使用 Session 的 `RuntimeLimits`。SDK 对返回内容应用保留输出配额，并将较大的结构化值流式写入捕获。执行器内部的分配和进程由适配器管理。
+
 `RuntimeLimits.workspace_io` 配置直接工具和 `run_js` 宿主动作共用的文件额度。每次操作获得自己的额度。需要共用 worker 和宿主动作容量的 Session 可使用同一 `WorkspaceExecutionHost` 的克隆。宿主容量独立于 Session 或 Agent 数量配置。
 
 | 工作区 I/O 额度 | 默认值 | 适用范围 |
 | --- | ---: | --- |
 | `scan_bytes` | 2 GiB | 一次搜索或文件扫描读取的源字节 |
-| `scan_entries` | 1,000,000 | 一次列目录或搜索检查的目录项 |
-| `scan_timeout_ms` | 30,000 | 遍历和搜索的耗时额度，在读入和目录项边界检查。宿主管理截止时间时可设为 `None`。 |
+| `scan_entries` | 1,000,000 | 一次工作区扫描或 Session 日志查询检查的条目 |
+| `scan_timeout_ms` | 30,000 | 遍历、搜索和 Session 日志查询的耗时额度，在读入和目录项边界检查。宿主管理截止时间时可设为 `None`。 |
 | `search_path_bytes` | 64 MiB | 一次搜索为排序保留的候选路径 |
 | `search_line_bytes` | 1 MiB | 搜索单行可缓冲的源字节 |
-| `text_bytes` | 8 MiB | 一次编辑的源文本和替换结果 |
+| `text_bytes` | 8 MiB | 一次编辑的源文本和替换结果，或一次完整写入的内容 |
 | `context_file_bytes` | 256 KiB | 单份记忆或项目指引文件 |
 
 默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。宿主需要限制传输大小时，可通过 `RuntimeLimits::max_request_bytes` 设置序列化请求上限。预览至少 1 KiB，以保留完整引用和标志。

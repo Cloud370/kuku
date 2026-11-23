@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 
 use super::{ReadBy, ReadRequest};
 use crate::tool::builtin::common::{
-    format_content_hash, invalid_utf8, valid_utf8_prefix, FileCancellation, IoLimit, LimitedReader,
-    StableFile, Utf8Reader, FILE_BUFFER_BYTES,
+    format_content_hash, invalid_utf8, valid_utf8_prefix, FileCancellation, LimitedReader,
+    StableFile, Utf8Reader, FILE_BUFFER_BYTES, FILE_SCAN_BYTES,
 };
 
 const LINE_SAMPLE_BYTES: usize = 256;
@@ -31,10 +31,11 @@ pub(super) fn scan(
     cancelled: &FileCancellation<'_>,
 ) -> io::Result<ReadView> {
     let mut file = StableFile::open(path, cancelled)?;
+    file.check_size(scan_bytes, FILE_SCAN_BYTES)?;
     let mut reader = Utf8Reader::new(LimitedReader::new(
         &mut file,
         &mut scan_bytes,
-        IoLimit("file scan byte budget exhausted"),
+        FILE_SCAN_BYTES,
     ));
     let mut buffer = [0; FILE_BUFFER_BYTES];
     let mut hash = Sha256::new();

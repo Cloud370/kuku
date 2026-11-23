@@ -9,6 +9,11 @@ use crate::event::history::{event_conversation, event_turn};
 use crate::event::store::HistoryMarks;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::ToolResultEnvelope;
+use crate::WorkspaceIoLimits;
+
+use super::common::{
+    charge_entry, ensure_active, file_read_error, is_io_limit, FileCancellation, ScanDeadline,
+};
 
 const MAX_RESULT_CHARS: usize = 8_000;
 const MAX_EVENT_CONTENT_CHARS: usize = 500;
@@ -37,50 +42,63 @@ pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
     }
 }
 
-pub(crate) fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvelope {
-    let (content, count, truncated) = match run_query(args, events_path) {
-        Ok(pair) => pair,
-        Err(e) => {
-            return ToolResultEnvelope::error(
-                format!("query_session failed: {e}"),
-                format!("error querying session: {e}"),
-            );
-        }
-    };
-    ToolResultEnvelope {
-        status: "ok".to_string(),
-        summary: format!("{count} events returned"),
-        model_content: content,
-        truncated,
-        structured: None,
-        faults: Default::default(),
-        supplied_full_write: false,
+pub(crate) fn query_session(
+    args: &Value,
+    events_path: &Path,
+    limits: WorkspaceIoLimits,
+    cancelled: &FileCancellation<'_>,
+) -> ToolResultEnvelope {
+    match run_query(args, events_path, limits, cancelled) {
+        Ok(matches) => matches.render(),
+        Err(crate::Error::Io(error)) => file_read_error(Path::new("Session journal"), error),
+        Err(e) => ToolResultEnvelope::error(
+            format!("query_session failed: {e}"),
+            format!("error querying session: {e}"),
+        ),
     }
 }
 
 fn run_query(
     args: &Value,
     events_path: &Path,
-) -> Result<(String, usize, bool), crate::error::Error> {
+    limits: WorkspaceIoLimits,
+    cancelled: &FileCancellation<'_>,
+) -> Result<Matches, crate::error::Error> {
     let filters = QueryFilters::new(args);
-    let history = EventStore::history_marks(events_path, filters.conversation.is_some())?;
+    let deadline = ScanDeadline::new(limits.scan_timeout_ms);
+    let mut entries_left = limits.scan_entries;
+    let history = if filters.skip_rolled_back || filters.conversation.is_some() {
+        EventStore::query_history_marks(events_path, filters.conversation.is_some())?
+    } else {
+        HistoryMarks::default()
+    };
     let visibility = RewindVisibility::new(&history.controls);
     let legacy_target = active_main_turn_rollback_target(&history.controls);
     let mut result = Matches::default();
     let mut position = None;
-    let mut seen = false;
     let mut turn = 0usize;
     let mut seen_turn_end = false;
 
     'history: loop {
+        ensure_active(cancelled)?;
         let page = EventStore::read_page_before(events_path, position, 256)?;
         let Some(first) = page.first() else {
             break;
         };
-        seen = true;
+        result.seen = true;
         position = Some(first.id);
         for event in page.iter().rev() {
             if event.id <= filters.after || result.count >= filters.limit {
+                break 'history;
+            }
+            if let Err(error) = deadline
+                .check()
+                .and_then(|()| charge_entry(&mut entries_left, cancelled))
+            {
+                if !is_io_limit(&error) {
+                    return Err(error.into());
+                }
+                result.scan_limit = Some(error.to_string());
                 break 'history;
             }
             if filters.skip_rolled_back
@@ -106,11 +124,7 @@ fn run_query(
             }
         }
     }
-    if seen {
-        Ok(result.render())
-    } else {
-        Ok(("[]".into(), 0, false))
-    }
+    Ok(result)
 }
 
 struct QueryFilters<'a> {
@@ -156,10 +170,13 @@ impl<'a> QueryFilters<'a> {
                 |owner| owner == conversation,
             )
         }) && self.search.as_ref().is_none_or(|query| {
-            serde_json::to_string(payload)
-                .unwrap_or_default()
-                .to_lowercase()
-                .contains(query)
+            let mut encoded = serde_json::to_string(payload).unwrap_or_default();
+            if encoded.is_ascii() {
+                encoded.make_ascii_lowercase();
+                encoded.contains(query)
+            } else {
+                encoded.to_lowercase().contains(query)
+            }
         })
     }
 }
@@ -170,6 +187,8 @@ struct Matches {
     size: usize,
     count: usize,
     truncated: bool,
+    seen: bool,
+    scan_limit: Option<String>,
 }
 
 impl Matches {
@@ -184,8 +203,12 @@ impl Matches {
         }
     }
 
-    fn render(self) -> (String, usize, bool) {
-        let mut output = String::from("[\n");
+    fn render(self) -> ToolResultEnvelope {
+        let mut output = if self.seen {
+            String::from("[\n")
+        } else {
+            String::from("[")
+        };
         for (index, (entry, _)) in self.entries.iter().enumerate() {
             if index > 0 {
                 output.push_str(",\n");
@@ -195,8 +218,23 @@ impl Matches {
         if self.truncated {
             output.push_str("\n... (truncated, total output cap reached)");
         }
-        output.push_str("\n]");
-        (output, self.count, self.truncated)
+        output.push_str(if self.seen { "\n]" } else { "]" });
+        if let Some(reason) = &self.scan_limit {
+            output.push_str(&format!(
+                "\nSession scan incomplete ({reason}). Use after or a Turn range to narrow it."
+            ));
+        }
+        ToolResultEnvelope {
+            status: "ok".into(),
+            summary: format!("{} events returned", self.count),
+            model_content: output,
+            truncated: self.truncated || self.scan_limit.is_some(),
+            structured: self
+                .scan_limit
+                .map(|reason| json!({"scan_complete":false,"scan_limit": reason})),
+            faults: Default::default(),
+            supplied_full_write: false,
+        }
     }
 }
 
@@ -306,35 +344,25 @@ fn format_event(event: &crate::event::StoredEvent) -> String {
         "id": event.id,
         "kind": event.payload.kind_name(),
     });
-    if let Ok(payload_json) = serde_json::to_value(&event.payload) {
-        if let Some(obj) = payload_json.as_object() {
-            for (k, v) in obj {
-                let display_value = truncate_value(k, v);
-                json[k] = display_value;
-            }
+    if let Ok(Value::Object(fields)) = serde_json::to_value(&event.payload) {
+        for (key, value) in fields {
+            let display = truncate_value(&key, value);
+            json[key] = display;
         }
     }
     truncate_json_string(&serde_json::to_string(&json).unwrap_or_default())
 }
 
-fn truncate_value(key: &str, value: &Value) -> Value {
-    match key {
-        "text" | "model_content" | "summary" | "content" => {
-            if let Some(s) = value.as_str() {
-                if s.chars().count() > MAX_EVENT_CONTENT_CHARS {
-                    Value::String(format!(
-                        "{}...(truncated)",
-                        s.chars().take(MAX_EVENT_CONTENT_CHARS).collect::<String>()
-                    ))
-                } else {
-                    value.clone()
-                }
-            } else {
-                value.clone()
+fn truncate_value(key: &str, mut value: Value) -> Value {
+    if matches!(key, "text" | "model_content" | "summary" | "content") {
+        if let Value::String(text) = &mut value {
+            if let Some((end, _)) = text.char_indices().nth(MAX_EVENT_CONTENT_CHARS) {
+                text.truncate(end);
+                text.push_str("...(truncated)");
             }
         }
-        _ => value.clone(),
     }
+    value
 }
 
 fn truncate_json_string(s: &str) -> String {

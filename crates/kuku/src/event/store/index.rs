@@ -239,7 +239,12 @@ impl JournalIndex {
             .collect()
     }
 
-    pub(super) fn history_marks(&self, include_owners: bool, cursor: u64) -> HistoryMarks {
+    pub(super) fn history_marks(
+        &self,
+        include_owners: bool,
+        include_previews: bool,
+        cursor: u64,
+    ) -> HistoryMarks {
         HistoryMarks {
             cursor,
             controls: self.rewind_controls(),
@@ -270,11 +275,14 @@ impl JournalIndex {
                     })
                 })
                 .collect(),
-            editable: self
-                .agents
-                .iter()
-                .map(|(address, facts)| (address.clone(), facts.messages.previews.clone()))
-                .collect(),
+            editable: if include_previews {
+                self.agents
+                    .iter()
+                    .map(|(address, facts)| (address.clone(), facts.messages.previews.clone()))
+                    .collect()
+            } else {
+                HashMap::new()
+            },
         }
     }
 
@@ -483,14 +491,14 @@ mod tests {
         index.observe(&message(1, 1, "main", "First message", false));
         index.observe(&message(2, 2, "main", "Second message", false));
         index.observe(&message(3, 2, "main", "Job output", true));
-        let old = index.history_marks(true, 3);
-        let same = index.history_marks(true, 3);
+        let old = index.history_marks(true, true, 3);
+        let same = index.history_marks(true, true, 3);
         assert!(old.turn_owners.ptr_eq(&same.turn_owners));
         assert!(old.editable["main"].ptr_eq(&same.editable["main"]));
 
         index.observe(&message(4, 2, "main", "Follow-up", false));
         index.observe(&message(5, 2, "peer", "Peer message", false));
-        let current = index.history_marks(true, 5);
+        let current = index.history_marks(true, true, 5);
         assert_eq!("main", old.turn_owners[&2].last);
         assert_eq!("main", current.turn_owners[&2].first);
         assert_eq!("peer", current.turn_owners[&2].last);
@@ -512,7 +520,7 @@ mod tests {
             saved["agents"]["main"]["messages"]
         );
         let restored: JournalIndex = serde_json::from_value(saved).unwrap();
-        let history = restored.history_marks(true, 5);
+        let history = restored.history_marks(true, true, 5);
         assert_eq!("Follow-up", history.editable["main"][&2][1].text);
         assert!(restored.agents["main"].messages.contains(3));
     }

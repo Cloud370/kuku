@@ -16,9 +16,9 @@ pub(super) use file_io::WorkspaceCommitError;
 pub(crate) use file_io::{
     append_text, charge_entry, content_hash, ensure_active, file_read_error, file_version,
     file_version_with_text, format_content_hash, invalid_utf8, is_cancellation, is_io_limit,
-    mutation_preview, publish_file, read_context_file, read_file_as_utf8_bounded,
+    mutation_preview, path_lock, publish_file, read_context_file, read_file_as_utf8_bounded,
     remove_observed_file, valid_utf8_prefix, write_atomically, FileCancellation, IoLimit,
-    LimitedReader, ScanDeadline, StableFile, Utf8Reader, FILE_BUFFER_BYTES,
+    LimitedReader, ScanDeadline, StableFile, Utf8Reader, FILE_BUFFER_BYTES, FILE_SCAN_BYTES,
 };
 #[cfg(test)]
 use snapshot::find_write_snapshot;
@@ -270,23 +270,6 @@ pub(super) fn relative_path(path: &Path, workspace: &Path) -> String {
 }
 
 // ---------- String helpers ----------
-
-pub(super) fn join_bounded_strings(
-    lines: &[String],
-    max_chars: usize,
-    truncation_message: &str,
-) -> (String, bool) {
-    let visible = bounded_lines(lines, max_chars);
-    let mut model_content = visible.join("\n");
-    let truncated = visible.len() < lines.len();
-    if truncated {
-        if !model_content.is_empty() {
-            model_content.push('\n');
-        }
-        model_content.push_str(truncation_message);
-    }
-    (model_content, truncated)
-}
 
 pub(super) fn bounded_lines(lines: &[String], max_bytes: usize) -> &[String] {
     let mut bytes = 0;

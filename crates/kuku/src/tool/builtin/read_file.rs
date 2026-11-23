@@ -563,6 +563,7 @@ mod tests {
                 dir.path(),
                 &ConversationAddress::MAIN,
                 events,
+                crate::WorkspaceIoLimits::default(),
                 &|| false,
             )
         };

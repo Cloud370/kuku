@@ -7,7 +7,7 @@ use crate::session::{global_memory_path, project_memory_path};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    append_text, content_hash, file_read_error, read_context_file, write_atomically,
+    append_text, content_hash, file_read_error, path_lock, read_context_file, write_atomically,
 };
 
 struct MemoryRememberRequest<'a> {
@@ -55,6 +55,10 @@ pub(crate) fn remember_memory_with_home(
         Ok(path) => path,
         Err(result) => return result,
     };
+    let _guard = match path_lock(&memory_path, &|| false) {
+        Ok(guard) => guard,
+        Err(error) => return file_read_error(&memory_path, error),
+    };
     let mut memory = match load_memory_file(&memory_path, max_bytes) {
         Ok(memory) => memory,
         Err(result) => return result,
@@ -96,6 +100,10 @@ pub(crate) fn forget_memory_with_home(
     let memory_path = match resolve_memory_path(kuku_home, request.scope, workspace) {
         Ok(path) => path,
         Err(result) => return result,
+    };
+    let _guard = match path_lock(&memory_path, &|| false) {
+        Ok(guard) => guard,
+        Err(error) => return file_read_error(&memory_path, error),
     };
     let mut memory = match load_memory_file(&memory_path, max_bytes) {
         Ok(memory) => memory,

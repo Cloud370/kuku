@@ -143,6 +143,7 @@ fn edit_file_with_evidence(
         &resolved.path,
         Some(&current_hash),
         edited.as_bytes(),
+        text_bytes as u64,
         cancelled,
     ) {
         Ok(publication) => publication,

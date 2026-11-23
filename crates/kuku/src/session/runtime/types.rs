@@ -243,6 +243,9 @@ pub struct RuntimeLimits {
     pub job_foreground_wait_ms: u64,
     /// Optional process deadline in seconds for direct commands and commands run by scripts.
     pub max_command_seconds: Option<std::num::NonZeroU32>,
+    /// Optional OS memory limit for commands and their descendants.
+    #[serde(default)]
+    pub max_command_memory_bytes: Option<std::num::NonZeroU64>,
     /// Maximum retained bytes for one command or host-tool output.
     pub max_output_bytes: u64,
     /// Maximum total physical bytes retained in this session, including capture framing.
@@ -336,6 +339,7 @@ impl Default for RuntimeLimits {
             max_tools_per_agent: 8,
             job_foreground_wait_ms: default_job_foreground_wait_ms(),
             max_command_seconds: None,
+            max_command_memory_bytes: None,
             max_output_bytes: 8 * 1024 * 1024,
             max_retained_output_bytes: default_retained_output_bytes(),
             output_retention_secs: default_output_retention_secs(),

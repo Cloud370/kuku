@@ -30,7 +30,8 @@ pub(super) fn register_tools(options: &SessionOptions) -> Result<BTreeMap<String
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
             || spec.description.len() > 16_384
             || !spec.input_schema.is_object()
-            || serde_json::to_vec(&spec.input_schema)?.len() > 65_536
+            || crate::util::json::write_bounded_json(&spec.input_schema, 65_536, std::io::sink())
+                .is_err()
             || !(1024..=65_536).contains(&spec.max_result_bytes)
         {
             return Err(Error::InvalidArgument(format!(

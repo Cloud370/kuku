@@ -644,7 +644,13 @@ impl EventStore {
 
     pub(crate) fn history_marks(path: &Path, include_owners: bool) -> Result<HistoryMarks> {
         Self::with_index(path, |facts, cursor| {
-            Ok(facts.history_marks(include_owners, cursor))
+            Ok(facts.history_marks(include_owners, true, cursor))
+        })
+    }
+
+    pub(crate) fn query_history_marks(path: &Path, include_owners: bool) -> Result<HistoryMarks> {
+        Self::with_index(path, |facts, cursor| {
+            Ok(facts.history_marks(include_owners, false, cursor))
         })
     }
 

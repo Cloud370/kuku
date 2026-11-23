@@ -19,7 +19,10 @@ pub(super) struct ProcessTree {
 
 #[cfg(unix)]
 impl ProcessTree {
-    pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
+    pub(super) fn spawn(
+        command: &mut Command,
+        _memory_bytes: Option<std::num::NonZeroU64>,
+    ) -> io::Result<(Child, Self)> {
         #[cfg(target_os = "macos")]
         let exited = signal(SignalKind::child())?;
         command.process_group(0).kill_on_drop(true);
@@ -212,6 +215,7 @@ impl Drop for ProcessTree {
 mod windows {
     use std::io;
     use std::mem::{size_of, zeroed};
+    use std::num::NonZeroU64;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::process::ExitStatus;
     use std::ptr;
@@ -223,7 +227,7 @@ mod windows {
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
@@ -235,8 +239,11 @@ mod windows {
     }
 
     impl ProcessTree {
-        pub(crate) fn spawn(command: &mut Command) -> io::Result<(Child, Self)> {
-            let job = create_job()?;
+        pub(crate) fn spawn(
+            command: &mut Command,
+            memory_bytes: Option<NonZeroU64>,
+        ) -> io::Result<(Child, Self)> {
+            let job = create_job(memory_bytes)?;
             command
                 .creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)
                 .kill_on_drop(true);
@@ -270,7 +277,7 @@ mod windows {
         }
     }
 
-    fn create_job() -> io::Result<OwnedHandle> {
+    fn create_job(memory_bytes: Option<NonZeroU64>) -> io::Result<OwnedHandle> {
         // NOTE: Null security/name pointers request an unnamed job with default security; the returned non-null handle is newly owned.
         let raw = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
         if raw.is_null() {
@@ -281,6 +288,15 @@ mod windows {
         // NOTE: This Win32 C structure permits all-zero initialization before its documented limit flag is set.
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if let Some(bytes) = memory_bytes {
+            limits.JobMemoryLimit = usize::try_from(bytes.get()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "command memory limit exceeds the platform size",
+                )
+            })?;
+            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+        }
         // NOTE: The job handle and correctly sized limits remain valid throughout the call; Win32 exposes no safe wrapper.
         let result = unsafe {
             SetInformationJobObject(
@@ -368,7 +384,8 @@ mod tests {
 
     #[tokio::test]
     async fn pre_reap_sweep_stops_a_process_that_joined_after_the_first_signal() {
-        let (mut leader, mut tree) = ProcessTree::spawn(Command::new("sleep").arg("30")).unwrap();
+        let (mut leader, mut tree) =
+            ProcessTree::spawn(Command::new("sleep").arg("30"), None).unwrap();
         let group = leader.id().unwrap() as i32;
         tree.signal_group().unwrap();
 
@@ -402,7 +419,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn zombie_only_group_can_be_swept_before_reaping_the_leader() {
-        let (mut leader, mut tree) = ProcessTree::spawn(Command::new("sleep").arg("30")).unwrap();
+        let (mut leader, mut tree) =
+            ProcessTree::spawn(Command::new("sleep").arg("30"), None).unwrap();
         let group = leader.id().unwrap() as i32;
         let mut sibling = Command::new("sh")
             .args(["-c", "exit 7"])

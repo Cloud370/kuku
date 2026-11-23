@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::io;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -30,7 +31,9 @@ pub(super) struct CommandRequest {
 }
 
 impl CommandRequest {
-    pub(super) fn command(&self) -> io::Result<PreparedCommand> {
+    pub(super) fn command(&self, memory_bytes: Option<NonZeroU64>) -> io::Result<PreparedCommand> {
+        #[cfg(not(unix))]
+        let _ = memory_bytes;
         match &self.invocation {
             CommandInvocation::Program { program, args } => {
                 let program = if Path::new(program).file_name() == Some(OsStr::new(program)) {
@@ -40,6 +43,8 @@ impl CommandRequest {
                 };
                 let mut command = Command::new(program);
                 command.args(args);
+                #[cfg(unix)]
+                super::native::configure_memory(&mut command, memory_bytes)?;
                 #[cfg(unix)]
                 let executable_paths = super::native::configure(&mut command)?;
                 #[cfg(not(unix))]
@@ -56,6 +61,12 @@ impl CommandRequest {
                         format!("selected interpreter {shell:?} was not found"),
                     )
                 })?;
+                #[cfg(unix)]
+                let command = {
+                    let mut command = command;
+                    super::native::configure_memory(&mut command, memory_bytes)?;
+                    command
+                };
                 let executable_paths = vec![PathBuf::from(command.as_std().get_program())];
                 Ok(PreparedCommand {
                     command,

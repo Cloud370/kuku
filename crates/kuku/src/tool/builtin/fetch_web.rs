@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -8,13 +7,14 @@ use serde_json::Value;
 use crate::tool::ToolResultEnvelope;
 
 const SMALL_CONTENT_THRESHOLD: usize = 50_000;
+const MAX_HTML_TAG_STARTS: usize = 100_000;
 const MAX_HTML_BYTES: usize = 10 * 1024 * 1024;
 const CACHE_MAX_ENTRIES: usize = 200;
 const CACHE_TTL: Duration = Duration::from_secs(300);
 
 pub(crate) async fn fetch_web(
     args: &Value,
-    _workspace: &Path,
+    host: &crate::WorkspaceExecutionHost,
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
 ) -> ToolResultEnvelope {
@@ -52,27 +52,39 @@ pub(crate) async fn fetch_web(
         };
     }
 
+    let permit = match host.operations().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(error) => {
+            return ToolResultEnvelope::error("web capacity unavailable", error.to_string())
+        }
+    };
     let html = match fetch_html(url).await {
         Ok(html) => html,
         Err(e) => return e,
     };
 
-    let markdown = match html_to_markdown(url, &html) {
-        Ok(md) => md,
-        Err(e) => return e,
+    let source_url = url.to_owned();
+    let markdown = match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        html_to_markdown(&source_url, html)
+    })
+    .await
+    {
+        Ok(Ok(markdown)) => markdown,
+        Ok(Err(result)) => return result,
+        Err(error) => {
+            return ToolResultEnvelope::error("HTML conversion failed", error.to_string())
+        }
     };
 
     let result = if markdown.len() < SMALL_CONTENT_THRESHOLD {
         FetchedContent {
-            content: markdown.clone(),
+            content: markdown,
             truncated: false,
         }
     } else {
         match call_secondary_llm(&markdown, prompt, model_tier, config, catalog).await {
-            Ok(summary) => FetchedContent {
-                content: summary,
-                truncated: false,
-            },
+            Ok(summary) => summary,
             Err(_) => bounded_fallback_content(&markdown),
         }
     };
@@ -95,11 +107,24 @@ pub(crate) async fn fetch_web(
 }
 
 fn bounded_fallback_content(markdown: &str) -> FetchedContent {
-    let (content, truncated) = super::common::join_bounded_strings(
-        &markdown.lines().map(String::from).collect::<Vec<_>>(),
-        SMALL_CONTENT_THRESHOLD,
-        "[Content truncated — LLM summarization failed]",
-    );
+    const HINT: &str = "[Content truncated — LLM summarization failed]";
+    let mut content = String::new();
+    let mut truncated = false;
+    for (index, line) in markdown.lines().enumerate() {
+        let separator = usize::from(index > 0);
+        if content.len() + line.len() + separator > SMALL_CONTENT_THRESHOLD - HINT.len() - 1 {
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str(HINT);
+            truncated = true;
+            break;
+        }
+        if index > 0 {
+            content.push('\n');
+        }
+        content.push_str(line);
+    }
     FetchedContent { content, truncated }
 }
 
@@ -143,9 +168,10 @@ async fn fetch_html(url: &str) -> Result<String, ToolResultEnvelope> {
         let chunk =
             chunk.map_err(|e| ToolResultEnvelope::error("failed: read error", format!("{e}")))?;
         if buf.len() + chunk.len() > MAX_HTML_BYTES {
-            return Err(ToolResultEnvelope::error(
+            return Err(ToolResultEnvelope::error_with_reason(
                 "failed: response too large",
                 format!("HTML body exceeds {MAX_HTML_BYTES} byte limit"),
+                crate::tool::ToolErrorReason::ResourceLimit,
             ));
         }
         buf.extend_from_slice(&chunk);
@@ -155,7 +181,18 @@ async fn fetch_html(url: &str) -> Result<String, ToolResultEnvelope> {
     })
 }
 
-fn html_to_markdown(url: &str, html: &str) -> Result<String, ToolResultEnvelope> {
+fn html_to_markdown(url: &str, html: String) -> Result<String, ToolResultEnvelope> {
+    if memchr::memchr_iter(b'<', html.as_bytes())
+        .take(MAX_HTML_TAG_STARTS + 1)
+        .count()
+        > MAX_HTML_TAG_STARTS
+    {
+        return Err(ToolResultEnvelope::error_with_reason(
+            "HTML conversion budget reached",
+            "The page contains too much markup to convert. Use fetch_url to inspect the retained response.",
+            crate::tool::ToolErrorReason::ResourceLimit,
+        ));
+    }
     let parsed_url = url::Url::parse(url).map_err(|e| {
         ToolResultEnvelope::error(
             "failed: invalid url",
@@ -165,7 +202,7 @@ fn html_to_markdown(url: &str, html: &str) -> Result<String, ToolResultEnvelope>
 
     let clean_html = match readability::extractor::extract(&mut html.as_bytes(), &parsed_url) {
         Ok(product) => product.content,
-        Err(_) => html.to_string(),
+        Err(_) => html,
     };
 
     htmd::convert(&clean_html).map_err(|e| {
@@ -182,7 +219,7 @@ async fn call_secondary_llm(
     model_tier: &str,
     config: &crate::config::Config,
     catalog: &crate::prompt::PromptCatalog,
-) -> Result<String, ToolResultEnvelope> {
+) -> Result<FetchedContent, ToolResultEnvelope> {
     use tokio_stream::StreamExt;
 
     let resolved =
@@ -205,10 +242,11 @@ async fn call_secondary_llm(
         })?;
 
     let max_chars = resolved.max_context_tokens as usize * 3;
-    let truncated: String = content
-        .chars()
-        .take(max_chars.saturating_sub(2_000))
-        .collect();
+    let end = content
+        .char_indices()
+        .nth(max_chars.saturating_sub(2_000))
+        .map_or(content.len(), |(end, _)| end);
+    let truncated = &content[..end];
     let user_text = format!("{prompt}\n\n---\n\n{truncated}");
 
     let assembly = crate::context::ContextAssembly {
@@ -244,9 +282,16 @@ async fn call_secondary_llm(
         })?;
 
     let mut response_text = String::new();
+    let mut truncated = false;
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(crate::provider::chunk::ProviderChunk::TextDelta { text }) => {
+                let remaining = SMALL_CONTENT_THRESHOLD - response_text.len();
+                if text.len() > remaining {
+                    response_text.push_str(&text[..text.floor_char_boundary(remaining)]);
+                    truncated = true;
+                    break;
+                }
                 response_text.push_str(&text);
             }
             Ok(_) => {}
@@ -259,7 +304,10 @@ async fn call_secondary_llm(
         }
     }
 
-    Ok(response_text)
+    Ok(FetchedContent {
+        content: response_text,
+        truncated,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,7 +372,12 @@ mod tests {
             "url": "https://example.com",
             "prompt": "summarize",
         });
-        let result = tokio_test::block_on(fetch_web(&args, Path::new("."), &config, &catalog));
+        let result = tokio_test::block_on(fetch_web(
+            &args,
+            &crate::WorkspaceExecutionHost::default(),
+            &config,
+            &catalog,
+        ));
         assert_eq!(result.status, "error");
         assert!(result.model_content.contains("model_tier"));
     }
@@ -333,15 +386,30 @@ mod tests {
     fn validate_missing_required_params() {
         let (config, catalog) = test_context();
         let no_url = serde_json::json!({"prompt": "x", "model_tier": "light"});
-        let r = tokio_test::block_on(fetch_web(&no_url, Path::new("."), &config, &catalog));
+        let r = tokio_test::block_on(fetch_web(
+            &no_url,
+            &crate::WorkspaceExecutionHost::default(),
+            &config,
+            &catalog,
+        ));
         assert_eq!(r.status, "error");
 
         let no_prompt = serde_json::json!({"url": "https://x.com", "model_tier": "light"});
-        let r = tokio_test::block_on(fetch_web(&no_prompt, Path::new("."), &config, &catalog));
+        let r = tokio_test::block_on(fetch_web(
+            &no_prompt,
+            &crate::WorkspaceExecutionHost::default(),
+            &config,
+            &catalog,
+        ));
         assert_eq!(r.status, "error");
 
         let no_tier = serde_json::json!({"url": "https://x.com", "prompt": "x"});
-        let r = tokio_test::block_on(fetch_web(&no_tier, Path::new("."), &config, &catalog));
+        let r = tokio_test::block_on(fetch_web(
+            &no_tier,
+            &crate::WorkspaceExecutionHost::default(),
+            &config,
+            &catalog,
+        ));
         assert_eq!(r.status, "error");
     }
 
@@ -365,7 +433,12 @@ mod tests {
             "model_tier": "light",
         });
 
-        let result = tokio_test::block_on(fetch_web(&args, Path::new("."), &config, &catalog));
+        let result = tokio_test::block_on(fetch_web(
+            &args,
+            &crate::WorkspaceExecutionHost::default(),
+            &config,
+            &catalog,
+        ));
 
         assert_eq!(result.status, "ok");
         assert!(result.truncated);
@@ -385,10 +458,17 @@ mod tests {
     #[test]
     fn html_to_markdown_converts_basic_html() {
         let html = "<html><body><h1>Title</h1><p>Paragraph</p></body></html>";
-        let md = html_to_markdown("https://example.com", html).unwrap();
+        let md = html_to_markdown("https://example.com", html.to_owned()).unwrap();
         assert!(
             md.contains("Paragraph"),
             "md should contain Paragraph, got: {md}"
         );
+    }
+
+    #[test]
+    fn dense_markup_reaches_the_conversion_budget_before_html_parsing() {
+        let html = "<x>".repeat(MAX_HTML_TAG_STARTS + 1);
+        let error = html_to_markdown("https://example.com", html).unwrap_err();
+        assert_eq!(error.structured.unwrap()["reason_code"], "resource_limit");
     }
 }

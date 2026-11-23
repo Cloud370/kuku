@@ -3,6 +3,10 @@ use crate::event::{EventPayload, EventStore};
 use serde_json::json;
 use tempfile::tempdir;
 
+fn query_session(args: &Value, events_path: &Path) -> ToolResultEnvelope {
+    super::query_session(args, events_path, WorkspaceIoLimits::default(), &|| false)
+}
+
 fn write_events(dir: &Path, payloads: &[EventPayload]) -> std::path::PathBuf {
     let path = dir.join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();

@@ -1,4 +1,5 @@
 pub(crate) mod fs_sync;
+pub(crate) mod json;
 pub mod path;
 mod private_directory;
 mod private_file;

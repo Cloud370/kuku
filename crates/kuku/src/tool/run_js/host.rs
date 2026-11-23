@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::io::{self, Write};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -227,12 +226,7 @@ impl ScriptExecution {
 }
 
 pub(super) fn bounded_json(value: &impl Serialize, limit: usize) -> serde_json::Result<Vec<u8>> {
-    let mut writer = BoundedWriter {
-        bytes: Vec::new(),
-        limit,
-    };
-    serde_json::to_writer(&mut writer, value)?;
-    Ok(writer.bytes)
+    crate::util::json::write_bounded_json(value, limit, Vec::new())
 }
 
 pub(super) fn cap_str(text: &str, max_bytes: usize) -> &str {
@@ -426,28 +420,6 @@ fn merge_output_read(
         .into();
     }
     true
-}
-
-struct BoundedWriter {
-    bytes: Vec<u8>,
-    limit: usize,
-}
-
-impl Write for BoundedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.limit - self.bytes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "serialized JSON exceeds byte limit",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

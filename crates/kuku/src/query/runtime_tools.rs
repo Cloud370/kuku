@@ -241,7 +241,15 @@ pub(super) async fn dispatch(
             args: queued.tool_call.args.clone(),
             workspace: pending.workspace.clone(),
         };
-        let slot = super::adapters::spawn_tool(registered, action, output, event_tx);
+        let session = runtime_session(&pending)?;
+        let slot = super::adapters::spawn_tool(
+            registered,
+            action,
+            output,
+            pending.query.runtime_limits.clone(),
+            session.workspace_execution_host(),
+            event_tx,
+        );
         return start_slot(pending, queued, slot);
     }
     if let Some(control) = JobControl::for_tool(&queued.tool_call.name) {
@@ -457,6 +465,7 @@ fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedO
             (None, _) => ModelOutputAccess::Unavailable,
         },
         max_command_seconds: pending.query.runtime_limits.max_command_seconds,
+        max_command_memory_bytes: pending.query.runtime_limits.max_command_memory_bytes,
         retention,
     })
 }

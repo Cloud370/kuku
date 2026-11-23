@@ -60,7 +60,9 @@ pub(crate) fn spawn_simple_slot(
         .unwrap_or(crate::conversation::address::ConversationAddress::MAIN);
 
     tokio::spawn(async move {
-        let result = if crate::tool::dispatch::is_workspace_file(&tool_name) {
+        let result = if crate::tool::dispatch::is_workspace_file(&tool_name)
+            || tool_name == "query_session"
+        {
             let operations = capacity.operations();
             let permit = tokio::select! {
                 biased;
@@ -73,6 +75,15 @@ pub(crate) fn spawn_simple_slot(
                 let check = stopped.clone();
                 let mut work = tokio::task::spawn_blocking(move || {
                     let _permit = permit;
+                    let cancelled = || check.load(Ordering::Acquire);
+                    if tool_name == "query_session" {
+                        return crate::tool::builtin::query_session(
+                            &args,
+                            &events_path,
+                            limits.workspace_io,
+                            &cancelled,
+                        );
+                    }
                     crate::tool::dispatch::dispatch_workspace_file(
                         &tool_name,
                         &args,
@@ -82,7 +93,7 @@ pub(crate) fn spawn_simple_slot(
                         0,
                         Some(&dispatch_tool_call_id),
                         &limits,
-                        &|| check.load(Ordering::Acquire),
+                        &cancelled,
                     )
                     .expect("a known workspace file operation")
                 });
@@ -106,7 +117,7 @@ pub(crate) fn spawn_simple_slot(
                 _ = cancel_clone.notified() => cancelled_slot("cancelled"),
                 r = crate::tool::dispatch::dispatch(
                     &tool_name,&args,&workspace,&kuku_home,&dispatch_conversation,&prior_events,
-                    0,Some(&dispatch_tool_call_id),&config,&catalog,&events_path,&limits,
+                    0,Some(&dispatch_tool_call_id),&config,&catalog,&events_path,&limits,&capacity,
                 ) => SlotEvent::Done(r),
             }
         };
@@ -324,7 +335,10 @@ pub(super) fn spawn_command_slot(
                             output.limits,
                             output.access,
                         )
-                        .with_time_limit(output.max_command_seconds),
+                        .with_process_limits(
+                            output.max_command_seconds,
+                            output.max_command_memory_bytes,
+                        ),
                     )
                     .await;
                     if result
@@ -427,6 +441,7 @@ pub(crate) struct RetainedOutputSpec {
     pub(crate) limits: crate::tool::builtin::run_command::output::OutputLimits,
     pub(crate) access: crate::tool::builtin::run_command::ModelOutputAccess,
     pub(crate) max_command_seconds: Option<std::num::NonZeroU32>,
+    pub(crate) max_command_memory_bytes: Option<std::num::NonZeroU64>,
     pub(crate) retention: crate::session::runtime::OutputReservation,
 }
 
@@ -477,6 +492,7 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
         summary,
         workspace,
         event_tx,
+        capacity,
         ..
     } = args;
     let cancel = Arc::new(Notify::new());
@@ -491,8 +507,16 @@ fn spawn_fetch_slot(args: SlotDispatchArgs) -> ExecSlot {
                 limits: output.limits,
                 access: output.access,
             });
-        let result =
-            crate::tool::builtin::fetch_url(&args, &workspace, retention, &fetch_cancel).await;
+        let permit = tokio::select! {
+            biased;
+            _ = fetch_cancel.notified() => None,
+            permit = capacity.operations().acquire_owned() => permit.ok(),
+        };
+        let result = if let Some(_permit) = permit {
+            crate::tool::builtin::fetch_url(&args, &workspace, retention, &fetch_cancel).await
+        } else {
+            ToolResultEnvelope::cancelled("download cancelled before execution")
+        };
         if let Some(mut output) = output {
             if result
                 .structured

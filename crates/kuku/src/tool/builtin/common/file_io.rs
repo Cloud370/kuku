@@ -13,6 +13,7 @@ use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 use crate::util::fs_sync;
 
 pub(crate) const FILE_BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const FILE_SCAN_BYTES: IoLimit = IoLimit("file scan byte budget exhausted");
 const MUTATION_LOCKS: usize = 64;
 const MUTATION_PREVIEW_BYTES: usize = 80_000;
 const MUTATION_LOCK_RETRY: Duration = Duration::from_millis(10);
@@ -82,6 +83,14 @@ impl<'a> StableFile<'a> {
     pub(crate) fn rewind(&mut self) -> io::Result<()> {
         ensure_active(self.cancelled)?;
         self.file.rewind()
+    }
+
+    pub(crate) fn check_size(&self, max_bytes: u64, limit: IoLimit) -> io::Result<()> {
+        if self.opened.len() > max_bytes {
+            Err(io::Error::other(limit))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -268,13 +277,15 @@ fn read_text_file(
 ) -> io::Result<String> {
     let limit = IoLimit("text exceeds the file input budget");
     let mut file = StableFile::open(path, cancelled)?;
-    if file.opened.len() > max_bytes as u64 {
-        return Err(io::Error::other(limit));
-    }
+    file.check_size(max_bytes as u64, limit)?;
+    let read_size = (file.opened.len() as usize)
+        .saturating_add(1)
+        .clamp(4096, FILE_BUFFER_BYTES)
+        .min(max_bytes.max(1));
     let mut bytes_left = max_bytes as u64;
     let mut reader = Utf8Reader::new(LimitedReader::new(&mut file, &mut bytes_left, limit));
     let mut content: Vec<u8> = Vec::new();
-    let mut buffer = [0; FILE_BUFFER_BYTES];
+    let mut buffer = vec![0; read_size];
     loop {
         let count = match reader.read(&mut buffer) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -319,34 +330,39 @@ fn next_text_capacity(current: usize, used: usize, add: usize, max: usize) -> Op
 
 pub(crate) fn file_version(
     path: &Path,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> io::Result<(String, Metadata)> {
-    scan_file_version(path, cancelled, None).map(|(hash, metadata, _)| (hash, metadata))
+    scan_file_version(path, scan_bytes, cancelled, None).map(|(hash, metadata, _)| (hash, metadata))
 }
 
 pub(crate) fn file_version_with_text(
     path: &Path,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
     text_limit: Option<usize>,
 ) -> io::Result<(String, Option<String>)> {
-    scan_file_version(path, cancelled, text_limit)
+    scan_file_version(path, scan_bytes, cancelled, text_limit)
         .map(|(hash, _, bytes)| (hash, bytes.and_then(|bytes| String::from_utf8(bytes).ok())))
 }
 
 fn scan_file_version(
     path: &Path,
+    mut scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
     text_limit: Option<usize>,
 ) -> io::Result<(String, Metadata, Option<Vec<u8>>)> {
     let mut file = StableFile::open(path, cancelled)?;
+    file.check_size(scan_bytes, FILE_SCAN_BYTES)?;
     let mut hash = Sha256::new();
     let mut text = text_limit
         .zip(usize::try_from(file.opened.len()).ok())
         .filter(|(limit, len)| len <= limit)
         .map(|(limit, len)| (limit, Vec::with_capacity(len)));
     let mut buffer = [0; FILE_BUFFER_BYTES];
+    let mut reader = LimitedReader::new(&mut file, &mut scan_bytes, FILE_SCAN_BYTES);
     loop {
-        let count = match file.read(&mut buffer) {
+        let count = match reader.read(&mut buffer) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,
         };
@@ -420,6 +436,9 @@ impl WorkspaceCommitError {
             Self::WriteFailed(error) if is_cancellation(&error) => {
                 ToolResultEnvelope::cancelled(format!("file operation cancelled: {relative}"))
             }
+            Self::WriteFailed(error) if is_io_limit(&error) => {
+                file_read_error(Path::new(relative), error)
+            }
             Self::WriteFailed(error) => ToolResultEnvelope::error(
                 format!("failed: {error}"),
                 format!("error modifying file: {relative}"),
@@ -475,6 +494,7 @@ pub(crate) fn publish_file(
     path: &Path,
     expected: Option<&str>,
     bytes: &[u8],
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> Result<Publication, WorkspaceCommitError> {
     let _commit = path_lock(path, cancelled)?;
@@ -494,7 +514,7 @@ pub(crate) fn publish_file(
     let staged = staged.into_temp_path();
     verify_canonical_parent(path).map_err(version_error)?;
     if let Some(expected) = expected {
-        verify_file_version(path, expected, cancelled)?;
+        verify_file_version(path, expected, scan_bytes, cancelled)?;
         ensure_active(cancelled)?;
         return replace_existing(&staged, path);
     }
@@ -512,17 +532,22 @@ pub(crate) fn publish_file(
 pub(crate) fn remove_observed_file(
     path: &Path,
     expected: &str,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
-) -> Result<Publication, WorkspaceCommitError> {
+) -> Result<(Publication, String, u64), WorkspaceCommitError> {
     let _commit = path_lock(path, cancelled)?;
     verify_canonical_parent(path).map_err(version_error)?;
-    verify_file_version(path, expected, cancelled)?;
+    let (version, metadata) = verify_file_version(path, expected, scan_bytes, cancelled)?;
     ensure_active(cancelled)?;
     fs::remove_file(path).map_err(version_error)?;
     #[cfg(unix)]
-    return Ok(confirm_publication(fs_sync::sync_parent(path)));
+    return Ok((
+        confirm_publication(fs_sync::sync_parent(path)),
+        version,
+        metadata.len(),
+    ));
     #[cfg(not(unix))]
-    Ok(Publication::Committed)
+    Ok((Publication::Committed, version, metadata.len()))
 }
 
 pub(crate) fn mutation_preview(content: &str, fields: &mut serde_json::Value) {
@@ -591,7 +616,10 @@ fn stage_file(
     Ok(staged)
 }
 
-fn path_lock(path: &Path, cancelled: &FileCancellation<'_>) -> io::Result<MutexGuard<'static, ()>> {
+pub(crate) fn path_lock(
+    path: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<MutexGuard<'static, ()>> {
     let mut hash = DefaultHasher::new();
     path.hash(&mut hash);
     let lock = &MUTATIONS[(hash.finish() % MUTATION_LOCKS as u64) as usize];
@@ -652,13 +680,14 @@ fn create_missing_parents(path: &Path, cancelled: &FileCancellation<'_>) -> io::
 fn verify_file_version(
     path: &Path,
     expected: &str,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
-) -> Result<(), WorkspaceCommitError> {
-    let (current, _) = file_version(path, cancelled).map_err(version_error)?;
-    if current != expected {
+) -> Result<(String, Metadata), WorkspaceCommitError> {
+    let (current, metadata) = file_version(path, scan_bytes, cancelled).map_err(version_error)?;
+    if !super::snapshot::version_matches(&current, expected) {
         return Err(WorkspaceCommitError::Conflict);
     }
-    Ok(())
+    Ok((current, metadata))
 }
 
 fn version_error(error: io::Error) -> WorkspaceCommitError {
@@ -725,7 +754,7 @@ mod tests {
                 let version = &version;
                 scope.spawn(move || {
                     barrier.wait();
-                    publish_file(path, Some(version), bytes, &|| false)
+                    publish_file(path, Some(version), bytes, u64::MAX, &|| false)
                 })
             };
             let alpha = attempt(b"alpha");
@@ -747,11 +776,11 @@ mod tests {
         let path = temporary.path().canonicalize().unwrap().join("file.txt");
         fs::write(&path, b"current").unwrap();
         assert!(matches!(
-            publish_file(&path, None, b"replacement", &|| false),
+            publish_file(&path, None, b"replacement", u64::MAX, &|| false),
             Err(WorkspaceCommitError::Conflict)
         ));
         assert!(matches!(
-            remove_observed_file(&path, &content_hash(b"old"), &|| false),
+            remove_observed_file(&path, &content_hash(b"old"), u64::MAX, &|| false),
             Err(WorkspaceCommitError::Conflict)
         ));
         assert_eq!(b"current", fs::read(path).unwrap().as_slice());
@@ -764,7 +793,7 @@ mod tests {
         let path = dir.join("new.txt");
         let cancelled = || fs::read_dir(&dir).unwrap().next().is_some();
 
-        let error = publish_file(&path, None, b"", &cancelled)
+        let error = publish_file(&path, None, b"", u64::MAX, &cancelled)
             .err()
             .expect("cancelled before the staged file can be published");
 
@@ -792,6 +821,7 @@ mod tests {
             &path,
             Some(&content_hash(b"original")),
             b"replacement",
+            u64::MAX,
             &changed_after_staging,
         );
 

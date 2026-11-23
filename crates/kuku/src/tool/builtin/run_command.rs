@@ -1,5 +1,5 @@
 use std::io;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -78,6 +78,7 @@ pub(crate) struct CommandCapture<'a> {
     limits: OutputLimits,
     view: CommandView,
     max_seconds: Option<NonZeroU32>,
+    memory_bytes: Option<NonZeroU64>,
 }
 
 impl<'a> CommandCapture<'a> {
@@ -93,6 +94,7 @@ impl<'a> CommandCapture<'a> {
             limits,
             view: CommandView::Model(access),
             max_seconds: None,
+            memory_bytes: None,
         }
     }
 
@@ -108,11 +110,17 @@ impl<'a> CommandCapture<'a> {
             limits,
             view: CommandView::Script { host_bytes },
             max_seconds: None,
+            memory_bytes: None,
         }
     }
 
-    pub(crate) fn with_time_limit(mut self, max_seconds: Option<NonZeroU32>) -> Self {
+    pub(crate) fn with_process_limits(
+        mut self,
+        max_seconds: Option<NonZeroU32>,
+        memory_bytes: Option<NonZeroU64>,
+    ) -> Self {
         self.max_seconds = max_seconds;
+        self.memory_bytes = memory_bytes;
         self
     }
 }
@@ -228,7 +236,15 @@ pub(crate) async fn run_command_to(
             ..CommandOutcome::default()
         }
     } else {
-        match execute_command(&request, &mut writer, event_tx, cancelled.as_mut()).await {
+        match execute_command(
+            &request,
+            &mut writer,
+            event_tx,
+            cancelled.as_mut(),
+            output.memory_bytes,
+        )
+        .await
+        {
             Ok(outcome) => outcome,
             Err(result) => return result,
         }
@@ -245,7 +261,12 @@ pub(crate) async fn run_command_to(
         Ok(result) => result,
         Err(error) => return output_error("sync", error, outcome.cleanup_incomplete),
     };
-    render_command_result(&request, outcome, capture, started.elapsed(), output)
+    let memory_bytes = output.memory_bytes;
+    let mut result = render_command_result(&request, outcome, capture, started.elapsed(), output);
+    if let (Some(bytes), Some(facts)) = (memory_bytes, &mut result.structured) {
+        facts["memory_limit_bytes"] = serde_json::json!(bytes.get());
+    }
+    result
 }
 
 async fn execute_command(
@@ -253,8 +274,9 @@ async fn execute_command(
     output: &mut OutputWriter,
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
+    memory_bytes: Option<NonZeroU64>,
 ) -> Result<CommandOutcome, ToolResultEnvelope> {
-    let mut prepared = match request.command() {
+    let mut prepared = match request.command(memory_bytes) {
         Ok(command) => command,
         Err(error) => {
             let termination = if error.kind() == io::ErrorKind::NotFound {
@@ -274,7 +296,7 @@ async fn execute_command(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, mut tree) = match ProcessTree::spawn(&mut prepared.command) {
+    let (mut child, mut tree) = match ProcessTree::spawn(&mut prepared.command, memory_bytes) {
         Ok(process) => process,
         Err(error) => {
             let termination = if error.kind() == io::ErrorKind::NotFound

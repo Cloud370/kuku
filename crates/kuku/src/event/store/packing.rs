@@ -118,7 +118,7 @@ impl EventStore {
             },
         )?;
         if let Some(facts) = facts {
-            result.history = facts.history_marks(true, cursor);
+            result.history = facts.history_marks(true, true, cursor);
         }
         Ok((cursor, result))
     }

@@ -57,7 +57,9 @@ pub(crate) fn dispatch_workspace_file(
             limits.workspace_io,
             cancelled,
         ),
-        "stat_file" => builtin::stat_file(args, workspace, cancelled),
+        "stat_file" => {
+            builtin::stat_file(args, workspace, limits.workspace_io.scan_bytes, cancelled)
+        }
         "edit_file" => builtin::edit_file(
             args,
             workspace,
@@ -66,10 +68,22 @@ pub(crate) fn dispatch_workspace_file(
             limits.workspace_io.text_bytes,
             cancelled,
         ),
-        "write_file" => builtin::write_file(args, workspace, conversation, prior_events, cancelled),
-        "remove_file" => {
-            builtin::remove_file(args, workspace, conversation, prior_events, cancelled)
-        }
+        "write_file" => builtin::write_file(
+            args,
+            workspace,
+            conversation,
+            prior_events,
+            limits.workspace_io,
+            cancelled,
+        ),
+        "remove_file" => builtin::remove_file(
+            args,
+            workspace,
+            conversation,
+            prior_events,
+            limits.workspace_io.scan_bytes,
+            cancelled,
+        ),
         _ => return None,
     };
     if name == "write_file" && result.status == "ok" {
@@ -136,6 +150,7 @@ pub(crate) async fn dispatch(
     catalog: &crate::prompt::PromptCatalog,
     events_path: &Path,
     limits: &crate::RuntimeLimits,
+    host: &crate::WorkspaceExecutionHost,
 ) -> ToolResultEnvelope {
     if let Some(result) = dispatch_workspace_file(
         name,
@@ -155,7 +170,7 @@ pub(crate) async fn dispatch(
             "agent tool must be executed via agent runtime".to_string(),
             "the agent tool can only be invoked through the normal agent loop".to_string(),
         ),
-        "fetch_web" => builtin::fetch_web(args, workspace, config, catalog).await,
+        "fetch_web" => builtin::fetch_web(args, host, config, catalog).await,
         "remember_memory" | "forget_memory" | "run_command"
             if has_denied_permission(prior_events, tool_call_id) =>
         {
@@ -174,7 +189,9 @@ pub(crate) async fn dispatch(
             limits.workspace_io.context_file_bytes,
         ),
         "run_command" => builtin::run_command(args, workspace, None, None).await,
-        "query_session" => builtin::query_session(args, events_path),
+        "query_session" => {
+            builtin::query_session(args, events_path, limits.workspace_io, &|| false)
+        }
         _ => ToolResultEnvelope::error(
             format!("failed: unknown tool: {name}"),
             format!("unknown tool: {name}"),
@@ -232,6 +249,7 @@ mod tests {
             catalog,
             events_path,
             &crate::RuntimeLimits::default(),
+            &crate::WorkspaceExecutionHost::default(),
         )
         .await
     }

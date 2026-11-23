@@ -194,15 +194,7 @@ pub(crate) fn require_version(
     current: Option<&str>,
 ) -> Result<(), ToolResultEnvelope> {
     if let Some(expected) = expected {
-        let matches = current.is_some_and(|current| {
-            current == expected
-                || current.strip_prefix("sha256:").is_some_and(|digest| {
-                    digest.len() == 64
-                        && digest.eq_ignore_ascii_case(
-                            expected.strip_prefix("sha256:").unwrap_or(expected),
-                        )
-                })
-        });
+        let matches = current.is_some_and(|current| version_matches(current, expected));
         if !matches {
             return Err(ToolResultEnvelope::error_with_reason(
                 format!("failed: expected_version does not match {relative}"),
@@ -212,6 +204,14 @@ pub(crate) fn require_version(
         }
     }
     Ok(())
+}
+
+pub(super) fn version_matches(current: &str, expected: &str) -> bool {
+    current == expected
+        || current.strip_prefix("sha256:").is_some_and(|digest| {
+            digest.len() == 64
+                && digest.eq_ignore_ascii_case(expected.strip_prefix("sha256:").unwrap_or(expected))
+        })
 }
 
 pub(crate) fn snapshot_stale_error(relative: &str, event_id: u64) -> ToolResultEnvelope {

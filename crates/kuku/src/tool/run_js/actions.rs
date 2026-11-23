@@ -20,6 +20,7 @@ pub(crate) struct WorkspaceActions {
     pub(crate) preview_bytes: usize,
     pub(crate) io_limits: crate::WorkspaceIoLimits,
     pub(crate) max_command_seconds: Option<std::num::NonZeroU32>,
+    pub(crate) max_command_memory_bytes: Option<std::num::NonZeroU64>,
 }
 
 impl WorkspaceActions {
@@ -106,7 +107,7 @@ impl WorkspaceActions {
                         },
                         execution.limits.host_bytes,
                     )
-                    .with_time_limit(self.max_command_seconds),
+                    .with_process_limits(self.max_command_seconds, self.max_command_memory_bytes),
                 )
                 .await;
                 if result
@@ -145,7 +146,9 @@ impl WorkspaceActions {
                         Op::SearchText => {
                             builtin::search_text_for_executor(&args, &workspace, limits, &cancelled)
                         }
-                        Op::StatFile => builtin::stat_file(&args, &workspace, &cancelled),
+                        Op::StatFile => {
+                            builtin::stat_file(&args, &workspace, limits.scan_bytes, &cancelled)
+                        }
                         Op::ReadFile => {
                             let (result, read) = builtin::read_file_for_executor(
                                 &args,
@@ -170,12 +173,14 @@ impl WorkspaceActions {
                             &args,
                             &workspace,
                             &execution.observations(),
+                            limits,
                             &cancelled,
                         ),
                         Op::RemoveFile => builtin::remove_file_for_executor(
                             &args,
                             &workspace,
                             &execution.observations(),
+                            limits.scan_bytes,
                             &cancelled,
                         ),
                         _ => unreachable!("only file operations reach the blocking executor"),

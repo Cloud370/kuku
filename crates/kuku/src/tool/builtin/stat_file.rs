@@ -24,6 +24,7 @@ enum EntryKind {
 pub(crate) fn stat_file(
     args: &Value,
     workspace: &Path,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let path = match required_path("stat_file", args) {
@@ -54,7 +55,7 @@ pub(crate) fn stat_file(
     };
     let (kind, size, hash) = match fs::symlink_metadata(&resolved.path) {
         Ok(metadata) if metadata.is_file() && include_version => {
-            match file_version(&resolved.path, cancelled) {
+            match file_version(&resolved.path, scan_bytes, cancelled) {
                 Ok((hash, metadata)) => (EntryKind::File, Some(metadata.len()), Some(hash)),
                 Err(error) => return file_read_error(Path::new(relative), error),
             }
