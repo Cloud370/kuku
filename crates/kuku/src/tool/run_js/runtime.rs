@@ -379,7 +379,11 @@ fn result(
         }
         Finish::RetainedReturn(output) => {
             let hint = if can_read_output {
-                "Read the complete JSON with read_output({id, offset, limit})."
+                if output.bytes <= super::MAX_OUTPUT_TEXT_BYTES as u64 {
+                    "In run_js, parse await tools.output_text({id}) with JSON.parse and return only the fields you need. For a byte range, use read_output({id, offset, limit})."
+                } else {
+                    "Use read_output({id, offset, limit}) for a range, or iterate tools.output_chunks({id}) in run_js."
+                }
             } else {
                 "The complete JSON is available to the Session owner."
             };

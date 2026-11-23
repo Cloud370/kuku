@@ -189,13 +189,28 @@ impl ActivityFrame {
     }
 
     pub(super) fn thinking_line(&self, width: usize) -> Line<'static> {
-        let mut line = motion::thinking_label(&shorten("Thinking", width), self.text_step);
-        let room = width.saturating_sub(line.width() + 2);
+        let phase_elapsed = if self.status == ObservedActivity::Agent(Activity::Thinking) {
+            self.phase_elapsed
+        } else {
+            None
+        };
+        let elapsed = phase_elapsed
+            .map(|seconds| format_elapsed(Duration::from_secs(seconds)))
+            .filter(|elapsed| elapsed.width() + 1 < width);
+        let left = elapsed
+            .as_ref()
+            .map_or(width, |elapsed| width - elapsed.width() - 1);
+        let mut line = motion::thinking_label(&shorten("Thinking", left), self.text_step);
+        let room = left.saturating_sub(line.width() + 2);
         if room >= 4 && !self.thinking.is_empty() {
             line.push_span(Span::styled(
                 format!("  {}", motion::flow_excerpt(&self.thinking, room)),
                 Style::new().fg(MUTED),
             ));
+        }
+        if let Some(elapsed) = elapsed {
+            line.push_span(" ".repeat(width - line.width() - elapsed.width()));
+            line.push_span(Span::styled(elapsed, Style::new().fg(MUTED)));
         }
         line
     }
@@ -215,6 +230,26 @@ impl ActivityFrame {
             | ObservedActivity::Compacting => app.pane().activity(),
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn thinking_preview_yields_space_to_its_right_aligned_timer() {
+    let mut frame = ActivityFrame::new(ObservedActivity::Agent(Activity::Thinking), None, None);
+    frame.thinking = "Checking the totals and reconciling 中文 details".to_owned();
+    frame.phase_elapsed = Some(18);
+    for width in [12, 19, 64] {
+        let line = frame.thinking_line(width);
+        assert_eq!(line.width(), width);
+        assert_eq!(line.spans.last().unwrap().content.as_ref(), "18s");
+    }
+    assert!(frame.thinking_line(2).width() <= 2);
+    frame.status = ObservedActivity::Agent(Activity::RunningTools);
+    assert!(frame
+        .thinking_line(64)
+        .spans
+        .iter()
+        .all(|span| span.content.as_ref() != "18s"));
 }
 
 pub(super) fn render_heading(

@@ -16,13 +16,14 @@ use super::common::{
 };
 
 const MAX_RESULT_CHARS: usize = 8_000;
-const MAX_EVENT_CONTENT_CHARS: usize = 500;
+const MAX_EVENT_BYTES: usize = 600;
+const RESULT_METADATA_BYTES: usize = 512;
 const DEFAULT_LIMIT: usize = 20;
 
 pub(crate) fn query_session_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {
         name: "query_session".to_string(),
-        description: "Look up earlier Session events, such as an Agent's tool calls.".to_string(),
+        description: "Look up earlier Session events. Returns JSON with events, omitted_events, and scan_complete.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -84,7 +85,6 @@ fn run_query(
         let Some(first) = page.first() else {
             break;
         };
-        result.seen = true;
         position = Some(first.id);
         for event in page.iter().rev() {
             if event.id <= filters.after || result.count >= filters.limit {
@@ -117,7 +117,7 @@ fn run_query(
                 break 'history;
             }
             if age >= filters.from_turn && filters.matches(&event.payload, &history) {
-                result.push(format_event(event));
+                result.push(event);
             }
         }
     }
@@ -180,57 +180,44 @@ impl<'a> QueryFilters<'a> {
 
 #[derive(Default)]
 struct Matches {
-    entries: VecDeque<(String, usize)>,
+    entries: VecDeque<Value>,
     size: usize,
     count: usize,
-    truncated: bool,
-    seen: bool,
+    abbreviated: bool,
     scan_limit: Option<String>,
 }
 
 impl Matches {
-    fn push(&mut self, display: String) {
-        let size = display.chars().count() + 2;
-        self.entries.push_front((display, size));
-        self.size += size;
+    fn push(&mut self, event: &StoredEvent) {
         self.count += 1;
-        while self.entries.len() > 1 && self.size + 4 > MAX_RESULT_CHARS {
-            self.size -= self.entries.pop_back().unwrap().1;
-            self.truncated = true;
+        if self.entries.len() + 1 < self.count {
+            return;
         }
+        let (event, bytes) = format_event(event);
+        if self.size + bytes + 1 > MAX_RESULT_CHARS - RESULT_METADATA_BYTES {
+            return;
+        }
+        self.abbreviated |= event["abbreviated"] == true;
+        self.entries.push_front(event);
+        self.size += bytes + 1;
     }
 
     fn render(self) -> ToolResultEnvelope {
-        let mut output = if self.seen {
-            String::from("[\n")
+        let returned = self.entries.len();
+        let omitted_events = self.count - returned;
+        let truncated = omitted_events != 0 || self.abbreviated || self.scan_limit.is_some();
+        let output = json!({
+            "events": self.entries,
+            "omitted_events": omitted_events,
+            "scan_complete": self.scan_limit.is_none(),
+            "scan_limit": self.scan_limit,
+        });
+        let summary = format!("{returned} events returned");
+        let text = output.to_string();
+        if truncated {
+            ToolResultEnvelope::ok_truncated(summary, text, output)
         } else {
-            String::from("[")
-        };
-        for (index, (entry, _)) in self.entries.iter().enumerate() {
-            if index > 0 {
-                output.push_str(",\n");
-            }
-            output.push_str(entry);
-        }
-        if self.truncated {
-            output.push_str("\n... (truncated, total output cap reached)");
-        }
-        output.push_str(if self.seen { "\n]" } else { "]" });
-        if let Some(reason) = &self.scan_limit {
-            output.push_str(&format!(
-                "\nSession scan incomplete ({reason}). Use after or a Turn range to narrow it."
-            ));
-        }
-        ToolResultEnvelope {
-            status: "ok".into(),
-            summary: format!("{} events returned", self.count),
-            model_content: output,
-            truncated: self.truncated || self.scan_limit.is_some(),
-            structured: self
-                .scan_limit
-                .map(|reason| json!({"scan_complete":false,"scan_limit": reason})),
-            faults: Default::default(),
-            supplied_full_write: false,
+            ToolResultEnvelope::ok(summary, text, output)
         }
     }
 }
@@ -278,43 +265,55 @@ fn unscoped_main_event(payload: &EventPayload) -> bool {
     )
 }
 
-fn format_event(event: &crate::event::StoredEvent) -> String {
-    let mut json = serde_json::json!({
-        "id": event.id,
-        "kind": event.payload.kind_name(),
-    });
-    if let Ok(Value::Object(fields)) = serde_json::to_value(&event.payload) {
-        for (key, value) in fields {
-            let display = truncate_value(&key, value);
-            json[key] = display;
-        }
+fn format_event(event: &StoredEvent) -> (Value, usize) {
+    let kind = event.payload.kind_name();
+    let mut body = match serde_json::to_value(&event.payload) {
+        Ok(Value::Object(fields)) => Value::Object(fields),
+        _ => json!({}),
+    };
+    body["id"] = json!(event.id);
+    body["kind"] = json!(kind);
+    let bytes = body.to_string().len();
+    if bytes <= MAX_EVENT_BYTES {
+        return (body, bytes);
     }
-    truncate_json_string(&serde_json::to_string(&json).unwrap_or_default())
-}
 
-fn truncate_value(key: &str, mut value: Value) -> Value {
-    if matches!(key, "text" | "model_content" | "summary" | "content") {
-        if let Value::String(text) = &mut value {
-            if let Some((end, _)) = text.char_indices().nth(MAX_EVENT_CONTENT_CHARS) {
-                text.truncate(end);
-                text.push_str("...(truncated)");
+    let kind = if serde_json::to_string(kind).expect("kind is a string").len() <= 256 {
+        kind
+    } else {
+        &kind[..kind.floor_char_boundary(80)]
+    };
+    let mut preview = json!({"id": event.id, "kind": kind, "abbreviated": true});
+    for field in ["turn", "tool_call_id"] {
+        if let Some(value) = body
+            .get(field)
+            .or_else(|| body["record"].get(field))
+            .filter(|value| value.is_u64() || value.as_str().is_some_and(|text| text.len() <= 256))
+        {
+            preview[field] = value.clone();
+            if preview.to_string().len() > MAX_EVENT_BYTES {
+                preview
+                    .as_object_mut()
+                    .expect("event preview is an object")
+                    .remove(field);
             }
         }
     }
-    value
-}
-
-fn truncate_json_string(s: &str) -> String {
-    if s.chars().count() <= MAX_EVENT_CONTENT_CHARS + 100 {
-        s.to_string()
-    } else {
-        format!(
-            "{}...(truncated)",
-            s.chars()
-                .take(MAX_EVENT_CONTENT_CHARS + 100)
-                .collect::<String>()
-        )
+    if let Some((field, content)) = ["text", "model_content", "summary", "content"]
+        .into_iter()
+        .find_map(|field| body[field].as_str().map(|text| (field, text)))
+    {
+        let end = content.floor_char_boundary(400);
+        preview[field] = json!(&content[..end]);
+        if preview.to_string().len() > MAX_EVENT_BYTES {
+            preview
+                .as_object_mut()
+                .expect("event preview is an object")
+                .remove(field);
+        }
     }
+    let bytes = preview.to_string().len();
+    (preview, bytes)
 }
 
 #[cfg(test)]

@@ -96,6 +96,7 @@ async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
                     turn: 3,
                     tool_call_id: "fixture-command".into(),
                     tool: "run_command".into(),
+                    output_id: Some("out_1".into()),
                     summary: "interrupted command".into(),
                     started: Instant::now(),
                     wait_tool_available: false,

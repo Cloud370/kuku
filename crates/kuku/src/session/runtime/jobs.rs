@@ -14,8 +14,8 @@ use crate::{Error, Result};
 
 use super::record::{timestamp, Record, State};
 use super::{
-    command_output_id, ensure_open, load_state, Activation, CleanupOutcome, Input, InputSource,
-    InputTiming, JobResult, JobSnapshot, JobStatus, Session,
+    ensure_open, load_state, Activation, CleanupOutcome, Input, InputSource, InputTiming,
+    JobResult, JobSnapshot, JobStatus, Session,
 };
 
 pub(super) const JOB_DELIVERY_PREFIX: &str = "job-completion:";
@@ -62,6 +62,7 @@ pub(crate) struct JobRequest {
     pub(crate) turn: u64,
     pub(crate) tool_call_id: String,
     pub(crate) tool: String,
+    pub(crate) output_id: Option<String>,
     pub(crate) summary: String,
     pub(crate) started: Instant,
     pub(crate) wait_tool_available: bool,
@@ -539,8 +540,6 @@ impl Session {
             .checked_add(1)
             .ok_or_else(|| Error::InvalidEventStream("Job identities exhausted".into()))?;
         let id = job_id(sequence);
-        let output_id = (request.tool == "run_command")
-            .then(|| command_output_id(&request.agent, request.turn, &request.tool_call_id));
         let title = bounded(&request.summary, MAX_JOB_SUMMARY_BYTES);
         let summary = format!("{id} running: {title}");
         let facts = json!({
@@ -551,7 +550,7 @@ impl Session {
             "tool": request.tool,
             "title": title,
             "elapsed_ms": elapsed_ms(request.started),
-            "output_id": output_id,
+            "output_id": request.output_id,
         });
         let mut model_view = facts.clone();
         if request.wait_tool_available {

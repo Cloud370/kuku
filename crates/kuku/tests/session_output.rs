@@ -197,9 +197,24 @@ async fn captured(
             _ => None,
         })
         .expect("real command did not retain an output ID");
+    assert_eq!(first_reserved_id(&session), id);
     first.assert_hits_async(1).await;
     second.assert_hits_async(1).await;
     (session, id)
+}
+
+fn first_reserved_id(session: &Session) -> String {
+    let event = session
+        .events(0, 256)
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            matches!(&event.payload, EventPayload::Unknown(value)
+                if value["kind"] == "runtime.operation"
+                    && value["record"]["operation"] == "output_reserved")
+        })
+        .expect("output reservation was recorded");
+    format!("out_{}", event.id)
 }
 
 fn chunk(
@@ -472,16 +487,21 @@ async fn large_delimited_output_gives_an_extraction_hint_and_keeps_the_original_
 }
 
 #[tokio::test]
-async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permission() {
+async fn direct_and_script_search_share_the_read_output_permission() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let policy = Arc::new(ReadPolicy::default());
+    const FIRST: u64 = 113_833;
+    const SECOND: u64 = FIRST + 16;
+    let mut payload = vec![b'x'; FIRST as usize];
+    payload.extend_from_slice(b"needle withheld needle\n");
+    payload.extend(std::iter::repeat_n(b'y', 100_049));
     let (session, id) = captured(
         &server,
         workspace.path(),
         data.path(),
-        b"x needle withheld needle\n",
+        &payload,
         policy.clone(),
     )
     .await;
@@ -489,11 +509,13 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         .save_named_value("main", "log", NamedValueSource::Output(id.clone()), false)
         .await
         .unwrap();
-    let rejected = fixture(
+    let direct = fixture(
         &server,
         |request| {
             latest_input_contains(request, "find the two known strings")
                 && results(request).len() == 1
+                && body(request)["tools"].as_array().unwrap().iter()
+                    .any(|tool| tool["function"]["name"] == "search_output")
                 && body(request)["tools"].as_array().unwrap().iter().any(|tool| {
                     tool["function"]["name"] == "run_js"
                         && tool["function"]["description"]
@@ -508,7 +530,9 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
     let requested = fixture(
         &server,
         |request| latest_input_contains(request, "find the two known strings") && results(request).len() == 2,
-        json!({"tool_calls":[tool("script-search", "run_js", json!({"code":r#"
+        json!({"tool_calls":[tool("direct-range", "read_output", json!({"id":id,"offset":FIRST,"limit":6})),
+        tool("direct-denied", "search_output", json!({"name":"log","text":"withheld"})),
+        tool("script-search", "run_js", json!({"code":r#"
             const first = await tools.search_output({name:"log",text:"needle",stream:"stdout",limit:1});
             if (first.status !== "ok") return first;
             const second = await tools.search_output({id:first.result.output_id,text:"needle",offset:first.result.next_offset});
@@ -521,7 +545,7 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         &server,
         |request| {
             latest_input_contains(request, "find the two known strings")
-                && results(request).len() == 3
+                && results(request).len() == 5
         },
         json!({"content":"script search settled"}),
         "stop",
@@ -535,21 +559,25 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         ))
         .unwrap();
     idle(&session).await;
-    let (status, content, _) = stored_result(&session, "direct-search");
-    assert_eq!("error", status);
-    assert!(content.contains("Use run_js and call tools.search_output(args)"));
+    let found = json_page(&stored_result(&session, "direct-search"));
+    let matches = json!([
+        {"stream":"stdout","offset":FIRST,"end_offset":FIRST + 6},
+        {"stream":"stdout","offset":SECOND,"end_offset":SECOND + 6}
+    ]);
+    assert_eq!(found["matches"], matches);
+    assert_eq!(found["capture_complete"], true);
+    assert_eq!(found["has_more"], false);
+    assert_eq!(
+        json_page(&stored_result(&session, "direct-range"))["segments"][0]["text"],
+        "needle"
+    );
+    assert_eq!(stored_result(&session, "direct-denied").0, "blocked");
     let (status, content, facts) = stored_result(&session, "script-search");
     assert_eq!("ok", status, "{content}");
     let returned = &facts.unwrap()["value"];
-    assert_eq!(
-        returned["first"]["matches"],
-        json!([{"stream":"stdout","offset":2,"end_offset":8}])
-    );
+    assert_eq!(returned["first"]["matches"], json!([matches[0].clone()]));
     assert_eq!(returned["first"]["has_more"], true);
-    assert_eq!(
-        returned["second"]["matches"],
-        json!([{"stream":"stdout","offset":18,"end_offset":24}])
-    );
+    assert_eq!(returned["second"]["matches"], json!([matches[1].clone()]));
     assert_eq!(returned["second"]["has_more"], false);
     assert_eq!(returned["denied"], "blocked");
     let actions = policy
@@ -557,16 +585,22 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         .lock()
         .unwrap()
         .iter()
-        .filter(|action| action.tool.name == "read_output")
+        .filter(|action| action.tool.name == "read_output" && action.args["text"].is_string())
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(3, actions.len());
+    assert_eq!(5, actions.len());
     for action in &actions {
         assert_eq!(id, action.args["id"]);
         assert!(action.args.get("name").is_none());
         assert_eq!(json!(["text"]), action.tool.input_schema["required"]);
     }
-    assert_eq!(json!("withheld"), actions[2].args["text"]);
+    assert_eq!(
+        2,
+        actions
+            .iter()
+            .filter(|action| action.args["text"] == "withheld")
+            .count()
+    );
 
     session
         .configure_agent(
@@ -581,7 +615,7 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
         .unwrap();
     let unavailable = fixture(
         &server,
-        |request| latest_input_contains(request, "check deselected method") && results(request).len() == 3,
+        |request| latest_input_contains(request, "check deselected method") && results(request).len() == 5,
         json!({"tool_calls":[tool("unavailable-search", "search_output", json!({"name":"log","text":"needle"}))]}),
         "tool_calls",
     )
@@ -589,7 +623,7 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
     let unavailable_done = fixture(
         &server,
         |request| {
-            latest_input_contains(request, "check deselected method") && results(request).len() == 4
+            latest_input_contains(request, "check deselected method") && results(request).len() == 6
         },
         json!({"content":"search unavailable"}),
         "stop",
@@ -603,7 +637,7 @@ async fn script_search_resolves_a_named_capture_and_uses_the_read_output_permiss
     assert_eq!("error", status);
     assert_eq!("unknown tool: search_output", content);
     session.close().await.unwrap();
-    rejected.assert_hits_async(1).await;
+    direct.assert_hits_async(1).await;
     requested.assert_hits_async(1).await;
     done.assert_hits_async(1).await;
     unavailable.assert_hits_async(1).await;
@@ -786,6 +820,7 @@ async fn model_reads_a_running_job_through_direct_and_script_tools() {
     idle(&session).await;
     let receipt = stored_result(&session, "command").2.unwrap();
     let id = receipt["output_id"].as_str().unwrap();
+    assert_eq!(first_reserved_id(&session), id);
     let job = receipt["job_id"].as_str().unwrap();
     let read = json!({"id":id});
     let code = format!(
@@ -907,5 +942,20 @@ async fn naming_command_output_reuses_its_file_and_replaced_body_can_expire() {
     assert!(reopened.events(0, 256).unwrap().iter().any(|event| {
         matches!(&event.payload, EventPayload::ToolResult { structured: Some(facts), .. } if facts["output_ref"]["id"] == id)
     }));
+    let recreated = reopened
+        .save_named_value(
+            "main",
+            "recreated",
+            NamedValueSource::Text("retained evidence".into()),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_ne!(recreated.reference.id, id);
+    assert_ne!(recreated.reference.id, replacement.reference.id);
+    assert!(matches!(
+        reopened.read_output(&id, &OutputRead::default()),
+        Err(Error::OutputUnavailable(_))
+    ));
     reopened.close().await.unwrap();
 }

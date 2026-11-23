@@ -9,8 +9,9 @@ use crate::execution::{ModelImage, OutputReference};
 use crate::{Error, Result};
 
 use super::jobs::{JobCompletion, JobIndex, JOB_DELIVERY_PREFIX};
+use super::media::RetainedModelImage;
 use super::observe::ReplyPreview;
-use super::retention::{CaptureOrigin, OutputStore};
+use super::retention::{output_id, CaptureOrigin, OutputStore};
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource, InputStatus,
     PendingInput, QuestionRequest, Receipt, UsageTotals,
@@ -70,13 +71,10 @@ pub(super) enum Record {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         values: Vec<OutputReference>,
     },
-    OutputOwned {
+    OutputReserved {
         agent: String,
-        id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        turn: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tool_call_id: Option<String>,
+        origin: Option<CaptureOrigin>,
     },
     NamedValueSaved {
         agent: String,
@@ -85,6 +83,7 @@ pub(super) enum Record {
     ModelImageSaved {
         agent: String,
         turn: u64,
+        digest: String,
         image: ModelImage,
     },
     OutputsPinned {
@@ -349,28 +348,11 @@ pub(super) struct State {
     pub(super) outputs: OutputStore,
     pub(super) values: ValueState,
     pub(super) model_images: HashMap<String, RetainedModelImage>,
+    pub(super) model_image_ids: HashMap<String, String>,
     pub(super) jobs: JobIndex,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(super) struct RetainedModelImage {
-    pub(super) agent: String,
-    pub(super) turn: u64,
-    pub(super) image: ModelImage,
-}
-
 impl State {
-    pub(super) fn pinned_outputs(&self) -> HashSet<String> {
-        let mut pinned = self.values.pinned_outputs();
-        pinned.extend(self.model_images.iter().filter_map(|(id, retained)| {
-            let current = self.agents.get(&retained.agent)?.snapshot.turn?;
-            (current == retained.turn
-                || self.turns.previous(&retained.agent, current) == Some(retained.turn))
-            .then(|| id.clone())
-        }));
-        pinned
-    }
-
     pub(super) fn acknowledge_job_result(&mut self, agent: &str, job_id: &str) -> Result<()> {
         let command_id = format!("{JOB_DELIVERY_PREFIX}{job_id}");
         let agent = self.agent_mut(agent)?;
@@ -453,29 +435,34 @@ impl State {
                 }
                 self.deliver(event_id, fingerprint, input, values)?;
             }
-            Record::OutputOwned {
-                agent,
-                id,
-                turn,
-                tool_call_id,
-            } => {
-                let origin = turn
-                    .zip(tool_call_id)
-                    .map(|(turn, tool_call_id)| CaptureOrigin { turn, tool_call_id });
+            Record::OutputReserved { agent, origin } => {
+                let id = output_id(event_id);
+                let turn = origin.as_ref().map(|origin| origin.turn);
                 self.outputs.claim_capture(&agent, &id, origin);
                 if let Some(turn) = turn {
                     self.pin_current_turn(agent, turn, vec![id])?;
                 }
             }
             Record::NamedValueSaved { agent, binding } => {
-                self.outputs.claim(&agent, &binding.value.reference.id);
                 self.values.save(agent, binding);
             }
-            Record::ModelImageSaved { agent, turn, image } => {
+            Record::ModelImageSaved {
+                agent,
+                turn,
+                digest,
+                image,
+            } => {
                 let id = image.output.id.clone();
-                self.outputs.claim(&agent, &id);
-                self.model_images
-                    .insert(id, RetainedModelImage { agent, turn, image });
+                self.model_image_ids.insert(digest.clone(), id.clone());
+                self.model_images.insert(
+                    id,
+                    RetainedModelImage {
+                        agent,
+                        turn,
+                        digest,
+                        image,
+                    },
+                );
             }
             Record::OutputsPinned { agent, turn, ids } => {
                 self.pin_current_turn(agent, turn, ids)?;
@@ -837,14 +824,6 @@ impl State {
         self.agents.get_mut(address).ok_or_else(|| {
             Error::InvalidArgument(format!("agent '{address}' does not exist in this session"))
         })
-    }
-
-    fn pin_current_turn(&mut self, address: String, turn: u64, ids: Vec<String>) -> Result<()> {
-        let snapshot = &self.agent(&address)?.snapshot;
-        if snapshot.status == AgentStatus::Running && snapshot.turn == Some(turn) {
-            self.values.pin(address, turn, ids);
-        }
-        Ok(())
     }
 
     pub(super) fn agent(&self, address: &str) -> Result<&AgentState> {

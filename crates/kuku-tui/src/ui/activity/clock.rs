@@ -88,7 +88,7 @@ impl PhaseClock {
                 return shown;
             }
         }
-        if self.shown.is_some_and(|shown| shown != observed) {
+        if self.shown != Some(observed) {
             self.shown_since = Some(
                 self.next
                     .filter(|(candidate, _)| *candidate == observed)
@@ -167,6 +167,32 @@ mod tests {
     use crate::app::{Activity, ServiceStatus};
 
     use super::{ElapsedClock, ObservedActivity, PhaseClock, TurnTiming, PHASE_CONFIRMATION};
+
+    #[test]
+    fn thinking_time_stays_anchored_during_updates_and_restarts_after_tools() {
+        let mut clock = PhaseClock::default();
+        let start = Instant::now();
+        let thinking = ObservedActivity::Agent(Activity::Thinking);
+        let tools = ObservedActivity::Agent(Activity::RunningTools);
+        assert_eq!(thinking, clock.sample(thinking, start));
+        assert_eq!(Some(start), clock.shown_since);
+        assert_eq!(
+            thinking,
+            clock.sample(thinking, start + Duration::from_secs(3))
+        );
+        assert_eq!(Some(start), clock.shown_since);
+
+        let tool_start = start + Duration::from_secs(4);
+        clock.sample(tools, tool_start);
+        assert_eq!(tools, clock.sample(tools, tool_start + PHASE_CONFIRMATION));
+        let second_start = start + Duration::from_secs(5);
+        clock.sample(thinking, second_start);
+        assert_eq!(
+            thinking,
+            clock.sample(thinking, second_start + PHASE_CONFIRMATION)
+        );
+        assert_eq!(Some(second_start), clock.shown_since);
+    }
 
     #[test]
     fn elapsed_is_monotonic_during_work_and_freezes_at_the_durable_end() {

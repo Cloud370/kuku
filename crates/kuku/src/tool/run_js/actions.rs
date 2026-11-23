@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{ScriptExecution, ScriptOperation};
-use crate::session::runtime::{command_output_id, OutputReservation};
+use crate::session::runtime::OutputReservation;
 use crate::tool::builtin;
 use crate::tool::builtin::run_command::output::{OutputLimits, OutputWriter, MAX_FRAME_BYTES};
 use crate::tool::builtin::run_command::{run_command_to, CommandCapture};
@@ -24,19 +24,14 @@ pub(crate) struct WorkspaceActions {
 }
 
 impl WorkspaceActions {
-    pub(super) fn reserve_output(&self, id: &str) -> Result<OutputReservation> {
+    pub(super) fn reserve_output(&self) -> Result<OutputReservation> {
         self.session
-            .reserve_output(&self.agent, self.original_turn, &self.tool_call_id, id)
+            .reserve_output(&self.agent, self.original_turn, &self.tool_call_id)
     }
 
     pub(crate) async fn retain_script_return(&self, json: String) -> Result<OutputReference> {
-        let id = command_output_id(
-            &self.agent,
-            self.original_turn,
-            &format!("{}:return", self.tool_call_id),
-        );
-        let mut reservation = self.reserve_output(&id)?;
-        reservation.discard_on_drop();
+        let mut reservation = self.reserve_output()?;
+        let id = reservation.id().to_owned();
         if json.len() as u64 > reservation.max_bytes() {
             return Err(Error::InvalidArgument(
                 "the complete JSON exceeds available retained output capacity".into(),
@@ -79,14 +74,12 @@ impl WorkspaceActions {
         op: ScriptOperation,
         local_id: &str,
         args: Value,
-        output_id: &str,
         execution: Arc<ScriptExecution>,
     ) -> Result<ToolResultEnvelope> {
         use ScriptOperation as Op;
         match op {
             Op::RunCommand => {
-                let mut reservation = self.reserve_output(output_id)?;
-                reservation.discard_on_drop();
+                let mut reservation = self.reserve_output()?;
                 let output_dir = self
                     .session
                     .events_path()
@@ -100,7 +93,7 @@ impl WorkspaceActions {
                     Some(execution.cancellation()),
                     CommandCapture::script(
                         &output_dir,
-                        output_id,
+                        reservation.id(),
                         OutputLimits {
                             max_output_bytes: reservation.max_bytes(),
                             max_preview_bytes: self.preview_bytes,
@@ -120,7 +113,7 @@ impl WorkspaceActions {
                 Ok(result)
             }
             Op::CreateOutput | Op::AppendOutput | Op::FinishOutput => {
-                let value = execution.outputs.apply(op, self, output_id, &args).await?;
+                let value = execution.outputs.apply(op, self, &args).await?;
                 Ok(ToolResultEnvelope::ok(
                     op.name(),
                     serde_json::to_string(&value)?,

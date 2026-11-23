@@ -144,7 +144,7 @@ pub(crate) fn method_definitions(
     let read = methods.iter().find(|method| method.name == "read_output");
     let can_read = read.is_some();
     if let Some(read) = read {
-        methods.push(outputs::search_definition(read));
+        methods.push(crate::tool::builtin::run_command::output::search::definition(read));
     }
     if let Some(command) = methods
         .iter_mut()
@@ -162,7 +162,7 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
     let methods =
         method_definitions(|op| tools.iter().find(|tool| tool.name == op.name()).cloned());
     let mut description = format!("{SCRIPT_DESCRIPTION}\n");
-    description.push_str("File and output host methods return {status,result,truncated,error?}. After checking status === 'ok', read their fields from result.\n");
+    description.push_str("File methods and retained-output page calls return {status,result,truncated,error?}. After checking status === 'ok', read their fields from result.\n");
     if methods.iter().any(|method| method.name == "read_file") {
         description.push_str("Read example: `const r = await tools.read_file({path:'README.md',limit:5}); return r.status === 'ok' ? r.result.raw_text : r.error;`.\n");
     }
@@ -197,7 +197,13 @@ fn method_result(operation: ScriptOperation) -> &'static str {
         Op::StatFile => "stat_file({path,version?}) returns result.exists and entry_kind. Set version:true for a regular file's result.content_hash. ",
         Op::RemoveFile => "remove_file({path,expected_version?,brief?}) returns result.bytes_removed. Pass the current content_hash as expected_version, or fully read the current version in this script. ",
         Op::RunCommand => "",
-        Op::ReadOutput => "read_output({id or name,offset?,limit?,search?}) returns result.segments, next_offset and has_more. tools.output_chunks(args) yields pages. tools.output_lines({id or name,stream?,offset?,limit?}) yields line records with text and completeness flags. tools.output_text({id or name,stream?}) reads complete UTF-8 up to 1 MiB, with stdout as the default. ",
+        Op::ReadOutput => concat!(
+            "read_output({id or name,offset?,limit?,search?}) returns result.segments, next_offset and has_more. ",
+            "tools.output_chunks(args) and tools.output_lines({id or name,stream?,offset?,limit?}) are async iterators over pages and line records. ",
+            "tools.output_text({id or name,stream?}) resolves to a string containing up to 1 MiB of complete UTF-8, with stdout as the default. Iterator and text helpers throw on errors. ",
+            "For a complete JSON capture, use `const data = JSON.parse(await tools.output_text({id})); return {count:data.count};`. ",
+            "For larger or incomplete output, iterate tools.output_chunks or read a bounded range. ",
+        ),
         Op::SearchOutput => "search_output({id or name,text,stream?,offset?,limit?}) finds exact UTF-8 bytes in each stream and returns result.matches with stream, offset and end_offset. Continue with result.next_offset while result.has_more is true, even if a page has no matches. ",
         Op::SaveValue => "save_value({name,output_id or value,replace?}) returns result.reference. ",
         Op::ListValues => "list_values({prefix?,after?,limit?}) returns result.values and next_after. ",

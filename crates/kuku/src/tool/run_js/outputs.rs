@@ -5,9 +5,6 @@ use tokio::sync::Mutex;
 
 use super::{ScriptOperation, WorkspaceActions, WorkspaceScriptLimits};
 use crate::session::runtime::OutputReservation;
-use crate::tool::builtin::run_command::output::search::{
-    DEFAULT_MATCHES, MAX_LITERAL_BYTES, MAX_MATCHES,
-};
 use crate::tool::builtin::run_command::output::{OutputLimits, OutputWriter, MAX_FRAME_BYTES};
 use crate::tool::ToolDefinition;
 use crate::{Error, OutputStream, Result};
@@ -25,29 +22,6 @@ const STREAM_SIGNATURE: &str = concat!(
     "stdout and stderr are CommandStream readers. Use await r.stdout.text() for text, await r.stdout.json() for JSON, or for await to read r.stdout.lines(). ",
     "These readers require complete, decodable output. ",
 );
-
-pub(super) fn search_definition(read: &ToolDefinition) -> ToolDefinition {
-    let properties = &read.input_schema["properties"];
-    ToolDefinition {
-        name: ScriptOperation::SearchOutput.name().into(),
-        description: "Find literal UTF-8 bytes in retained output. Returns merged byte ranges and a continuation offset.".into(),
-        input_schema: json!({
-            "type":"object",
-            "properties":{
-                "id":properties["id"],
-                "name":properties["name"],
-                "text":{"type":"string","minLength":1,"maxLength":MAX_LITERAL_BYTES},
-                "stream":{"type":"string","enum":["stdout","stderr"]},
-                "offset":properties["offset"],
-                "limit":{"type":"integer","minimum":1,"maximum":MAX_MATCHES,"default":DEFAULT_MATCHES}
-            },
-            "required":["text"],
-            "oneOf":read.input_schema["oneOf"],
-            "additionalProperties":false
-        }),
-        ..read.clone()
-    }
-}
 
 pub(super) fn describe_script_command(definition: &mut ToolDefinition, can_read: bool) {
     if let Some(properties) = definition.input_schema["properties"].as_object_mut() {
@@ -91,7 +65,6 @@ impl DerivedOutputs {
         &self,
         op: ScriptOperation,
         actions: &WorkspaceActions,
-        action_output_id: &str,
         args: &Value,
     ) -> Result<Value> {
         let mut drafts = self.state.lock().await;
@@ -102,8 +75,8 @@ impl DerivedOutputs {
                         "script derived output count exceeded".into(),
                     ));
                 }
-                let mut reservation = actions.reserve_output(action_output_id)?;
-                reservation.discard_on_drop();
+                let reservation = actions.reserve_output()?;
+                let id = reservation.id().to_owned();
                 let dir = actions
                     .session
                     .events_path()
@@ -112,7 +85,7 @@ impl DerivedOutputs {
                     .join("outputs");
                 let writer = OutputWriter::create(
                     &dir,
-                    action_output_id,
+                    &id,
                     OutputLimits {
                         max_output_bytes: reservation.max_bytes(),
                         max_preview_bytes: 0,
@@ -120,14 +93,14 @@ impl DerivedOutputs {
                 )
                 .await?;
                 drafts.open.insert(
-                    action_output_id.into(),
+                    id.clone(),
                     Draft {
                         writer,
                         reservation,
                     },
                 );
                 drafts.created += 1;
-                Ok(json!({"id":action_output_id,"complete":false}))
+                Ok(json!({"id":id,"complete":false}))
             }
             ScriptOperation::AppendOutput => {
                 let (id, text) = (string_arg(args, "id")?, string_arg(args, "text")?);

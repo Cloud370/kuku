@@ -65,6 +65,31 @@ fn definition_with_bounds(bounds: PageBounds) -> ToolDefinition {
     }
 }
 
+pub(super) async fn execute_tool(
+    session: Session,
+    agent: &str,
+    call: &crate::provider::types::ProviderToolCall,
+) -> Result<ToolResultEnvelope> {
+    let permits = session.workspace_execution_host().operations();
+    let permit = permits
+        .acquire_owned()
+        .await
+        .map_err(|_| Error::InvalidArgument("workspace capacity closed".into()))?;
+    let agent = agent.to_owned();
+    let args = call.args.clone();
+    let search = call.name == "search_output";
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        if search {
+            execute_search(&session, &agent, &args, MAX_RESULT_BYTES, || false)
+        } else {
+            execute(&session, &agent, &args)
+        }
+    })
+    .await
+    .map_err(|error| Error::InvalidEventStream(error.to_string()))?
+}
+
 pub(crate) fn execute(session: &Session, agent: &str, args: &Value) -> Result<ToolResultEnvelope> {
     execute_with_bounds(session, agent, args, MODEL_BOUNDS)
 }
