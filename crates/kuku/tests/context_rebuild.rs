@@ -136,7 +136,7 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     assert!(assembly
         .system_prompt
         .contains("put the content in your reply"));
-    assert!(assembly.system_prompt.contains("To change the workspace"));
+    assert!(!assembly.system_prompt.contains("To change the workspace"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
     assert!(assembly.system_prompt.contains("<kuku_shared_style>"));
     assert_eq!(assembly.prelude_messages.len(), 2);

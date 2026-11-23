@@ -376,9 +376,9 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         .unwrap();
 
     let replayed = EventStore::replay(&path).unwrap();
-    assert_eq!(replayed.len(), 6);
+    assert_eq!(replayed.len(), 5);
 
-    match &replayed[2].payload {
+    match &replayed[1].payload {
         EventPayload::PromptSnapshot { messages, .. } => {
             assert_eq!(messages.len(), 1);
             assert!(messages[0].content.contains("<kuku_execution_context>"));
@@ -386,7 +386,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected prompt.snapshot, got {other:?}"),
     }
 
-    match &replayed[3].payload {
+    match &replayed[2].payload {
         EventPayload::ContextSources {
             request_id,
             project_instruction_sources,
@@ -400,7 +400,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected context.sources, got {other:?}"),
     }
 
-    match &replayed[4].payload {
+    match &replayed[3].payload {
         EventPayload::ModelError { kind, message, .. } => {
             panic!("expected model.response before model.error, got model.error kind={kind} message={message}");
         }
@@ -417,7 +417,7 @@ fn fact_only_events_roundtrip_without_observability_fields() {
         other => panic!("expected model.response, got {other:?}"),
     }
 
-    match &replayed[5].payload {
+    match &replayed[4].payload {
         EventPayload::ModelError { kind, message, .. } => {
             assert_eq!(kind, "RateLimited");
             assert_eq!(message, "HTTP 429: rate limited");

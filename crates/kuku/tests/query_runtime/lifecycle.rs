@@ -10,12 +10,10 @@ async fn start_creates_session_events_under_kuku_home() {
     let session_id = run.session_id().to_string();
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 5);
-    assert_eq!(events[0].id, 1);
-    assert_eq!(events[0].id, 2);
-    assert_eq!(events[1].id, 3);
-    assert_eq!(events[2].id, 4);
-    assert_eq!(events[3].id, 5);
+    assert_eq!(
+        events.iter().map(|event| event.id).collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
 
     match &events[0].payload {
         EventPayload::SessionCreated {
@@ -77,7 +75,7 @@ async fn start_creates_session_events_under_kuku_home() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn main_conversation_startup_writes_conversation_events() {
+async fn standalone_query_records_turn_and_user_input() {
     let env = TestEnv::new();
 
     let run = query("inspect this project")
@@ -135,7 +133,7 @@ async fn start_persists_session_scoped_log_without_event_payload() {
     }));
 
     let events = EventStore::replay(env.events_path(&session_id)).unwrap();
-    assert_eq!(events.len(), 5);
+    assert_eq!(events.len(), 4);
     assert!(!events.iter().any(|event| {
         let payload = serde_json::to_value(&event.payload).unwrap();
         payload.get("log").is_some() || payload.get("debug").is_some()
@@ -343,7 +341,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
         ]
     );
     assert!(matches!(
-        &events[4].payload,
+        &events[3].payload,
         EventPayload::TurnInterrupted { conversation, turn: 1, .. } if conversation == "main"
     ));
 }

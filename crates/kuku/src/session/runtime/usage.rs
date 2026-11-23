@@ -645,8 +645,11 @@ mod tests {
         settle_turn(&mut store, "main", turn, json!(previous));
 
         let next = begin_turn(&mut store, "main");
-        for kind in ["runtime.step_prepared", "runtime.model_retry"] {
-            model_fact(&mut store, "main", next, "unreported", json!({"kind":kind}));
+        for fact in [
+            json!({"kind":"runtime.step_prepared"}),
+            json!({"kind":"runtime.model_retry","phase":"started","attempt":2}),
+        ] {
+            model_fact(&mut store, "main", next, "unreported", fact);
         }
         let reopened = Session::read_view(&path, "main").unwrap().snapshot.usage;
         assert_eq!(8, reopened.model_requests);

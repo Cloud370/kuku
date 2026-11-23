@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 /// Whether a session is still running, finished cleanly, or was interrupted.
 pub enum SessionStatus {
     Active,

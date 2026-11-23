@@ -26,7 +26,7 @@ async fn anthropic_success_returns_text_and_writes_events() {
     assert_eq!(output.text, "Hello from Claude!");
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(11, events.len());
+    assert_eq!(10, events.len());
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSources { .. })));
@@ -163,9 +163,7 @@ async fn unsigned_thinking_is_durable_across_three_turns_and_profile_flip() {
         )));
         let replay = admitted_before_flip
             .iter()
-            .find_map(|(event_turn, payload)| {
-                (*event_turn == turn).then_some(payload)
-            })
+            .find_map(|(event_turn, payload)| (*event_turn == turn).then_some(payload))
             .unwrap();
         let EventPayload::Unknown(value) = replay else {
             panic!("provider replay event must remain durable");
@@ -182,16 +180,17 @@ async fn unsigned_thinking_is_durable_across_three_turns_and_profile_flip() {
         when.method(POST)
             .path(flip_endpoint.as_str())
             .matches(common::capture_http_request);
-        then.status(200).body(anthropic_sse_response(serde_json::json!({
-            "id": "msg_flip",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type":"thinking","thinking":"compatible thought"},
-                {"type":"text","text":"answer after flip"}
-            ],
-            "stop_reason": "end_turn"
-        })));
+        then.status(200)
+            .body(anthropic_sse_response(serde_json::json!({
+                "id": "msg_flip",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type":"thinking","thinking":"compatible thought"},
+                    {"type":"text","text":"answer after flip"}
+                ],
+                "stop_reason": "end_turn"
+            })));
     });
     let output = anthro_profile(
         "flip provider profile",
@@ -209,14 +208,16 @@ async fn unsigned_thinking_is_durable_across_three_turns_and_profile_flip() {
     assert!(flipped_history_bytes.starts_with(&admitted_history_bytes));
     let events_after_flip = EventStore::replay(env.events_path(session_id)).unwrap();
     assert_eq!(admitted_before_flip, replay_events(&events_after_flip));
-    let flip_replay = events_after_flip.iter().find_map(|event| match &event.payload {
-        EventPayload::Unknown(value)
-            if value["kind"] == "runtime.provider_replay" && value["turn"] == 4 =>
-        {
-            Some(&value["value"]["content"])
-        }
-        _ => None,
-    });
+    let flip_replay = events_after_flip
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.provider_replay" && value["turn"] == 4 =>
+            {
+                Some(&value["value"]["content"])
+            }
+            _ => None,
+        });
     assert_eq!(
         Some(&serde_json::json!([
             {"type":"thinking","thinking":"compatible thought"},
@@ -230,7 +231,11 @@ async fn unsigned_thinking_is_durable_across_three_turns_and_profile_flip() {
 async fn unsigned_thinking_does_not_block_tool_dispatch_through_sdk() {
     let env = TestEnv::new();
     let server = MockServer::start();
-    std::fs::write(env.workspace.path().join("README.md"), "# Unsigned thinking").unwrap();
+    std::fs::write(
+        env.workspace.path().join("README.md"),
+        "# Unsigned thinking",
+    )
+    .unwrap();
     let endpoint = "/unsigned-thinking-tool/v1/messages";
     let tool_mock = server.mock(|when, then| {
         context_conditions(when, "find files").path(endpoint);
@@ -509,7 +514,7 @@ async fn openai_success_returns_text_and_writes_events() {
     mock.assert();
     assert_eq!(output.text, "Hi from GPT!");
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert_eq!(11, events.len());
+    assert_eq!(10, events.len());
     assert!(events
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ContextSkills { .. })));
