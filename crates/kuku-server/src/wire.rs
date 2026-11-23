@@ -393,7 +393,7 @@ pub(crate) fn retry_metadata(payload: &EventPayload) -> Option<Value> {
     match payload {
         EventPayload::Unknown(record) if record["kind"] == "runtime.model_retry" => Some(json!({
             "source":"runtime.model_retry",
-            "phase":record.get("phase").and_then(Value::as_str).unwrap_or("started"),
+            "phase":record["phase"].as_str()?,
             "attempt":record["attempt"],
             "failed_attempt":record["failed_attempt"],
             "max_attempts":record["max_attempts"],
@@ -678,15 +678,7 @@ fn peer_event_value(event: &UiEvent) -> Option<Value> {
 fn event_value(event: &UiEvent) -> Option<Value> {
     let mut value = kuku::wire::to_wire(event)?;
     match event {
-        UiEvent::ToolStart {
-            kind: kuku::query::ToolKind::Agent { conversation, .. },
-            ..
-        } => value["conversation"] = json!(conversation.as_str()),
-        UiEvent::PermissionRequested { request }
-        | UiEvent::ToolOutput {
-            event: kuku::query::ToolEvent::PermissionRequested { request },
-            ..
-        } => {
+        UiEvent::PermissionRequested { request } => {
             value["conversation"] = json!(request.conversation.as_str());
             value["turn"] = json!(request.turn);
         }
@@ -716,7 +708,6 @@ mod retry_tests {
                 turn: 7,
                 text: "Input to the model".into(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery,
             },
         };
@@ -727,9 +718,9 @@ mod retry_tests {
     }
 
     #[test]
-    fn legacy_retry_projection_defaults_to_started_and_preserves_metadata() {
+    fn started_retry_projection_preserves_metadata() {
         let payload = EventPayload::Unknown(json!({
-            "kind":"runtime.model_retry","agent":"main","turn":7,
+            "kind":"runtime.model_retry","agent":"main","turn":7,"phase":"started",
             "request_id":"request-2","failed_kind":"transport","attempt":2,
             "delay_ms":5000,"ts":"2025-01-01T00:00:00Z"
         }));

@@ -295,9 +295,7 @@ fn assembly_with_multiblock_current_user() -> ContextAssembly {
         role: Role::User,
         blocks: vec![
             MessageBlock::Text("<kuku_runtime_notices>notice</kuku_runtime_notices>".to_string()),
-            MessageBlock::Text(
-                "<kuku_conversation_inbox>inbox</kuku_conversation_inbox>".to_string(),
-            ),
+            MessageBlock::Text("<kuku_skill_input>inbox</kuku_skill_input>".to_string()),
             MessageBlock::Text("raw user input".to_string()),
         ],
     });
@@ -532,7 +530,7 @@ fn anthropic_render_body_keeps_current_user_as_multiple_text_blocks() {
     );
     assert_eq!(
         current[1]["text"],
-        "<kuku_conversation_inbox>inbox</kuku_conversation_inbox>"
+        "<kuku_skill_input>inbox</kuku_skill_input>"
     );
     assert_eq!(current[2]["text"], "raw user input");
     assert!(current[2].get("cache_control").is_none());
@@ -778,7 +776,7 @@ fn openai_chat_render_body_joins_current_user_blocks_in_order() {
     assert_eq!(current["role"], "user");
     assert_eq!(
         current["content"],
-        "<kuku_runtime_notices>notice</kuku_runtime_notices>\n\n<kuku_conversation_inbox>inbox</kuku_conversation_inbox>\n\nraw user input"
+        "<kuku_runtime_notices>notice</kuku_runtime_notices>\n\n<kuku_skill_input>inbox</kuku_skill_input>\n\nraw user input"
     );
 }
 

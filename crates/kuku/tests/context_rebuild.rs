@@ -17,7 +17,6 @@ fn prompt_snapshot(
     EventPayload::PromptSnapshot {
         ts: "2026-06-09T00:00:00Z".to_string(),
         conversation: conversation.to_string(),
-        binding_id: format!("binding:{conversation}"),
         snapshot_id: format!("snapshot:{conversation}:{turn}"),
         turn,
         messages,
@@ -61,7 +60,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             conversation: "main".to_string(),
             text: "inspect".to_string(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -127,7 +125,6 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
             model_tiers: Vec::new(),
             runtime_blocks: None,
             enable_memory: false,
-            agent_name: "main".into(),
             agent_instructions: String::new(),
             response_contract: None,
         },
@@ -256,7 +253,6 @@ fn assemble_context_keeps_stable_empty_placeholders() {
             model_tiers: Vec::new(),
             runtime_blocks: None,
             enable_memory: false,
-            agent_name: "main".into(),
             agent_instructions: String::new(),
             response_contract: None,
         },
@@ -298,7 +294,6 @@ fn drift_notice_can_be_inserted_between_project_context_and_tool_guidance() {
             model_tiers: Vec::new(),
             runtime_blocks: None,
             enable_memory: false,
-            agent_name: "main".into(),
             agent_instructions: String::new(),
             response_contract: None,
         },
@@ -339,7 +334,6 @@ fn rebuilds_multi_group_tool_history_at_crate_boundary() {
             conversation: "main".to_string(),
             text: "inspect".to_string(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -487,7 +481,6 @@ fn restores_frozen_prelude_from_fact_event() {
                 conversation: "main".to_string(),
                 text: "inspect".to_string(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             },
         },
@@ -609,7 +602,6 @@ fn rebuild_history_replays_non_main_scoped_tool_result() {
                 turn: 1,
                 text: "inspect".to_string(),
                 from: Some("main".to_string()),
-                via_tool_call_id: Some("toolu_agent_review".to_string()),
                 job_delivery: false,
             },
         },
@@ -694,7 +686,6 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
                 conversation: "main".to_string(),
                 text: "old".to_string(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             },
         },
@@ -730,7 +721,6 @@ fn rebuild_history_ignores_context_source_facts_and_respects_handoff_cutoff() {
                 conversation: "main".to_string(),
                 text: "new".to_string(),
                 from: None,
-                via_tool_call_id: None,
                 job_delivery: false,
             },
         },
@@ -874,7 +864,6 @@ fn conversation_skill_binding_is_stable() {
             payload: EventPayload::PromptSnapshot {
                 ts: "2026-06-09T00:00:00Z".to_string(),
                 conversation: "main".to_string(),
-                binding_id: "binding:main:review-v1".to_string(),
                 snapshot_id: "snapshot:main:1".to_string(),
                 turn: 1,
                 messages: vec![

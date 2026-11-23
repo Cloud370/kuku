@@ -54,7 +54,7 @@ pub(crate) fn rebuild_history_for_provider(
     events: &[StoredEvent],
     conversation: &ConversationAddress,
 ) -> (Option<String>, Vec<CanonicalMessage>) {
-    let (summary, messages) = rebuild_history_internal(events, conversation, true);
+    let (summary, messages) = rebuild_history_internal(events, conversation, false);
     (
         summary,
         messages.into_iter().map(|(message, _)| message).collect(),
@@ -146,10 +146,19 @@ pub(crate) fn supplied_file_version(structured: &serde_json::Value) -> Option<(&
     ))
 }
 
+pub(crate) fn render_agent_message(text: &str, from: &str) -> String {
+    let from = from
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('"', "&quot;");
+    let text = text.replace('&', "&amp;").replace('<', "&lt;");
+    format!("<kuku_agent_message from=\"{from}\">\n{text}\n</kuku_agent_message>")
+}
+
 fn rebuild_history_internal(
     events: &[StoredEvent],
     conversation: &ConversationAddress,
-    wrap_delegated_prompts: bool,
+    render_agent_sender: bool,
 ) -> (Option<String>, Vec<(CanonicalMessage, u64)>) {
     let filtered = filter_rolled_back_events(events);
     let suppressed_turns = if is_session_runtime(events) {
@@ -260,16 +269,13 @@ fn rebuild_history_internal(
                 conversation: event_conversation,
                 text,
                 from,
-                via_tool_call_id,
                 ..
             } if event_conversation == conversation.as_str() => {
                 flush_group(&mut messages, &mut current_group);
-                let provider_text =
-                    if wrap_delegated_prompts && from.is_some() && via_tool_call_id.is_some() {
-                        wrap_delegated_prompt_for_provider(text)
-                    } else {
-                        text.clone()
-                    };
+                let provider_text = match from.as_deref() {
+                    Some(from) if render_agent_sender => render_agent_message(text, from),
+                    _ => text.clone(),
+                };
                 messages.push((CanonicalMessage::user_text(provider_text), event.id));
             }
             EventPayload::ModelResponse {
@@ -438,8 +444,6 @@ fn rebuild_history_internal(
             EventPayload::SessionCreated { .. }
             | EventPayload::ContextSources { .. }
             | EventPayload::ContextSkills { .. }
-            | EventPayload::ConversationOpened { .. }
-            | EventPayload::ConversationBound { .. }
             | EventPayload::PromptSnapshot { .. }
             | EventPayload::TurnStarted { .. }
             | EventPayload::ModelError { .. }
@@ -450,8 +454,6 @@ fn rebuild_history_internal(
             | EventPayload::Handoff { .. }
             | EventPayload::TurnCancelled { .. }
             | EventPayload::TurnInterrupted { .. }
-            | EventPayload::ConversationRollback { .. }
-            | EventPayload::ConversationRollbackUndone { .. }
             | EventPayload::Unknown(_) => {}
             _ => {}
         }
@@ -459,14 +461,6 @@ fn rebuild_history_internal(
 
     flush_group(&mut messages, &mut current_group);
     (summary, messages)
-}
-
-fn wrap_delegated_prompt_for_provider(text: &str) -> String {
-    let escaped = text
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    format!("<kuku_delegated_prompt>\n{escaped}\n</kuku_delegated_prompt>")
 }
 
 fn is_session_runtime(events: &[StoredEvent]) -> bool {
@@ -521,12 +515,8 @@ fn event_turn(payload: &EventPayload) -> Option<u64> {
         | EventPayload::PermissionDeny { turn, .. }
         | EventPayload::Handoff { turn, .. } => Some(*turn),
         EventPayload::SessionCreated { .. }
-        | EventPayload::ConversationOpened { .. }
-        | EventPayload::ConversationBound { .. }
         | EventPayload::PromptSnapshot { .. }
         | EventPayload::MessageAssistant { .. }
-        | EventPayload::ConversationRollback { .. }
-        | EventPayload::ConversationRollbackUndone { .. }
         | EventPayload::Unknown(_) => None,
     }
 }

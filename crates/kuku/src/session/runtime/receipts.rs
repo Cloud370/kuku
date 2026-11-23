@@ -193,15 +193,5 @@ pub(super) fn validate_key(key: &str) -> Result<()> {
 }
 
 pub(super) fn validate_address(address: &str) -> Result<()> {
-    if address.is_empty()
-        || address.len() > 64
-        || !address
-            .bytes()
-            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
-    {
-        return Err(Error::InvalidArgument(format!(
-            "agent address '{address}' must be flat and contain 1..=64 lowercase ASCII letters, digits, '-' or '_'"
-        )));
-    }
-    Ok(())
+    crate::conversation::address::validate_address(address).map_err(Error::InvalidArgument)
 }

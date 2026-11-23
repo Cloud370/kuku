@@ -258,12 +258,12 @@ pub enum AgentProgress {
 pub enum RetryPhase {
     /// The policy-selected wait has not elapsed yet.
     Waiting,
-    /// A retry request has started, including legacy records without a phase.
-    #[default]
+    /// A retry request has started.
     Started,
     /// No further automatic request will be sent.
     Stopped,
-    /// A phase introduced by a newer runtime.
+    /// An unknown phase.
+    #[default]
     #[serde(other)]
     Unknown,
 }
@@ -336,11 +336,10 @@ pub enum RetryStopReason {
 
 /// Structured metadata from a durable model retry or recovery event.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct RetryMetadata {
     /// The source event kind, when known.
     pub source: RetrySource,
-    /// The retry phase; absent on legacy retry records.
+    /// The retry phase.
     pub phase: RetryPhase,
     /// One-based next attempt, or the failed attempt when retries stop.
     pub attempt: Option<u64>,
@@ -508,7 +507,6 @@ pub struct HistoryPage {
     /// Entries within the requested Session boundary.
     pub entries: Vec<HistoryEntry>,
     /// Read-only summaries of rewound ranges anchored at their original user messages.
-    #[serde(default)]
     pub rewind_groups: Vec<RewindGroup>,
     /// Exclusive `before` cursor for the previous page, when available.
     pub next_before: Option<u64>,
@@ -615,13 +613,10 @@ where
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     /// The service has an active session.
-    #[serde(alias = "Active")]
     Active,
     /// Work finished cleanly.
-    #[serde(alias = "Done")]
     Done,
     /// The last execution ended unexpectedly or has not completed.
-    #[serde(alias = "Interrupted")]
     Interrupted,
 }
 

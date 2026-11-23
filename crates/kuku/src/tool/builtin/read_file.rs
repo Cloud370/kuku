@@ -528,51 +528,6 @@ mod tests {
     }
 
     #[test]
-    fn whole_file_writes_require_same_version_pages_without_gaps() {
-        let dir = workspace();
-        let path = dir.path().join("sample.txt");
-        let first = "a".repeat(TEST_PREVIEW_BYTES - PAGE_NOTICE_BYTES - 2);
-        let original = format!("{first}\r\nold tail\r\n");
-        let changed = format!("{first}\r\nnew tail\r\n");
-        let page = |offset, id| {
-            let args = serde_json::json!({"path":"sample.txt", "offset":offset});
-            let result = read_file(&args, dir.path(), &[], id);
-            stored_read_event(id, &result.model_content, result.structured.unwrap())
-        };
-        let write = |events: &[StoredEvent]| {
-            super::super::write_file(
-                &serde_json::json!({"path":"sample.txt", "content":"replacement\n"}),
-                dir.path(),
-                &ConversationAddress::MAIN,
-                events,
-                &|| false,
-            )
-        };
-        std::fs::write(&path, original).unwrap();
-        let old_head = page(1, 1);
-        std::fs::write(&path, &changed).unwrap();
-        let tail = page(2, 2);
-        assert_eq!("error", write(&[old_head, tail.clone()]).status);
-        assert_eq!("error", write(std::slice::from_ref(&tail)).status);
-
-        let head = page(1, 3);
-        let rewind = StoredEvent {
-            id: 4,
-            payload: crate::event::EventPayload::ConversationRollback {
-                ts: "ts".into(),
-                conversation: "main".into(),
-                to_turn: 1,
-                to_event_id: 3,
-                scope: crate::event::RollbackScope::ConversationOnly,
-            },
-        };
-        assert_eq!("error", write(&[tail.clone(), head.clone(), rewind]).status);
-        assert_eq!(changed, std::fs::read_to_string(&path).unwrap());
-        assert_eq!("ok", write(&[tail, head]).status);
-        assert_eq!("replacement\n", std::fs::read_to_string(path).unwrap());
-    }
-
-    #[test]
     fn executor_read_preserves_raw_lines_and_offsets_across_utf8_buffer_boundaries() {
         let dir = workspace();
         let prefix = format!("{}中\n", "x".repeat(65_535));

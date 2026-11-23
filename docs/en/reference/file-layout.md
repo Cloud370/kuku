@@ -41,7 +41,7 @@ $KUKU_HOME/p/code/my-app/
 
 - `events.jsonl` is the single source of truth; `events.jsonl.lock` holds the single-writer OS lock (the lock file may stay on disk after close).
 - `outputs/` holds bounded framed command captures, derived outputs, and named values. Naming and sharing metadata live in the journal.
-- Agents use flat addresses inside the journal with no per-Agent subdirectories or hidden aliases. (Older Sessions may still contain legacy rollback backups.)
+- Agents use flat addresses inside the journal with no per-Agent subdirectories or hidden aliases.
 - Journals start as plain JSONL. On [eligible clean closes](../how-it-works/sessions.md#when-the-journal-compacts), kuku can seal older records into independent gzip frames with an inline checkpoint while continuing to append JSONL to the tail. `kuku events --file <path> --all --json` reads both layouts transparently. [Session events](events.md) · [Sessions](../how-it-works/sessions.md) · [SDK](sdk.md)
 
 ## Directory creation intents (Unix)

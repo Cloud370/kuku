@@ -8,7 +8,7 @@ use super::controls::command;
 use super::driver::Work;
 use super::record::{Command, ManualCompaction, Record, State};
 use super::usage::{AgentUsage, UnfinishedSummary};
-use super::{ensure_open, Activation, AgentStatus, Receipt, Session, UsageTotals};
+use super::{ensure_open, Activation, AgentStatus, Receipt, Session};
 
 impl Session {
     /// Compact an idle or interrupted Agent's model context without submitting a user message.
@@ -190,10 +190,7 @@ impl State {
         agent.snapshot.execution_id = None;
         agent.snapshot.last_error = error;
         agent.set_active_config(None);
-        agent.model_usage.settle(
-            agent.snapshot.turn,
-            &mut agent.snapshot.usage,
-            UsageTotals::default(),
-        )
+        agent.model_usage.settle(agent.snapshot.turn);
+        Ok(())
     }
 }

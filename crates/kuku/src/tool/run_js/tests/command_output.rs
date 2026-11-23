@@ -350,7 +350,7 @@ fn nested_command_title_rejection_points_to_the_outer_tool_call() {
 
 #[test]
 fn model_definition_advertises_only_selected_script_methods() {
-    let mut tools = crate::tool::builtin_registry(false, false);
+    let mut tools = crate::tool::builtin_registry(false);
     tools.retain(|tool| tool.name == "read_file");
     tools.push(super::super::definition());
     super::super::describe_selected_tools(&mut tools);

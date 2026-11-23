@@ -373,7 +373,6 @@ fn nesting_probe_ignores_escaped_string_contents() {
         turn: 1,
         text: text.clone(),
         from: None,
-        via_tool_call_id: None,
         job_delivery: false,
     };
     store.append(event).unwrap();

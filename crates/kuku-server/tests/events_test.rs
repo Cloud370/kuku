@@ -16,25 +16,12 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
         })
         .unwrap();
     store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-09T00:00:01Z".into(),
-            conversation: "main".into(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-09T00:00:02Z".into(),
-            conversation: "review".into(),
-        })
-        .unwrap();
-    store
         .append(EventPayload::MessageUser {
             ts: "2026-06-09T00:00:03Z".into(),
             conversation: "main".into(),
             turn: 1,
             text: "main message".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -45,7 +32,6 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
             turn: 1,
             text: "review message".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -221,7 +207,6 @@ async fn history_pages_are_bounded_by_the_requested_snapshot_cursor() {
             turn: 2,
             text: "message after the saved cursor".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -324,18 +309,6 @@ fn write_rewind_group_events(
             kuku_version: "test".into(),
         })
         .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-10T00:00:01Z".into(),
-            conversation: "main".into(),
-        })
-        .unwrap();
-    store
-        .append(EventPayload::ConversationOpened {
-            ts: "2026-06-10T00:00:02Z".into(),
-            conversation: "reviewer".into(),
-        })
-        .unwrap();
     let old_target = append_group_user(&mut store, "main", 101, "old prompt");
     append_group_response(&mut store, 101, "old reply");
     let first_target = append_group_user(&mut store, "main", 102, "first rewind prompt");
@@ -366,7 +339,6 @@ fn append_group_user(store: &mut EventStore, agent: &str, turn: u64, text: &str)
             turn,
             text: text.into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();

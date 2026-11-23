@@ -23,7 +23,7 @@ Each module should have one clear job. Dependency rules keep the ledger model un
 | `config/` | config parsing, validation, defaults, patching | — | provider logic, tool execution |
 | `skill/` | skill definitions, loader, registry, loaded-skill recovery | `prompt/`, `event/` | provider logic, host transport |
 | `plugin/` | package discovery, manifests, hook execution, registry | `event/`, `config/`, `skill/` | provider logic, permission logic |
-| `notice/` | runtime notices such as inbox, interruptions, open conversations, drift | `event/`, `conversation/`, `prompt/`, `skill/`, `agent/` | provider logic |
+| `notice/` | runtime Skill and context drift notices | `event/`, `conversation/`, `prompt/`, `skill/`, `agent/` | provider logic |
 
 ## Important Boundaries
 
@@ -33,7 +33,7 @@ Each module should have one clear job. Dependency rules keep the ledger model un
 
 ### `conversation/`
 
-`conversation/` retains the event codec and history-reduction representation. Public Session Agent identities are validated flat addresses, owned by `session/runtime/`; slash-separated legacy conversation syntax does not create hidden Agent identities.
+`conversation/` retains the event codec and history-reduction representation. Public Session Agent identities are validated flat addresses, owned by `session/runtime/`.
 
 ### `agent/`
 

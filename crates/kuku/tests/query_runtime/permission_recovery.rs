@@ -99,7 +99,6 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
             conversation: "main".to_string(),
             text: "run interrupted command".to_string(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -351,7 +350,7 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
         Some(UiEvent::PermissionRequested { .. })
     ));
     let decision_event = resumed
-        .decide(&request.id, PermissionChoice::Deny, None)
+        .decide(&request.id, PermissionChoice::Deny)
         .await
         .unwrap();
     assert!(matches!(decision_event, Some(UiEvent::ToolEnd { .. })));
@@ -449,7 +448,7 @@ async fn pending_permission_resume_allow_executes_original_tool() {
         Some(UiEvent::PermissionRequested { .. })
     ));
     let decision_event = resumed
-        .decide(&request.id, PermissionChoice::Once, None)
+        .decide(&request.id, PermissionChoice::Once)
         .await
         .unwrap();
     assert!(
@@ -548,7 +547,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
         Some(UiEvent::PermissionRequested { .. })
     ));
     let decision_event = resumed
-        .decide(&request.id, PermissionChoice::Deny, None)
+        .decide(&request.id, PermissionChoice::Deny)
         .await
         .unwrap();
     assert!(matches!(decision_event, Some(UiEvent::ToolEnd { status, .. }) if status == "blocked"));
@@ -642,7 +641,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     assert_eq!(resumed_first.tool_call_id, "toolu_resume_first");
 
     let denied = resumed
-        .decide(&resumed_first.id, PermissionChoice::Deny, None)
+        .decide(&resumed_first.id, PermissionChoice::Deny)
         .await
         .unwrap();
     assert!(matches!(denied, Some(UiEvent::ToolEnd { .. })));

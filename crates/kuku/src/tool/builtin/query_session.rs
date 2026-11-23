@@ -65,7 +65,6 @@ fn run_query(
     let filters = QueryFilters::new(args);
     let history = EventStore::history_marks(events_path, filters.conversation.is_some())?;
     let visibility = RewindVisibility::new(&history.controls);
-    let legacy_target = active_main_turn_rollback_target(&history.controls);
     let mut result = Matches::default();
     let mut position = None;
     let mut seen = false;
@@ -83,9 +82,7 @@ fn run_query(
             if event.id <= filters.after || result.count >= filters.limit {
                 break 'history;
             }
-            if filters.skip_rolled_back
-                && !visible_event(event, &history, &visibility, legacy_target)
-            {
+            if filters.skip_rolled_back && !visible_event(event, &history, &visibility) {
                 continue;
             }
             let age = turn;
@@ -204,7 +201,6 @@ fn visible_event(
     event: &StoredEvent,
     history: &HistoryMarks,
     visibility: &RewindVisibility,
-    legacy_target: Option<u64>,
 ) -> bool {
     let owner = event_conversation(&event.payload)
         .or_else(|| match &event.payload {
@@ -219,63 +215,6 @@ fn visible_event(
                 .map(|owners| owners.last.as_str())
         });
     visibility.includes(event, owner)
-        && legacy_target.is_none_or(|target| match &event.payload {
-            EventPayload::TurnStarted { turn, .. }
-            | EventPayload::MessageUser { turn, .. }
-            | EventPayload::ModelResponse { turn, .. }
-            | EventPayload::ModelError { turn, .. }
-            | EventPayload::ToolCall {
-                turn,
-                conversation: None,
-                ..
-            }
-            | EventPayload::ToolResult {
-                turn,
-                conversation: None,
-                ..
-            }
-            | EventPayload::PermissionAllow { turn, .. }
-            | EventPayload::PermissionRequested { turn, .. }
-            | EventPayload::PermissionDeny { turn, .. }
-            | EventPayload::ContextSources { turn, .. }
-            | EventPayload::Handoff { turn, .. }
-            | EventPayload::TurnCompleted { turn, .. }
-            | EventPayload::TurnCancelled { turn, .. }
-            | EventPayload::TurnInterrupted { turn, .. } => *turn < target,
-            _ => true,
-        })
-}
-
-fn active_main_turn_rollback_target(all_events: &[crate::event::StoredEvent]) -> Option<u64> {
-    let undone = all_events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            EventPayload::ConversationRollbackUndone {
-                conversation,
-                rollback_event_id,
-                ..
-            } if conversation == "main" => Some(*rollback_event_id),
-            _ => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-
-    all_events
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            EventPayload::ConversationRollback {
-                conversation,
-                to_turn,
-                scope,
-                ..
-            } if conversation == "main"
-                && scope.affects_conversation()
-                && !undone.contains(&event.id) =>
-            {
-                Some(*to_turn)
-            }
-            _ => None,
-        })
 }
 
 fn unscoped_main_event(payload: &EventPayload) -> bool {

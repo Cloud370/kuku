@@ -1,25 +1,10 @@
-use crate::conversation::address::ConversationAddress;
-
 const CONTEXT_OUTPUT_RESERVE_TOKENS: u32 = 8_192;
 const CONTEXT_MARGIN_TOKENS: u32 = 2_048;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NoticeKind {
-    ContextDrift {
-        entries: Vec<ContextDriftEntry>,
-    },
-    AgentDirectory {
-        directory: String,
-    },
-    OpenConversations {
-        entries: Vec<OpenConversationEntry>,
-    },
-    ConversationInbox {
-        messages: Vec<ConversationInboxMessage>,
-    },
-    LoadedSkills {
-        skills: Vec<String>,
-    },
+    ContextDrift { entries: Vec<ContextDriftEntry> },
+    LoadedSkills { skills: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,18 +22,6 @@ pub(crate) struct Notice {
 pub(crate) struct ContextDriftEntry {
     pub(crate) path: String,
     pub(crate) status: ContextDriftStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OpenConversationEntry {
-    pub(crate) conversation: ConversationAddress,
-    pub(crate) summary: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConversationInboxMessage {
-    pub(crate) from: Option<ConversationAddress>,
-    pub(crate) text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

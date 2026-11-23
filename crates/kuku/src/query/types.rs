@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use futures_core::Stream;
 
@@ -35,12 +35,6 @@ pub struct Query {
     pub(super) disable_agents: bool,
     pub(super) disable_skills: bool,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
-    pub(super) current_turn_prefix: Option<String>,
-    pub(super) current_turn_body: Option<String>,
-    pub(super) agent_registry: Option<crate::agent::registry::AgentRegistry>,
-    pub(super) agent_binding_id: Option<String>,
-    pub(super) message_from: Option<ConversationAddress>,
-    pub(super) via_tool_call_id: Option<String>,
     pub(crate) response_contract: Option<HostResponseContract>,
     pub(crate) agent_instructions: Option<String>,
     pub(crate) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
@@ -117,13 +111,7 @@ pub enum PermissionChoice {
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
     Simple,
-    Agent {
-        conversation: ConversationAddress,
-        binding_id: String,
-    },
-    Command {
-        pid: Option<u32>,
-    },
+    Command { pid: Option<u32> },
 }
 
 /// Events produced during a tool execution phase.
@@ -131,49 +119,8 @@ pub enum ToolKind {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolEvent {
-    TextDelta {
-        text: String,
-    },
-    ThinkingDelta {
-        text: String,
-    },
-    ToolStart {
-        id: String,
-        tool: String,
-        summary: String,
-        kind: ToolKind,
-    },
-    ToolOutput {
-        id: String,
-        event: Box<ToolEvent>,
-    },
-    ToolEnd {
-        id: String,
-        status: String,
-        summary: String,
-    },
-    Stdout {
-        text: String,
-    },
-    Stderr {
-        text: String,
-    },
-    PermissionRequested {
-        request: PermissionRequest,
-    },
-    Error {
-        code: String,
-        message: String,
-    },
-    ModelRequest {
-        conversation: ConversationAddress,
-        turn: u64,
-        request_id: String,
-        request_ordinal: u64,
-    },
-    ModelRecovery {
-        info: ModelRecoveryInfo,
-    },
+    Stdout { text: String },
+    Stderr { text: String },
 }
 
 /// Identifies an automatic bounded retry for a model request.
@@ -307,8 +254,6 @@ pub(crate) struct ExecSlot {
     pub(crate) label: String,
     pub(crate) cancel: Arc<tokio::sync::Notify>,
     pub(super) job: Option<Box<super::job_slots::ForegroundJob>>,
-    pub(crate) nested_permissions:
-        Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>>>,
 }
 
 impl std::fmt::Debug for ExecSlot {
@@ -400,13 +345,10 @@ pub(super) struct PendingRun {
     pub(super) resumed_permission_requests: VecDeque<PermissionRequest>,
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
-    pub(super) agent_registry: Option<crate::agent::registry::AgentRegistry>,
     pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) previous_skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
     pub(super) frozen_turn_prefix: TurnPrefixFreeze,
-    pub(super) child_session_count: u32,
-    pub(super) agent_binding_id: Option<String>,
     pub(super) tool_registry_override: Option<Vec<crate::tool::ToolDefinition>>,
     pub(super) catalog: crate::prompt::PromptCatalog,
     pub(super) pending_events: std::collections::VecDeque<UiEvent>,
@@ -679,12 +621,6 @@ impl Query {
             disable_agents: false,
             disable_skills: false,
             bootstrap_skill: None,
-            current_turn_prefix: None,
-            current_turn_body: None,
-            agent_registry: None,
-            agent_binding_id: None,
-            message_from: None,
-            via_tool_call_id: None,
             response_contract: None,
             agent_instructions: None,
             tool_registry_override: None,
@@ -710,14 +646,8 @@ impl Query {
         }
     }
 
-    /// Register an agent registry for agent tool dispatch.
-    pub fn agents(mut self, registry: crate::agent::registry::AgentRegistry) -> Self {
-        self.agent_registry = Some(registry);
-        self
-    }
-
-    /// Disable the agent tool (agent delegation).
-    pub fn no_agents(mut self) -> Self {
+    /// Disable Session Agent collaboration tools.
+    pub(crate) fn no_agents(mut self) -> Self {
         self.disable_agents = true;
         self
     }
@@ -731,16 +661,6 @@ impl Query {
     /// Attach a skill body to be injected as a separate block before user input.
     pub fn skill_body(mut self, body: String) -> Self {
         self.bootstrap_skill = Some(BootstrapSkill { name: None, body });
-        self
-    }
-
-    pub(crate) fn current_turn_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.current_turn_prefix = Some(prefix.into());
-        self
-    }
-
-    pub(crate) fn current_turn_body(mut self, body: impl Into<String>) -> Self {
-        self.current_turn_body = Some(body.into());
         self
     }
 
@@ -760,24 +680,9 @@ impl Query {
     }
 
     /// Select the target conversation within the session.
-    pub fn conversation(mut self, conversation: impl AsRef<str>) -> Self {
+    pub(crate) fn conversation(mut self, conversation: impl AsRef<str>) -> Self {
         self.conversation = ConversationAddress::parse(conversation.as_ref())
             .expect("conversation address must be valid");
-        self
-    }
-
-    pub(crate) fn with_agent_binding_id(mut self, binding_id: impl Into<String>) -> Self {
-        self.agent_binding_id = Some(binding_id.into());
-        self
-    }
-
-    pub(crate) fn sender(
-        mut self,
-        from: ConversationAddress,
-        via_tool_call_id: impl Into<String>,
-    ) -> Self {
-        self.message_from = Some(from);
-        self.via_tool_call_id = Some(via_tool_call_id.into());
         self
     }
 
@@ -899,13 +804,6 @@ mod tests {
             serde_json::to_string(&cmd).unwrap(),
             r#"{"command":{"pid":null}}"#
         );
-        let agent = ToolKind::Agent {
-            conversation: ConversationAddress::parse("review/api").unwrap(),
-            binding_id: "sha256:abc".into(),
-        };
-        let agent_json = serde_json::to_string(&agent).unwrap();
-        let back: ToolKind = serde_json::from_str(&agent_json).unwrap();
-        assert_eq!(back, agent);
     }
 
     #[test]
@@ -918,23 +816,6 @@ mod tests {
         assert!(
             matches!(error, Error::InvalidArgument(message) if message.contains("max_output_tokens"))
         );
-    }
-
-    #[test]
-    fn tool_event_recursive_serialization() {
-        let inner = ToolEvent::ToolStart {
-            id: "tc_2".into(),
-            tool: "find_files".into(),
-            summary: "search".into(),
-            kind: ToolKind::Simple,
-        };
-        let outer = ToolEvent::ToolOutput {
-            id: "tc_1".into(),
-            event: Box::new(inner),
-        };
-        let json = serde_json::to_string(&outer).unwrap();
-        assert!(json.contains("tc_1"));
-        assert!(json.contains("tc_2"));
     }
 
     #[test]

@@ -1,7 +1,6 @@
 mod deferred;
 
 pub(crate) use deferred::AwaitingAction;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -113,7 +112,6 @@ pub(super) fn spawn(
         label: queued.display_summary.clone(),
         cancel,
         job: Some(job),
-        nested_permissions: Arc::new(Mutex::new(HashMap::new())),
     })
 }
 

@@ -6,17 +6,13 @@ pub(crate) fn event_conversation(payload: &EventPayload) -> Option<&str> {
         | EventPayload::ModelError { conversation, .. }
         | EventPayload::ToolCall { conversation, .. }
         | EventPayload::ToolResult { conversation, .. } => conversation.as_deref(),
-        EventPayload::ConversationOpened { conversation, .. }
-        | EventPayload::ConversationBound { conversation, .. }
-        | EventPayload::PromptSnapshot { conversation, .. }
+        EventPayload::PromptSnapshot { conversation, .. }
         | EventPayload::MessageUser { conversation, .. }
         | EventPayload::MessageAssistant { conversation, .. }
         | EventPayload::TurnStarted { conversation, .. }
         | EventPayload::TurnCompleted { conversation, .. }
         | EventPayload::TurnCancelled { conversation, .. }
         | EventPayload::TurnInterrupted { conversation, .. }
-        | EventPayload::ConversationRollback { conversation, .. }
-        | EventPayload::ConversationRollbackUndone { conversation, .. }
         | EventPayload::ModelRecovery { conversation, .. }
         | EventPayload::ContextSkills { conversation, .. } => Some(conversation.as_str()),
         EventPayload::Unknown(value) => value
@@ -205,18 +201,6 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
                 format!("handoff  {preview}")
             }
         }
-        EventPayload::ConversationOpened { conversation, .. } => conversation.clone(),
-        EventPayload::ConversationBound {
-            conversation,
-            binding_id,
-            ..
-        } => {
-            if verbose {
-                format!("{conversation}  binding={binding_id}")
-            } else {
-                conversation.clone()
-            }
-        }
         EventPayload::TurnCancelled {
             conversation,
             turn,
@@ -247,11 +231,6 @@ fn render_unknown_event_details(value: &serde_json::Value, verbose: bool) -> Str
         .unwrap_or("unknown");
 
     match kind {
-        "conversation.opened" => value
-            .get("conversation")
-            .and_then(|item| item.as_str())
-            .unwrap_or("")
-            .to_string(),
         "turn.cancelled" | "turn.interrupted" => {
             let conversation = value
                 .get("conversation")
@@ -415,75 +394,5 @@ mod tests {
 
         assert!(render_event_brief(&allow, true).contains("allow  run_command  session"));
         assert!(render_event_brief(&handoff, true).contains("keep_turns=2"));
-    }
-
-    #[test]
-    fn derive_final_output_skips_rolled_back_answers() {
-        let events = vec![
-            StoredEvent {
-                id: 1,
-                payload: EventPayload::ModelResponse {
-                    conversation: None,
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    request_id: "req_1".to_string(),
-                    text: "keep me".to_string(),
-                    thinking: None,
-                    input_tokens_total: Some(5),
-                    output_tokens_total: None,
-                    stop_reason: None,
-                },
-            },
-            StoredEvent {
-                id: 3,
-                payload: EventPayload::TurnCompleted {
-                    conversation: "main".to_string(),
-                    turn: 1,
-                    ts: "t2".to_string(),
-                },
-            },
-            StoredEvent {
-                id: 4,
-                payload: EventPayload::TurnStarted {
-                    conversation: "main".to_string(),
-                    turn: 2,
-                    ts: "t2.5".to_string(),
-                },
-            },
-            StoredEvent {
-                id: 5,
-                payload: EventPayload::ModelResponse {
-                    conversation: None,
-                    turn: 2,
-                    ts: "t3".to_string(),
-                    request_id: "req_2".to_string(),
-                    text: "rolled back answer".to_string(),
-                    thinking: None,
-                    input_tokens_total: Some(7),
-                    output_tokens_total: None,
-                    stop_reason: None,
-                },
-            },
-            StoredEvent {
-                id: 6,
-                payload: EventPayload::TurnCompleted {
-                    conversation: "main".to_string(),
-                    turn: 2,
-                    ts: "t4".to_string(),
-                },
-            },
-            StoredEvent {
-                id: 7,
-                payload: EventPayload::ConversationRollback {
-                    ts: "t5".to_string(),
-                    conversation: "main".to_string(),
-                    to_turn: 2,
-                    to_event_id: 6,
-                    scope: kuku::event::RollbackScope::ConversationOnly,
-                },
-            },
-        ];
-
-        assert_eq!(derive_final_output(&events).as_deref(), Some("keep me"));
     }
 }

@@ -18,8 +18,7 @@ pub enum RequestCost {
     Estimated {
         nanodollars: u64,
         rates: TokenRates,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        basis: Option<EstimateBasis>,
+        basis: EstimateBasis,
     },
     #[default]
     Unknown,
@@ -116,7 +115,7 @@ impl RequestPricing {
             Some(RequestCost::Estimated {
                 nanodollars,
                 rates: rates.clone(),
-                basis: Some(basis),
+                basis,
             })
         });
         estimated.unwrap_or_default()
@@ -381,7 +380,7 @@ mod tests {
         assert!(
             matches!(pricing.cost(Some(&usage), Some(&report)), RequestCost::Estimated {
             nanodollars: 225_000,
-                basis: Some(EstimateBasis::Catalog { endpoint, .. }),
+                basis: EstimateBasis::Catalog { endpoint, .. },
             ..
         } if endpoint == "google-ai-studio/flex")
         );
@@ -416,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_route_rates_need_the_matching_tier_and_preserve_legacy_costs() {
+    fn configured_route_rates_need_the_matching_tier() {
         let rates = TokenRates {
             input: Some(2.0),
             output: Some(4.0),
@@ -446,7 +445,7 @@ mod tests {
         assert!(
             matches!(pricing.cost(Some(&usage), Some(&confirmed)), RequestCost::Estimated {
             nanodollars: 140_000,
-            basis: Some(EstimateBasis::Configured { service_tier, .. }),
+            basis: EstimateBasis::Configured { service_tier, .. },
             ..
         } if service_tier == "priority")
         );
@@ -458,10 +457,5 @@ mod tests {
             RequestCost::Unknown,
             pricing.cost(Some(&usage), Some(&fallback))
         );
-        let legacy = serde_json::from_value::<RequestCost>(json!({
-            "source": "estimated", "nanodollars": 140000, "rates": rates
-        }))
-        .unwrap();
-        assert!(matches!(legacy, RequestCost::Estimated { basis: None, .. }));
     }
 }

@@ -594,18 +594,6 @@ impl Window {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let error_scopes = self
-            .records
-            .iter()
-            .filter_map(|record| match &record.body {
-                Body::ModelError { .. } => Some((
-                    record.owner.as_ref()?.clone(),
-                    record.turn?,
-                    record.execution_id,
-                )),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         let error_requests = self
             .records
             .iter()
@@ -626,7 +614,7 @@ impl Window {
         let correlated_errors = error_requests
             .iter()
             .filter(|(agent, turn, request_id, execution_id, error_position)| {
-                let matching_retry = stopped_provider_retries.iter().any(
+                stopped_provider_retries.iter().any(
                     |(retry_agent, retry_turn, retry_id, retry_execution, retry_position)| {
                         agent == retry_agent
                             && turn == retry_turn
@@ -634,17 +622,7 @@ impl Window {
                             && execution_matches(*execution_id, *retry_execution)
                             && retry_position < error_position
                     },
-                );
-                let legacy_error = error_scopes
-                    .iter()
-                    .filter(|(error_agent, error_turn, error_execution)| {
-                        agent == error_agent
-                            && turn == error_turn
-                            && execution_matches(*execution_id, *error_execution)
-                    })
-                    .count()
-                    == 1;
-                matching_retry || legacy_error
+                )
             })
             .cloned()
             .collect::<Vec<_>>();

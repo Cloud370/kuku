@@ -1,6 +1,4 @@
-use super::{
-    insert_runtime_date, legacy_project_policy_has_date, segment_prefix_hash, FrozenSegment,
-};
+use super::{custom_project_policy_has_date, insert_runtime_date, FrozenSegment};
 use crate::context::runtime::{AdmittedMessage, MessageOrigin};
 use crate::context::CanonicalMessage;
 
@@ -44,42 +42,7 @@ fn midnight_date_change_does_not_reorder_admitted_tool_turn_input() {
 }
 
 #[test]
-fn old_catalog_date_fallback_does_not_change_the_frozen_prefix() {
-    let mut catalog = crate::prompt::builtin_prompt_catalog();
-    catalog.runtime.remove("current-date");
-    let segment = FrozenSegment {
-        id: 1,
-        signature: String::new(),
-        configuration: 0,
-        handoff: 0,
-        system_prompt: "FROZEN_SYSTEM".into(),
-        prelude: vec![CanonicalMessage::user_text("FROZEN_PRELUDE")],
-        tools: Vec::new(),
-        catalog,
-        connection: "openai".into(),
-        protocol: "openai-responses".into(),
-        model: "context-fixture".into(),
-        endpoint: "https://api.openai.com/v1/responses".into(),
-        capabilities: None,
-        route_selectors: None,
-        behavior: String::new(),
-        project_instruction_sources: Vec::new(),
-        identity_slot: 1,
-        handoff_prelude: None,
-        checkpoint_files: Default::default(),
-        checkpoint_files_omitted: false,
-        workspace: "/workspace".into(),
-    };
-    let prefix_hash = segment_prefix_hash(&segment).unwrap();
-    let runtime_date = crate::prompt::render_runtime_date(&segment.catalog, "2026-05-18").unwrap();
-
-    assert!(runtime_date.contains("Current date: 2026-05-18"));
-    assert!(!segment.catalog.runtime.contains_key("current-date"));
-    assert_eq!(prefix_hash, segment_prefix_hash(&segment).unwrap());
-}
-
-#[test]
-fn legacy_policy_date_ignores_incidental_memory_dates_in_both_prelude_orders() {
+fn custom_policy_date_ignores_incidental_memory_dates_in_both_prelude_orders() {
     let mut catalog = crate::prompt::builtin_prompt_catalog();
     catalog.blocks.get_mut("project-policy").unwrap().text =
         "Policy\n- Date: {{current_date}}\n{{project_instructions_rendered}}".into();
@@ -125,7 +88,7 @@ fn legacy_policy_date_ignores_incidental_memory_dates_in_both_prelude_orders() {
             checkpoint_files_omitted: false,
             workspace: String::new(),
         };
-        assert!(!legacy_project_policy_has_date(&segment, "2026-05-19"));
-        assert!(legacy_project_policy_has_date(&segment, "2026-05-18"));
+        assert!(!custom_project_policy_has_date(&segment, "2026-05-19"));
+        assert!(custom_project_policy_has_date(&segment, "2026-05-18"));
     }
 }

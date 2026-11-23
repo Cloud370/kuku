@@ -6,10 +6,8 @@ use common::{anthropic_sse_response, openai_sse_response, test_config, TestEnv};
 
 use httpmock::prelude::{HttpMockRequest, MockServer, Regex, POST};
 use httpmock::When;
-use kuku::agent::registry::AgentRegistry;
 use kuku::config::{ApiKey, ProviderProfile};
 use kuku::event::{EventPayload, EventStore, ModelStopReason};
-use kuku::prompt::builtin_prompt_catalog;
 use kuku::query::Run;
 use kuku::{query, Error, Provider, UiEvent};
 
@@ -100,27 +98,6 @@ fn snapshot_history_and_input_are_in_order(req: &HttpMockRequest) -> bool {
     }
 }
 
-fn body_contains_main_not_review(req: &HttpMockRequest) -> bool {
-    body_contains(req, b"main snapshot") && !body_contains(req, b"review snapshot")
-}
-
-fn body_contains_review_not_main(req: &HttpMockRequest) -> bool {
-    body_contains(req, b"review snapshot") && !body_contains(req, b"main snapshot")
-}
-
-fn body_contains_review_assistant_history(req: &HttpMockRequest) -> bool {
-    body_contains(req, b"review followup") && body_contains(req, b"previous review answer")
-}
-
-fn body_contains_child_agent_result(req: &HttpMockRequest) -> bool {
-    body_contains(req, b"\"tool_use_id\":\"toolu_agent_child\"")
-        && body_contains(req, b"KUKU_CHILD_AGENT_RESULT")
-}
-
-fn body_contains_initial_child_task(req: &HttpMockRequest) -> bool {
-    body_contains(req, b"child task") && is_initial_request(req)
-}
-
 fn has_read_tool_result_only(req: &HttpMockRequest) -> bool {
     body_contains(req, b"\"tool_use_id\":\"toolu_read\"")
         && !body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
@@ -135,20 +112,6 @@ fn has_read_and_edit_tool_results(req: &HttpMockRequest) -> bool {
         && body_contains(req, b"\"tool_use_id\":\"toolu_edit\"")
 }
 
-fn body_contains_open_conversation_summary_without_peer_transcript(req: &HttpMockRequest) -> bool {
-    body_contains(req, b"Open conversations:")
-        && body_contains(req, b"review: turn 1 completed")
-        && !body_contains(req, b"review secret transcript")
-}
-
-fn body_contains_review_conversation_notices_only(req: &HttpMockRequest) -> bool {
-    body_contains(req, b"review followup")
-        && body_contains(req, b"please review this")
-        && !body_contains(req, b"explore secret transcript")
-}
-
-/// Register the common body conditions that always accompany a tool-use
-/// request.  Returns the updated `When` for further chaining.
 fn context_conditions(when: When, query_text: &str) -> When {
     when.body_contains(r#""tools""#)
         .body_contains("<kuku_execution_context>")
@@ -205,44 +168,6 @@ fn anthro_profile(
         .config(config)
 }
 
-fn anthro_with_agents(query_text: &str, server: &MockServer) -> query::Query {
-    anthro(query_text, server).agents(
-        AgentRegistry::builder()
-            .builtins(&builtin_prompt_catalog())
-            .build(),
-    )
-}
-
-fn event_conversation(payload: &EventPayload) -> Option<&str> {
-    match payload {
-        EventPayload::ConversationOpened { conversation, .. }
-        | EventPayload::ConversationBound { conversation, .. }
-        | EventPayload::MessageUser { conversation, .. }
-        | EventPayload::MessageAssistant { conversation, .. }
-        | EventPayload::TurnStarted { conversation, .. }
-        | EventPayload::TurnCompleted { conversation, .. }
-        | EventPayload::TurnCancelled { conversation, .. }
-        | EventPayload::TurnInterrupted { conversation, .. } => Some(conversation.as_str()),
-        _ => None,
-    }
-}
-
-fn tree_contains_name(root: &std::path::Path, needle: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.file_name().is_some_and(|name| name == needle) {
-            return true;
-        }
-        if path.is_dir() && tree_contains_name(&path, needle) {
-            return true;
-        }
-    }
-    false
-}
-
 async fn next_matching(
     run: &mut Run,
     deadline: tokio::time::Instant,
@@ -260,25 +185,6 @@ async fn next_matching(
     }
 }
 
-async fn wait_for_tool_end(run: &mut Run, tool_call_id: &str) -> UiEvent {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    next_matching(run, deadline, |event| {
-        matches!(
-            event,
-            UiEvent::ToolEnd {
-                id,
-                status: _,
-                summary: _,
-                model_content: _,
-                result: _,
-            } if id == tool_call_id
-        )
-    })
-    .await
-}
-
-// NOTE: Keep crate-scope test names so exact libtest filters remain valid.
 include!("provider_integration/protocols.rs");
 include!("provider_integration/context.rs");
-include!("provider_integration/agents.rs");
 include!("provider_integration/tools.rs");

@@ -37,30 +37,6 @@ fn retry_entry(
     }
 }
 
-fn legacy_retry_entry(id: u64, turn: u64, request_id: &str) -> HistoryEntry {
-    HistoryEntry {
-        id,
-        agent: "main".into(),
-        turn: Some(turn),
-        kind: HistoryKind::Retry,
-        text: None,
-        turn_summary: None,
-        details: [(
-            "retry".into(),
-            json!({
-                "source":"runtime.model_retry",
-                "attempt":2,
-                "max_attempts":3,
-                "request_id":request_id,
-                "failed_kind":"transport",
-                "status":502
-            }),
-        )]
-        .into_iter()
-        .collect(),
-    }
-}
-
 fn error_entry(id: u64, turn: u64, request_id: &str, message: &str) -> HistoryEntry {
     HistoryEntry {
         id,
@@ -539,63 +515,6 @@ fn correlated_provider_interruption_renders_one_error_block_after_page_load() {
             );
         }
     }
-}
-
-#[test]
-fn legacy_model_error_and_provider_interruption_are_correlated_on_page_load() {
-    let mut transcript = Transcript::default();
-    transcript.apply_page(
-        HistoryRequest::Recent,
-        HistoryPage {
-            entries: vec![
-                error_entry(9, 2, "req_1", "Fixture connection closed"),
-                interruption_entry(10, 2, None, "transport"),
-            ],
-            rewind_groups: Vec::new(),
-            next_before: None,
-        },
-    );
-
-    let text = rendered(&mut transcript);
-    assert!(
-        text.contains("Transport error · Reply interrupted"),
-        "{text}"
-    );
-    assert_eq!(1, text.matches("Fixture connection closed").count());
-    assert!(!text.contains("Execution interrupted"), "{text}");
-    assert!(
-        !text.lines().any(|line| line.trim() == "transport"),
-        "{text}"
-    );
-}
-
-#[test]
-fn phase_less_retry_does_not_block_legacy_terminal_error_correlation() {
-    let mut transcript = Transcript::default();
-    transcript.apply_page(
-        HistoryRequest::Recent,
-        HistoryPage {
-            entries: vec![
-                legacy_retry_entry(8, 2, "req_1"),
-                error_entry(9, 2, "req_1", "Fixture connection closed"),
-                interruption_entry(10, 2, None, "transport"),
-            ],
-            rewind_groups: Vec::new(),
-            next_before: None,
-        },
-    );
-
-    let text = rendered(&mut transcript);
-    assert!(
-        text.contains("Transport error · Reply interrupted"),
-        "{text}"
-    );
-    assert_eq!(1, text.matches("Fixture connection closed").count());
-    assert!(!text.contains("Execution interrupted"), "{text}");
-    assert!(
-        !text.lines().any(|line| line.trim() == "transport"),
-        "{text}"
-    );
 }
 
 #[test]

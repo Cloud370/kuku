@@ -225,8 +225,6 @@ impl JournalIndex {
                     .messages
                     .push(event.id, *turn, preview);
             }
-            EventPayload::ConversationRollback { .. }
-            | EventPayload::ConversationRollbackUndone { .. } => self.rewinds.push(event.clone()),
             EventPayload::Unknown(value) => self.observe_runtime(event.id, value),
             _ => {}
         }

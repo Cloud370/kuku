@@ -73,7 +73,6 @@ pub(super) fn spawn(
         label: queued.display_summary.clone(),
         cancel,
         job: None,
-        nested_permissions: Default::default(),
     }
 }
 

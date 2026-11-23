@@ -246,7 +246,6 @@ fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reope
             ts: "t".into(),
             text: "steering input".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap()
@@ -478,7 +477,6 @@ fn reopened_cursor_preserves_handoff_summary_before_rewind_target() {
             ts: "t".into(),
             text: "rewound second-turn input".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap()
@@ -627,7 +625,6 @@ fn active_cursor_selects_one_prepared_segment_and_incrementally_reads_new_facts(
             turn: 1,
             text: "input".into(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();

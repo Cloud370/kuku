@@ -84,7 +84,6 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
             conversation: "main".to_string(),
             text: "resume this turn".to_string(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -205,7 +204,6 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
             conversation: "main".to_string(),
             text: "resume this turn".to_string(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
@@ -313,7 +311,6 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
             conversation: "main".to_string(),
             text: "resume this turn".to_string(),
             from: None,
-            via_tool_call_id: None,
             job_delivery: false,
         })
         .unwrap();
