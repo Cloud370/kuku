@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 use kuku_client::{
     Acknowledgement, Error, HistoryPage, InputStatus, Receipt, Snapshot, Timing, UsageTotals,
@@ -9,12 +9,13 @@ use serde_json::{json, Value};
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    compact_token_count, render_segments, Field, Priority, Segment, StatusLine, SEPARATOR,
+    compact_token_count, render_segments, Field, Priority, Segment, StatusLine, GROUP_GAP,
+    SEPARATOR,
 };
 use crate::app::{Address, App};
 use crate::config::StatusLineSettings;
 use crate::jobs::{Job, Update};
-use crate::theme::{ERROR, MODEL, WARNING};
+use crate::theme::{horizontal_gutter, ERROR, MODEL, WARNING};
 use crate::ui;
 
 fn connected_app() -> App {
@@ -143,7 +144,7 @@ fn status_line_setting_reports_duplicates_and_unknown_fields() {
 fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
     let line = render_segments(
         vec![
-            Segment::workspace("/dir/开发👩‍💻/最后".into()),
+            Segment::workspace(Some(Path::new("/dir/开发👩‍💻/最后"))),
             Segment::labels(vec!["Waiting".into()], WARNING, Priority::Attention),
             Segment::labels(vec!["Offline".into()], ERROR, Priority::ConnectionProblem),
         ],
@@ -159,9 +160,9 @@ fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
             .collect::<Vec<_>>()
     );
     let line = render_segments(
-        vec![Segment::workspace(
-            "/dir/e\u{0301}e\u{0301}e\u{0301}/👩‍💻末".into(),
-        )],
+        vec![Segment::workspace(Some(Path::new(
+            "/dir/e\u{0301}e\u{0301}e\u{0301}/👩‍💻末",
+        )))],
         10,
         SEPARATOR,
     )
@@ -356,23 +357,42 @@ fn default_status_line_shows_context_cache_tps_and_workspace() {
 }
 
 #[test]
-fn wide_status_line_keeps_metrics_anchored_while_identity_width_changes() {
-    let layout = StatusLine::default();
+fn wide_default_and_custom_status_lines_anchor_usage_and_shorten_long_paths() {
     let mut short = connected_workspace(PathBuf::from("/short"));
-    let mut long = connected_workspace(PathBuf::from("/really-long-directory".repeat(20)));
+    let workspace = PathBuf::from("/really-long-directory".repeat(20)).join("work-right");
+    let mut long = connected_workspace(workspace);
     for app in [&mut short, &mut long] {
         load_agent(app, "running", 0, Value::Null, measured_usage());
     }
-    let first = screen(&mut short, &layout, 120, 24);
     long.pane_mut().draft.insert("正在输入");
-    let second = screen(&mut long, &layout, 120, 24);
-    let measures = "Context 89K/100K (89%)  Cache hit 75%  18.4 TPS";
-    assert_ne!(first[23], second[23]);
-    let position = |row: &str| row.split_once(measures).map(|(prefix, _)| prefix.width());
-    assert_eq!(position(&first[23]), position(&second[23]));
-    assert!(first[23].trim_end().ends_with(measures));
-    assert!(second[23].trim_end().ends_with(measures));
-    assert_eq!("", second[22].trim());
+    let abbreviated = format!("…{MAIN_SEPARATOR}work-right");
+    for (layout, measures) in [
+        (
+            StatusLine::default(),
+            "Context 89K/100K (89%)  Cache hit 75%  18.4 TPS",
+        ),
+        (
+            StatusLine::parse("workspace,agent,cache,context,tps").unwrap(),
+            "Cache hit 75% · Context 89% used · 18.4 TPS",
+        ),
+    ] {
+        for width in [120, 200] {
+            let first = screen(&mut short, &layout, width, 24);
+            let second = screen(&mut long, &layout, width, 24);
+            assert!(first[23].contains("/short"));
+            assert!(second[23].contains(&abbreviated));
+            assert!(!second[23].contains("really-long-directory"));
+            for footer in [&first[23], &second[23]] {
+                let footer = footer.trim_end();
+                assert!(footer.ends_with(measures), "{footer}");
+                assert_eq!(
+                    usize::from(width - horizontal_gutter(width)),
+                    footer.width()
+                );
+            }
+            assert_eq!("", second[22].trim());
+        }
+    }
 }
 
 #[test]
@@ -462,15 +482,21 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
     assert_eq!("Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace", fields);
     assert!(rows[16].contains("Enter steer"));
 
+    let assert_wide_footer = |app: &mut App, agent, expected| {
+        let rows = screen(app, &statusline, 120, 20);
+        let (left, right) = rows[19].trim().split_once(GROUP_GAP).unwrap();
+        assert_eq!(agent, left);
+        assert_eq!(expected, right.trim_start());
+    };
     app.select(
         Address::new(main.session.clone(), "reviewer".into()),
         true,
         "Example".into(),
     );
-    let rows = screen(&mut app, &statusline, 120, 20);
-    assert_eq!(
-        "Agent reviewer · — TPS · Context — · — out · Cache hit — · — in · /workspace",
-        rows[19].trim()
+    assert_wide_footer(
+        &mut app,
+        "Agent reviewer",
+        "— TPS · Context — · — out · Cache hit — · — in · /workspace",
     );
     let reviewer: UsageTotals = serde_json::from_value(json!({
         "model_requests": 2,
@@ -482,16 +508,16 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
     }))
     .unwrap();
     load_agent(&mut app, "idle", 0, Value::Null, reviewer);
-    let rows = screen(&mut app, &statusline, 120, 20);
-    assert_eq!(
-        "Agent reviewer · — TPS · Context — · 0 out · Cache hit — · ≥1.2K in · /workspace",
-        rows[19].trim()
+    assert_wide_footer(
+        &mut app,
+        "Agent reviewer",
+        "— TPS · Context — · 0 out · Cache hit — · ≥1.2K in · /workspace",
     );
     app.select(main, true, "Example".into());
-    let rows = screen(&mut app, &statusline, 120, 20);
-    assert_eq!(
-        "Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace",
-        rows[19].trim()
+    assert_wide_footer(
+        &mut app,
+        "Agent main",
+        "18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace",
     );
 }
 

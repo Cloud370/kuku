@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::path::{Path, MAIN_SEPARATOR};
 
 use kuku_client::UsageTotals;
 use ratatui::style::{Color, Style};
@@ -18,9 +19,10 @@ pub(crate) use editor::StatusLineEditor;
 
 const SEPARATOR: &str = " · ";
 const WIDE_SEPARATOR: &str = "  ";
-const GROUP_GAP: &str = "    ";
+const GROUP_GAP: &str = "   ";
 const COMPACT_DETAILS_WIDTH: usize = 12;
 const COMPACT_MODEL_WIDTH: usize = 28;
+const MAX_WORKSPACE_WIDTH: usize = 24;
 const MAX_EFFORT_WIDTH: usize = 12;
 const COMPACT_STATUS_WIDTH: usize = 96;
 const PHONE_WIDTH: usize = 60;
@@ -98,7 +100,8 @@ impl StatusLine {
             .as_ref()
             .map(|snapshot| &snapshot.agent.usage);
         let custom = self.fields.is_some();
-        let compact = !custom && width < COMPACT_STATUS_WIDTH;
+        let narrow = width < COMPACT_STATUS_WIDTH;
+        let compact = !custom && narrow;
         let mut segments: Vec<_> = self
             .fields()
             .iter()
@@ -131,27 +134,26 @@ impl StatusLine {
                     .collect();
             }
         }
-        if custom || compact {
-            return render_segments(
-                segments.into_iter().map(|(_, segment)| segment).collect(),
-                width,
-                SEPARATOR,
-            )
-            .into_iter()
-            .collect();
-        }
-        let mut identity = Vec::new();
-        let mut measurements = Vec::new();
-        for (field, segment) in segments {
-            if field.is_measurement() {
-                measurements.push(segment);
-            } else {
-                identity.push(segment);
-            }
-        }
-        render_groups(identity, measurements, width)
-            .into_iter()
-            .collect()
+        let separator = if custom || narrow {
+            SEPARATOR
+        } else {
+            WIDE_SEPARATOR
+        };
+        let split = if narrow {
+            None
+        } else {
+            segments
+                .iter()
+                .position(|(field, _)| field.is_measurement())
+        };
+        let mut segments = segments.into_iter().map(|(_, segment)| segment);
+        let line = if let Some(split) = split {
+            let left = segments.by_ref().take(split).collect();
+            render_groups(left, segments.collect(), width, separator)
+        } else {
+            render_segments(segments.collect(), width, separator)
+        };
+        line.into_iter().collect()
     }
 
     fn fields(&self) -> &[Field] {
@@ -282,11 +284,7 @@ impl Field {
                 format!("Agent {}", single_line(&app.active.agent)),
                 Priority::Agent,
             ),
-            Self::Workspace => Segment::workspace(
-                app.resolved_workspace()
-                    .map(single_line_path)
-                    .unwrap_or_else(|| "Workspace —".into()),
-            ),
+            Self::Workspace => Segment::workspace(app.resolved_workspace()),
             Self::Model => {
                 let pane = app.pane();
                 let (id, route, effort, slot) = match pane.effective_model_identity() {
@@ -493,7 +491,18 @@ impl Segment {
         }
     }
 
-    fn workspace(text: String) -> Self {
+    fn workspace(workspace: Option<&Path>) -> Self {
+        let text = workspace.map_or_else(
+            || "Workspace —".into(),
+            |path| {
+                let full = single_line_path(path);
+                path.file_name()
+                    .filter(|_| full.width() > MAX_WORKSPACE_WIDTH)
+                    .map_or(full, |name| {
+                        format!("…{MAIN_SEPARATOR}{}", single_line(&name.to_string_lossy()))
+                    })
+            },
+        );
         Self {
             text: SegmentText::Workspace(text),
             style: Style::default(),
@@ -583,6 +592,7 @@ impl Segment {
                 text
             }
             SegmentText::Workspace(text) => {
+                let width = width.min(MAX_WORKSPACE_WIDTH);
                 if text.width() <= width {
                     text.clone()
                 } else {
@@ -595,18 +605,29 @@ impl Segment {
 }
 
 fn render_groups(
-    identity: Vec<Segment>,
-    usage: Vec<Segment>,
+    left: Vec<Segment>,
+    right: Vec<Segment>,
     width: usize,
+    separator: &'static str,
 ) -> Option<Line<'static>> {
-    let Some(right) = render_segments(usage, width / 2, WIDE_SEPARATOR) else {
-        return render_segments(identity, width, WIDE_SEPARATOR);
+    let minimum_left = if left.is_empty() {
+        0
+    } else {
+        left.iter()
+            .map(|segment| segment.compact_width(width))
+            .sum::<usize>()
+            + separator.width() * (left.len() - 1)
+            + GROUP_GAP.width()
+    };
+    let right_width = (width / 2).max(width.saturating_sub(minimum_left));
+    let Some(right) = render_segments(right, right_width, separator) else {
+        return render_segments(left, width, separator);
     };
     let left_width = width - right.width();
     let mut line = render_segments(
-        identity,
+        left,
         left_width.saturating_sub(GROUP_GAP.width()),
-        WIDE_SEPARATOR,
+        separator,
     )
     .unwrap_or_default();
     line.push_span(" ".repeat(left_width - line.width()));
