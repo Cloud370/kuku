@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 
-use super::scan::SCAN_BYTES;
+use super::scan::{LINE_BYTES, SCAN_BYTES};
 use super::{CollectedFile, ContextPreview, FileSearch, SearchPage, SearchView};
 use crate::tool::builtin::common::{
-    is_cancellation, is_io_limit, FileCancellation, ScanDeadline, WorkspaceFiles,
+    is_cancellation, is_io_limit, FileCancellation, IoLimit, ScanDeadline, WorkspaceFiles,
 };
 use crate::WorkspaceIoLimits;
 
@@ -27,6 +27,13 @@ pub(super) struct ScanStats {
     pub skipped: usize,
     pub unverified: usize,
     pub limit: Option<String>,
+    pub unchecked: Option<UncheckedFile>,
+}
+
+#[derive(serde::Serialize)]
+pub(super) struct UncheckedFile {
+    pub path: String,
+    pub reason: &'static str,
 }
 
 impl ScanStats {
@@ -35,6 +42,14 @@ impl ScanStats {
         self.skipped += stats.skipped;
         self.unverified += stats.unverified;
         self.limit = self.limit.take().or(stats.limit);
+        self.unchecked = self.unchecked.take().or(stats.unchecked);
+    }
+
+    fn record_unchecked(&mut self, path: &str, reason: &'static str) {
+        self.unchecked.get_or_insert_with(|| UncheckedFile {
+            path: path.to_owned(),
+            reason,
+        });
     }
 }
 
@@ -162,6 +177,7 @@ impl WorkspaceScan<'_, '_> {
         mut context: Option<ContextScan<'_>>,
     ) -> io::Result<ScanStats> {
         let mut stats = ScanStats::default();
+        let regex = search.regex().clone();
         for file in files {
             if let Err(error) = self.deadline.check() {
                 stats.limit = Some(error.to_string());
@@ -174,12 +190,13 @@ impl WorkspaceScan<'_, '_> {
                 Err(_) => {
                     stats.skipped += 1;
                     stats.unverified += 1;
+                    stats.record_unchecked(&file.relative, "could not be opened");
                     continue;
                 }
             };
             let previous_count = page.matches.len();
             let previous_progress = page.progress;
-            let matched = |number, line: &str| page.matched(&file.relative, number, line);
+            let matched = |number, line: &str| page.matched(&file.relative, number, line, &regex);
             let scan = match &mut bytes {
                 ScanBytes::Local(left) => search.scan(&mut input, left, matched),
                 ScanBytes::Shared(credit) => search.scan_reader(
@@ -200,11 +217,19 @@ impl WorkspaceScan<'_, '_> {
                 stats.skipped += 1;
                 if is_io_limit(&error) {
                     stats.limit.get_or_insert_with(|| error.to_string());
+                    if error
+                        .get_ref()
+                        .and_then(|cause| cause.downcast_ref::<IoLimit>())
+                        .is_some_and(|limit| limit.0 == LINE_BYTES.0)
+                    {
+                        stats.record_unchecked(&file.relative, LINE_BYTES.0);
+                    }
                     if bytes.exhausted() {
                         break;
                     }
                 } else if error.kind() != io::ErrorKind::InvalidData {
                     stats.unverified += 1;
+                    stats.record_unchecked(&file.relative, "could not be read or verified");
                 }
                 continue;
             }

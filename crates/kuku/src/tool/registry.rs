@@ -73,7 +73,7 @@ fn registry(agent_enabled: bool, skills_enabled: bool, session: bool) -> Vec<Too
                     "pattern": {"type": "string", "description": "Regular expression pattern to search for."},
                     "path": {"type": "string", "description": "Folder or file to search. Defaults to the workspace root."},
                     "include": {"type": "string", "description": "Only search files matching this glob, such as **/*.rs."},
-                    "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Result view. Defaults to files."},
+                    "view": {"type": "string", "enum": ["files", "lines", "count"], "description": "Defaults to lines with paths, line numbers and excerpts. Use files for paths alone, or count for per-file counts."},
                     "offset": {"type": "integer", "description": "Skip the first N matches (default: 0)."},
                     "limit": {"type": "integer", "minimum": 1, "description": "Maximum matches shown on the page (default: 100)."},
                     "context": {"type": "integer", "description": "Nearby lines before and after each match, as space allows (view=lines only, default: 0)."}

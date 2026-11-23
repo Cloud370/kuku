@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt::Write;
 use std::io;
 use std::path::Path;
 
@@ -150,6 +151,7 @@ fn edit_file_with_evidence(
         Err(error) => return error.result(&resolved.relative),
     };
     let content_hash_after = content_hash(edited.as_bytes());
+    let content_changed = current_hash != content_hash_after;
     let mut fields = serde_json::json!({
         "replacement_count": replacement_count,
         "change": change,
@@ -163,7 +165,7 @@ fn edit_file_with_evidence(
         resolved.relative,
         plural(replacement_count)
     );
-    publication.result(
+    let mut result = publication.result(
         FileMutationFacts {
             kind: FileMutationKind::FileEdit,
             path: resolved.relative,
@@ -176,7 +178,36 @@ fn edit_file_with_evidence(
         },
         summary,
         fields,
-    )
+    );
+    if result.status == "ok" && content_changed {
+        result.model_content.push_str(". File change committed.");
+        if let Some(change) = result
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("change"))
+        {
+            append_change_preview(&mut result.model_content, change);
+        }
+    } else if result.status == "ok" {
+        result.model_content.push_str(". File contents unchanged.");
+    }
+    result
+}
+
+fn append_change_preview(receipt: &mut String, change: &Value) {
+    if let Some(line) = change["first_changed_line"].as_u64() {
+        let _ = write!(receipt, "\nFirst changed line: {line}.");
+    } else if let (Some(preview), Some(line_numbers)) = (
+        change["preview"].as_str(),
+        change["preview_line_numbers"].as_array(),
+    ) {
+        for (line, number) in preview.lines().zip(line_numbers) {
+            let _ = write!(receipt, "\n{number}: {line}");
+        }
+        if change["preview_truncated"] == true {
+            receipt.push_str("\nChange preview truncated.");
+        }
+    }
 }
 
 type Replacement<'a> = (usize, usize, &'a str);

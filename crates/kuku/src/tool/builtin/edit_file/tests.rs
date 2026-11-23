@@ -146,6 +146,10 @@ fn edit_file_replaces_unique_text_or_all_matches() {
         std::slice::from_ref(&snapshot),
     );
     assert_eq!(unique.status, "ok");
+    assert_eq!(
+        unique.model_content,
+        "edited README.md, 1 replacement. File change committed.\n2: -beta\n2: +gamma"
+    );
     assert_eq!(unique.structured.as_ref().unwrap()["replacement_count"], 1);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("README.md")).unwrap(),

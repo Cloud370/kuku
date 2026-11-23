@@ -184,7 +184,7 @@ fn method_result(operation: ScriptOperation) -> &'static str {
     match operation {
         Op::FindFiles => "find_files({path?,pattern?,max_depth?}) returns result.entries, entry_count and scan_complete. ",
         Op::ReadFile => "read_file({path,offset?,limit?}) returns result.raw_text, content_hash, start_byte, end_byte and is_full_file_snapshot. ",
-        Op::SearchText => "search_text({pattern,path?,include?,view?,offset?,limit?,context?}) returns result.matches, scan_complete, has_more and next_offset. If scan_complete is false, matches cover only the searched portion. ",
+        Op::SearchText => "search_text({pattern,path?,include?,view?,offset?,limit?,context?}) returns result.matches, scan_complete, has_more and next_offset. Default view is lines with path, line_number and an excerpt. If scan_complete is false, matches cover only the searched portion and unchecked_file may name one skipped file. ",
         Op::EditFile => "edit_file({path,old_text,new_text,replace_all?,expected_version?,brief?}) returns result.replacement_count and content_hash_after. ",
         Op::WriteFile => "write_file({path,content,expected_version?,brief?}) returns result.content_hash_after and bytes_written. ",
         Op::StatFile => "stat_file({path,version?}) returns result.exists and entry_kind. Set version:true for a regular file's result.content_hash. ",

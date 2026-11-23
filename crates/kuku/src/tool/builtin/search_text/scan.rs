@@ -9,7 +9,7 @@ use crate::tool::builtin::common::{
 };
 
 pub(super) const SCAN_BYTES: IoLimit = IoLimit("search input byte budget exhausted");
-const LINE_BYTES: IoLimit = IoLimit("a line exceeds the search buffer budget");
+pub(super) const LINE_BYTES: IoLimit = IoLimit("a line exceeds the search buffer budget");
 
 #[derive(Clone)]
 pub(super) struct FileSearch {
@@ -22,6 +22,10 @@ pub(super) struct FileSearch {
 }
 
 impl FileSearch {
+    pub(super) fn regex(&self) -> &Regex {
+        &self.regex
+    }
+
     pub(super) fn new(
         pattern: &str,
         line_bytes: usize,

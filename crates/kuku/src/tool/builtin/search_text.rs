@@ -23,7 +23,7 @@ mod workspace_scan;
 
 use preview::ContextPreview;
 use scan::FileSearch;
-use workspace_scan::{ScanStats, WorkspaceScan};
+use workspace_scan::{ScanStats, UncheckedFile, WorkspaceScan};
 
 const SEARCH_MATCH_BYTES: usize = 80_000;
 const PAGE_NOTICE_BYTES: usize = 320;
@@ -88,21 +88,27 @@ impl SearchPage {
         }
     }
 
-    fn matched(&mut self, path: &str, line_number: usize, source: &str) -> bool {
+    fn matched(
+        &mut self,
+        path: &str,
+        line_number: usize,
+        source: &str,
+        regex: &regex::Regex,
+    ) -> bool {
         self.progress.total += 1;
         if !self.progress.full
             && self.progress.total > self.offset
             && self.matches.len() < self.limit
         {
-            self.add_match(path, line_number, source);
+            self.add_match(path, line_number, source, regex);
         }
         true
     }
 
-    fn add_match(&mut self, path: &str, line_number: usize, source: &str) {
+    fn add_match(&mut self, path: &str, line_number: usize, source: &str, regex: &regex::Regex) {
         let prefix_bytes = self.row_prefix_bytes(path, line_number);
         let line = (self.view == SearchView::Lines)
-            .then(|| trim_search_line(source, self.body_budget.saturating_sub(prefix_bytes)));
+            .then(|| match_excerpt(source, self.body_budget.saturating_sub(prefix_bytes), regex));
         let line_truncated = line.as_deref().is_some_and(|line| line != source);
         self.push_match(
             SearchMatch {
@@ -177,7 +183,7 @@ pub(crate) fn search_text(
     };
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let include = args.get("include").and_then(Value::as_str);
-    let view = args.get("view").and_then(Value::as_str).unwrap_or("files");
+    let view = args.get("view").and_then(Value::as_str).unwrap_or("lines");
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let limit = match optional_positive_usize(args, "limit") {
         Ok(limit) => limit.unwrap_or(100),
@@ -259,6 +265,7 @@ pub(crate) fn search_text(
         skipped: skipped_file_count,
         unverified: unverified_file_count,
         limit: scan_limit,
+        unchecked,
     } = match scan.run(search, &files, &mut page, &mut preview, context, limits) {
         Ok(stats) => stats,
         Err(error) => return file_read_error(Path::new(path), error),
@@ -299,17 +306,18 @@ pub(crate) fn search_text(
         );
     }
     if !scan_complete {
-        let reason = budget_reason
-            .as_deref()
-            .unwrap_or("some files or directory entries could not be verified");
-        let notice = format!(
-            "Search incomplete ({reason}). {total_match_count} matches in the part searched. Search a smaller folder with path, or restrict file types with include."
+        let notice = incomplete_notice(
+            total_match_count,
+            budget_reason.as_deref(),
+            unchecked.as_ref(),
         );
         model_content = if model_content.is_empty() {
             notice
         } else {
             format!("{notice}\n{model_content}")
         };
+    } else if total_match_count == 0 {
+        model_content = "No matches in the searched files.".into();
     }
     let file_count = sliced
         .chunk_by(|left, right| left.path == right.path)
@@ -360,6 +368,7 @@ pub(crate) fn search_text(
         "context_truncated": context_truncated,
         "scan_complete": scan_complete,
         "scan_limit": budget_reason,
+        "unchecked_file": unchecked,
         "matches": sliced,
     });
 
@@ -368,6 +377,28 @@ pub(crate) fn search_text(
     } else {
         ToolResultEnvelope::ok(summary, model_content, structured)
     }
+}
+
+fn incomplete_notice(
+    matches: usize,
+    limit: Option<&str>,
+    unchecked: Option<&UncheckedFile>,
+) -> String {
+    if let Some(file) = unchecked {
+        let mut path = format!("{:?}", file.path);
+        if path.len() > 88 {
+            path.truncate(path.floor_char_boundary(84));
+            path.push_str("…\"");
+        }
+        return format!(
+            "Search incomplete. {matches} matches in the part searched. Unchecked file example: {path} ({}). Inspect this file if you need the missing evidence.",
+            file.reason,
+        );
+    }
+    let reason = limit.unwrap_or("some files or directory entries could not be verified");
+    format!(
+        "Search incomplete ({reason}). {matches} matches in the part searched. Search a smaller folder with path, or restrict file types with include."
+    )
 }
 
 struct SearchFiles<'a> {
@@ -504,6 +535,23 @@ fn line_row_bytes(path: &str, line_number: usize) -> usize {
     path.len() + line_number.ilog10() as usize + 5
 }
 
+fn match_excerpt(line: &str, max_bytes: usize, regex: &regex::Regex) -> String {
+    let preview = trim_search_line(line, max_bytes);
+    if preview == line || max_bytes <= 3 {
+        return preview;
+    }
+    if let Some(hit) = regex.find(line) {
+        if hit.end() > preview.len().saturating_sub(3) {
+            let before_hit = (max_bytes / 4).min(MAX_SEARCH_LINE_CHARS / 4);
+            let start = line.floor_char_boundary(hit.start().saturating_sub(before_hit));
+            if start > 0 {
+                return format!("...{}", trim_search_line(&line[start..], max_bytes - 3));
+            }
+        }
+    }
+    preview
+}
+
 fn trim_search_line(line: &str, max_bytes: usize) -> String {
     let char_end = line
         .char_indices()
@@ -567,7 +615,7 @@ mod tests {
         assert_eq!(facts["total_match_count"], 1);
         assert_eq!(facts["skipped_file_count"], 1);
         assert_eq!(facts["scan_complete"], true);
-        assert_eq!(result.model_content, "good.txt");
+        assert_eq!(result.model_content, "good.txt:1: needle");
     }
 
     #[test]
@@ -593,9 +641,10 @@ mod tests {
         assert!(result.truncated);
         assert!(result.summary.starts_with("Incomplete search"));
         assert!(result.model_content.starts_with("Search incomplete"));
-        assert!(result
-            .model_content
-            .contains("Search a smaller folder with path"));
+        assert!(result.model_content.contains(
+            "Unchecked file example: \"large.txt\" (a line exceeds the search buffer budget)"
+        ));
+        assert_eq!(facts["unchecked_file"]["path"], "large.txt");
         assert_eq!(facts["next_offset"], Value::Null);
     }
 
@@ -620,6 +669,10 @@ mod tests {
         let facts = result.structured.unwrap();
         assert_eq!(facts["scan_complete"], false);
         assert_eq!(facts["next_offset"], Value::Null);
+        assert_eq!(facts["unchecked_file"], Value::Null);
+        let complete = search_text(&serde_json::json!({"pattern":"needle"}), dir.path());
+        assert_eq!(complete.model_content, "No matches in the searched files.");
+        assert_eq!(complete.structured.unwrap()["scan_complete"], true);
     }
 
     #[test]
@@ -633,7 +686,10 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
-        let files = search_text(&serde_json::json!({"pattern": "TODO"}), dir.path());
+        let files = search_text(
+            &serde_json::json!({"pattern": "TODO", "view": "files"}),
+            dir.path(),
+        );
         assert_eq!(files.status, "ok");
         assert_eq!(files.model_content, "README.md\ndocs/tools.md");
         assert_eq!(files.structured.as_ref().unwrap()["match_count"], 3);
@@ -676,7 +732,20 @@ mod tests {
             dir.path(),
         );
         assert_eq!(filtered.status, "ok");
-        assert_eq!(filtered.model_content, "docs/tools.md");
+        assert_eq!(filtered.model_content, "docs/tools.md:1: TODO docs");
+    }
+
+    #[test]
+    fn default_search_excerpt_includes_a_match_late_in_a_long_line() {
+        let dir = workspace();
+        let source = format!("{}needle{}", "词".repeat(800), "字".repeat(800));
+        std::fs::write(dir.path().join("README.md"), source).unwrap();
+
+        let result = search_text(&serde_json::json!({"pattern": "needle"}), dir.path());
+        assert!(result.model_content.starts_with("README.md:1: ..."));
+        assert!(result.model_content.contains("needle"));
+        let facts = result.structured.unwrap();
+        assert_eq!(facts["matches"][0]["line_truncated"], true);
     }
 
     #[test]
