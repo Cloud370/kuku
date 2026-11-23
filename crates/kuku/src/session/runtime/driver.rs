@@ -366,12 +366,7 @@ impl Session {
         let mut query = crate::query(text)
             .session(&self.inner.id)
             .conversation(address)
-            .workspace(
-                config
-                    .workspace
-                    .as_ref()
-                    .unwrap_or(&self.inner.options.workspace),
-            )
+            .workspace(self.workspace_for(&config))
             .kuku_home(&self.inner.options.data_dir)
             .config(self.inner.options.model_config().into_owned());
         query.connection = config.connection.clone();
@@ -408,10 +403,7 @@ impl Session {
         if let Some(name) = &config.bootstrap_skill {
             let registry = crate::skill::build_registry_snapshot_for_host(
                 &self.inner.options.data_dir,
-                config
-                    .workspace
-                    .as_ref()
-                    .unwrap_or(&self.inner.options.workspace),
+                self.workspace_for(&config),
                 &self.inner.options.config,
             )?;
             let definition = registry.get(name).ok_or_else(|| {
