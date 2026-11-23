@@ -3,6 +3,9 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 
 use serde::Serialize;
+use serde_json::json;
+
+use crate::tool::ToolDefinition;
 
 use super::{
     decode_header, invalid_output, read_frame_header, CaptureMetadata, OutputStream,
@@ -13,6 +16,29 @@ pub(crate) const DEFAULT_MATCHES: usize = 32;
 pub(crate) const MAX_MATCHES: usize = 128;
 pub(crate) const MAX_LITERAL_BYTES: usize = MAX_SEARCH_BYTES;
 pub(crate) const MAX_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+
+pub(crate) fn definition(read: &ToolDefinition) -> ToolDefinition {
+    let properties = &read.input_schema["properties"];
+    ToolDefinition {
+        name: "search_output".into(),
+        description: "Find literal text in retained output by ID or name. Returns byte ranges you can read separately. Continue at next_offset when has_more is true, even on an empty page. A running command can add more output later.".into(),
+        input_schema: json!({
+            "type":"object",
+            "properties":{
+                "id":properties["id"],
+                "name":properties["name"],
+                "text":{"type":"string","minLength":1,"maxLength":MAX_LITERAL_BYTES},
+                "stream":{"type":"string","enum":["stdout","stderr"]},
+                "offset":properties["offset"],
+                "limit":{"type":"integer","minimum":1,"maximum":MAX_MATCHES,"default":DEFAULT_MATCHES}
+            },
+            "required":["text"],
+            "oneOf":read.input_schema["oneOf"],
+            "additionalProperties":false
+        }),
+        ..read.clone()
+    }
+}
 
 pub(crate) struct OutputSearch<'a> {
     pub(crate) text: &'a str,

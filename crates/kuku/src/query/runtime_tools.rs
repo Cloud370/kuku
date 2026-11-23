@@ -74,10 +74,14 @@ pub(super) async fn advance(
             request,
         })));
     }
+    let mut tool = schema(&definition);
+    if tool.name == "search_output" {
+        tool.name = "read_output".into();
+    }
     let candidate = permission_candidate(
         &pending.kuku_home,
         &pending.workspace,
-        &queued.tool_call.name,
+        &tool.name,
         &queued.tool_call.args,
     );
     let workspace = if queued.tool_call.name == "run_command" {
@@ -92,7 +96,7 @@ pub(super) async fn advance(
         agent: pending.conversation.as_str().into(),
         source: pending.query.input_source.clone(),
         tool_call_id: queued.tool_call.id.clone(),
-        tool: schema(&definition),
+        tool,
         args: queued.tool_call.args.clone(),
         workspace,
     };
@@ -423,6 +427,7 @@ pub(super) fn is_inline(name: &str) -> bool {
             | "list_agents"
             | "ask_user"
             | "read_output"
+            | "search_output"
             | "save_value"
             | "list_values"
             | "list_jobs"
@@ -499,10 +504,12 @@ pub(crate) fn supported(
 }
 
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
+    let read_output = output::definition();
     vec![
         crate::tool::run_js::definition(),
         crate::tool::builtin::view_image_definition(),
-        output::definition(),
+        crate::tool::builtin::run_command::output::search::definition(&read_output),
+        read_output,
         values::save_definition(),
         values::list_definition(),
         jobs::list_definition(),
@@ -546,20 +553,8 @@ pub(super) async fn execute(
         call.id
     );
     let value = match call.name.as_str() {
-        "read_output" => {
-            let permits = session.workspace_execution_host().operations();
-            let permit = permits
-                .acquire_owned()
-                .await
-                .map_err(|_| Error::InvalidArgument("workspace capacity closed".into()))?;
-            let agent = agent.to_owned();
-            let args = call.args.clone();
-            return tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                output::execute(&session, &agent, &args)
-            })
-            .await
-            .map_err(|err| Error::InvalidEventStream(err.to_string()))?;
+        "read_output" | "search_output" => {
+            return output::execute_tool(session, agent, call).await;
         }
         "save_value" => return values::save(&session, agent, &call.args).await,
         "list_values" => return values::list(&session, agent, &call.args),
@@ -826,6 +821,12 @@ async fn prepare(
     let turn = pending.turn;
     match queued.tool_call.name.as_str() {
         "read_output" => output::prepare(
+            &runtime_session(pending)?,
+            agent,
+            turn,
+            &mut queued.tool_call.args,
+        )?,
+        "search_output" => output::prepare_search(
             &runtime_session(pending)?,
             agent,
             turn,

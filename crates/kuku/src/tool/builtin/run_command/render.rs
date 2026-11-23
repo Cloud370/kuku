@@ -458,6 +458,8 @@ fn output_shape(prefix: &str, complete: bool) -> (String, Option<LineFormat>) {
             Ok(Value::Array(items)) => return (format!("JSON array, {} items", items.len()), None),
             _ => {}
         }
+    } else if let Some(shape) = json_prefix_shape(prefix) {
+        return (shape.into(), None);
     }
     let mut lines = prefix
         .split_inclusive('\n')
@@ -499,6 +501,34 @@ fn output_shape(prefix: &str, complete: bool) -> (String, Option<LineFormat>) {
         format!("multiline text, first two nonblank lines {samples}"),
         None,
     )
+}
+
+fn json_prefix_shape(prefix: &str) -> Option<&'static str> {
+    let prefix = prefix.trim_start();
+    let shape = if let Some(fields) = prefix.strip_prefix('{') {
+        let mut key = serde_json::Deserializer::from_str(fields).into_iter::<String>();
+        key.next()?.ok()?;
+        fields[key.byte_offset()..]
+            .trim_start()
+            .starts_with(':')
+            .then_some("likely JSON object (bounded prefix)")?
+    } else {
+        let items = prefix.strip_prefix('[')?.trim_start();
+        if items.len() < 2
+            || !(items.starts_with([
+                '{', '[', '"', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+            ]) || ["true", "false", "null"]
+                .iter()
+                .any(|token| items.starts_with(token)))
+        {
+            return None;
+        }
+        "likely JSON array (bounded prefix)"
+    };
+    serde_json::from_str::<serde::de::IgnoredAny>(prefix)
+        .err()
+        .filter(serde_json::Error::is_eof)
+        .map(|_| shape)
 }
 
 fn delimited_sample(lines: [&str; 3]) -> Option<(char, &'static str, usize)> {
@@ -739,6 +769,30 @@ fn truncate_utf8(content: &mut String, limit: usize) {
 mod tests {
     use super::super::output::{OutputLimits, OutputWriter};
     use super::{output_shape, read_output, stream_shape, LineFormat, OutputRead, OutputStream};
+
+    #[test]
+    fn bounded_json_shape_requires_a_plausible_document_prefix() {
+        for (prefix, expected) in [
+            (
+                r#"{"meta":{"total":800},"items":[{"payload":"#,
+                "likely JSON object (bounded prefix)",
+            ),
+            (r#"[{"id":1},{"id":2"#, "likely JSON array (bounded prefix)"),
+            ("{build started", "text"),
+            ("[INFO] first line", "text"),
+            ("{\"log message:", "text"),
+        ] {
+            assert_eq!(
+                output_shape(prefix, false),
+                (expected.into(), None),
+                "{prefix}"
+            );
+        }
+        assert_eq!(
+            output_shape("{\"id\":1}\n{\"id\":2}\na partial line", false).1,
+            Some(LineFormat::JsonObject)
+        );
+    }
 
     #[tokio::test]
     async fn output_shape_rejoins_streams_before_decoding_and_sampling() {

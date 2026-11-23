@@ -70,7 +70,7 @@ fn query_session_rejects_non_canonical_kind_aliases() {
     let result = query_session(&json!({"kind": "MessageUser"}), &path);
 
     assert_eq!(result.status, "ok");
-    assert_eq!(result.model_content, "[\n\n]");
+    assert_eq!(result.structured.unwrap()["events"], json!([]));
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn query_session_empty_events() {
     let path = dir.path().join("events.jsonl");
     let result = query_session(&json!({}), &path);
     assert_eq!(result.status, "ok");
-    assert_eq!(result.model_content, "[]");
+    assert_eq!(result.structured.unwrap()["events"], json!([]));
 }
 
 #[test]
@@ -188,7 +188,10 @@ fn query_session_truncates_long_content() {
     let path = write_events(dir.path(), &[message_user(1, &long_text)]);
     let result = query_session(&json!({}), &path);
     assert_eq!(result.status, "ok");
-    assert!(result.model_content.contains("...(truncated)"));
+    let parsed: Value = serde_json::from_str(&result.model_content).unwrap();
+    assert_eq!(parsed["events"][0]["abbreviated"], true);
+    assert_eq!(parsed["events"][0]["kind"], "message.user");
+    assert_eq!(parsed["events"][0]["id"], 1);
     let full = "x".repeat(1000);
     assert!(!result.model_content.contains(&full));
 }
@@ -204,12 +207,49 @@ fn query_session_output_cap_drops_earliest_events() {
     let path = write_events(dir.path(), &payloads);
     let result = query_session(&json!({}), &path);
     assert_eq!(result.status, "ok");
-    assert!(
-        result.model_content.len() < MAX_RESULT_CHARS + 2000,
-        "output too large: {} chars",
-        result.model_content.len()
-    );
+    assert!(result.model_content.len() <= MAX_RESULT_CHARS);
+    let parsed: Value = serde_json::from_str(&result.model_content).unwrap();
+    let events = parsed["events"].as_array().unwrap();
+    assert_eq!(parsed["omitted_events"], 20 - events.len());
+    assert!(events.first().unwrap()["id"].as_u64().unwrap() > 1);
+    assert_eq!(events.last().unwrap()["id"], 20);
     assert!(result.truncated);
+}
+
+#[test]
+fn nested_event_and_incomplete_scan_keep_valid_json_and_identifiers() {
+    let dir = tempdir().unwrap();
+    let path = write_events(
+        dir.path(),
+        &[
+            message_user(1, "older input"),
+            EventPayload::Unknown(json!({
+                "kind": "runtime.tool_prepared",
+                "turn": 2,
+                "tool_call_id": "tool_2",
+                "definition": {"schema": "文".repeat(1000)}
+            })),
+        ],
+    );
+    let result = super::query_session(
+        &json!({}),
+        &path,
+        WorkspaceIoLimits {
+            scan_entries: 1,
+            ..Default::default()
+        },
+        &|| false,
+    );
+    let parsed: Value = serde_json::from_str(&result.model_content).unwrap();
+    assert_eq!(
+        parsed["events"],
+        json!([{
+            "id": 2, "kind": "runtime.tool_prepared", "turn": 2, "tool_call_id": "tool_2",
+            "abbreviated": true,
+        }])
+    );
+    assert_eq!(parsed["scan_complete"], false);
+    assert!(parsed["scan_limit"].is_string());
 }
 
 #[test]

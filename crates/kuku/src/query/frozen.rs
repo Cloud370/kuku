@@ -405,7 +405,10 @@ fn adapt_new_segment_tools(
     // object. Keep the properties flat; the tool handlers still enforce exactly
     // one selector before accessing or creating any retained output.
     for tool in tools {
-        if matches!(tool.name.as_str(), "read_output" | "save_value") {
+        if matches!(
+            tool.name.as_str(),
+            "read_output" | "search_output" | "save_value"
+        ) {
             if let Some(schema) = tool.input_schema.as_object_mut() {
                 schema.remove("oneOf");
             }
@@ -776,7 +779,10 @@ mod snapshot_tests {
         adapt_new_segment_tools(&route, &mut declarations);
         for (before, after) in frozen.tools.iter().zip(&declarations) {
             assert_eq!(before.name, after.name);
-            if matches!(before.name.as_str(), "read_output" | "save_value") {
+            if matches!(
+                before.name.as_str(),
+                "read_output" | "search_output" | "save_value"
+            ) {
                 let mut expected = before.input_schema.clone();
                 assert!(expected.as_object_mut().unwrap().remove("oneOf").is_some());
                 assert_eq!(expected, after.input_schema);

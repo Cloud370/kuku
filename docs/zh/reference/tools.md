@@ -11,6 +11,7 @@
 | `view_image` | `path` | 无 | `read` |
 | `stat_file` | `path` | `version` | `read` |
 | `read_output` | `id` 或 `name` | `offset`, `limit`, `search` | `read` |
+| `search_output` | `text` and either `id` or `name` | `stream`, `offset`, `limit` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
@@ -148,7 +149,7 @@ return {exit_code, duration_ms, entries, output_ref};
 
 `await tools.output_text({id, stream?})` 从一个保留流读取最多 1 MiB 的完整无损文本。它接受 `name` 代替 `id`，默认读取 `stdout`。下载正文和命名值也保存在这个流中。它与迭代器使用相同的 `read_output` 授权。处理 JSON 响应时，可用 `JSON.parse(await tools.output_text({id}))` 来解析正文，再返回模型下一步所需的字段。
 
-`await tools.search_output({id, text, stream?, offset?, limit?})` 在保留输出中匹配 UTF-8 原始字节。可以用 `name` 代替 `id`，并沿用 `read_output` 授权。每次请求在 Rust 中扫描最多 8 MiB 的新保留字节，默认最多返回 32 条匹配，上限为 128 条。先检查 `status` 再使用 `result`。只要 `result.has_more` 为真，就传入 `result.output_id` 和 `result.next_offset` 续查，空页也一样。
+可直接调用 `search_output({id, text, stream?, offset?, limit?})`，也可在 `run_js` 中使用 `await tools.search_output(...)`。它在保留输出中匹配 UTF-8 原始字节。可以用 `name` 代替 `id`，并沿用 `read_output` 授权。每次请求在 Rust 中扫描最多 8 MiB 的新保留字节，默认最多返回 32 条匹配，上限为 128 条。直调返回 JSON 搜索结果。在 `run_js` 中先检查 `status` 再使用 `result`。只要 `has_more` 为真，就传入返回的 `output_id` 和 `next_offset` 续查，空页也一样。用结果中的偏移量调用 `read_output({id, offset, limit})` 即可读回命中内容。
 
 匹配按结束位置排列。每条匹配包含流标识 `stream`、起始偏移 `offset` 和不包含末尾的 `end_offset`，偏移采用合流字节坐标。同一流的匹配可以跨帧，回读交错范围时应按 `stream` 筛选。`capture_complete` 描述原始捕获是否完整，扫描是否还有下一页由 `has_more` 表示。
 
@@ -217,7 +218,7 @@ return {exit_code, duration_ms, entries, output_ref};
 - 列目录和文本搜索在额度用尽而提前停止时返回 `scan_complete: false`。文本搜索遇到无法读取或校验的候选文件时，也标记搜索未完成。此时计数只覆盖已验证部分，结果开头会提示缩小路径或限制文件类型。文本搜索跳过无效 UTF-8 文件。编辑超出输入或替换额度时，在发布修改前返回 `reason_code: resource_limit`。详见 [SDK 限额](sdk.md#限额与用量)。
 - `fetch_url` 下载最大 50 MiB 的 HTTP(S) 响应正文。即使服务器返回错误响应，结果也会包含 HTTP 状态码。在 Session 内，完整正文必须能存入可用的输出配额。下载完成后，发起请求的 Agent 可将 `output_ref.id` 传给 `read_output` 读取正文。取消下载会丢弃已接收的部分。独立查询返回临时文件路径。工具会拒绝带内嵌密码的 URL。
 - 网页转换对下载的 HTML、解析的标记数量和返回的摘要设有额度。响应超出转换额度时，可以用 `fetch_url` 保留原始响应，再通过 `read_output` 读取。
-- `query_session` 会过滤 Session 账本，默认排除 rolled-back 事件，并截断单条事件内容。
+- `query_session` 返回含 `events`、`omitted_events`、`scan_complete` 和 `scan_limit` 的 JSON。事件按 ID 升序排列。省略内容的事件会标记 `abbreviated: true`，保留 ID、类型和可用的 Turn 与工具调用标识。达到响应上限时保留最新命中。
 - `edit_file` 可直接替换已知的 `old_text`，只要它在当前文件中仅出现一次。文件其他部分的修改会保留。若原文出现多次，工具可接受在当前版本已观察范围内的唯一匹配。多个位置都符合时，提供更多相邻原文来定位。`replace_all=true` 需要掌握该版本的整文件内容。只有在匹配 CRLF 文件确有需要时，LF 输入才会映射为 CRLF，并保持替换文本的换行风格。写入时文件哈希仍须一致。修改确认提交后，结果给出有长度上限的变更预览，或在无法生成预览时给出首个变更行号。
 - `write_file` 创建文件时会一并创建工作区内缺失的父目录。它可以覆盖 Agent 在有效历史中完整读取过的文件版本，或由它自身写入完整内容且已确认成功的版本。当前路径和哈希都必须与证据一致。局部编辑不足以确认变更后的整文件内容。
 - `remove_file` 在 `expected_version` 与当前哈希一致时移除普通文件。省略该参数时，需要同一版本的整文件读取。移除二进制文件可用 `stat_file({path, version: true})` 获取哈希，再作为 `expected_version` 传入。末级路径为符号链接时会拒绝该请求。
