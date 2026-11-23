@@ -120,7 +120,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 
 ### Status and usage
 
-The default bottom status bar shows the active model and resolved thinking level (e.g. `gemini-4-neon · High`, with `Default` for provider-chosen), connection notices, Agent, workspace, context usage, cache hit rate, and average TPS. Pending model/thinking changes show under **Next model request**.
+The default bottom status bar shows the active model and resolved thinking level (e.g. `gemini-4-neon · High`, with `Default` for provider-chosen), connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending model/thinking changes show under **Next model request**.
 
 Above the composer, kuku displays the recipient (`To <agent>`), input delivery state (`Draft`, `Awaiting receipt`, `Input queued`, `Input accepted`), live elapsed Turn timer, and Agent execution state:
 
@@ -136,6 +136,7 @@ Customize fields interactively with `/statusline` (writes `tui.toml`) or per-lau
 | `in`, `out` | Cumulative input (including cache) and output tokens across the Agent's requests. `≥` means only some requests reported usage. |
 | `Cache hit …%` | Cumulative cache-read tokens divided by cumulative input tokens across requests reporting both. `0%` is measured zero; `—` means no positive measured input yet. |
 | `TPS` | Total output tokens divided by total request duration across completed requests with output and valid timing (includes time-to-first-token; excludes tool execution and retry backoff). |
+| Request cost | Session request cost in USD. `~` marks a total that includes estimates. `≥` marks a lower bound. |
 
 ## `kuku run`
 

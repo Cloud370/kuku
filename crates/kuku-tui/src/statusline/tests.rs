@@ -68,6 +68,12 @@ fn measured_usage() -> UsageTotals {
         "unreported_requests": 0,
         "input_reported_requests": 3,
         "output_reported_requests": 3,
+        "costs": {
+            "reported_nanodollars": 10_000_000,
+            "estimated_nanodollars": 8_000_000,
+            "reported_requests": 1,
+            "estimated_requests": 2,
+        },
         "cache_measured_input_tokens": 129_000_000,
         "cache_measured_read_tokens": 96_750_000,
         "measured_output_tokens": 920,
@@ -307,7 +313,7 @@ fn cost_is_a_compact_amount_with_an_honest_precision_marker() {
 }
 
 #[test]
-fn default_status_line_shows_context_cache_tps_and_workspace() {
+fn default_status_line_shows_workspace_usage_and_cost() {
     let workspace = PathBuf::from("/workspace")
         .join("archived-projects".repeat(12))
         .join("work-right");
@@ -323,11 +329,14 @@ fn default_status_line_shows_context_cache_tps_and_workspace() {
         "Context 89K/100K (89%)",
         "Cache hit 75%",
         "18.4 TPS",
+        "129M in",
+        "210K out",
+        "~$0.018",
     ] {
         assert!(footer.contains(label), "missing {label:?} in {footer}");
     }
     assert!(footer.starts_with("Model pending  Agent main"));
-    for detail in ["Running", "http://", "129M in", "210K out"] {
+    for detail in ["Running", "http://"] {
         assert!(!footer.contains(detail), "{footer}");
     }
     assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
@@ -369,14 +378,14 @@ fn wide_default_and_custom_status_lines_anchor_usage_and_shorten_long_paths() {
     for (layout, measures) in [
         (
             StatusLine::default(),
-            "Context 89K/100K (89%)  Cache hit 75%  18.4 TPS",
+            "Context 89K/100K (89%)  Cache hit 75%  18.4 TPS  129M in  210K out  ~$0.018",
         ),
         (
             StatusLine::parse("workspace,agent,cache,context,tps").unwrap(),
             "Cache hit 75% · Context 89% used · 18.4 TPS",
         ),
     ] {
-        for width in [120, 200] {
+        for width in [140, 200] {
             let first = screen(&mut short, &layout, width, 24);
             let second = screen(&mut long, &layout, width, 24);
             assert!(first[23].contains("/short"));

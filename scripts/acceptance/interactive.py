@@ -227,7 +227,8 @@ def two_workspaces_and_disconnect(client):
         )
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
         assert "main" in compact and "Context" in compact and "Cache hit 0%" in compact, compact
-        assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
+        for direction in ("in", "out"):
+            assert re.search(rf"\d(?:[.\d]*[KMB])? {direction}\b", compact), compact
         verify_restored_tool(reopened, completed.completed_job, tool_history)
         reopened.exit_cleanly()
     client.assert_current_service(original)

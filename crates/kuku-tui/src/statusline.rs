@@ -27,22 +27,18 @@ const MAX_EFFORT_WIDTH: usize = 12;
 const COMPACT_STATUS_WIDTH: usize = 96;
 const PHONE_WIDTH: usize = 60;
 const TWO_ROW_MIN_HEIGHT: u16 = 10;
-const DEFAULT_FIELDS: [Field; 7] = [
+const DEFAULT_FIELDS: [Field; 9] = [
     Field::Model,
-    Field::Connection,
     Field::Agent,
     Field::Workspace,
     Field::Context,
     Field::Cache,
     Field::Throughput,
-];
-const OPTIONAL_FIELDS: [Field; 5] = [
-    Field::Execution,
     Field::InputTokens,
     Field::OutputTokens,
-    Field::Input,
     Field::Cost,
 ];
+const OPTIONAL_FIELDS: [Field; 3] = [Field::Connection, Field::Execution, Field::Input];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct StatusLine {
@@ -112,6 +108,11 @@ impl StatusLine {
                     .map(|segment| (*field, segment))
             })
             .collect();
+        if !custom {
+            if let Some(notice) = connection(app, false) {
+                segments.insert(1, (Field::Connection, notice));
+            }
+        }
         if !self.fields().contains(&Field::Cache) {
             if let Some(warning) = cache_warning(app) {
                 segments.push((Field::Cache, warning));
