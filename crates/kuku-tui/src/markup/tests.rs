@@ -363,6 +363,12 @@ fn emphasis_keeps_the_transcript_background_in_wrapped_quotes() {
         assert!(emphasized.contains("English emphasis"));
         assert!(emphasized.contains("中文强调"));
         assert!(emphasized.contains("more"));
+        if crossterm::style::Colored::ansi_color_disabled_memoized() {
+            assert!(spans
+                .iter()
+                .filter(|span| span.style.fg == Some(MARKDOWN_EMPHASIS))
+                .all(|span| span.style.add_modifier.contains(Modifier::UNDERLINED)));
+        }
         assert!(spans.iter().all(|span| {
             span.style.bg.is_none()
                 && !span

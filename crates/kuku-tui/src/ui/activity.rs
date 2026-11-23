@@ -189,8 +189,12 @@ impl ActivityFrame {
     }
 
     pub(super) fn thinking_line(&self, width: usize) -> Line<'static> {
-        let elapsed = self
-            .phase_elapsed
+        let phase_elapsed = if self.status == ObservedActivity::Agent(Activity::Thinking) {
+            self.phase_elapsed
+        } else {
+            None
+        };
+        let elapsed = phase_elapsed
             .map(|seconds| format_elapsed(Duration::from_secs(seconds)))
             .filter(|elapsed| elapsed.width() + 1 < width);
         let left = elapsed
@@ -240,6 +244,12 @@ fn thinking_preview_yields_space_to_its_right_aligned_timer() {
         assert_eq!(line.spans.last().unwrap().content.as_ref(), "18s");
     }
     assert!(frame.thinking_line(2).width() <= 2);
+    frame.status = ObservedActivity::Agent(Activity::RunningTools);
+    assert!(frame
+        .thinking_line(64)
+        .spans
+        .iter()
+        .all(|span| span.content.as_ref() != "18s"));
 }
 
 pub(super) fn render_heading(

@@ -356,6 +356,9 @@ impl Markdown {
         let mut style = Style::default().add_modifier(self.modifiers);
         if self.emphasis_depth > 0 {
             style = style.fg(MARKDOWN_EMPHASIS);
+            if crossterm::style::Colored::ansi_color_disabled_memoized() {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
         }
         let mut lines = text.split('\n');
         self.push(lines.next().unwrap_or(""), style);
