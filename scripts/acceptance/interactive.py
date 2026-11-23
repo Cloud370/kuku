@@ -418,7 +418,9 @@ def editable_multiline_paste(client):
         texts = [block["text"] for block in message["content"] if block["type"] == "text"]
         assert message["role"] == "user" and prompt in texts, f"The edited paste did not match: {texts!r}"
         call.text("multiline paste verified")
-        phone = terminal.expect("multiline paste verified", also=("Turn 1", "Ctx", "TPS"))["screen"]
+        phone = terminal.expect(
+            "multiline paste verified", also=("Turn 1", "Ctx 0%", "Cache 0%"), rows=24,
+        )["screen"]
         print(phone)
         assert client.session(workspace)
         client.provider.assert_idle(duration=0.25)
