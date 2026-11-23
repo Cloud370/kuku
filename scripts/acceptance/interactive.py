@@ -226,7 +226,7 @@ def two_workspaces_and_disconnect(client):
             f"Restored terminal must show one durable response (count={screen.count(final)})\n{screen}"
         )
         compact = reopened.expect("TPS")["screen"].splitlines()[-1]
-        assert "main" in compact and "Context" in compact and "Cache hit" not in compact, compact
+        assert "main" in compact and "Context" in compact and "Cache hit 0%" in compact, compact
         assert not re.search(r"\d(?:[.\d]*[KMB])? (?:in|out)\b", compact), compact
         verify_restored_tool(reopened, completed.completed_job, tool_history)
         reopened.exit_cleanly()

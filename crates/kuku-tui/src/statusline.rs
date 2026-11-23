@@ -25,19 +25,19 @@ const MAX_EFFORT_WIDTH: usize = 12;
 const COMPACT_STATUS_WIDTH: usize = 96;
 const PHONE_WIDTH: usize = 60;
 const TWO_ROW_MIN_HEIGHT: u16 = 10;
-const DEFAULT_FIELDS: [Field; 6] = [
+const DEFAULT_FIELDS: [Field; 7] = [
     Field::Model,
     Field::Connection,
     Field::Agent,
     Field::Workspace,
     Field::Context,
+    Field::Cache,
     Field::Throughput,
 ];
-const OPTIONAL_FIELDS: [Field; 6] = [
+const OPTIONAL_FIELDS: [Field; 5] = [
     Field::Execution,
     Field::InputTokens,
     Field::OutputTokens,
-    Field::Cache,
     Field::Input,
     Field::Cost,
 ];
@@ -102,9 +102,7 @@ impl StatusLine {
         let mut segments: Vec<_> = self
             .fields()
             .iter()
-            .filter(|field| {
-                custom || usage.is_some() || !matches!(field, Field::Context | Field::Throughput)
-            })
+            .filter(|field| custom || usage.is_some() || !field.is_measurement())
             .filter_map(|field| {
                 field
                     .segment(app, usage, compact, custom, activity)
@@ -145,9 +143,10 @@ impl StatusLine {
         let mut identity = Vec::new();
         let mut measurements = Vec::new();
         for (field, segment) in segments {
-            match field {
-                Field::Context | Field::Throughput => measurements.push(segment),
-                _ => identity.push(segment),
+            if field.is_measurement() {
+                measurements.push(segment);
+            } else {
+                identity.push(segment);
             }
         }
         render_groups(identity, measurements, width)
@@ -255,6 +254,18 @@ impl Field {
         }
     }
 
+    fn is_measurement(self) -> bool {
+        matches!(
+            self,
+            Self::Context
+                | Self::InputTokens
+                | Self::OutputTokens
+                | Self::Cache
+                | Self::Cost
+                | Self::Throughput
+        )
+    }
+
     fn segment(
         self,
         app: &App,
@@ -313,19 +324,7 @@ impl Field {
                 };
                 Segment::model(id, route, effort, slot)
             }
-            Self::Context => Segment::measurement(
-                app.pane()
-                    .current_request_usage()
-                    .and_then(UsageTotals::context_percent),
-                if compact { "Ctx —" } else { "Context —" },
-                |percent| {
-                    if compact {
-                        format!("Ctx {percent:.0}%")
-                    } else {
-                        format!("Context {percent:.0}% used")
-                    }
-                },
-            ),
+            Self::Context => context(app.pane().current_request_usage(), compact, custom),
             Self::InputTokens => tokens(
                 usage.and_then(|usage| usage.input_tokens),
                 usage.is_some_and(UsageTotals::input_tokens_complete),
@@ -337,10 +336,15 @@ impl Field {
                 "out",
             ),
             Self::Cache => cache_warning(app).unwrap_or_else(|| {
+                let (label, missing) = if compact {
+                    ("Cache", "Cache —")
+                } else {
+                    ("Cache hit", "Cache hit —")
+                };
                 Segment::measurement(
                     usage.and_then(UsageTotals::cache_hit_percent),
-                    "Cache hit —",
-                    |percent| format!("Cache hit {percent:.0}%"),
+                    missing,
+                    |percent| format!("{label} {percent:.0}%"),
                 )
             }),
             Self::Cost => {
@@ -373,6 +377,33 @@ impl Field {
         };
         Some(segment)
     }
+}
+
+fn context(usage: Option<&UsageTotals>, compact: bool, custom: bool) -> Segment {
+    let measure = usage.and_then(|usage| {
+        let request = usage.latest_request.as_ref()?;
+        Some((
+            usage.context_percent()?,
+            request.input_tokens?,
+            request.context_window_tokens?,
+        ))
+    });
+    let Some((percent, input, window)) = measure else {
+        return Segment::metric(None, if compact { "Ctx —" } else { "Context —" });
+    };
+    let mut labels = vec![if compact {
+        format!("Ctx {percent:.0}%")
+    } else {
+        format!("Context {percent:.0}% used")
+    }];
+    if !compact && !custom {
+        labels.push(format!(
+            "Context {}/{} ({percent:.0}%)",
+            compact_token_count(input),
+            compact_token_count(u64::from(window)),
+        ));
+    }
+    Segment::labels(labels, USAGE, Priority::Metric)
 }
 
 fn cache_warning(app: &App) -> Option<Segment> {
@@ -568,7 +599,7 @@ fn render_groups(
     usage: Vec<Segment>,
     width: usize,
 ) -> Option<Line<'static>> {
-    let Some(right) = render_segments(usage, width / 3, WIDE_SEPARATOR) else {
+    let Some(right) = render_segments(usage, width / 2, WIDE_SEPARATOR) else {
         return render_segments(identity, width, WIDE_SEPARATOR);
     };
     let left_width = width - right.width();
@@ -619,9 +650,9 @@ fn render_segments(
     Some(Line::from(line))
 }
 
-fn connection(app: &App, show_endpoint: bool) -> Option<Segment> {
+fn connection(app: &App, show_connected: bool) -> Option<Segment> {
     let status = app.service_status();
-    if status == ServiceStatus::Connected && !show_endpoint {
+    if status == ServiceStatus::Connected && !show_connected {
         return None;
     }
     let (color, priority) = match status {
@@ -647,15 +678,9 @@ fn connection(app: &App, show_endpoint: bool) -> Option<Segment> {
             vec![status.label().to_owned()]
         }
     };
-    if show_endpoint {
+    if show_connected {
         let kind = if app.remote { "Remote" } else { "Local" };
-        let location = format!("{} {kind}", status.label());
-        if let Some(endpoint) = &app.endpoint {
-            labels.push(location.clone());
-            labels.push(format!("{location} {}", single_line(endpoint)));
-        } else {
-            labels.push(location);
-        }
+        labels.push(format!("{} {kind}", status.label()));
     }
     Some(Segment::labels(labels, color, priority))
 }

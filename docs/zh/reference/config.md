@@ -169,7 +169,7 @@ custom = "https://example.com/latest.json"
 
 TUI 在本地和远程连接下均从本地客户端数据目录（`--data-dir` → `KUKU_HOME` → `~/.kuku`）读取 `tui.toml`；执行相关配置仍在 `config.toml` 中。
 
-未设置 `tui.toml` 或 `statusline.fields` 时，默认顺序为 `model,connection,agent,workspace,context,tps`。显式列出 `model` 或 `connection` 后，空间允许时会显示路由或服务地址详情；`execution` 为可选字段。
+未设置 `tui.toml` 或 `statusline.fields` 时，默认顺序为 `model,connection,agent,workspace,context,cache,tps`。显式列出 `model` 可在空间允许时显示路由。显式列出 `connection` 也会在连接正常时显示本地或远程连接状态。`execution` 为可选字段。
 
 在 TUI 中运行 `/statusline` 可用 `Space` 开关、`←`/`→` 排序、`R` 预览默认并按 `Enter` 保存到 `tui.toml`（保存默认布局会移除 `statusline.fields`）。
 

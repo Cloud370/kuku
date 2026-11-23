@@ -306,7 +306,7 @@ fn cost_is_a_compact_amount_with_an_honest_precision_marker() {
 }
 
 #[test]
-fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
+fn default_status_line_shows_context_cache_tps_and_workspace() {
     let workspace = PathBuf::from("/workspace")
         .join("archived-projects".repeat(12))
         .join("work-right");
@@ -316,11 +316,17 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     let statusline = StatusLine::default();
     let rows = screen(&mut app, &statusline, 140, 24);
     let footer = rows[23].trim();
-    for label in ["Agent main", "work-right", "Context 89% used", "18.4 TPS"] {
+    for label in [
+        "Agent main",
+        "work-right",
+        "Context 89K/100K (89%)",
+        "Cache hit 75%",
+        "18.4 TPS",
+    ] {
         assert!(footer.contains(label), "missing {label:?} in {footer}");
     }
     assert!(footer.starts_with("Model pending  Agent main"));
-    for detail in ["Running", "http://", "129M in", "210K out", "Cache hit"] {
+    for detail in ["Running", "http://", "129M in", "210K out"] {
         assert!(!footer.contains(detail), "{footer}");
     }
     assert!(!footer.contains(workspace.to_string_lossy().as_ref()));
@@ -328,14 +334,14 @@ fn default_status_line_shows_context_tps_and_workspace_in_one_row() {
     assert!(rows[19].contains("Running"));
     assert!(rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 80, 24);
-    assert!(rows[23].contains("Ctx 89%"));
+    assert!(rows[23].contains("Ctx 89%") && rows[23].contains("Cache 75%"));
     assert!(rows[23].contains("work-right") && rows[21].contains("Local draft"));
     let rows = screen(&mut app, &statusline, 29, 24);
     assert!(rows[19].contains("Running"));
     let rows = screen(&mut app, &statusline, 42, 24);
     assert!(rows[22].contains("Model pending · Agent main"));
     assert!(
-        rows[23].contains("work-right · Ctx 89% · 18.4 TPS"),
+        rows[23].contains("work-right · Ctx 89% · Cache 75%"),
         "{}",
         rows[23]
     );
@@ -360,7 +366,7 @@ fn wide_status_line_keeps_metrics_anchored_while_identity_width_changes() {
     let first = screen(&mut short, &layout, 120, 24);
     long.pane_mut().draft.insert("正在输入");
     let second = screen(&mut long, &layout, 120, 24);
-    let measures = "Context 89% used  18.4 TPS";
+    let measures = "Context 89K/100K (89%)  Cache hit 75%  18.4 TPS";
     assert_ne!(first[23], second[23]);
     let position = |row: &str| row.split_once(measures).map(|(prefix, _)| prefix.width());
     assert_eq!(position(&first[23]), position(&second[23]));
@@ -420,7 +426,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
 }
 
 #[test]
-fn configured_status_line_can_show_full_metrics_and_connection_details() {
+fn configured_status_line_can_show_full_metrics_and_connection_state() {
     let mut app = connected_app();
     load_agent(&mut app, "running", 0, Value::Null, measured_usage());
     let statusline = StatusLine::parse(
@@ -435,6 +441,9 @@ fn configured_status_line_can_show_full_metrics_and_connection_details() {
         "{footer}"
     );
     assert!(rows[21].contains("Enter steer"));
+    let connection = StatusLine::parse("connection").unwrap();
+    let rows = screen(&mut app, &connection, 140, 24);
+    assert_eq!("Connected Local", rows[23].trim());
 }
 
 #[test]

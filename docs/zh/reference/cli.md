@@ -120,7 +120,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 
 ### 状态与用量
 
-底部状态栏默认显示生效模型与思考等级（如 `gemini-4-neon · High`；`Default` 表示由 Provider 自行决定）、连接状态、当前 Agent、工作区、上下文用量与平均 TPS。待生效的模型/思考设置显示在 **Next model request**。
+底部状态栏默认显示生效模型与思考等级（如 `gemini-4-neon · High`，`Default` 表示由 Provider 自行决定）、连接提示、当前 Agent、工作区、上下文用量、缓存命中率与平均 TPS。待生效的模型/思考设置显示在 **Next model request**。
 
 输入区上方显示收件人（`To <agent>`）、输入投递状态（`Draft`、`Awaiting receipt`、`Input queued`、`Input accepted`）、当前 Turn 实时耗时及执行状态：
 
@@ -132,7 +132,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 
 | 字段 | 读数含义 |
 |---|---|
-| `Context …% used` | 最近一次已测请求的输入 token 数除以该次请求的上下文窗口。 |
+| `Context` | 最近一次已测请求的输入 token 数除以该次请求的上下文窗口。默认布局在空间充足时同时显示输入 token 数和窗口上限。 |
 | `in`、`out` | 当前 Agent 历次请求的累计输入（含缓存）与输出 token。`≥` 表示仅部分请求上报了读数。 |
 | `Cache hit …%` | 同时上报两项计数的请求中，累计缓存读取 token 占累计输入 token 的比例。`0%` 为实测零命中，无正输入读数时显示 `—`。 |
 | `TPS` | 已完成且有输出与有效计时的请求总输出 token 除以总请求耗时（含首 token 等待，不含工具执行与重试退避）。 |
