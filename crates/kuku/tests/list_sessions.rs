@@ -180,7 +180,6 @@ fn pruning_logs_does_not_break_session_listing() {
     );
     let events_path = sessions_dir.join("s_keep/events.jsonl");
     let before = EventStore::replay(&events_path).unwrap();
-    assert_eq!(before.len(), 5);
 
     let logs = home.join("logs/runtime");
     std::fs::create_dir_all(&logs).unwrap();
@@ -206,7 +205,7 @@ fn pruning_logs_does_not_break_session_listing() {
     assert_eq!(sessions[0].status, SessionStatus::Done);
     assert!(events_path.exists());
     let replayed = EventStore::replay(&events_path).unwrap();
-    assert_eq!(replayed.len(), 4);
+    assert_eq!(before, replayed);
     assert!(matches!(
         &replayed[0].payload,
         EventPayload::SessionCreated { session_id, .. } if session_id == "s_keep"
