@@ -190,7 +190,7 @@ impl WorkspaceHost {
         execution: Arc<ScriptExecution>,
     ) -> Result<ToolResultEnvelope> {
         if self.has_step_input()? {
-            execution.stop();
+            execution.stop_for_new_input();
             return Ok(ToolResultEnvelope::cancelled(
                 "new input arrived at the workspace action boundary",
             ));
@@ -284,7 +284,7 @@ impl WorkspaceHost {
             &action,
         )?;
         if self.has_step_input()? {
-            execution.stop();
+            execution.stop_for_new_input();
         }
         if execution.is_cancelled() {
             return Ok(ToolResultEnvelope::cancelled(
