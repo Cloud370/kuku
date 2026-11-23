@@ -62,22 +62,25 @@ pub(crate) struct WriteSnapshot {
 }
 
 impl WriteSnapshot {
-    pub(crate) fn restrict_matches(
+    pub(crate) fn visible_matches<'a>(
         &self,
-        content: &str,
-        text: &str,
-        mut offsets: Vec<usize>,
-    ) -> Vec<usize> {
-        if let ReadCoverage::Ranges(spans) = &self.coverage {
-            let ranges = merged_ranges(spans.iter().filter_map(|span| span.bytes(content)));
-            offsets.retain(|offset| {
+        content: &'a str,
+        text: &'a str,
+    ) -> impl Iterator<Item = usize> + 'a {
+        let ranges = match &self.coverage {
+            ReadCoverage::Full => None,
+            ReadCoverage::Ranges(spans) => Some(merged_ranges(
+                spans.iter().filter_map(|span| span.bytes(content)),
+            )),
+        };
+        text_matches(content, text, true).filter(move |offset| {
+            ranges.as_ref().is_none_or(|ranges| {
                 let index = ranges.partition_point(|range| range.end <= *offset);
                 ranges.get(index).is_some_and(|range| {
                     *offset >= range.start && *offset + text.len() <= range.end
                 })
-            });
-        }
-        offsets
+            })
+        })
     }
 }
 
@@ -191,15 +194,7 @@ pub(crate) fn require_version(
     current: Option<&str>,
 ) -> Result<(), ToolResultEnvelope> {
     if let Some(expected) = expected {
-        let matches = current.is_some_and(|current| {
-            current == expected
-                || current.strip_prefix("sha256:").is_some_and(|digest| {
-                    digest.len() == 64
-                        && digest.eq_ignore_ascii_case(
-                            expected.strip_prefix("sha256:").unwrap_or(expected),
-                        )
-                })
-        });
+        let matches = current.is_some_and(|current| version_matches(current, expected));
         if !matches {
             return Err(ToolResultEnvelope::error_with_reason(
                 format!("failed: expected_version does not match {relative}"),
@@ -209,6 +204,14 @@ pub(crate) fn require_version(
         }
     }
     Ok(())
+}
+
+pub(super) fn version_matches(current: &str, expected: &str) -> bool {
+    current == expected
+        || current.strip_prefix("sha256:").is_some_and(|digest| {
+            digest.len() == 64
+                && digest.eq_ignore_ascii_case(expected.strip_prefix("sha256:").unwrap_or(expected))
+        })
 }
 
 pub(crate) fn snapshot_stale_error(relative: &str, event_id: u64) -> ToolResultEnvelope {
@@ -411,7 +414,7 @@ fn model_coverage(
         return None;
     }
     let raw = visible_snapshot_raw_text(structured)?;
-    if required_text.is_some_and(|text| text_match_offsets(raw, text, true).is_empty()) {
+    if required_text.is_some_and(|text| text_matches(raw, text, true).next().is_none()) {
         return None;
     }
     let span = match structured["start_byte"].as_u64() {
@@ -492,37 +495,34 @@ fn merged_ranges(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>
     merged
 }
 
-pub(crate) fn text_match_offsets(content: &str, text: &str, overlapping: bool) -> Vec<usize> {
-    if text.len() > content.len() {
-        return Vec::new();
-    }
-    let valid_offset = |offset: usize| {
-        !text.starts_with('\n') || offset == 0 || content.as_bytes()[offset - 1] != b'\r'
-    };
-    if overlapping && text.len() > 1 {
-        let text = text.as_bytes();
-        let prefixes = matching_prefix_lengths(text);
-        if prefixes[text.len() - 1] != 0 {
-            let mut offsets = Vec::new();
-            let mut matched = 0;
-            for (index, byte) in content.bytes().enumerate() {
-                matched = extend_match(text, &prefixes, matched, byte);
-                if matched == text.len() {
-                    let offset = index + 1 - matched;
-                    if valid_offset(offset) {
-                        offsets.push(offset);
-                    }
-                    matched = prefixes[matched - 1];
-                }
+pub(crate) fn text_matches<'a>(
+    content: &'a str,
+    text: &'a str,
+    overlapping: bool,
+) -> impl Iterator<Item = usize> + 'a {
+    let prefixes = (overlapping && (2..=content.len()).contains(&text.len()))
+        .then(|| matching_prefix_lengths(text.as_bytes()))
+        .filter(|prefixes| prefixes.last() != Some(&0));
+    let mut bytes = content.bytes().enumerate();
+    let mut disjoint = content.match_indices(text);
+    let mut matched = 0;
+    std::iter::from_fn(move || {
+        let Some(prefixes) = &prefixes else {
+            return disjoint.next().map(|(offset, _)| offset);
+        };
+        for (index, byte) in bytes.by_ref() {
+            matched = extend_match(text.as_bytes(), prefixes, matched, byte);
+            if matched == text.len() {
+                let offset = index + 1 - matched;
+                matched = prefixes[matched - 1];
+                return Some(offset);
             }
-            return offsets;
         }
-    }
-    content
-        .match_indices(text)
-        .map(|(offset, _)| offset)
-        .filter(|&offset| valid_offset(offset))
-        .collect()
+        None
+    })
+    .filter(move |&offset| {
+        !text.starts_with('\n') || offset == 0 || content.as_bytes()[offset - 1] != b'\r'
+    })
 }
 
 fn matching_prefix_lengths(text: &[u8]) -> Vec<usize> {

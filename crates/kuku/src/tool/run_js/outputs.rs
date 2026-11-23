@@ -22,9 +22,8 @@ const COMMAND_SIGNATURE: &str = concat!(
 );
 
 const STREAM_SIGNATURE: &str = concat!(
-    "CommandStream.text() returns Promise<string>. Its .json() returns Promise<JSONValue>. Both read up to 1 MiB per stream. ",
-    ".lines() returns AsyncIterable<string> (up to 128 KiB per line). Both pipes work the same way. ",
-    "Readers require complete, decodable output. Small complete output is included within command authorization. ",
+    "stdout and stderr are CommandStream readers. Use await r.stdout.text() for text, await r.stdout.json() for JSON, or for await to read r.stdout.lines(). ",
+    "These readers require complete, decodable output. ",
 );
 
 pub(super) fn search_definition(read: &ToolDefinition) -> ToolDefinition {
@@ -56,7 +55,7 @@ pub(super) fn describe_script_command(definition: &mut ToolDefinition, can_read:
         properties.remove("title");
     }
     let access = if can_read {
-        "Larger reads require host authorization for read_output. For raw or partial bytes, use tools.output_chunks({id:run.output_ref.id}). "
+        "For large or partial output, use tools.output_chunks({id:run.output_ref.id}). "
     } else {
         "Larger captures still return a reference. This Agent has no read_output access. "
     };

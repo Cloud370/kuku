@@ -322,6 +322,8 @@ pub(super) async fn execute_tool_call(
         &pending.config,
         &pending.catalog,
         &pending.events_path,
+        &pending.query.runtime_limits,
+        &crate::WorkspaceExecutionHost::default(),
     )
     .await;
     let mut store = EventStore::open(&pending.events_path)?;

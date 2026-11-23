@@ -7,11 +7,12 @@ use serde_json::Value;
 use crate::event::StoredEvent;
 use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
+use crate::WorkspaceIoLimits;
 
 use super::common::{
     content_hash, expected_version, file_read_error, file_version_with_text, mutation_preview,
     plural, publish_file, require_version, resolve_stat_path, snapshot_stale_error,
-    ExecutorObservation, FileCancellation, WriteEvidence, WriteSnapshotLookup,
+    ExecutorObservation, FileCancellation, IoLimit, WriteEvidence, WriteSnapshotLookup,
 };
 
 use super::file_change;
@@ -26,6 +27,7 @@ pub(crate) fn write_file(
     workspace: &Path,
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
+    limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     write_file_with_evidence(
@@ -35,6 +37,7 @@ pub(crate) fn write_file(
             conversation,
             events: prior_events,
         },
+        limits,
         cancelled,
     )
 }
@@ -43,15 +46,23 @@ pub(crate) fn write_file_for_executor(
     args: &Value,
     workspace: &Path,
     reads: &[ExecutorObservation],
+    limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    write_file_with_evidence(args, workspace, WriteEvidence::Executor(reads), cancelled)
+    write_file_with_evidence(
+        args,
+        workspace,
+        WriteEvidence::Executor(reads),
+        limits,
+        cancelled,
+    )
 }
 
 fn write_file_with_evidence(
     args: &Value,
     workspace: &Path,
     evidence: WriteEvidence<'_>,
+    limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let request = match write_request(args) {
@@ -67,11 +78,16 @@ fn write_file_with_evidence(
         Err(result) => return result,
     };
 
+    if request.content.len() > limits.text_bytes {
+        let error = std::io::Error::other(IoLimit("text exceeds the file output budget"));
+        return file_read_error(Path::new(&resolved.relative), error);
+    }
     let text_limit = file_change::MAX_INPUT_BYTES.checked_sub(request.content.len());
-    let (before, before_text) = match current_version(&resolved.path, cancelled, text_limit) {
-        Ok(before) => before,
-        Err(error) => return file_read_error(Path::new(&resolved.relative), error),
-    };
+    let (before, before_text) =
+        match current_version(&resolved.path, limits.scan_bytes, cancelled, text_limit) {
+            Ok(before) => before,
+            Err(error) => return file_read_error(Path::new(&resolved.relative), error),
+        };
     if let Err(result) = require_version(&resolved.relative, expected, before.as_deref()) {
         return result;
     }
@@ -98,7 +114,13 @@ fn write_file_with_evidence(
     }
 
     let bytes = request.content.as_bytes();
-    let publication = match publish_file(&resolved.path, before.as_deref(), bytes, cancelled) {
+    let publication = match publish_file(
+        &resolved.path,
+        before.as_deref(),
+        bytes,
+        limits.scan_bytes,
+        cancelled,
+    ) {
         Ok(publication) => publication,
         Err(error) => return error.result(&resolved.relative),
     };
@@ -141,11 +163,12 @@ fn write_file_with_evidence(
 
 fn current_version(
     path: &Path,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
     text_limit: Option<usize>,
 ) -> std::io::Result<(Option<String>, Option<String>)> {
     match fs::symlink_metadata(path) {
-        Ok(_) => file_version_with_text(path, cancelled, text_limit)
+        Ok(_) => file_version_with_text(path, scan_bytes, cancelled, text_limit)
             .map(|(hash, text)| (Some(hash), text)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok((None, None)),
         Err(error) => Err(error),
@@ -183,6 +206,7 @@ mod tests {
             workspace,
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
+            crate::WorkspaceIoLimits::default(),
             &|| false,
         )
     }
@@ -360,6 +384,7 @@ mod tests {
                 &serde_json::json!({"path":"README.md","offset":offset,"limit":limit}),
                 dir.path(),
                 80,
+                u64::MAX,
                 &|| false,
             )
             .1
@@ -370,14 +395,26 @@ mod tests {
         let mut reads = vec![first, last];
         let args = serde_json::json!({"path":"README.md","content":"replacement\n"});
 
-        let partial = write_file_for_executor(&args, dir.path(), &reads, &|| false);
+        let partial = write_file_for_executor(
+            &args,
+            dir.path(),
+            &reads,
+            crate::WorkspaceIoLimits::default(),
+            &|| false,
+        );
         assert_eq!(
             "full_snapshot_required",
             partial.structured.unwrap()["reason_code"]
         );
         reads.push(read(2, 1));
 
-        let committed = write_file_for_executor(&args, dir.path(), &reads, &|| false);
+        let committed = write_file_for_executor(
+            &args,
+            dir.path(),
+            &reads,
+            crate::WorkspaceIoLimits::default(),
+            &|| false,
+        );
         assert_eq!("ok", committed.status, "{:?}", committed.structured);
         assert_eq!("replacement\n", std::fs::read_to_string(path).unwrap());
     }
@@ -391,6 +428,7 @@ mod tests {
                 &serde_json::json!({"path":"README.md"}),
                 dir.path(),
                 80,
+                u64::MAX,
                 &|| false,
             )
             .1
@@ -403,7 +441,13 @@ mod tests {
         std::fs::write(&path, "new version\n").unwrap();
         let newer = read();
 
-        let stale = write_file_for_executor(&args, dir.path(), &[first, newer], &|| false);
+        let stale = write_file_for_executor(
+            &args,
+            dir.path(),
+            &[first, newer],
+            crate::WorkspaceIoLimits::default(),
+            &|| false,
+        );
 
         assert_eq!("snapshot_stale", stale.structured.unwrap()["reason_code"]);
         assert_eq!("new version\n", std::fs::read_to_string(path).unwrap());

@@ -51,9 +51,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let existing_events = EventStore::replay(&pending.events_path)?;
     let (handoff_summary, history) =
         rebuild_history_for_provider(&existing_events, &pending.conversation);
-    let project_instructions = load_project_instruction_sources(&pending.workspace)?;
+    let max_bytes = pending.query.runtime_limits.workspace_io.context_file_bytes;
+    let project_instructions = load_project_instruction_sources(&pending.workspace, max_bytes)?;
     let (global_memory, project_memory) =
-        load_memory_sources(&pending.kuku_home, &pending.workspace)?;
+        load_memory_sources(&pending.kuku_home, &pending.workspace, max_bytes)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
     let model_tiers = resolve::usable_model_routes(&pending.config);

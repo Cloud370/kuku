@@ -35,14 +35,15 @@ pub(crate) fn read_file(
     conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
-    preview_bytes: usize,
+    limits: &crate::RuntimeLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     read_file_impl(
         args,
         workspace,
         ReadBy::Model,
-        preview_bytes - PAGE_NOTICE_BYTES,
+        limits.max_preview_bytes - PAGE_NOTICE_BYTES,
+        limits.workspace_io.scan_bytes,
         Some((prior_events, conversation, read_event_id)),
         cancelled,
     )
@@ -53,6 +54,7 @@ pub(crate) fn read_file_for_executor(
     args: &Value,
     workspace: &Path,
     max_bytes: usize,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
     read_file_impl(
@@ -60,6 +62,7 @@ pub(crate) fn read_file_for_executor(
         workspace,
         ReadBy::Executor,
         max_bytes,
+        scan_bytes,
         None,
         cancelled,
     )
@@ -70,6 +73,7 @@ fn read_file_impl(
     workspace: &Path,
     read_by: ReadBy,
     max_bytes: usize,
+    scan_bytes: u64,
     model_history: Option<(&[StoredEvent], &ConversationAddress, u64)>,
     cancelled: &FileCancellation<'_>,
 ) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
@@ -81,7 +85,14 @@ fn read_file_impl(
         Ok(resolved) => resolved,
         Err(result) => return (result, None),
     };
-    let mut view = match scan::scan(&resolved.path, &request, read_by, max_bytes, cancelled) {
+    let mut view = match scan::scan(
+        &resolved.path,
+        &request,
+        read_by,
+        max_bytes,
+        scan_bytes,
+        cancelled,
+    ) {
         Ok(view) => view,
         Err(error) => {
             return (file_read_error(Path::new(&resolved.relative), error), None);
@@ -246,9 +257,16 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
             read_event_id,
-            TEST_PREVIEW_BYTES,
+            &test_limits(),
             &|| false,
         )
+    }
+
+    fn test_limits() -> crate::RuntimeLimits {
+        crate::RuntimeLimits {
+            max_preview_bytes: TEST_PREVIEW_BYTES,
+            ..crate::RuntimeLimits::default()
+        }
     }
 
     #[test]
@@ -520,11 +538,68 @@ mod tests {
 
         let args = serde_json::json!({"path": "sample.txt", "offset": 1, "limit": 1});
         let (local, observation) =
-            read_file_for_executor(&args, dir.path(), content.len(), &|| false);
+            read_file_for_executor(&args, dir.path(), content.len(), u64::MAX, &|| false);
         assert!(!local.truncated);
         let observation = observation.unwrap();
         assert_eq!(0..line.len() + 2, observation.range);
         assert_eq!(format!("{line}\r\n"), local.structured.unwrap()["raw_text"]);
+    }
+
+    #[test]
+    fn whole_file_writes_require_same_version_pages_without_gaps() {
+        let dir = workspace();
+        let path = dir.path().join("sample.txt");
+        let first = "a".repeat(TEST_PREVIEW_BYTES - PAGE_NOTICE_BYTES - 2);
+        let original = format!("{first}\r\nold tail\r\n");
+        let changed = format!("{first}\r\nnew tail\r\n");
+        let page = |offset, id| {
+            let args = serde_json::json!({"path":"sample.txt", "offset":offset});
+            let result = read_file(&args, dir.path(), &[], id);
+            stored_read_event(id, &result.model_content, result.structured.unwrap())
+        };
+        let write = |events: &[StoredEvent]| {
+            super::super::write_file(
+                &serde_json::json!({"path":"sample.txt", "content":"replacement\n"}),
+                dir.path(),
+                &ConversationAddress::MAIN,
+                events,
+                crate::WorkspaceIoLimits::default(),
+                &|| false,
+            )
+        };
+        std::fs::write(&path, original).unwrap();
+        let old_head = page(1, 1);
+        std::fs::write(&path, &changed).unwrap();
+        let tail = page(2, 2);
+        assert_eq!("error", write(&[old_head, tail.clone()]).status);
+        assert_eq!("error", write(std::slice::from_ref(&tail)).status);
+
+        let query = StoredEvent {
+            id: 3,
+            payload: crate::event::EventPayload::MessageUser {
+                ts: "ts".into(),
+                turn: 1,
+                conversation: "main".into(),
+                text: "Read the start of the file".into(),
+                from: None,
+                job_delivery: false,
+            },
+        };
+        let head = page(1, 4);
+        let rewind = StoredEvent {
+            id: 5,
+            payload: crate::event::EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.operation",
+                "record": {"operation": "message_rewind", "address": "main", "target_event_id": 3}
+            })),
+        };
+        assert_eq!(
+            "error",
+            write(&[tail.clone(), query, head.clone(), rewind]).status
+        );
+        assert_eq!(changed, std::fs::read_to_string(&path).unwrap());
+        assert_eq!("ok", write(&[tail, head]).status);
+        assert_eq!("replacement\n", std::fs::read_to_string(path).unwrap());
     }
 
     #[test]
@@ -538,6 +613,7 @@ mod tests {
             &serde_json::json!({"path":"README.md","offset":2}),
             dir.path(),
             "第二行\r\n第三行\n".len(),
+            u64::MAX,
             &|| false,
         );
 
@@ -565,6 +641,7 @@ mod tests {
             &serde_json::json!({"path":"README.md","limit":1}),
             dir.path(),
             80,
+            u64::MAX,
             &|| false,
         );
 
@@ -599,7 +676,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::MAIN,
             std::slice::from_ref(&review_read),
             18,
-            TEST_PREVIEW_BYTES,
+            &test_limits(),
             &|| false,
         );
         let review_result = super::read_file(
@@ -608,7 +685,7 @@ mod tests {
             &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             &[review_read],
             19,
-            TEST_PREVIEW_BYTES,
+            &test_limits(),
             &|| false,
         );
 

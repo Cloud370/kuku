@@ -6,12 +6,15 @@ use serde_json::{json, Value};
 use crate::execution::{ImageMime, MAX_MODEL_IMAGE_BYTES};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
-use super::common::{file_read_error, required_path, resolve_path, FileCancellation, StableFile};
+use super::common::{
+    file_read_error, required_path, resolve_path, FileCancellation, IoLimit, LimitedReader,
+    StableFile,
+};
 
 pub(crate) fn view_image_definition() -> ToolDefinition {
     ToolDefinition {
         name: "view_image".into(),
-        description: "Look at a workspace PNG or JPEG as an image. Use this to inspect screenshots, diagrams, or text in an image. Supply its path. Images must be at most 1 MiB and fit the model request budget.".into(),
+        description: "View a workspace PNG or JPEG, such as a screenshot or diagram.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {"path": {"type": "string", "description": "Image path in the workspace."}},
@@ -39,18 +42,15 @@ pub(crate) fn read_image(
     }
     let mut file = StableFile::open(&resolved.path, cancelled)
         .map_err(|error| file_read_error(&resolved.path, error))?;
+    let limit = IoLimit("image exceeds 1 MiB, reduce its size before viewing it");
+    let mut bytes_left = MAX_MODEL_IMAGE_BYTES as u64;
+    file.check_size(bytes_left, limit)
+        .map_err(|error| file_read_error(&resolved.path, error))?;
     let mut bytes = Vec::new();
-    (&mut file)
-        .take((MAX_MODEL_IMAGE_BYTES + 1) as u64)
+    LimitedReader::new(&mut file, &mut bytes_left, limit)
         .read_to_end(&mut bytes)
         .and_then(|_| file.verify(&resolved.path))
         .map_err(|error| file_read_error(&resolved.path, error))?;
-    if bytes.len() > MAX_MODEL_IMAGE_BYTES {
-        return Err(ToolResultEnvelope::error(
-            "image exceeds 1 MiB",
-            "reduce its size before viewing it",
-        ));
-    }
     let mime = ImageMime::detect(&bytes).ok_or_else(|| {
         ToolResultEnvelope::error("unsupported image", "view_image accepts PNG and JPEG files")
     })?;

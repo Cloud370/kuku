@@ -66,6 +66,8 @@ When the tool returns a [Session Job](tools.md#session-jobs), call `Session::job
 
 `RuntimeLimits.job_foreground_wait_ms` controls the foreground observation window for top-level commands and scripts. `RuntimeLimits.max_command_seconds` optionally sets a separate process deadline for each command, including commands invoked from `run_js` or running as Jobs. It defaults to `None`.
 
+Use `RuntimeLimits.max_command_memory_bytes` to set an OS memory ceiling for direct commands and commands started by `run_js`. The default is `None`. Unix applies an address-space limit to each process, which its descendants inherit. Windows applies a committed-memory limit to the existing process Job Object. The command result reports the requested ceiling in `memory_limit_bytes`.
+
 A `run_js` result has `kind: "workspace_script_result"`. Decode it with `kuku::WorkspaceScriptFacts::from_structured`. The result contains the script's inline return `value` and its observed host `actions`. When the complete JSON is retained separately, `value` is null and `output_ref` locates it. Each action records its ID, tool, status, summary, truncation, and bounded result. An `unknown` action status means the host could not confirm its final outcome. At the script level, `timed_out`, `cleanup_incomplete`, and `not_dispatched` help reconcile partial work, including after a script fails. See [script methods](tools.md#javascript-tool-composition).
 
 For the journal's nested dispatch and outcome facts, decode `workspace.action` events with `kuku::execution::WorkspaceActionReceipt::from_event`. Correlate by `action_id` within the parent `tool_call_id`. A dispatch record without a matching outcome leaves the effect unknown.
@@ -93,6 +95,20 @@ cargo run -p kuku --example session_task -- \
 Use `--session-id` to reopen and `--command-id` to retry delivery after losing a receipt. Results include durable model, tool, and Turn counts, the journal path and cursor, provider settings and reports, limits, duration, and cleanup. `runtime_completed` means execution settled. A benchmark still needs its actual judge. `--max-requests N` optionally caps attempts across this open runtime. The example reports `null` for `max_requests` when this option is omitted. `--max-agents` sets the retained Agent limit. `--max-context-tokens` caps the configured context window in tokens. `--max-request-bytes` independently caps serialized request bytes and inherits the SDK default when omitted.
 
 ## Limits and accounting
+
+Registered `ToolAdapter` calls share the host operation capacity. Override `ToolAdapter::execute_with_limits` to use the Session's `RuntimeLimits` in your own executor. The SDK applies its retained-output quota to the returned content and streams large structured values into the capture. The adapter owns the allocations and processes inside that executor.
+
+`RuntimeLimits.workspace_io` configures the file budgets used by direct tools and `run_js` host actions. Each operation gets its own budget. Clone a `WorkspaceExecutionHost` into the Sessions that should share worker and host operation capacity. Set that capacity for the execution host independently of its Session or Agent count.
+
+| Workspace I/O limit | Default | Applies to |
+| --- | ---: | --- |
+| `scan_bytes` | 2 GiB | Source bytes read by a search or file scan |
+| `scan_entries` | 1,000,000 | Entries examined by a workspace scan or Session journal query |
+| `scan_timeout_ms` | 30,000 | Elapsed time for traversal, search, and Session journal queries, checked at read and directory entry boundaries. Set `None` for a host-managed deadline. |
+| `search_path_bytes` | 64 MiB | Candidate paths held for sorting one search |
+| `search_line_bytes` | 1 MiB | Source bytes buffered for one search line |
+| `text_bytes` | 8 MiB | Edit source and replacement text or a full write payload |
+| `context_file_bytes` | 256 KiB | Each memory or project instruction file |
 
 The default limits allow 64 Agents, 128 pending inputs per Agent, 65,536 input bytes, four simultaneous model streams, eight tools per Agent, 8 MiB per retained output, an 8 KiB first preview, and 128 transient observations. Set `RuntimeLimits::max_request_bytes` to cap serialized requests when the host needs a transport limit. Output previews require at least 1 KiB for a complete reference and flags.
 

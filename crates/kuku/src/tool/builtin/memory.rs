@@ -1,22 +1,24 @@
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 use serde_json::Value;
 
 use crate::session::{global_memory_path, project_memory_path};
 use crate::tool::ToolResultEnvelope;
 
-use super::common::{content_hash, write_atomically};
+use super::common::{
+    append_text, content_hash, file_read_error, path_lock, read_context_file, write_atomically,
+};
 
-struct MemoryRememberRequest {
+struct MemoryRememberRequest<'a> {
     scope: MemoryScope,
     section: MemorySection,
-    text: String,
+    text: &'a str,
 }
 
-struct MemoryForgetRequest {
+struct MemoryForgetRequest<'a> {
     scope: MemoryScope,
-    text: String,
+    text: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,7 @@ pub(crate) fn remember_memory_with_home(
     args: &Value,
     workspace: &Path,
     kuku_home: &Path,
+    max_bytes: usize,
 ) -> ToolResultEnvelope {
     let request = match remember_memory_request(args) {
         Ok(request) => request,
@@ -52,21 +55,28 @@ pub(crate) fn remember_memory_with_home(
         Ok(path) => path,
         Err(result) => return result,
     };
-    let mut memory = match load_memory_file(&memory_path) {
+    let _guard = match path_lock(&memory_path, &|| false) {
+        Ok(guard) => guard,
+        Err(error) => return file_read_error(&memory_path, error),
+    };
+    let mut memory = match load_memory_file(&memory_path, max_bytes) {
         Ok(memory) => memory,
         Err(result) => return result,
     };
+    if request.text.len() > max_bytes {
+        let error = io::Error::other(super::common::IoLimit(
+            "memory text exceeds the file budget",
+        ));
+        return file_read_error(&memory_path, error);
+    }
     memory
         .section_mut(request.section)
-        .push(request.text.clone());
+        .push(request.text.to_owned());
 
-    let raw_text_after = memory.render();
-    if let Err(error) = write_memory_file(&memory_path, &raw_text_after) {
-        return ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error writing memory file: {}", memory_path.display()),
-        );
-    }
+    let raw_text_after = match write_memory_file(&memory_path, &memory, max_bytes) {
+        Ok(text) => text,
+        Err(error) => return file_read_error(&memory_path, error),
+    };
 
     memory_success_result(
         "memory_write",
@@ -81,6 +91,7 @@ pub(crate) fn forget_memory_with_home(
     args: &Value,
     workspace: &Path,
     kuku_home: &Path,
+    max_bytes: usize,
 ) -> ToolResultEnvelope {
     let request = match forget_memory_request(args) {
         Ok(request) => request,
@@ -90,12 +101,16 @@ pub(crate) fn forget_memory_with_home(
         Ok(path) => path,
         Err(result) => return result,
     };
-    let mut memory = match load_memory_file(&memory_path) {
+    let _guard = match path_lock(&memory_path, &|| false) {
+        Ok(guard) => guard,
+        Err(error) => return file_read_error(&memory_path, error),
+    };
+    let mut memory = match load_memory_file(&memory_path, max_bytes) {
         Ok(memory) => memory,
         Err(result) => return result,
     };
 
-    let matches = memory.matching_sections(&request.text);
+    let matches = memory.matching_sections(request.text);
     if matches.is_empty() {
         return ToolResultEnvelope::error(
             "failed: no matching bullet".to_string(),
@@ -110,14 +125,11 @@ pub(crate) fn forget_memory_with_home(
     }
 
     let section = matches[0];
-    memory.remove_one(section, &request.text);
-    let raw_text_after = memory.render();
-    if let Err(error) = write_memory_file(&memory_path, &raw_text_after) {
-        return ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error writing memory file: {}", memory_path.display()),
-        );
-    }
+    memory.remove_one(section, request.text);
+    let raw_text_after = match write_memory_file(&memory_path, &memory, max_bytes) {
+        Ok(text) => text,
+        Err(error) => return file_read_error(&memory_path, error),
+    };
 
     memory_success_result(
         "forget_memory",
@@ -128,7 +140,7 @@ pub(crate) fn forget_memory_with_home(
     )
 }
 
-fn remember_memory_request(args: &Value) -> Result<MemoryRememberRequest, ToolResultEnvelope> {
+fn remember_memory_request(args: &Value) -> Result<MemoryRememberRequest<'_>, ToolResultEnvelope> {
     Ok(MemoryRememberRequest {
         scope: memory_scope(args.get("scope"))?,
         section: memory_section(args.get("kind"))?,
@@ -136,7 +148,7 @@ fn remember_memory_request(args: &Value) -> Result<MemoryRememberRequest, ToolRe
     })
 }
 
-fn forget_memory_request(args: &Value) -> Result<MemoryForgetRequest, ToolResultEnvelope> {
+fn forget_memory_request(args: &Value) -> Result<MemoryForgetRequest<'_>, ToolResultEnvelope> {
     Ok(MemoryForgetRequest {
         scope: memory_scope(args.get("scope"))?,
         text: required_memory_text(args.get("text"))?,
@@ -174,7 +186,7 @@ fn memory_section(value: Option<&Value>) -> Result<MemorySection, ToolResultEnve
     }
 }
 
-fn required_memory_text(value: Option<&Value>) -> Result<String, ToolResultEnvelope> {
+fn required_memory_text(value: Option<&Value>) -> Result<&str, ToolResultEnvelope> {
     let Some(text) = value.and_then(Value::as_str) else {
         return Err(ToolResultEnvelope::error(
             "failed: missing text",
@@ -200,7 +212,7 @@ fn required_memory_text(value: Option<&Value>) -> Result<String, ToolResultEnvel
             "text should be natural language without a bullet prefix",
         ));
     }
-    Ok(text.to_string())
+    Ok(text)
 }
 
 fn resolve_memory_path(
@@ -223,22 +235,21 @@ fn resolve_memory_path(
     Ok(path)
 }
 
-fn load_memory_file(path: &Path) -> Result<MemoryFile, ToolResultEnvelope> {
-    match fs::read_to_string(path) {
+fn load_memory_file(path: &Path, max_bytes: usize) -> Result<MemoryFile, ToolResultEnvelope> {
+    match read_context_file(path, max_bytes) {
         Ok(content) => Ok(parse_memory_file(&content)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(MemoryFile::default()),
-        Err(error) => Err(ToolResultEnvelope::error(
-            format!("failed: {error}"),
-            format!("error reading memory file: {}", path.display()),
-        )),
+        Err(error) => Err(file_read_error(path, error)),
     }
 }
 
-fn write_memory_file(path: &Path, content: &str) -> std::io::Result<()> {
+fn write_memory_file(path: &Path, memory: &MemoryFile, max_bytes: usize) -> io::Result<String> {
+    let content = memory.render(max_bytes)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_atomically(path, content.as_bytes())
+    write_atomically(path, content.as_bytes())?;
+    Ok(content)
 }
 
 fn parse_memory_file(content: &str) -> MemoryFile {
@@ -362,19 +373,33 @@ impl MemoryFile {
         }
     }
 
-    fn render(&self) -> String {
+    fn render(&self, max_bytes: usize) -> io::Result<String> {
         let mut out = String::new();
         if !self.prelude.trim().is_empty() {
-            out.push_str(self.prelude.trim_end());
-            out.push_str("\n\n");
+            append_text(&mut out, self.prelude.trim_end(), max_bytes)?;
+            append_text(&mut out, "\n\n", max_bytes)?;
         }
-        render_memory_section(&mut out, MemorySection::HowToWork, &self.how_to_work);
-        out.push_str("\n\n");
-        render_memory_section(&mut out, MemorySection::WhatIsTrue, &self.what_is_true);
-        out.push_str("\n\n");
-        render_memory_section(&mut out, MemorySection::WhereToLook, &self.where_to_look);
-        out.push('\n');
-        out
+        for section in [
+            MemorySection::HowToWork,
+            MemorySection::WhatIsTrue,
+            MemorySection::WhereToLook,
+        ] {
+            append_text(&mut out, section.heading(), max_bytes)?;
+            for entry in self.section(section) {
+                append_text(&mut out, "\n- ", max_bytes)?;
+                append_text(&mut out, entry, max_bytes)?;
+            }
+            append_text(
+                &mut out,
+                if section == MemorySection::WhereToLook {
+                    "\n"
+                } else {
+                    "\n\n"
+                },
+                max_bytes,
+            )?;
+        }
+        Ok(out)
     }
 }
 
@@ -405,16 +430,33 @@ impl MemorySection {
     }
 }
 
-fn render_memory_section(out: &mut String, section: MemorySection, entries: &[String]) {
-    out.push_str(section.heading());
-    for entry in entries {
-        out.push_str("\n- ");
-        out.push_str(entry);
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    fn remember_memory_with_home(
+        args: &serde_json::Value,
+        workspace: &std::path::Path,
+        home: &std::path::Path,
+    ) -> super::ToolResultEnvelope {
+        super::remember_memory_with_home(
+            args,
+            workspace,
+            home,
+            crate::WorkspaceIoLimits::default().context_file_bytes,
+        )
+    }
+
+    fn forget_memory_with_home(
+        args: &serde_json::Value,
+        workspace: &std::path::Path,
+        home: &std::path::Path,
+    ) -> super::ToolResultEnvelope {
+        super::forget_memory_with_home(
+            args,
+            workspace,
+            home,
+            crate::WorkspaceIoLimits::default().context_file_bytes,
+        )
+    }
     use super::super::test_helpers::workspace;
     use super::*;
 

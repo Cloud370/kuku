@@ -17,6 +17,7 @@ use serde_json::json;
 struct Model {
     requests: Mutex<Vec<ModelRequest>>,
     wait: bool,
+    command: Option<std::path::PathBuf>,
 }
 
 impl ModelAdapter for Model {
@@ -40,7 +41,14 @@ impl ModelAdapter for Model {
                     reason: ModelStopReason::EndTurn,
                 });
             } else {
-                let calls = if self.wait {
+                let calls = if let Some(program) = &self.command {
+                    vec![(
+                        "command",
+                        json!({"program":program, "args":[
+                            "--ignored", "--exact", "isolated_memory_probe", "--nocapture"
+                        ]}),
+                    )]
+                } else if self.wait {
                     vec![("wait", json!({"name":"active.txt","wait":true}))]
                 } else {
                     vec![
@@ -52,7 +60,12 @@ impl ModelAdapter for Model {
                     events.push(ModelEvent::ToolCallStart {
                         index: index as u64,
                         id: id.into(),
-                        name: "host_file".into(),
+                        name: if self.command.is_some() {
+                            "run_command"
+                        } else {
+                            "host_file"
+                        }
+                        .into(),
                     });
                     events.push(ModelEvent::ToolCallArgDelta {
                         index: index as u64,
@@ -84,6 +97,8 @@ struct FileTool {
     started: AtomicBool,
     cleaned: AtomicBool,
     incomplete: bool,
+    structured_bytes: usize,
+    scan_bytes: std::sync::atomic::AtomicU64,
 }
 
 impl ToolAdapter for FileTool {
@@ -123,11 +138,28 @@ impl ToolAdapter for FileTool {
                     cleanup_incomplete: self.incomplete,
                 });
             }
+            if self.structured_bytes > 0 {
+                return Ok(ToolOutput {
+                    data: Some(json!({"blob": "z".repeat(self.structured_bytes)})),
+                    ..ToolOutput::success("")
+                });
+            }
             Ok(ToolOutput {
                 data: Some(json!({"verified":true})),
                 ..ToolOutput::success(format!("{}END_OF_RETAINED_OUTPUT", "x".repeat(20_000)))
             })
         })
+    }
+
+    fn execute_with_limits(
+        &self,
+        action: ToolAuthorization,
+        cancellation: ToolCancellation,
+        limits: kuku::RuntimeLimits,
+    ) -> AdapterFuture<'_, ToolOutput> {
+        self.scan_bytes
+            .store(limits.workspace_io.scan_bytes, Ordering::SeqCst);
+        self.execute(action, cancellation)
     }
 }
 
@@ -272,6 +304,107 @@ fn input() -> Input {
         source: InputSource::External("test-input".into()),
         ..Input::new("input", "main", "perform the selected host action")
     }
+}
+
+#[tokio::test]
+async fn host_adapter_gets_the_sessions_limits_and_streams_structured_output_to_quota() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let tool = Arc::new(FileTool {
+        structured_bytes: 1024 * 1024,
+        ..FileTool::default()
+    });
+    let mut options = options(
+        workspace.path(),
+        data.path(),
+        Arc::new(Model::default()),
+        tool.clone(),
+        Arc::new(Gate::default()),
+    );
+    options.limits.workspace_io.scan_bytes = 107;
+    options.limits.max_output_bytes = 4096;
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session.send(input()).unwrap();
+    assert_eq!(AgentStatus::Idle, settled(&session, "main").await.status);
+    assert_eq!(107, tool.scan_bytes.load(Ordering::SeqCst));
+    assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload,
+        EventPayload::ToolResult { status, tool_call_id, structured: Some(value), .. }
+        if tool_call_id == "allowed" && status == "ok" && value["data"].is_null()
+            && value["quota_truncated"] == true && value["output_ref"]["bytes"].as_u64().is_some_and(|n| n < 4096)
+    )));
+    session.close().await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "run only as an isolated subprocess"]
+fn isolated_memory_probe() {
+    let mut bytes = Vec::<u8>::new();
+    if bytes.try_reserve_exact(512 * 1024 * 1024).is_err() {
+        println!("child memory reservation denied");
+        std::process::exit(73);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn command_memory_failure_leaves_an_independent_sdk_session_running() {
+    let workbook = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let tool = Arc::new(FileTool::default());
+    let host = kuku::WorkspaceExecutionHost::new(1, 2).unwrap();
+    let mut limited = options(
+        workbook.path(),
+        data.path(),
+        Arc::new(Model {
+            command: Some(std::env::current_exe().unwrap()),
+            ..Model::default()
+        }),
+        tool.clone(),
+        Arc::new(Gate::default()),
+    );
+    let memory_bytes = 128 * 1024 * 1024;
+    limited.limits.max_command_memory_bytes = std::num::NonZeroU64::new(memory_bytes);
+    limited.workspace_host = host.clone();
+    let mut peer = options(
+        work.path(),
+        data.path(),
+        Arc::new(Model::default()),
+        tool,
+        Arc::new(Gate::default()),
+    );
+    peer.workspace_host = host;
+    let (limited, peer) = tokio::join!(Session::open(limited), Session::open(peer));
+    let (limited, peer) = (limited.unwrap(), peer.unwrap());
+    for session in [&limited, &peer] {
+        session
+            .create_agent("create", "main", AgentConfig::default())
+            .unwrap();
+        session.send(input()).unwrap();
+    }
+    let (limited_state, peer_state) =
+        tokio::join!(settled(&limited, "main"), settled(&peer, "main"));
+    assert_eq!(AgentStatus::Idle, limited_state.status);
+    assert_eq!(AgentStatus::Idle, peer_state.status);
+    assert!(limited
+        .events(0, 256)
+        .unwrap()
+        .iter()
+        .any(|event| matches!(&event.payload,
+            EventPayload::ToolResult { tool_call_id, structured: Some(value), .. }
+            if tool_call_id == "command" && value["exit_code"] == 73
+                && value["memory_limit_bytes"] == memory_bytes
+        )));
+    assert_eq!(
+        "actual host tool output",
+        std::fs::read_to_string(work.path().join("allowed.txt")).unwrap()
+    );
+    limited.close().await.unwrap();
+    peer.close().await.unwrap();
 }
 
 #[tokio::test]

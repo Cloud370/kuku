@@ -46,15 +46,15 @@ pub(crate) fn definition_local() -> ToolDefinition {
 fn definition_with_bounds(bounds: PageBounds) -> ToolDefinition {
     ToolDefinition {
         name: "read_output".into(),
-        description: "Read output by exact ID, including bytes already captured from a running command, or by your exact value name. Select a byte offset and bounded scan limit, with an optional literal search. Continue with next_offset. When has_more and complete are both false, you have reached the current end of a growing capture.".into(),
+        description: "Read saved output by ID or name. Use next_offset to continue. A running command can add more output later.".into(),
         input_schema: json!({
             "type":"object",
             "properties":{
                 "id":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_-]+$"},
                 "name":{"type":"string","minLength":1,"maxLength":MAX_VALUE_NAME_BYTES,"pattern":"^[A-Za-z][A-Za-z0-9_-]*$"},
-                "offset":{"type":"integer","minimum":0,"description":"Starting raw byte offset across both output streams; defaults to 0."},
-                "limit":{"type":"integer","minimum":1,"default":bounds.default,"description":format!("Raw byte budget capped at {}. Continue with next_offset.", bounds.scan)},
-                "search":{"type":"string","minLength":1,"maxLength":MAX_SEARCH_BYTES,"description":"Literal filter of at most 4096 UTF-8 bytes, no longer than limit. Continue with next_offset even when no matches are returned."}
+                "offset":{"type":"integer","minimum":0,"description":"Starting byte offset. Defaults to 0."},
+                "limit":{"type":"integer","minimum":1,"default":bounds.default,"description":format!("Output bytes to examine. At most {} per call.", bounds.scan)},
+                "search":{"type":"string","minLength":1,"maxLength":MAX_SEARCH_BYTES,"description":"Literal text to find. Use next_offset even when this page has no matches."}
             },
             "oneOf":[{"required":["id"]},{"required":["name"]}],
             "additionalProperties":false

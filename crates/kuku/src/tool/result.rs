@@ -8,6 +8,7 @@ pub(crate) enum ToolErrorReason {
     FullSnapshotRequired,
     SnapshotStale,
     OldTextNotVisible,
+    ResourceLimit,
 }
 
 impl ToolErrorReason {
@@ -17,6 +18,7 @@ impl ToolErrorReason {
             Self::FullSnapshotRequired => "full_snapshot_required",
             Self::SnapshotStale => "snapshot_stale",
             Self::OldTextNotVisible => "old_text_not_visible",
+            Self::ResourceLimit => "resource_limit",
         }
     }
 }

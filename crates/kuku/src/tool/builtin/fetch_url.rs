@@ -446,16 +446,18 @@ fn temp_write_error(error: std::io::Error) -> ToolResultEnvelope {
 }
 
 fn size_error(size: u64) -> ToolResultEnvelope {
-    ToolResultEnvelope::error(
+    ToolResultEnvelope::error_with_reason(
         "failed: file too large",
         format!("download exceeds 50 MiB limit ({size} bytes)"),
+        crate::tool::ToolErrorReason::ResourceLimit,
     )
 }
 
 fn quota_error() -> ToolResultEnvelope {
-    ToolResultEnvelope::error(
+    ToolResultEnvelope::error_with_reason(
         "failed: download exceeds output quota",
         "The response body does not fit the retained output quota.",
+        crate::tool::ToolErrorReason::ResourceLimit,
     )
 }
 

@@ -1,10 +1,10 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata};
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, TryLockError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -12,7 +12,8 @@ use crate::execution::{FileCommitState, FileMutationFacts};
 use crate::tool::{ToolErrorReason, ToolResultEnvelope};
 use crate::util::fs_sync;
 
-const HASH_BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const FILE_BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const FILE_SCAN_BYTES: IoLimit = IoLimit("file scan byte budget exhausted");
 const MUTATION_LOCKS: usize = 64;
 const MUTATION_PREVIEW_BYTES: usize = 80_000;
 const MUTATION_LOCK_RETRY: Duration = Duration::from_millis(10);
@@ -36,6 +37,115 @@ pub(crate) struct StableFile<'a> {
     file: File,
     opened: Metadata,
     cancelled: &'a FileCancellation<'a>,
+}
+
+pub(crate) struct WorkspaceFiles<'a> {
+    path: &'a Path,
+    #[cfg(target_os = "linux")]
+    directory: Option<File>,
+}
+
+impl<'a> WorkspaceFiles<'a> {
+    pub(crate) fn new(path: &'a Path) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let directory = {
+            use rustix::fs::{openat2, Mode, OFlags, ResolveFlags, CWD};
+            use rustix::io::Errno;
+
+            match openat2(
+                CWD,
+                path,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+                ResolveFlags::NO_SYMLINKS,
+            ) {
+                Ok(directory) => Some(File::from(directory)),
+                Err(Errno::NOSYS | Errno::INVAL | Errno::PERM | Errno::OPNOTSUPP) => None,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        Ok(Self {
+            path,
+            #[cfg(target_os = "linux")]
+            directory,
+        })
+    }
+
+    pub(crate) fn open<'b>(
+        &self,
+        relative: &Path,
+        cancelled: &'b FileCancellation<'b>,
+    ) -> io::Result<StableFile<'b>> {
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = &self.directory {
+            use rustix::fs::OFlags;
+
+            ensure_active(cancelled)?;
+            let file = open_in_workspace(directory, relative, OFlags::RDONLY | OFlags::NONBLOCK)?;
+            let opened = file.metadata()?;
+            if !opened.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "path is not a file",
+                ));
+            }
+            return Ok(StableFile {
+                file,
+                opened,
+                cancelled,
+            });
+        }
+        StableFile::open(&self.path.join(relative), cancelled)
+    }
+
+    pub(crate) fn verify(&self, relative: &Path, file: &StableFile<'_>) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = &self.directory {
+            use rustix::fs::OFlags;
+
+            ensure_active(file.cancelled)?;
+            let current = open_in_workspace(directory, relative, OFlags::PATH)?.metadata()?;
+            if !same_version_marker(&file.opened, &current) {
+                return Err(changed_during_read());
+            }
+            return Ok(());
+        }
+        file.verify(&self.path.join(relative))
+    }
+
+    pub(crate) fn verify_root(&self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(directory) = &self.directory {
+            use std::os::unix::fs::MetadataExt;
+
+            let opened = directory.metadata()?;
+            let current = fs::symlink_metadata(self.path)?;
+            if !current.is_dir()
+                || (current.dev(), current.ino()) != (opened.dev(), opened.ino())
+                || self.path.canonicalize()? != self.path
+            {
+                return Err(changed_during_read());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_in_workspace(
+    directory: &File,
+    path: &Path,
+    oflags: rustix::fs::OFlags,
+) -> io::Result<File> {
+    use rustix::fs::{openat2, Mode, OFlags, ResolveFlags};
+
+    Ok(File::from(openat2(
+        directory,
+        path,
+        oflags | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS,
+    )?))
 }
 
 impl<'a> StableFile<'a> {
@@ -78,12 +188,172 @@ impl<'a> StableFile<'a> {
         }
         Ok(())
     }
+
+    pub(crate) fn rewind(&mut self) -> io::Result<()> {
+        ensure_active(self.cancelled)?;
+        self.file.rewind()
+    }
+
+    pub(crate) fn check_size(&self, max_bytes: u64, limit: IoLimit) -> io::Result<()> {
+        if self.opened.len() > max_bytes {
+            Err(io::Error::other(limit))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Read for StableFile<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         ensure_active(self.cancelled)?;
         self.file.read(buffer)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IoLimit(pub(crate) &'static str);
+
+impl std::fmt::Display for IoLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for IoLimit {}
+
+pub(crate) fn is_io_limit(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| cause.is::<IoLimit>())
+        || error.kind() == io::ErrorKind::OutOfMemory
+}
+
+pub(crate) fn charge_entry(
+    remaining: &mut usize,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<()> {
+    ensure_active(cancelled)?;
+    *remaining = remaining
+        .checked_sub(1)
+        .ok_or_else(|| io::Error::other(IoLimit("directory entry budget exhausted")))?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ScanDeadline(Option<Instant>);
+
+impl ScanDeadline {
+    pub(crate) fn new(timeout_ms: Option<std::num::NonZeroU64>) -> Self {
+        Self(
+            timeout_ms
+                .and_then(|limit| Instant::now().checked_add(Duration::from_millis(limit.get()))),
+        )
+    }
+
+    pub(crate) fn check(self) -> io::Result<()> {
+        if self.0.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(io::Error::other(IoLimit(
+                "workspace scan time budget exhausted",
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct LimitedReader<'a, R> {
+    inner: R,
+    bytes_left: &'a mut u64,
+    limit: IoLimit,
+    deadline: ScanDeadline,
+}
+
+impl<'a, R> LimitedReader<'a, R> {
+    pub(crate) fn new(inner: R, bytes_left: &'a mut u64, limit: IoLimit) -> Self {
+        Self {
+            inner,
+            bytes_left,
+            limit,
+            deadline: ScanDeadline::default(),
+        }
+    }
+
+    pub(crate) fn with_deadline(mut self, deadline: ScanDeadline) -> Self {
+        self.deadline = deadline;
+        self
+    }
+}
+
+impl<R: Read> Read for LimitedReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.deadline.check()?;
+        let allowed = self.bytes_left.saturating_add(1).min(buffer.len() as u64) as usize;
+        let count = self.inner.read(&mut buffer[..allowed])?;
+        let Some(bytes_left) = self.bytes_left.checked_sub(count as u64) else {
+            *self.bytes_left = 0;
+            return Err(io::Error::other(self.limit));
+        };
+        *self.bytes_left = bytes_left;
+        Ok(count)
+    }
+}
+
+pub(crate) struct Utf8Reader<R> {
+    inner: R,
+    tail: [u8; 4],
+    tail_len: usize,
+}
+
+impl<R: Read> Utf8Reader<R> {
+    pub(crate) fn new(inner: R) -> Self {
+        Self {
+            inner,
+            tail: [0; 4],
+            tail_len: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for Utf8Reader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let count = self.inner.read(buffer)?;
+        let mut remaining = &buffer[..count];
+        if self.tail_len != 0 {
+            let width = match self.tail[0] {
+                0xc2..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf4 => 4,
+                _ => return Err(invalid_utf8()),
+            };
+            if count == 0 {
+                return Err(invalid_utf8());
+            }
+            let taken = (width - self.tail_len).min(count);
+            let end = self.tail_len + taken;
+            self.tail[self.tail_len..end].copy_from_slice(&remaining[..taken]);
+            self.tail_len = end - valid_utf8_prefix(&self.tail[..end])?;
+            if self.tail_len != 0 {
+                return Ok(count);
+            }
+            remaining = &remaining[taken..];
+        }
+        let prefix = valid_utf8_prefix(remaining)?;
+        let tail = &remaining[prefix..];
+        self.tail[..tail.len()].copy_from_slice(tail);
+        self.tail_len = tail.len();
+        Ok(count)
+    }
+}
+
+pub(crate) fn invalid_utf8() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "file is not valid UTF-8")
+}
+
+pub(crate) fn valid_utf8_prefix(bytes: &[u8]) -> io::Result<usize> {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => Ok(bytes.len()),
+        Err(error) if error.error_len().is_none() => Ok(error.valid_up_to()),
+        Err(_) => Err(invalid_utf8()),
     }
 }
 
@@ -97,50 +367,111 @@ pub(crate) fn format_content_hash(hash: Sha256) -> String {
     format!("sha256:{:x}", hash.finalize())
 }
 
-pub(crate) fn read_file_as_utf8(
+pub(crate) fn read_file_as_utf8_bounded(
     path: &Path,
+    max_bytes: usize,
     cancelled: &FileCancellation<'_>,
 ) -> Result<String, ToolResultEnvelope> {
-    let mut content = String::new();
-    let read = (|| -> io::Result<()> {
-        let mut file = StableFile::open(path, cancelled)?;
-        file.read_to_string(&mut content)?;
-        file.verify(path)
-    })();
-    read.map_err(|error| file_read_error(path, error))?;
-    Ok(content)
+    read_text_file(path, max_bytes, cancelled).map_err(|error| file_read_error(path, error))
+}
+
+pub(crate) fn read_context_file(path: &Path, max_bytes: usize) -> io::Result<String> {
+    read_text_file(&path.canonicalize()?, max_bytes, &|| false)
+}
+
+fn read_text_file(
+    path: &Path,
+    max_bytes: usize,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<String> {
+    let limit = IoLimit("text exceeds the file input budget");
+    let mut file = StableFile::open(path, cancelled)?;
+    file.check_size(max_bytes as u64, limit)?;
+    let read_size = (file.opened.len() as usize)
+        .saturating_add(1)
+        .clamp(4096, FILE_BUFFER_BYTES)
+        .min(max_bytes.max(1));
+    let mut bytes_left = max_bytes as u64;
+    let mut reader = Utf8Reader::new(LimitedReader::new(&mut file, &mut bytes_left, limit));
+    let mut content: Vec<u8> = Vec::new();
+    let mut buffer = vec![0; read_size];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        if count > content.capacity() - content.len() {
+            let capacity = next_text_capacity(content.capacity(), content.len(), count, max_bytes)
+                .ok_or_else(|| io::Error::other(limit))?;
+            content
+                .try_reserve_exact(capacity - content.len())
+                .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        }
+        content.extend_from_slice(&buffer[..count]);
+    }
+    file.verify(path)?;
+    String::from_utf8(content).map_err(|_| invalid_utf8())
+}
+
+pub(crate) fn append_text(output: &mut String, part: &str, max_bytes: usize) -> io::Result<()> {
+    let capacity = next_text_capacity(output.capacity(), output.len(), part.len(), max_bytes)
+        .ok_or_else(|| io::Error::other(IoLimit("text exceeds the file output budget")))?;
+    if capacity > output.capacity() {
+        output
+            .try_reserve_exact(capacity - output.len())
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+    }
+    output.push_str(part);
+    Ok(())
+}
+
+fn next_text_capacity(current: usize, used: usize, add: usize, max: usize) -> Option<usize> {
+    let needed = used.checked_add(add).filter(|&needed| needed <= max)?;
+    Some(if needed <= current {
+        current
+    } else {
+        current.saturating_mul(2).max(needed).min(max)
+    })
 }
 
 pub(crate) fn file_version(
     path: &Path,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> io::Result<(String, Metadata)> {
-    scan_file_version(path, cancelled, None).map(|(hash, metadata, _)| (hash, metadata))
+    scan_file_version(path, scan_bytes, cancelled, None).map(|(hash, metadata, _)| (hash, metadata))
 }
 
 pub(crate) fn file_version_with_text(
     path: &Path,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
     text_limit: Option<usize>,
 ) -> io::Result<(String, Option<String>)> {
-    scan_file_version(path, cancelled, text_limit)
+    scan_file_version(path, scan_bytes, cancelled, text_limit)
         .map(|(hash, _, bytes)| (hash, bytes.and_then(|bytes| String::from_utf8(bytes).ok())))
 }
 
 fn scan_file_version(
     path: &Path,
+    mut scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
     text_limit: Option<usize>,
 ) -> io::Result<(String, Metadata, Option<Vec<u8>>)> {
     let mut file = StableFile::open(path, cancelled)?;
+    file.check_size(scan_bytes, FILE_SCAN_BYTES)?;
     let mut hash = Sha256::new();
     let mut text = text_limit
         .zip(usize::try_from(file.opened.len()).ok())
         .filter(|(limit, len)| len <= limit)
         .map(|(limit, len)| (limit, Vec::with_capacity(len)));
-    let mut buffer = [0; HASH_BUFFER_BYTES];
+    let mut buffer = [0; FILE_BUFFER_BYTES];
+    let mut reader = LimitedReader::new(&mut file, &mut scan_bytes, FILE_SCAN_BYTES);
     loop {
-        let count = match file.read(&mut buffer) {
+        let count = match reader.read(&mut buffer) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,
         };
@@ -174,7 +505,9 @@ pub(crate) fn file_read_error(path: &Path, error: io::Error) -> ToolResultEnvelo
     }
     let summary = format!("failed: {error}");
     let detail = format!("{}: {error}", path.display());
-    if error.kind() == io::ErrorKind::WouldBlock {
+    if is_io_limit(&error) {
+        ToolResultEnvelope::error_with_reason(summary, detail, ToolErrorReason::ResourceLimit)
+    } else if error.kind() == io::ErrorKind::WouldBlock {
         ToolResultEnvelope::error_with_reason(summary, detail, ToolErrorReason::SnapshotStale)
     } else {
         ToolResultEnvelope::error(summary, detail)
@@ -211,6 +544,9 @@ impl WorkspaceCommitError {
             ),
             Self::WriteFailed(error) if is_cancellation(&error) => {
                 ToolResultEnvelope::cancelled(format!("file operation cancelled: {relative}"))
+            }
+            Self::WriteFailed(error) if is_io_limit(&error) => {
+                file_read_error(Path::new(relative), error)
             }
             Self::WriteFailed(error) => ToolResultEnvelope::error(
                 format!("failed: {error}"),
@@ -267,6 +603,7 @@ pub(crate) fn publish_file(
     path: &Path,
     expected: Option<&str>,
     bytes: &[u8],
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> Result<Publication, WorkspaceCommitError> {
     let _commit = path_lock(path, cancelled)?;
@@ -286,7 +623,7 @@ pub(crate) fn publish_file(
     let staged = staged.into_temp_path();
     verify_canonical_parent(path).map_err(version_error)?;
     if let Some(expected) = expected {
-        verify_file_version(path, expected, cancelled)?;
+        verify_file_version(path, expected, scan_bytes, cancelled)?;
         ensure_active(cancelled)?;
         return replace_existing(&staged, path);
     }
@@ -304,17 +641,22 @@ pub(crate) fn publish_file(
 pub(crate) fn remove_observed_file(
     path: &Path,
     expected: &str,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
-) -> Result<Publication, WorkspaceCommitError> {
+) -> Result<(Publication, String, u64), WorkspaceCommitError> {
     let _commit = path_lock(path, cancelled)?;
     verify_canonical_parent(path).map_err(version_error)?;
-    verify_file_version(path, expected, cancelled)?;
+    let (version, metadata) = verify_file_version(path, expected, scan_bytes, cancelled)?;
     ensure_active(cancelled)?;
     fs::remove_file(path).map_err(version_error)?;
     #[cfg(unix)]
-    return Ok(confirm_publication(fs_sync::sync_parent(path)));
+    return Ok((
+        confirm_publication(fs_sync::sync_parent(path)),
+        version,
+        metadata.len(),
+    ));
     #[cfg(not(unix))]
-    Ok(Publication::Committed)
+    Ok((Publication::Committed, version, metadata.len()))
 }
 
 pub(crate) fn mutation_preview(content: &str, fields: &mut serde_json::Value) {
@@ -350,7 +692,7 @@ fn changed_during_read() -> io::Error {
     )
 }
 
-fn is_cancellation(error: &io::Error) -> bool {
+pub(crate) fn is_cancellation(error: &io::Error) -> bool {
     error.get_ref().is_some_and(|cause| cause.is::<Cancelled>())
 }
 
@@ -376,14 +718,17 @@ fn stage_file(
     let mut staged = tempfile::Builder::new()
         .prefix(".kuku-")
         .tempfile_in(parent)?;
-    for chunk in bytes.chunks(HASH_BUFFER_BYTES) {
+    for chunk in bytes.chunks(FILE_BUFFER_BYTES) {
         ensure_active(cancelled)?;
         staged.write_all(chunk)?;
     }
     Ok(staged)
 }
 
-fn path_lock(path: &Path, cancelled: &FileCancellation<'_>) -> io::Result<MutexGuard<'static, ()>> {
+pub(crate) fn path_lock(
+    path: &Path,
+    cancelled: &FileCancellation<'_>,
+) -> io::Result<MutexGuard<'static, ()>> {
     let mut hash = DefaultHasher::new();
     path.hash(&mut hash);
     let lock = &MUTATIONS[(hash.finish() % MUTATION_LOCKS as u64) as usize];
@@ -444,13 +789,14 @@ fn create_missing_parents(path: &Path, cancelled: &FileCancellation<'_>) -> io::
 fn verify_file_version(
     path: &Path,
     expected: &str,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
-) -> Result<(), WorkspaceCommitError> {
-    let (current, _) = file_version(path, cancelled).map_err(version_error)?;
-    if current != expected {
+) -> Result<(String, Metadata), WorkspaceCommitError> {
+    let (current, metadata) = file_version(path, scan_bytes, cancelled).map_err(version_error)?;
+    if !super::snapshot::version_matches(&current, expected) {
         return Err(WorkspaceCommitError::Conflict);
     }
-    Ok(())
+    Ok((current, metadata))
 }
 
 fn version_error(error: io::Error) -> WorkspaceCommitError {
@@ -491,6 +837,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expired_scan_deadline_consumes_no_source_bytes() {
+        let mut input = b"source".as_slice();
+        let mut bytes_left = 6;
+        let mut reader = LimitedReader::new(&mut input, &mut bytes_left, IoLimit("too large"))
+            .with_deadline(ScanDeadline(Some(Instant::now())));
+        let error = reader.read(&mut [0; 8]).unwrap_err();
+        assert!(is_io_limit(&error));
+        assert_eq!("workspace scan time budget exhausted", error.to_string());
+        assert_eq!(6, bytes_left);
+        assert_eq!(b"source", input);
+    }
+
+    #[test]
     fn concurrent_publications_cannot_both_commit_the_same_version() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().canonicalize().unwrap().join("file.txt");
@@ -504,7 +863,7 @@ mod tests {
                 let version = &version;
                 scope.spawn(move || {
                     barrier.wait();
-                    publish_file(path, Some(version), bytes, &|| false)
+                    publish_file(path, Some(version), bytes, u64::MAX, &|| false)
                 })
             };
             let alpha = attempt(b"alpha");
@@ -526,14 +885,46 @@ mod tests {
         let path = temporary.path().canonicalize().unwrap().join("file.txt");
         fs::write(&path, b"current").unwrap();
         assert!(matches!(
-            publish_file(&path, None, b"replacement", &|| false),
+            publish_file(&path, None, b"replacement", u64::MAX, &|| false),
             Err(WorkspaceCommitError::Conflict)
         ));
         assert!(matches!(
-            remove_observed_file(&path, &content_hash(b"old"), &|| false),
+            remove_observed_file(&path, &content_hash(b"old"), u64::MAX, &|| false),
             Err(WorkspaceCommitError::Conflict)
         ));
         assert_eq!(b"current", fs::read(path).unwrap().as_slice());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_file_verification_detects_moved_and_replaced_paths() {
+        use std::os::unix::fs::symlink;
+        use std::path::Path;
+
+        use super::WorkspaceFiles;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        let folder = workspace.join("folder");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("item.txt"), b"original").unwrap();
+        let source = WorkspaceFiles::new(&workspace).unwrap();
+        let relative = Path::new("folder/item.txt");
+        let old = source.open(relative, &|| false).unwrap();
+        source.verify(relative, &old).unwrap();
+
+        let moved = root.join("moved");
+        fs::rename(folder, &moved).unwrap();
+        symlink(&moved, workspace.join("folder")).unwrap();
+        assert!(source.open(relative, &|| false).is_err());
+        assert!(source.verify(relative, &old).is_err());
+
+        fs::rename(&workspace, root.join("old-workspace")).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        if source.directory.is_some() {
+            assert!(source.verify_root().is_err());
+        }
     }
 
     #[test]
@@ -543,7 +934,7 @@ mod tests {
         let path = dir.join("new.txt");
         let cancelled = || fs::read_dir(&dir).unwrap().next().is_some();
 
-        let error = publish_file(&path, None, b"", &cancelled)
+        let error = publish_file(&path, None, b"", u64::MAX, &cancelled)
             .err()
             .expect("cancelled before the staged file can be published");
 
@@ -571,6 +962,7 @@ mod tests {
             &path,
             Some(&content_hash(b"original")),
             b"replacement",
+            u64::MAX,
             &changed_after_staging,
         );
 

@@ -18,7 +18,9 @@ pub(crate) struct WorkspaceActions {
     pub(crate) tool_call_id: String,
     pub(crate) workspace: PathBuf,
     pub(crate) preview_bytes: usize,
+    pub(crate) io_limits: crate::WorkspaceIoLimits,
     pub(crate) max_command_seconds: Option<std::num::NonZeroU32>,
+    pub(crate) max_command_memory_bytes: Option<std::num::NonZeroU64>,
 }
 
 impl WorkspaceActions {
@@ -105,7 +107,7 @@ impl WorkspaceActions {
                         },
                         execution.limits.host_bytes,
                     )
-                    .with_time_limit(self.max_command_seconds),
+                    .with_process_limits(self.max_command_seconds, self.max_command_memory_bytes),
                 )
                 .await;
                 if result
@@ -130,6 +132,7 @@ impl WorkspaceActions {
             }
             _ => {
                 let workspace = self.workspace.clone();
+                let limits = self.io_limits;
                 let local_id = local_id.to_owned();
                 tokio::task::spawn_blocking(move || {
                     if execution.is_cancelled() {
@@ -139,16 +142,19 @@ impl WorkspaceActions {
                     }
                     let cancelled = || execution.is_cancelled();
                     match op {
-                        Op::FindFiles => builtin::find_files(&args, &workspace, &cancelled),
+                        Op::FindFiles => builtin::find_files(&args, &workspace, limits, &cancelled),
                         Op::SearchText => {
-                            builtin::search_text_for_executor(&args, &workspace, &cancelled)
+                            builtin::search_text_for_executor(&args, &workspace, limits, &cancelled)
                         }
-                        Op::StatFile => builtin::stat_file(&args, &workspace, &cancelled),
+                        Op::StatFile => {
+                            builtin::stat_file(&args, &workspace, limits.scan_bytes, &cancelled)
+                        }
                         Op::ReadFile => {
                             let (result, read) = builtin::read_file_for_executor(
                                 &args,
                                 &workspace,
                                 execution.limits.file_bytes,
+                                limits.scan_bytes,
                                 &cancelled,
                             );
                             if let Some(read) = read {
@@ -160,18 +166,21 @@ impl WorkspaceActions {
                             &args,
                             &workspace,
                             &execution.observations(),
+                            limits.text_bytes,
                             &cancelled,
                         ),
                         Op::WriteFile => builtin::write_file_for_executor(
                             &args,
                             &workspace,
                             &execution.observations(),
+                            limits,
                             &cancelled,
                         ),
                         Op::RemoveFile => builtin::remove_file_for_executor(
                             &args,
                             &workspace,
                             &execution.observations(),
+                            limits.scan_bytes,
                             &cancelled,
                         ),
                         _ => unreachable!("only file operations reach the blocking executor"),

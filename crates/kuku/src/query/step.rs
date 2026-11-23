@@ -708,7 +708,7 @@ pub(super) async fn advance_pending(
                     let (slot, tool_kind) = dispatch_tool_slot(SlotDispatchArgs {
                         capacity: crate::WorkspaceExecutionHost::default(),
                         workspace_access: query_workspace_access(&queued.tool_call.name),
-                        preview_bytes: pending.query.runtime_limits.max_preview_bytes,
+                        limits: pending.query.runtime_limits.clone(),
                         output: None,
                         tool_name: queued.tool_call.name.clone(),
                         tool_id: id.clone(),

@@ -419,9 +419,10 @@ fn initial_segment(
     tools: &[crate::context::ToolSchema],
     behavior: &str,
 ) -> Result<FrozenSegment> {
-    let project_instructions = load_project_instruction_sources(&pending.workspace)?;
+    let max_bytes = pending.query.runtime_limits.workspace_io.context_file_bytes;
+    let project_instructions = load_project_instruction_sources(&pending.workspace, max_bytes)?;
     let (global_memory, project_memory) =
-        load_memory_sources(&pending.kuku_home, &pending.workspace)?;
+        load_memory_sources(&pending.kuku_home, &pending.workspace, max_bytes)?;
     let input = ContextInput {
         environment: EnvironmentSource {
             workspace_path: pending.workspace.display().to_string(),

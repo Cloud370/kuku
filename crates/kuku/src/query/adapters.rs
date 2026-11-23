@@ -1,5 +1,7 @@
+use std::io::{self, Write};
 use std::sync::Arc;
 
+use serde_json::Value;
 use tokio::sync::{mpsc, watch, Notify};
 use tokio_stream::StreamExt;
 
@@ -70,6 +72,8 @@ pub(super) fn spawn_tool(
     registered: RegisteredTool,
     action: ToolAuthorization,
     output: RetainedOutputSpec,
+    limits: crate::RuntimeLimits,
+    host: crate::WorkspaceExecutionHost,
     event_tx: mpsc::Sender<(String, SlotEvent)>,
 ) -> ExecSlot {
     let cancel = Arc::new(Notify::new());
@@ -81,11 +85,20 @@ pub(super) fn spawn_tool(
     let label = format!("{} (host tool)", registered.spec.name);
     let workspace_access = workspace_access(registered.spec.access);
     tokio::spawn(async move {
-        let result = execute_tool(registered, action, output, slot_cancel)
-            .await
-            .unwrap_or_else(|error| {
-                ToolResultEnvelope::error("host tool failed", error.to_string())
-            });
+        let permit = tokio::select! {
+            biased;
+            _ = slot_cancel.notified() => None,
+            permit = host.operations().acquire_owned() => permit.ok(),
+        };
+        let result = if let Some(_permit) = permit {
+            execute_tool(registered, action, output, limits, slot_cancel)
+                .await
+                .unwrap_or_else(|error| {
+                    ToolResultEnvelope::error("host tool failed", error.to_string())
+                })
+        } else {
+            ToolResultEnvelope::cancelled("host tool cancelled before execution")
+        };
         let _ = event_tx.send((tool_call_id, SlotEvent::Done(result))).await;
     });
     ExecSlot {
@@ -103,17 +116,23 @@ async fn execute_tool(
     registered: RegisteredTool,
     action: ToolAuthorization,
     mut output: RetainedOutputSpec,
+    mut limits: crate::RuntimeLimits,
     cancel: Arc<Notify>,
 ) -> Result<ToolResultEnvelope> {
     output.limits.max_preview_bytes = output
         .limits
         .max_preview_bytes
         .min(registered.spec.max_result_bytes);
+    limits.max_preview_bytes = output.limits.max_preview_bytes;
+    limits.max_output_bytes = output.limits.max_output_bytes;
     let writer = OutputWriter::create(&output.dir, &output.id, output.limits).await?;
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let adapter = registered.adapter.clone();
-    let mut execute =
-        tokio::spawn(async move { adapter.execute(action, ToolCancellation(cancel_rx)).await });
+    let mut execute = tokio::spawn(async move {
+        adapter
+            .execute_with_limits(action, ToolCancellation(cancel_rx), limits)
+            .await
+    });
     let (result, cancelled) = tokio::select! {
         biased;
         _ = cancel.notified() => {
@@ -162,16 +181,7 @@ async fn capture_tool_result(
 ) -> Result<ToolResultEnvelope> {
     write_bytes(&mut writer, result.content.as_bytes()).await?;
     let data = match result.data.take() {
-        Some(data) => {
-            let encoded = serde_json::to_vec(&data)?;
-            if encoded.len() > output.limits.max_preview_bytes / 2 {
-                write_bytes(&mut writer, b"\n\nStructured result:\n").await?;
-                write_bytes(&mut writer, &encoded).await?;
-                None
-            } else {
-                Some(data)
-            }
-        }
+        Some(data) => capture_json(data, &mut writer, output.limits.max_preview_bytes / 2).await?,
         None => None,
     };
     let metadata = writer.finish(result.cleanup_incomplete).await?;
@@ -223,11 +233,97 @@ async fn capture_tool_result(
     })
 }
 
-async fn write_bytes(writer: &mut OutputWriter, bytes: &[u8]) -> std::io::Result<()> {
+async fn write_bytes(writer: &mut OutputWriter, bytes: &[u8]) -> io::Result<()> {
     for chunk in bytes.chunks(MAX_FRAME_BYTES) {
+        if writer.quota_truncated() {
+            break;
+        }
         writer.write(OutputStream::Stdout, chunk).await?;
     }
     Ok(())
+}
+
+async fn capture_json(
+    data: Value,
+    writer: &mut OutputWriter,
+    inline_bytes: usize,
+) -> Result<Option<Value>> {
+    let (sender, mut receiver) = mpsc::channel(1);
+    let encode = tokio::task::spawn_blocking(move || -> Result<Option<Value>> {
+        let mut frames = JsonFrames {
+            sender,
+            pending: Vec::new(),
+            frame_bytes: MAX_FRAME_BYTES.max(inline_bytes + 1),
+            streamed: false,
+        };
+        serde_json::to_writer(&mut frames, &data)?;
+        if frames.streamed || frames.pending.len() > inline_bytes {
+            frames.flush()?;
+            Ok(None)
+        } else {
+            Ok(Some(data))
+        }
+    });
+    let mut wrote_header = false;
+    while let Some(frame) = receiver.recv().await {
+        if !wrote_header {
+            write_bytes(writer, b"\n\nStructured result:\n").await?;
+            wrote_header = true;
+        }
+        write_bytes(writer, &frame).await?;
+        if writer.quota_truncated() {
+            break;
+        }
+    }
+    drop(receiver);
+    let encoded = encode.await.map_err(io::Error::other)?;
+    match encoded {
+        Err(crate::Error::Json(error))
+            if writer.quota_truncated()
+                && error.io_error_kind() == Some(io::ErrorKind::BrokenPipe) =>
+        {
+            Ok(None)
+        }
+        Err(crate::Error::Io(error))
+            if writer.quota_truncated() && error.kind() == io::ErrorKind::BrokenPipe =>
+        {
+            Ok(None)
+        }
+        result => result,
+    }
+}
+
+struct JsonFrames {
+    sender: mpsc::Sender<Vec<u8>>,
+    pending: Vec<u8>,
+    frame_bytes: usize,
+    streamed: bool,
+}
+
+impl Write for JsonFrames {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        let count = bytes.len();
+        while !bytes.is_empty() {
+            let take = bytes.len().min(self.frame_bytes - self.pending.len());
+            self.pending.extend_from_slice(&bytes[..take]);
+            if self.pending.len() == self.frame_bytes {
+                self.flush()?;
+            }
+            bytes = &bytes[take..];
+        }
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.pending.is_empty() {
+            self.sender
+                .blocking_send(std::mem::take(&mut self.pending))
+                .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
+            self.frame_bytes = MAX_FRAME_BYTES;
+            self.streamed = true;
+        }
+        Ok(())
+    }
 }
 
 fn truncate(text: &mut String, limit: usize) {

@@ -1,26 +1,32 @@
 use std::cmp::Reverse;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::time::SystemTime;
 
-use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::tool::ToolResultEnvelope;
+use crate::WorkspaceIoLimits;
 
 use super::common::{
-    ensure_active, file_read_error, glob_match, is_default_excluded_dir, optional_positive_usize,
-    read_file_as_utf8, relative_path, resolve_path, verify_directory, workspace_path_blocked,
-    FileCancellation,
+    charge_entry, ensure_active, file_read_error, glob_match, is_cancellation,
+    is_default_excluded_dir, is_io_limit, optional_positive_usize, relative_path, resolve_path,
+    verify_directory, workspace_path_blocked, FileCancellation, IoLimit, ScanDeadline,
+    WorkspaceFiles,
 };
 
 mod preview;
+mod scan;
+mod workspace_scan;
 
 use preview::ContextPreview;
+use scan::FileSearch;
+use workspace_scan::{ScanStats, UncheckedFile, WorkspaceScan};
 
 const SEARCH_MATCH_BYTES: usize = 80_000;
-const PAGE_NOTICE_BYTES: usize = 192;
+const PAGE_NOTICE_BYTES: usize = 320;
 const MAX_SEARCH_LINE_CHARS: usize = 500;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,8 +37,17 @@ enum SearchView {
 }
 
 struct CollectedFile {
-    absolute: PathBuf,
     relative: String,
+    original: Option<Box<Path>>,
+    modified: Option<SystemTime>,
+}
+
+impl CollectedFile {
+    fn path(&self) -> &Path {
+        self.original
+            .as_deref()
+            .unwrap_or(Path::new(&self.relative))
+    }
 }
 
 #[derive(Serialize)]
@@ -49,11 +64,16 @@ struct SearchPage {
     limit: usize,
     view: SearchView,
     body_budget: usize,
+    progress: SearchProgress,
+    matches: Vec<SearchMatch>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SearchProgress {
     total: usize,
     body_bytes: usize,
     match_bytes: usize,
     full: bool,
-    matches: Vec<SearchMatch>,
 }
 
 impl SearchPage {
@@ -63,78 +83,96 @@ impl SearchPage {
             limit,
             view,
             body_budget,
-            total: 0,
-            body_bytes: 0,
-            match_bytes: 0,
-            full: false,
+            progress: SearchProgress::default(),
             matches: Vec::new(),
         }
     }
 
-    fn scan(
+    fn matched(
         &mut self,
         path: &str,
-        content: &str,
-        regex: &Regex,
-        cancelled: &FileCancellation<'_>,
-    ) -> io::Result<()> {
-        for (index, source) in content.lines().enumerate() {
-            ensure_active(cancelled)?;
-            if !regex.is_match(source) {
-                continue;
-            }
-            self.total += 1;
-            if self.full || self.total <= self.offset || self.matches.len() >= self.limit {
-                continue;
-            }
-            self.add_match(path, index + 1, source);
+        line_number: usize,
+        source: &str,
+        regex: &regex::Regex,
+    ) -> bool {
+        self.progress.total += 1;
+        if !self.progress.full
+            && self.progress.total > self.offset
+            && self.matches.len() < self.limit
+        {
+            self.add_match(path, line_number, source, regex);
         }
-        Ok(())
+        true
     }
 
-    fn add_match(&mut self, path: &str, line_number: usize, source: &str) {
+    fn add_match(&mut self, path: &str, line_number: usize, source: &str, regex: &regex::Regex) {
+        let prefix_bytes = self.row_prefix_bytes(path, line_number);
+        let line = (self.view == SearchView::Lines)
+            .then(|| match_excerpt(source, self.body_budget.saturating_sub(prefix_bytes), regex));
+        let line_truncated = line.as_deref().is_some_and(|line| line != source);
+        self.push_match(
+            SearchMatch {
+                path: path.to_owned(),
+                line_number,
+                line,
+                line_truncated,
+            },
+            prefix_bytes,
+        );
+    }
+
+    fn row_prefix_bytes(&self, path: &str, line_number: usize) -> usize {
         let new_file = self.matches.last().is_none_or(|hit| hit.path != path);
-        let prefix_bytes = match self.view {
+        match self.view {
             SearchView::Lines => line_row_bytes(path, line_number),
             SearchView::Files if new_file => path.len() + 1,
             SearchView::Count if new_file => path.len() + usize::MAX.ilog10() as usize + 4,
             SearchView::Files | SearchView::Count => 0,
-        };
-        let line = (self.view == SearchView::Lines)
-            .then(|| trim_search_line(source, self.body_budget.saturating_sub(prefix_bytes)));
-        let line_bytes = line.as_ref().map_or(0, String::len);
+        }
+    }
+
+    fn push_match(&mut self, hit: SearchMatch, prefix_bytes: usize) {
+        let line_bytes = hit.line.as_ref().map_or(0, String::len);
         let body_bytes = prefix_bytes + line_bytes;
-        let match_bytes = path.len() + line_bytes + 64;
-        if body_bytes > self.body_budget - self.body_bytes
-            || match_bytes > SEARCH_MATCH_BYTES - self.match_bytes
+        let match_bytes = hit.path.len() + line_bytes + 64;
+        if body_bytes > self.body_budget - self.progress.body_bytes
+            || match_bytes > SEARCH_MATCH_BYTES - self.progress.match_bytes
         {
-            self.full = true;
+            self.progress.full = true;
             return;
         }
-        let line_truncated = line.as_deref().is_some_and(|line| line != source);
-        self.matches.push(SearchMatch {
-            path: path.to_owned(),
-            line_number,
-            line,
-            line_truncated,
-        });
-        self.body_bytes += body_bytes;
-        self.match_bytes += match_bytes;
+        self.matches.push(hit);
+        self.progress.body_bytes += body_bytes;
+        self.progress.match_bytes += match_bytes;
+    }
+
+    fn append_page(&mut self, page: Self) {
+        self.progress.total += page.progress.total;
+        for hit in page.matches {
+            if self.progress.full || self.matches.len() == self.limit {
+                break;
+            }
+            let prefix = self.row_prefix_bytes(&hit.path, hit.line_number);
+            self.push_match(hit, prefix);
+        }
+        self.progress.full |= page.progress.full;
     }
 }
 
 pub(crate) fn search_text_for_executor(
     args: &Value,
     workspace: &Path,
+    limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    search_text(args, workspace, SEARCH_MATCH_BYTES, cancelled)
+    search_text(args, workspace, SEARCH_MATCH_BYTES, limits, cancelled)
 }
 
 pub(crate) fn search_text(
     args: &Value,
     workspace: &Path,
     preview_bytes: usize,
+    limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     let Some(pattern) = args.get("pattern").and_then(Value::as_str) else {
@@ -145,7 +183,7 @@ pub(crate) fn search_text(
     };
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let include = args.get("include").and_then(Value::as_str);
-    let view = args.get("view").and_then(Value::as_str).unwrap_or("files");
+    let view = args.get("view").and_then(Value::as_str).unwrap_or("lines");
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let limit = match optional_positive_usize(args, "limit") {
         Ok(limit) => limit.unwrap_or(100),
@@ -163,8 +201,9 @@ pub(crate) fn search_text(
             );
         }
     };
-    let regex = match Regex::new(pattern) {
-        Ok(regex) => regex,
+    let deadline = ScanDeadline::new(limits.scan_timeout_ms);
+    let search = match FileSearch::new(pattern, limits.search_line_bytes, deadline) {
+        Ok(search) => search,
         Err(error) => {
             return ToolResultEnvelope::error(
                 "failed: invalid regex",
@@ -177,68 +216,72 @@ pub(crate) fn search_text(
         Err(result) => return result,
     };
 
-    let mut files = Vec::new();
-    let mut blocked_file_count = 0_usize;
-    if let Err(error) = collect_search_files(
-        &resolved.path,
-        &resolved.workspace,
+    let mut candidates = SearchFiles {
+        workspace: &resolved.workspace,
         include,
-        &mut files,
-        &mut blocked_file_count,
+        view: view_kind,
+        files: Vec::new(),
+        blocked: 0,
+        unreadable_entries: 0,
+        entries_left: limits.scan_entries,
+        path_bytes_left: limits.search_path_bytes,
+        deadline,
         cancelled,
-    ) {
-        return file_read_error(Path::new(path), error);
-    }
+    };
+    let collection_limit = match candidates.collect(&resolved.path) {
+        Ok(()) => None,
+        Err(error) if is_io_limit(&error) => Some(error.to_string()),
+        Err(error) => return file_read_error(Path::new(path), error),
+    };
+    let SearchFiles {
+        mut files,
+        blocked: blocked_file_count,
+        unreadable_entries,
+        ..
+    } = candidates;
     if view_kind == SearchView::Lines {
-        files.sort_by_cached_key(|file| {
-            let modified = if cancelled() {
-                None
-            } else {
-                fs::metadata(&file.absolute).and_then(|m| m.modified()).ok()
-            };
-            (Reverse(modified), file.relative.clone())
+        files.sort_unstable_by(|left, right| {
+            (Reverse(left.modified), &left.relative)
+                .cmp(&(Reverse(right.modified), &right.relative))
         });
     } else {
-        files.sort_by(|left, right| left.relative.cmp(&right.relative));
+        files.sort_unstable_by(|left, right| left.relative.cmp(&right.relative));
     }
 
     let body_budget = preview_bytes - PAGE_NOTICE_BYTES;
     let mut page = SearchPage::new(offset, limit, view_kind, body_budget);
     let mut preview = ContextPreview::new(body_budget);
-    let mut skipped_file_count = 0_usize;
-    let mut searched_file_count = 0_usize;
-    for file in &files {
-        let content = match read_file_as_utf8(&file.absolute, cancelled) {
-            Ok(content) => content,
-            Err(result) if result.status == "cancelled" => return result,
-            Err(_) => {
-                skipped_file_count += 1;
-                continue;
-            }
-        };
-        searched_file_count += 1;
-        let previous_count = page.matches.len();
-        if let Err(error) = page.scan(&file.relative, &content, &regex, cancelled) {
-            return file_read_error(Path::new(path), error);
-        }
-        if context > 0 && view_kind == SearchView::Lines {
-            if let Err(error) = preview.extend(
-                &file.relative,
-                &content,
-                &page.matches[previous_count..],
-                previous_count,
-                context,
-                cancelled,
-            ) {
-                return file_read_error(Path::new(path), error);
-            }
-        }
-    }
+    let source = match WorkspaceFiles::new(&resolved.workspace) {
+        Ok(source) => source,
+        Err(error) => return file_read_error(Path::new(path), error),
+    };
+    let scan = WorkspaceScan {
+        source: &source,
+        deadline,
+        cancelled,
+    };
+    let ScanStats {
+        searched: searched_file_count,
+        skipped: skipped_file_count,
+        unverified: unverified_file_count,
+        limit: scan_limit,
+        unchecked,
+    } = match scan.run(search, &files, &mut page, &mut preview, context, limits) {
+        Ok(stats) => stats,
+        Err(error) => return file_read_error(Path::new(path), error),
+    };
+    let budget_reason = collection_limit.or(scan_limit);
 
-    let total_match_count = page.total;
+    if let Err(error) = source.verify_root() {
+        return file_read_error(Path::new(path), error);
+    }
+    let total_match_count = page.progress.total;
     let sliced = page.matches;
     let next_offset = offset.saturating_add(sliced.len());
-    let has_more = next_offset < total_match_count;
+    let scan_complete =
+        budget_reason.is_none() && unreadable_entries == 0 && unverified_file_count == 0;
+    let page_has_more = next_offset < total_match_count;
+    let has_more = scan_complete && page_has_more;
     if has_more && sliced.is_empty() {
         return ToolResultEnvelope::error(
             "search match does not fit within the preview limit",
@@ -248,7 +291,7 @@ pub(crate) fn search_text(
 
     let primary_lines = render_search_lines(view_kind, &sliced);
     let (mut model_content, context_truncated) =
-        preview.render(primary_lines, body_budget - page.body_bytes);
+        preview.render(primary_lines, body_budget - page.progress.body_bytes);
     if has_more {
         use std::fmt::Write;
         let _ = write!(
@@ -262,10 +305,26 @@ pub(crate) fn search_text(
             "\nSome context lines were omitted. Lower limit or use read_file around a hit.",
         );
     }
+    if !scan_complete {
+        let notice = incomplete_notice(
+            total_match_count,
+            budget_reason.as_deref(),
+            unchecked.as_ref(),
+        );
+        model_content = if model_content.is_empty() {
+            notice
+        } else {
+            format!("{notice}\n{model_content}")
+        };
+    } else if total_match_count == 0 {
+        model_content = "No matches in the searched files.".into();
+    }
     let file_count = sliced
         .chunk_by(|left, right| left.path == right.path)
         .count();
-    let summary = if has_more {
+    let summary = if !scan_complete {
+        format!("Incomplete search with {total_match_count} matches in the part searched")
+    } else if has_more {
         format!(
             "Showing {} of {} matches in {} files, view={}",
             sliced.len(),
@@ -299,93 +358,150 @@ pub(crate) fn search_text(
         "file_count": file_count,
         "searched_file_count": searched_file_count,
         "skipped_file_count": skipped_file_count,
+        "unverified_file_count": unverified_file_count,
         "blocked_file_count": blocked_file_count,
+        "unreadable_entry_count": unreadable_entries,
         "offset": offset,
         "limit": limit,
         "has_more": has_more,
         "next_offset": has_more.then_some(next_offset),
         "context_truncated": context_truncated,
+        "scan_complete": scan_complete,
+        "scan_limit": budget_reason,
+        "unchecked_file": unchecked,
         "matches": sliced,
     });
 
-    if context_truncated || has_more {
+    if context_truncated || has_more || !scan_complete {
         ToolResultEnvelope::ok_truncated(summary, model_content, structured)
     } else {
         ToolResultEnvelope::ok(summary, model_content, structured)
     }
 }
 
-fn collect_search_files(
-    root: &Path,
-    workspace: &Path,
-    include: Option<&str>,
-    files: &mut Vec<CollectedFile>,
-    blocked_file_count: &mut usize,
-    cancelled: &FileCancellation<'_>,
-) -> io::Result<()> {
-    ensure_active(cancelled)?;
-    let relative = relative_path(root, workspace);
-    if workspace_path_blocked(&relative) {
-        *blocked_file_count += 1;
-        return Ok(());
-    }
-    if root.is_file() {
-        push_search_file(root, workspace, include, files, blocked_file_count);
-        return Ok(());
-    }
-
-    verify_directory(root)?;
-    for entry in fs::read_dir(root)? {
-        ensure_active(cancelled)?;
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let path = entry.path();
-        let relative = relative_path(&path, workspace);
-
-        if workspace_path_blocked(&relative) {
-            *blocked_file_count += 1;
-            continue;
+fn incomplete_notice(
+    matches: usize,
+    limit: Option<&str>,
+    unchecked: Option<&UncheckedFile>,
+) -> String {
+    if let Some(file) = unchecked {
+        let mut path = format!("{:?}", file.path);
+        if path.len() > 88 {
+            path.truncate(path.floor_char_boundary(84));
+            path.push_str("…\"");
         }
-        if file_type.is_dir() {
-            let file_name = entry.file_name();
-            if is_default_excluded_dir(&file_name.to_string_lossy()) {
-                continue;
-            }
-            collect_search_files(
-                &path,
-                workspace,
-                include,
-                files,
-                blocked_file_count,
-                cancelled,
-            )?;
-        } else if file_type.is_file() {
-            push_search_file(&path, workspace, include, files, blocked_file_count);
-        }
+        return format!(
+            "Search incomplete. {matches} matches in the part searched. Unchecked file example: {path} ({}). Inspect this file if you need the missing evidence.",
+            file.reason,
+        );
     }
-
-    Ok(())
+    let reason = limit.unwrap_or("some files or directory entries could not be verified");
+    format!(
+        "Search incomplete ({reason}). {matches} matches in the part searched. Search a smaller folder with path, or restrict file types with include."
+    )
 }
 
-fn push_search_file(
-    path: &Path,
-    workspace: &Path,
-    include: Option<&str>,
-    files: &mut Vec<CollectedFile>,
-    blocked_file_count: &mut usize,
-) {
-    let relative = relative_path(path, workspace);
-    if workspace_path_blocked(&relative) {
-        *blocked_file_count += 1;
-        return;
+struct SearchFiles<'a> {
+    workspace: &'a Path,
+    include: Option<&'a str>,
+    view: SearchView,
+    files: Vec<CollectedFile>,
+    blocked: usize,
+    unreadable_entries: usize,
+    entries_left: usize,
+    path_bytes_left: usize,
+    deadline: ScanDeadline,
+    cancelled: &'a FileCancellation<'a>,
+}
+
+impl SearchFiles<'_> {
+    fn collect(&mut self, root: &Path) -> io::Result<()> {
+        self.deadline.check()?;
+        ensure_active(self.cancelled)?;
+        let relative = relative_path(root, self.workspace);
+        if workspace_path_blocked(&relative) {
+            self.blocked += 1;
+            return Ok(());
+        }
+        if root.is_file() {
+            return self.push(root, relative);
+        }
+        self.walk(root)
     }
-    if include.is_some_and(|pattern| !glob_match(pattern, &relative)) {
-        return;
+
+    fn walk(&mut self, root: &Path) -> io::Result<()> {
+        verify_directory(root)?;
+        for entry in fs::read_dir(root)? {
+            self.deadline.check()?;
+            charge_entry(&mut self.entries_left, self.cancelled)?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    self.unreadable_entries += 1;
+                    continue;
+                }
+            };
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => {
+                    self.unreadable_entries += 1;
+                    continue;
+                }
+            };
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if workspace_path_blocked(&name) {
+                self.blocked += 1;
+                continue;
+            }
+            if file_type.is_dir() && !is_default_excluded_dir(&name) {
+                if let Err(error) = self.walk(&entry.path()) {
+                    if is_cancellation(&error) || is_io_limit(&error) {
+                        return Err(error);
+                    }
+                    self.unreadable_entries += 1;
+                }
+            } else if file_type.is_file() {
+                let path = entry.path();
+                self.push(&path, relative_path(&path, self.workspace))?;
+            }
+        }
+        Ok(())
     }
-    files.push(CollectedFile {
-        absolute: path.to_path_buf(),
-        relative,
-    });
+
+    fn push(&mut self, path: &Path, relative: String) -> io::Result<()> {
+        if self
+            .include
+            .is_some_and(|pattern| !glob_match(pattern, &relative))
+        {
+            return Ok(());
+        }
+        let original = path.strip_prefix(self.workspace).unwrap_or(path);
+        let original = (original != Path::new(&relative)).then(|| Box::<Path>::from(original));
+        let bytes = std::mem::size_of::<CollectedFile>()
+            + relative.capacity()
+            + original.as_ref().map_or(0, |raw| raw.as_os_str().len());
+        self.path_bytes_left = self
+            .path_bytes_left
+            .checked_sub(bytes)
+            .ok_or_else(|| io::Error::other(IoLimit("search path memory budget exhausted")))?;
+        self.files
+            .try_reserve(1)
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        let modified = (self.view == SearchView::Lines)
+            .then(|| {
+                fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+            })
+            .flatten();
+        self.files.push(CollectedFile {
+            relative,
+            original,
+            modified,
+        });
+        Ok(())
+    }
 }
 
 fn render_search_lines(view: SearchView, matches: &[SearchMatch]) -> Vec<String> {
@@ -419,6 +535,23 @@ fn line_row_bytes(path: &str, line_number: usize) -> usize {
     path.len() + line_number.ilog10() as usize + 5
 }
 
+fn match_excerpt(line: &str, max_bytes: usize, regex: &regex::Regex) -> String {
+    let preview = trim_search_line(line, max_bytes);
+    if preview == line || max_bytes <= 3 {
+        return preview;
+    }
+    if let Some(hit) = regex.find(line) {
+        if hit.end() > preview.len().saturating_sub(3) {
+            let before_hit = (max_bytes / 4).min(MAX_SEARCH_LINE_CHARS / 4);
+            let start = line.floor_char_boundary(hit.start().saturating_sub(before_hit));
+            if start > 0 {
+                return format!("...{}", trim_search_line(&line[start..], max_bytes - 3));
+            }
+        }
+    }
+    preview
+}
+
 fn trim_search_line(line: &str, max_bytes: usize) -> String {
     let char_end = line
         .char_indices()
@@ -444,6 +577,7 @@ mod tests {
             args,
             workspace,
             crate::RuntimeLimits::default().max_preview_bytes,
+            WorkspaceIoLimits::default(),
             &|| false,
         )
     }
@@ -459,11 +593,86 @@ mod tests {
             &serde_json::json!({"path":"large.txt","pattern":"missing pattern"}),
             dir.path(),
             crate::RuntimeLimits::default().max_preview_bytes,
+            WorkspaceIoLimits::default(),
             &stop,
         );
 
         assert_eq!("cancelled", result.status);
         assert_eq!(5, checks.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn search_discards_matches_from_a_file_with_invalid_utf8_after_the_first_chunk() {
+        let dir = workspace();
+        let mut input = b"needle\n".to_vec();
+        input.extend(b"ordinary line\n".repeat(8_000));
+        input.push(0xff);
+        std::fs::write(dir.path().join("bad.txt"), input).unwrap();
+        std::fs::write(dir.path().join("good.txt"), "needle\n").unwrap();
+
+        let result = search_text(&serde_json::json!({"pattern":"needle"}), dir.path());
+        let facts = result.structured.unwrap();
+        assert_eq!(facts["total_match_count"], 1);
+        assert_eq!(facts["skipped_file_count"], 1);
+        assert_eq!(facts["scan_complete"], true);
+        assert_eq!(result.model_content, "good.txt:1: needle");
+    }
+
+    #[test]
+    fn search_reports_incomplete_when_a_long_line_cannot_be_matched() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("large.txt"), "a".repeat(1024)).unwrap();
+        std::fs::write(dir.path().join("good.txt"), "needle\n").unwrap();
+        let limits = WorkspaceIoLimits {
+            search_line_bytes: 128,
+            ..WorkspaceIoLimits::default()
+        };
+        let result = super::search_text(
+            &serde_json::json!({"pattern":"needle"}),
+            dir.path(),
+            1024,
+            limits,
+            &|| false,
+        );
+        let facts = result.structured.unwrap();
+        assert!(!facts["scan_complete"].as_bool().unwrap());
+        assert_eq!(facts["total_match_count"], 1);
+        assert_eq!(facts["skipped_file_count"], 1);
+        assert!(result.truncated);
+        assert!(result.summary.starts_with("Incomplete search"));
+        assert!(result.model_content.starts_with("Search incomplete"));
+        assert!(result.model_content.contains(
+            "Unchecked file example: \"large.txt\" (a line exceeds the search buffer budget)"
+        ));
+        assert_eq!(facts["unchecked_file"]["path"], "large.txt");
+        assert_eq!(facts["next_offset"], Value::Null);
+    }
+
+    #[test]
+    fn zero_matches_in_an_incomplete_search_are_reported_as_partial() {
+        let dir = workspace();
+        std::fs::write(dir.path().join("large.txt"), "ordinary\n".repeat(1024)).unwrap();
+        let result = super::search_text(
+            &serde_json::json!({"pattern":"needle"}),
+            dir.path(),
+            1024,
+            WorkspaceIoLimits {
+                scan_bytes: 32,
+                ..Default::default()
+            },
+            &|| false,
+        );
+        assert!(result.model_content.starts_with("Search incomplete"));
+        assert!(result
+            .model_content
+            .contains("0 matches in the part searched"));
+        let facts = result.structured.unwrap();
+        assert_eq!(facts["scan_complete"], false);
+        assert_eq!(facts["next_offset"], Value::Null);
+        assert_eq!(facts["unchecked_file"], Value::Null);
+        let complete = search_text(&serde_json::json!({"pattern":"needle"}), dir.path());
+        assert_eq!(complete.model_content, "No matches in the searched files.");
+        assert_eq!(complete.structured.unwrap()["scan_complete"], true);
     }
 
     #[test]
@@ -477,7 +686,10 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
-        let files = search_text(&serde_json::json!({"pattern": "TODO"}), dir.path());
+        let files = search_text(
+            &serde_json::json!({"pattern": "TODO", "view": "files"}),
+            dir.path(),
+        );
         assert_eq!(files.status, "ok");
         assert_eq!(files.model_content, "README.md\ndocs/tools.md");
         assert_eq!(files.structured.as_ref().unwrap()["match_count"], 3);
@@ -520,7 +732,20 @@ mod tests {
             dir.path(),
         );
         assert_eq!(filtered.status, "ok");
-        assert_eq!(filtered.model_content, "docs/tools.md");
+        assert_eq!(filtered.model_content, "docs/tools.md:1: TODO docs");
+    }
+
+    #[test]
+    fn default_search_excerpt_includes_a_match_late_in_a_long_line() {
+        let dir = workspace();
+        let source = format!("{}needle{}", "词".repeat(800), "字".repeat(800));
+        std::fs::write(dir.path().join("README.md"), source).unwrap();
+
+        let result = search_text(&serde_json::json!({"pattern": "needle"}), dir.path());
+        assert!(result.model_content.starts_with("README.md:1: ..."));
+        assert!(result.model_content.contains("needle"));
+        let facts = result.structured.unwrap();
+        assert_eq!(facts["matches"][0]["line_truncated"], true);
     }
 
     #[test]
@@ -629,6 +854,7 @@ mod tests {
                     &serde_json::json!({"path":"fixture.txt","pattern":"TODO","view":"lines","context":context,"offset":offset,"limit":1000}),
                     dir.path(),
                     cap,
+                    WorkspaceIoLimits::default(),
                     &|| false,
                 );
                 assert_eq!("ok", result.status);
@@ -675,8 +901,9 @@ mod tests {
         let row = format!("TODO {}\n", "🙂".repeat(650));
         std::fs::write(dir.path().join("fixture.txt"), row.repeat(20)).unwrap();
         let args = serde_json::json!({"path":"fixture.txt","pattern":"TODO","view":"lines"});
-        let direct = super::search_text(&args, dir.path(), 1024, &|| false);
-        let local = super::search_text_for_executor(&args, dir.path(), &|| false);
+        let limits = WorkspaceIoLimits::default();
+        let direct = super::search_text(&args, dir.path(), 1024, limits, &|| false);
+        let local = super::search_text_for_executor(&args, dir.path(), limits, &|| false);
 
         assert!(direct.model_content.len() <= 1024);
         let facts = direct.structured.unwrap();

@@ -29,6 +29,8 @@ crc32fast = "1"
 fastrand = "2"
 flate2 = "1"
 regex = "1"
+regex-syntax = "0.8"
+memchr = "2"
 readability = { version = "0.3", default-features = false }
 htmd = "0.5"
 lru = "0.18"
@@ -42,6 +44,9 @@ rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tokio = { workspace = true, features = ["signal"] }

@@ -54,7 +54,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         3,
-        crate::RuntimeLimits::default().max_preview_bytes,
+        &crate::RuntimeLimits::default(),
         &never_cancelled,
     );
     assert_eq!(read_before.status, "ok");
@@ -79,6 +79,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(write.status, "ok");
@@ -94,7 +95,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         &conversation,
         &events,
         5,
-        crate::RuntimeLimits::default().max_preview_bytes,
+        &crate::RuntimeLimits::default(),
         &never_cancelled,
     );
     assert_eq!(read_after.status, "ok");
@@ -119,6 +120,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default().text_bytes,
         &never_cancelled,
     );
     assert_eq!(edit.status, "ok");
@@ -173,7 +175,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         3,
-        crate::RuntimeLimits::default().max_preview_bytes,
+        &crate::RuntimeLimits::default(),
         &never_cancelled,
     );
     assert_eq!(read_before.status, "ok");
@@ -190,6 +192,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(write.status, "ok");
@@ -209,7 +212,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         5,
-        crate::RuntimeLimits::default().max_preview_bytes,
+        &crate::RuntimeLimits::default(),
         &never_cancelled,
     );
     assert_eq!(read_before_edit.status, "ok");
@@ -230,6 +233,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default().text_bytes,
         &never_cancelled,
     );
     assert_eq!(edit.status, "ok");
@@ -249,7 +253,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         &conversation,
         &events,
         7,
-        crate::RuntimeLimits::default().max_preview_bytes,
+        &crate::RuntimeLimits::default(),
         &never_cancelled,
     );
     assert_eq!(read_after_edit.status, "ok");
@@ -269,6 +273,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(target_write.status, "ok");
@@ -341,6 +346,7 @@ fn assert_real_created_file_deletion(workspace_alias: &Path, session_dir: &Path)
         workspace_alias,
         &conversation,
         &events,
+        crate::WorkspaceIoLimits::default(),
         &never_cancelled,
     );
     assert_eq!(write.status, "ok");

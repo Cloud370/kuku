@@ -204,6 +204,16 @@ pub trait ToolAdapter: std::fmt::Debug + Send + Sync {
         action: ToolAuthorization,
         cancellation: ToolCancellation,
     ) -> AdapterFuture<'_, ToolOutput>;
+
+    /// Execute using the Session's budgets. An embedding may apply these to its own executor.
+    fn execute_with_limits(
+        &self,
+        action: ToolAuthorization,
+        cancellation: ToolCancellation,
+        _limits: crate::RuntimeLimits,
+    ) -> AdapterFuture<'_, ToolOutput> {
+        self.execute(action, cancellation)
+    }
 }
 
 /// Effective model and tool selection, inspectable without starting a model or tool.
