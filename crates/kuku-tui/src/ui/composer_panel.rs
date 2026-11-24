@@ -144,7 +144,7 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
         )),
         Line::raw("Ctrl+P/F1   Show this help"),
         Line::raw("Ctrl+G      Rewind to a message"),
-        Line::raw("Ctrl+V      Paste · Ctrl+Alt+V also works"),
+        Line::raw("Ctrl+V / Ctrl+Shift+V  Paste when forwarded"),
         Line::raw("/           Search actions and Skills"),
         Line::default(),
     ];

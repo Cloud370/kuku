@@ -193,7 +193,7 @@ impl App {
         }
         let editing = self.composer_focused();
         match key {
-            key if Shortcut::PASTE.matches(key) || Shortcut::PASTE_IMAGE_ALIAS.matches(key) => {
+            key if Shortcut::clipboard_paste(key) => {
                 self.paste_clipboard();
             }
             key if Shortcut::CLEAR.matches(key) => {

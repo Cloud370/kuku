@@ -762,3 +762,38 @@ fn image_quality_defaults_to_compressed_and_tab_stops_auto_send() {
         assert_eq!(app.pane().draft.text().trim(), "[Image #1]");
     }
 }
+
+#[test]
+fn terminal_paste_reads_images_on_empty_events_and_preserves_text() {
+    use crate::clipboard::PasteSource;
+
+    let mut app = connected_app();
+    let screen = frame(&mut app, 100);
+    app.event(Event::Paste("pasted text".into()), &screen);
+    assert_eq!(app.pane().draft.text(), "pasted text");
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::PasteClipboard(..)))
+    );
+
+    app.event(Event::Paste(String::new()), &screen);
+    assert!(app.effects.iter().any(|job| matches!(
+        job,
+        Job::PasteClipboard(_, _, PasteSource::Clipboard { image_only: true })
+    )));
+    assert_eq!(app.pane().draft.text(), "pasted text");
+
+    let mut app = connected_app();
+    app.event(
+        Event::Key(KeyEvent::new(
+            KeyCode::Char('V'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )),
+        &screen,
+    );
+    assert!(app.effects.iter().any(|job| matches!(
+        job,
+        Job::PasteClipboard(_, _, PasteSource::Clipboard { image_only: false })
+    )));
+}

@@ -105,7 +105,11 @@ pub(super) struct ImageSend {
 
 impl App {
     pub(crate) fn paste_transfer(&mut self, text: String) {
-        if self.modal.is_none() && crate::clipboard::image_path_candidate(&text).is_some() {
+        if self.modal.is_some() {
+            self.paste(&text);
+        } else if text.is_empty() {
+            self.begin_clipboard_read(PasteSource::Clipboard { image_only: true });
+        } else if crate::clipboard::image_path_candidate(&text).is_some() {
             self.begin_clipboard_read(PasteSource::ImagePath(text));
         } else {
             self.paste(&text);
@@ -113,7 +117,7 @@ impl App {
     }
 
     pub(crate) fn paste_clipboard(&mut self) {
-        self.begin_clipboard_read(PasteSource::Clipboard);
+        self.begin_clipboard_read(PasteSource::Clipboard { image_only: false });
     }
 
     fn begin_clipboard_read(&mut self, source: PasteSource) {
@@ -145,7 +149,7 @@ impl App {
         }
         pane.clipboard_ticket = None;
         match pasted {
-            Ok(Pasted::Text(text)) => {
+            Ok(Pasted::Text(text)) if !text.is_empty() => {
                 if active && self.modal.is_none() {
                     self.paste(&text);
                 } else {

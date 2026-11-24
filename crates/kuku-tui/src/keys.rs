@@ -58,6 +58,13 @@ impl Shortcut {
     pub(crate) const LATEST: Self = Self::new(KeyCode::End, KeyModifiers::CONTROL, "Ctrl+End");
     pub(crate) const READING_BACK: Self = Self::new(KeyCode::Up, KeyModifiers::ALT, "Alt+↑");
 
+    pub(crate) fn clipboard_paste(key: KeyEvent) -> bool {
+        Self::PASTE.matches(key)
+            || Self::PASTE_IMAGE_ALIAS.matches(key)
+            || (matches!(key.code, KeyCode::Char('v' | 'V'))
+                && key.modifiers == KeyModifiers::CONTROL.union(KeyModifiers::SHIFT))
+    }
+
     pub(crate) fn matches(self, key: KeyEvent) -> bool {
         key.code == self.code && key.modifiers == self.modifiers
     }

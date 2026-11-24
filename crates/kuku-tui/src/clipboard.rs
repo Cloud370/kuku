@@ -11,14 +11,14 @@ const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SOURCE_PIXELS: usize = 32 * 1024 * 1024;
 
 pub(crate) enum PasteSource {
-    Clipboard,
+    Clipboard { image_only: bool },
     ImagePath(String),
 }
 
 impl PasteSource {
     pub(crate) fn read(self, workspace: &Path) -> Result<Pasted, String> {
         match self {
-            Self::Clipboard => read_clipboard(workspace),
+            Self::Clipboard { image_only } => read_clipboard(workspace, image_only),
             Self::ImagePath(text) => image_from_text(workspace, text),
         }
     }
@@ -160,8 +160,8 @@ fn wsl_image_path(path: &Path) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
-fn read_clipboard(workspace: &Path) -> Result<Pasted, String> {
-    let native = read_native_clipboard(workspace);
+fn read_clipboard(workspace: &Path, image_only: bool) -> Result<Pasted, String> {
+    let native = read_native_clipboard(workspace, image_only);
     #[cfg(target_os = "linux")]
     if (native.is_err() || matches!(&native, Ok(Pasted::Text(text)) if text.is_empty()))
         && let Some(result) = read_windows_bitmap()
@@ -199,7 +199,7 @@ fn read_windows_bitmap() -> Option<Result<ClipboardImage, String>> {
         .then(|| decode_image(output.stdout))
 }
 
-fn read_native_clipboard(workspace: &Path) -> Result<Pasted, String> {
+fn read_native_clipboard(workspace: &Path, image_only: bool) -> Result<Pasted, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
     if let Ok(paths) = clipboard.get().file_list()
         && let Some(path) = paths
@@ -226,6 +226,7 @@ fn read_native_clipboard(workspace: &Path) -> Result<Pasted, String> {
                 transparent,
             }))
         }
+        Err(arboard::Error::ContentNotAvailable) if image_only => Ok(Pasted::Text(String::new())),
         Err(arboard::Error::ContentNotAvailable) => {
             let text = clipboard.get_text().map_err(|error| error.to_string())?;
             image_from_text(workspace, text)
