@@ -38,7 +38,7 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 ### 在无头主机登录订阅
 
-在 `kuku init` 或 `/model` 的 **Add model** 中选择 **Preset · ChatGPT subscription**。选择网络模式，可选填账号别名。在自己的浏览器打开 **Open authorization link**，或用 **Ctrl+Y** 复制分隔线之间的完整授权地址。授权后，把地址栏里的回调 URL 粘贴到 kuku。如果浏览器无法连接回调页面，从错误页的地址栏复制。粘贴的 URL 不回显。登录后账号会保存，设置界面随即查询该账号的模型。
+在 `kuku init` 或 `/model` 的 **Add model** 中选择 **Preset · ChatGPT subscription**。选择网络模式，可选填账号别名。在自己的浏览器打开 **Open authorization link**，或用 **Ctrl+Y** 复制分隔线之间的完整授权地址。授权后，把地址栏里的回调 URL 粘贴到 kuku。如果浏览器无法连接回调页面，从错误页的地址栏复制。回调输入提示会显示光标，粘贴的 URL 不回显。OpenAI 拒绝授权码时，请使用 kuku 显示的新授权链接。登录后账号会保存，设置界面随即查询该账号的模型。
 
 也可以在运行 kuku 的主机上执行 `kuku auth login chatgpt [名称]`。重新授权时使用已保存的账号别名。省略名称时，从授权身份派生别名。
 

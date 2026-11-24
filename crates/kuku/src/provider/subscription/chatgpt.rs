@@ -40,13 +40,16 @@ pub struct SubscriptionLogin {
     account: Option<SubscriptionAccount>,
     host: HostRegistration,
     proxy: ProviderProxy,
-    authorization_url: Url,
-    redirect: Url,
     pending: PendingLogin,
-    state: String,
-    nonce: String,
-    verifier: String,
-    started: Instant,
+    browser: BrowserAuthorization,
+}
+
+/// The result of exchanging the browser callback.
+pub enum SubscriptionLoginProgress {
+    /// The verified account and its current sign-in state.
+    Completed(SubscriptionLoginResult),
+    /// OpenAI rejected the code and the same registration needs a new browser authorization.
+    Retry(Box<SubscriptionLogin>),
 }
 
 /// The account selected or created by a successful browser authorization.
@@ -71,97 +74,73 @@ impl SubscriptionLogin {
         let store = AccountStore::new(&directory_reference)?;
         let prior = if name.is_some() { store.read()? } else { None };
         let host = store.host_registration().await?;
-        let verifier = random_secret()?;
-        let state = random_secret()?;
-        let nonce = random_secret()?;
-        let redirect = redirect_url()?;
-        let mut authorization_url =
-            Url::parse(AUTH_ENDPOINT).expect("fixed authorization endpoint");
-        let client_id = prior
-            .as_ref()
-            .map_or(DYNAMIC_CLIENT, |record| &record.client_id);
-        authorization_url.query_pairs_mut().extend_pairs([
-            ("client_id", client_id),
-            ("ext_agent_host_id", &host.id),
-            ("response_type", "code"),
-            ("redirect_uri", redirect.as_str()),
-            ("scope", USER_SCOPES),
-            ("resource", CHATGPT_RESOURCE),
-            ("state", &state),
-            ("nonce", &nonce),
-            ("code_challenge_method", "S256"),
-            (
-                "code_challenge",
-                &URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
-            ),
-        ]);
-        if prior.is_none() {
-            authorization_url
-                .query_pairs_mut()
-                .append_pair("agent_name_hint", "kuku");
-        }
-        if prior
-            .as_ref()
-            .and_then(|record| record.tokens.as_ref())
-            .is_some_and(|tokens| !plan_enabled(&tokens.scope))
-        {
-            authorization_url
-                .query_pairs_mut()
-                .append_pair("prompt", "consent");
-        }
+        let pending = PendingLogin::from_record(prior);
+        let browser = BrowserAuthorization::new(&host, &pending)?;
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             channel,
             account: name.map(|_| directory_reference),
             host,
             proxy,
-            authorization_url,
-            redirect,
-            pending: PendingLogin::from_record(prior),
-            state,
-            nonce,
-            verifier,
-            started: Instant::now(),
+            pending,
+            browser,
         })
     }
 
     /// Return the complete browser authorization link for this attempt.
     pub fn authorization_url(&self) -> &str {
-        self.authorization_url.as_str()
+        self.browser.authorization_url.as_str()
     }
 
     /// Accept the complete pasted callback, validate the grant, and publish the new token set.
     pub async fn complete(self, pasted: &str) -> Result<SubscriptionLoginResult> {
-        if self.started.elapsed() >= LOGIN_TIMEOUT {
+        match self.complete_or_retry(pasted).await? {
+            SubscriptionLoginProgress::Completed(login) => Ok(login),
+            SubscriptionLoginProgress::Retry(_) => Err(TokenFailure::InvalidGrant.into()),
+        }
+    }
+
+    /// Exchange the callback, preparing a fresh link for the same registration if OpenAI rejects the code.
+    pub async fn complete_or_retry(mut self, pasted: &str) -> Result<SubscriptionLoginProgress> {
+        if self.browser.started.elapsed() >= LOGIN_TIMEOUT {
             return Err(Error::InvalidArgument(
                 "ChatGPT sign-in expired; start a new attempt".into(),
             ));
         }
         let callback = parse_callback(
             pasted.trim(),
-            &self.redirect,
-            &self.state,
+            &self.browser.redirect,
+            &self.browser.state,
             self.pending.client_id.as_deref(),
         )?;
         let client = proxy_client(&self.proxy)?;
-        let reply = token_request(
+        let exchange = token_request(
             &client,
             &[
                 ("grant_type", "authorization_code"),
                 ("code", &callback.code),
-                ("code_verifier", &self.verifier),
+                ("code_verifier", &self.browser.verifier),
                 ("client_id", &callback.client_id),
-                ("redirect_uri", self.redirect.as_str()),
+                ("redirect_uri", self.browser.redirect.as_str()),
                 ("resource", CHATGPT_RESOURCE),
             ],
         )
-        .await?;
+        .await;
+        let reply = match exchange {
+            Ok(reply) => reply,
+            Err(TokenFailure::InvalidGrant) => {
+                self.pending.client_id = Some(callback.client_id);
+                self.browser = BrowserAuthorization::new(&self.host, &self.pending)?;
+                return Ok(SubscriptionLoginProgress::Retry(Box::new(self)));
+            }
+            Err(error) => return Err(error.into()),
+        };
         let id_token = reply
             .id_token
             .as_deref()
             .ok_or(TokenFailure::InvalidResponse)?;
         let identity =
-            verified_identity(&client, id_token, &callback.client_id, &self.nonce).await?;
+            verified_identity(&client, id_token, &callback.client_id, &self.browser.nonce).await?;
         if self
             .pending
             .subject
@@ -207,9 +186,65 @@ impl SubscriptionLogin {
             tokens: Some(reply.into_tokens(None)?),
         };
         store.write(&record)?;
-        Ok(SubscriptionLoginResult {
-            account,
-            info: account_info(Some(&record)),
+        Ok(SubscriptionLoginProgress::Completed(
+            SubscriptionLoginResult {
+                account,
+                info: account_info(Some(&record)),
+            },
+        ))
+    }
+}
+
+struct BrowserAuthorization {
+    authorization_url: Url,
+    redirect: Url,
+    state: String,
+    nonce: String,
+    verifier: String,
+    started: Instant,
+}
+
+impl BrowserAuthorization {
+    fn new(host: &HostRegistration, pending: &PendingLogin) -> Result<Self> {
+        let verifier = random_secret()?;
+        let state = random_secret()?;
+        let nonce = random_secret()?;
+        let redirect = redirect_url()?;
+        let mut authorization_url =
+            Url::parse(AUTH_ENDPOINT).expect("fixed authorization endpoint");
+        let client_id = pending.client_id.as_deref().unwrap_or(DYNAMIC_CLIENT);
+        authorization_url.query_pairs_mut().extend_pairs([
+            ("client_id", client_id),
+            ("ext_agent_host_id", &host.id),
+            ("response_type", "code"),
+            ("redirect_uri", redirect.as_str()),
+            ("scope", USER_SCOPES),
+            ("resource", CHATGPT_RESOURCE),
+            ("state", &state),
+            ("nonce", &nonce),
+            ("code_challenge_method", "S256"),
+            (
+                "code_challenge",
+                &URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+            ),
+        ]);
+        if pending.client_id.is_none() {
+            authorization_url
+                .query_pairs_mut()
+                .append_pair("agent_name_hint", "kuku");
+        }
+        if pending.prompt_consent {
+            authorization_url
+                .query_pairs_mut()
+                .append_pair("prompt", "consent");
+        }
+        Ok(Self {
+            authorization_url,
+            redirect,
+            state,
+            nonce,
+            verifier,
+            started: Instant::now(),
         })
     }
 }
@@ -218,6 +253,7 @@ struct PendingLogin {
     revision: Option<String>,
     client_id: Option<String>,
     subject: Option<String>,
+    prompt_consent: bool,
 }
 
 impl PendingLogin {
@@ -227,11 +263,16 @@ impl PendingLogin {
                 revision: Some(record.revision),
                 client_id: Some(record.client_id),
                 subject: Some(record.subject),
+                prompt_consent: record
+                    .tokens
+                    .as_ref()
+                    .is_some_and(|tokens| !plan_enabled(&tokens.scope)),
             },
             None => Self {
                 revision: None,
                 client_id: None,
                 subject: None,
+                prompt_consent: false,
             },
         }
     }
@@ -243,7 +284,9 @@ pub(super) enum TokenFailure {
     Transport,
     #[error("OpenAI returned an invalid sign-in response")]
     InvalidResponse,
-    #[error("OpenAI rejected the authorization grant; sign in again")]
+    #[error("OpenAI rejected the authorization code (invalid_grant)")]
+    InvalidGrant,
+    #[error("OpenAI rejected the refresh token; sign in again")]
     Expired,
     #[error("OpenAI rejected the account's client registration")]
     InvalidClient,
@@ -592,9 +635,9 @@ async fn token_request(
     }
     let body = read_json::<TokenErrorBody>(response).await.ok();
     match body.as_ref().map(|body| body.error.as_str()) {
+        Some("invalid_grant") => Err(TokenFailure::InvalidGrant),
         Some(
-            "invalid_grant"
-            | "invalid_refresh_token"
+            "invalid_refresh_token"
             | "token_expired"
             | "refresh_token_expired"
             | "refresh_token_invalidated"
@@ -790,9 +833,9 @@ mod tests {
         assert!(url
             .query_pairs()
             .all(|(key, _)| !matches!(key.as_ref(), "id_token_hint" | "login_hint")));
-        let mut redirect = attempt.redirect.clone();
+        let mut redirect = attempt.browser.redirect.clone();
         redirect.query_pairs_mut().extend_pairs([
-            ("state", attempt.state.as_str()),
+            ("state", attempt.browser.state.as_str()),
             ("code", "fake-private-code"),
             ("client_id", "oaiapp_fixture"),
         ]);

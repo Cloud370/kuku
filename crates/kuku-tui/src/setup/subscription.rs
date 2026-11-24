@@ -198,7 +198,11 @@ mod tests {
         generate_default, load_config, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
     };
     use kuku_client::ConnectionOptions;
-    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+    use ratatui::{
+        backend::TestBackend,
+        layout::{Position, Rect},
+        Terminal,
+    };
 
     use super::SubscriptionSettings;
     use crate::setup::config::{save, Settings};
@@ -281,6 +285,16 @@ mod tests {
             "{}?code=fixture-callback-secret&state=wrong",
             parameters["redirect_uri"]
         );
+        let url_rows = u16::try_from(url.as_str().len().div_ceil(60)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .unwrap();
+        let prompt = "Paste callback URL > ";
+        assert!(terminal.backend().to_string().contains(prompt.trim_end()));
+        assert_eq!(
+            Position::new(prompt.len() as u16, 5 + url_rows),
+            terminal.get_cursor_position().unwrap()
+        );
         state.handle(Event::Paste(bad_callback), &settings, SetupMode::Init);
         terminal
             .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
@@ -291,7 +305,6 @@ mod tests {
         assert!(screen.contains("──── Authorization URL ────"));
         assert!(screen.contains("──── End authorization URL ────"));
         let buffer = terminal.backend().buffer();
-        let url_rows = u16::try_from(url.as_str().len().div_ceil(60)).unwrap();
         for row in [2, 3 + url_rows] {
             assert!((0..60).all(|column| buffer[(column, row)].symbol() == " "));
         }

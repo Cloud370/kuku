@@ -9,7 +9,7 @@ use crate::{Error, Result};
 
 use self::store::{now, AccountRecord, AccountStore};
 
-pub use self::chatgpt::{SubscriptionLogin, SubscriptionLoginResult};
+pub use self::chatgpt::{SubscriptionLogin, SubscriptionLoginProgress, SubscriptionLoginResult};
 
 const REFRESH_WINDOW_SECS: i64 = 30;
 
@@ -96,7 +96,7 @@ pub(crate) async fn authorization_token(
         SubscriptionChannel::ChatGpt => {
             match chatgpt::refresh(proxy, &record.client_id, refresh_token, &tokens.scope).await {
                 Ok(tokens) => record.tokens = Some(tokens),
-                Err(chatgpt::TokenFailure::Expired) => {
+                Err(chatgpt::TokenFailure::InvalidGrant | chatgpt::TokenFailure::Expired) => {
                     record.tokens = None;
                     record.revision = Uuid::new_v4().to_string();
                     store.write(&record)?;

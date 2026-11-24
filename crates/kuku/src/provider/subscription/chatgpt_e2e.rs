@@ -22,7 +22,9 @@ use crate::adapter::{
 use crate::config::{ApiKey, ProviderConfig, ProviderFormat, ProviderOptions, ProviderProxy};
 use crate::provider::http_client::TEST_TRUST;
 
-use super::{now, test_signer, SubscriptionChannel, SubscriptionLogin, ISSUER};
+use super::{
+    now, test_signer, SubscriptionChannel, SubscriptionLogin, SubscriptionLoginProgress, ISSUER,
+};
 
 #[tokio::test]
 async fn subscription_login_refresh_catalog_tools_and_revocation_share_the_proxy() {
@@ -44,19 +46,55 @@ async fn subscription_login_refresh_catalog_tools_and_revocation_share_the_proxy
                 )
                 .await
                 .unwrap();
-                let mut callback = attempt.redirect.clone();
+                let mut callback = attempt.browser.redirect.clone();
                 callback.query_pairs_mut().extend_pairs([
-                    ("code", "fixture-code"),
-                    ("state", attempt.state.as_str()),
+                    ("code", "rejected-fixture-code"),
+                    ("state", attempt.browser.state.as_str()),
                     ("client_id", "oaiapp_fixture"),
                 ]);
-                let (id_token, keys) = identity(&attempt.nonce);
-                let verifier = attempt.verifier.clone();
-                let uri = attempt.redirect.to_string();
-                let provider = tokio::spawn(async move {
-                    let upstream = FixtureProxy { listener, tls };
-                    upstream.serve(&verifier, &uri, &id_token, keys).await;
-                });
+                let previous_state = attempt.browser.state.clone();
+                let previous_nonce = attempt.browser.nonce.clone();
+                let previous_verifier = attempt.browser.verifier.clone();
+                let upstream = FixtureProxy { listener, tls };
+                let reject = async {
+                    let (mut stream, _, bytes) = upstream
+                        .request("auth.openai.com", "POST /api/accounts/oauth/token")
+                        .await;
+                    let form = url::form_urlencoded::parse(&bytes).collect::<BTreeMap<_, _>>();
+                    assert_eq!("oaiapp_fixture", form["client_id"]);
+                    assert_eq!("rejected-fixture-code", form["code"]);
+                    reply_with_status(
+                        &mut stream,
+                        "400 Bad Request",
+                        "application/json",
+                        r#"{"error":"invalid_grant"}"#,
+                    )
+                    .await;
+                };
+                let (outcome, ()) =
+                    tokio::join!(attempt.complete_or_retry(callback.as_str()), reject);
+                let SubscriptionLoginProgress::Retry(attempt) = outcome.unwrap() else {
+                    panic!("expected a new authorization link")
+                };
+                let retry_url = url::Url::parse(attempt.authorization_url()).unwrap();
+                let query = retry_url.query_pairs().collect::<BTreeMap<_, _>>();
+                assert_eq!("oaiapp_fixture", query["client_id"]);
+                assert!(!query.contains_key("agent_name_hint"));
+                assert_ne!(previous_state, attempt.browser.state);
+                assert_ne!(previous_nonce, attempt.browser.nonce);
+                assert_ne!(previous_verifier, attempt.browser.verifier);
+                let mut callback = attempt.browser.redirect.clone();
+                callback.query_pairs_mut().extend_pairs([
+                    ("code", "fixture-code"),
+                    ("state", attempt.browser.state.as_str()),
+                ]);
+                let (id_token, keys) = identity(&attempt.browser.nonce);
+                let verifier = attempt.browser.verifier.clone();
+                let uri = attempt.browser.redirect.to_string();
+                let provider =
+                    tokio::spawn(
+                        async move { upstream.serve(&verifier, &uri, &id_token, keys).await },
+                    );
                 let login = attempt.complete(callback.as_str()).await.unwrap();
                 assert_eq!(SubscriptionStatus::SignedIn, login.info.status);
                 assert_eq!(Some("a***@e***"), login.info.masked_email.as_deref());
@@ -309,7 +347,16 @@ async fn request_header(stream: &mut (impl AsyncRead + Unpin)) -> String {
 }
 
 async fn reply(stream: &mut SslStream<tokio::net::TcpStream>, content_type: &str, body: &str) {
-    let header = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+    reply_with_status(stream, "200 OK", content_type, body).await;
+}
+
+async fn reply_with_status(
+    stream: &mut SslStream<tokio::net::TcpStream>,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) {
+    let header = format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
     stream.write_all(header.as_bytes()).await.unwrap();
     stream.write_all(body.as_bytes()).await.unwrap();
     stream.shutdown().await.unwrap();

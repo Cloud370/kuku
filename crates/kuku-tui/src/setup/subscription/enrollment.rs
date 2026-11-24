@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::FutureExt;
-use kuku::adapter::{SubscriptionLogin, SubscriptionLoginResult, SubscriptionStatus};
+use kuku::adapter::{
+    SubscriptionLogin, SubscriptionLoginProgress, SubscriptionLoginResult, SubscriptionStatus,
+};
 use kuku::config::{ProviderProxy, SubscriptionChannel};
 use ratatui::{
     layout::{Position, Rect},
@@ -29,6 +31,7 @@ pub(in crate::setup) struct Enrollment {
     callback: Editor,
     url_first_row: usize,
     url_copy_sent: bool,
+    url_retry: bool,
     stage: Stage,
     next_poll: Option<Instant>,
 }
@@ -41,7 +44,7 @@ enum Stage {
     Authorizing(ProviderProxy, Box<SubscriptionLogin>),
     Verifying(
         ProviderProxy,
-        JoinHandle<kuku::Result<SubscriptionLoginResult>>,
+        JoinHandle<kuku::Result<SubscriptionLoginProgress>>,
     ),
     Registered(ProviderProxy, SubscriptionLoginResult),
 }
@@ -60,6 +63,7 @@ impl Enrollment {
             callback: Editor::default(),
             url_first_row: 0,
             url_copy_sent: false,
+            url_retry: false,
             stage: Stage::Settings,
             next_poll: None,
         }
@@ -104,6 +108,7 @@ impl Enrollment {
         self.stage = Stage::Preparing(proxy, task);
         self.url_first_row = 0;
         self.url_copy_sent = false;
+        self.url_retry = false;
         self.next_poll = Some(Instant::now());
         Ok(())
     }
@@ -113,7 +118,7 @@ impl Enrollment {
             unreachable!("submitting an authorization callback");
         };
         let callback = self.callback.take_text();
-        let task = tokio::spawn(async move { attempt.complete(&callback).await });
+        let task = tokio::spawn(async move { attempt.complete_or_retry(&callback).await });
         self.stage = Stage::Verifying(proxy, task);
         self.next_poll = Some(Instant::now());
     }
@@ -127,9 +132,17 @@ impl Enrollment {
             Stage::Preparing(proxy, task) => {
                 ready(task)?.map(|attempt| Stage::Authorizing(proxy.clone(), Box::new(attempt)))
             }
-            Stage::Verifying(proxy, task) => {
-                ready(task)?.map(|registration| Stage::Registered(proxy.clone(), registration))
-            }
+            Stage::Verifying(proxy, task) => ready(task)?.map(|progress| match progress {
+                SubscriptionLoginProgress::Completed(login) => {
+                    Stage::Registered(proxy.clone(), login)
+                }
+                SubscriptionLoginProgress::Retry(attempt) => {
+                    self.url_first_row = 0;
+                    self.url_copy_sent = false;
+                    self.url_retry = true;
+                    Stage::Authorizing(proxy.clone(), attempt)
+                }
+            }),
             Stage::Registered(..) => return Some(Ok(())),
             _ => return None,
         };
@@ -223,7 +236,12 @@ impl Enrollment {
         let clipboard = if self.url_copy_sent { " · Sent" } else { "" };
         let actions = format!("{}  [Ctrl+Y Copy URL]{clipboard}", AuthorizationLink::LABEL);
         line(frame, area, &mut row, &actions, ACCENT);
-        line(frame, area, &mut row, "──── Authorization URL ────", MUTED);
+        let heading = if self.url_retry {
+            "──── New authorization URL ────"
+        } else {
+            "──── Authorization URL ────"
+        };
+        line(frame, area, &mut row, heading, MUTED);
         row += 1;
         for (_, text) in link.rows() {
             line(frame, area, &mut row, text, ACCENT);
@@ -236,21 +254,19 @@ impl Enrollment {
         };
         line(frame, area, &mut row, end, MUTED);
         if self.callback.text().is_empty() {
-            line(
-                frame,
-                area,
-                &mut row,
-                "Paste the callback URL from your browser's address bar.",
-                MUTED,
-            );
+            let prompt = "Paste callback URL > ";
+            let input_row = row;
+            line(frame, area, &mut row, prompt, ACCENT);
+            if input_row < area.height {
+                frame.set_cursor_position((area.x + prompt.len() as u16, area.y + input_row));
+            }
             if problem.is_none() {
-                line(
-                    frame,
-                    area,
-                    &mut row,
-                    "If the page fails to load, still copy its address.",
-                    MUTED,
-                );
+                let help = if self.url_retry {
+                    "OpenAI rejected the code. Open the new link above."
+                } else {
+                    "Copy the browser address even if the page fails to load."
+                };
+                line(frame, area, &mut row, help, MUTED);
             }
         } else {
             line(

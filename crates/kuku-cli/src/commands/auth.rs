@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 
 use kuku::adapter::{
     discover_models, sign_out_subscription, subscription_account_info, SubscriptionLogin,
-    SubscriptionStatus,
+    SubscriptionLoginProgress, SubscriptionStatus,
 };
 use kuku::config::{
     ProviderConfig, ProviderProxy, ProxyAuth, SubscriptionAccount, SubscriptionChannel,
@@ -98,22 +98,24 @@ async fn login(
                 .map(|(_, _, connection)| connection.options.proxy.clone())
         })
         .unwrap_or_default();
-    let attempt =
+    let mut attempt = Box::new(
         SubscriptionLogin::start(settings.private_data_dir()?, channel, name, proxy.clone())
-            .await?;
-    let url = attempt.authorization_url();
-    println!("Open the authorization page in your browser.");
-    if io::stdout().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb") {
-        println!("\x1b]8;;{url}\x1b\\[Open authorization link]\x1b]8;;\x1b\\");
-    }
-    println!("\n---- Authorization URL ----\n\n{url}\n\n---- End authorization URL ----\n");
-    println!("After authorization, copy the full address even if the page cannot connect.");
-    io::stdout().flush()?;
-    let callback = tokio::task::spawn_blocking(|| {
-        kuku_tui::read_hidden_line("Paste the callback URL: ", 64 * 1024)
-    })
-    .await??;
-    let login = attempt.complete(&callback).await?;
+            .await?,
+    );
+    let login = loop {
+        print_authorization_link(attempt.authorization_url())?;
+        let callback = tokio::task::spawn_blocking(|| {
+            kuku_tui::read_hidden_line("Paste the callback URL: ", 64 * 1024)
+        })
+        .await??;
+        match attempt.complete_or_retry(&callback).await? {
+            SubscriptionLoginProgress::Completed(login) => break login,
+            SubscriptionLoginProgress::Retry(new_attempt) => {
+                println!("OpenAI rejected the code. Use the new authorization link below.");
+                attempt = new_attempt;
+            }
+        }
+    };
     let connection_name = settings.save_connection(&login.account, &proxy)?;
     let name = login.account.name()?;
     let label = login.info.masked_email.as_deref().unwrap_or(name);
@@ -124,6 +126,16 @@ async fn login(
     }
     println!("Manage usage: {}", channel.usage_url());
     Ok(())
+}
+
+fn print_authorization_link(url: &str) -> io::Result<()> {
+    println!("Open the authorization page in your browser.");
+    if io::stdout().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb") {
+        println!("\x1b]8;;{url}\x1b\\[Open authorization link]\x1b]8;;\x1b\\");
+    }
+    println!("\n---- Authorization URL ----\n\n{url}\n\n---- End authorization URL ----\n");
+    println!("After authorization, copy the full address even if the page cannot connect.");
+    io::stdout().flush()
 }
 
 fn saved_connection<'a>(
