@@ -269,6 +269,7 @@ fn rebuild_history_internal(
                 conversation: event_conversation,
                 text,
                 from,
+                images,
                 ..
             } if event_conversation == conversation.as_str() => {
                 flush_group(&mut messages, &mut current_group);
@@ -276,7 +277,11 @@ fn rebuild_history_internal(
                     Some(from) if render_agent_sender => render_agent_message(text, from),
                     _ => text.clone(),
                 };
-                messages.push((CanonicalMessage::user_text(provider_text), event.id));
+                let mut message = CanonicalMessage::user_text(provider_text);
+                message
+                    .blocks
+                    .extend(images.iter().cloned().map(MessageBlock::InputImage));
+                messages.push((message, event.id));
             }
             EventPayload::ModelResponse {
                 conversation: event_conversation,

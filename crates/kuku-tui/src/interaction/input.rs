@@ -140,7 +140,7 @@ impl App {
         }
     }
 
-    pub(super) fn paste(&mut self, text: &str) {
+    pub(crate) fn paste(&mut self, text: &str) {
         self.dismiss_confirmation();
         if matches!(self.modal, Some(Modal::SendRouteConfirmation(_))) {
             self.close_picker();

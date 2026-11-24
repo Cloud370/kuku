@@ -53,6 +53,8 @@
 
 首次发送前选定唯一的 Session ID 和命令 ID。请求体包含服务端工作区的绝对路径、目标 Agent 地址和命令标识。向新 Session 发送时，在 `create` 中写入 Agent 初始配置。
 
+`send` 可携带 `images` 数组。每个元素的 `label` 出现在 `text` 中，`data` 是 PNG 或 JPEG 的 Base64 数据。每条消息最多四张，编码前每张最多 1 MiB。图片保存在 Session 下，归接收 Agent 所有，只允许有图像输入能力的路由接纳。命令身份校验同时覆盖文本和图片内容。
+
 ```json
 {
   "workspace": "/code/my-project",

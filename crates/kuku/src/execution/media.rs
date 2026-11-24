@@ -1,8 +1,50 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::OutputReference;
 
-pub(crate) const MAX_MODEL_IMAGE_BYTES: usize = 1024 * 1024;
+/// Maximum size of one encoded PNG or JPEG.
+pub const MAX_MODEL_IMAGE_BYTES: usize = 1024 * 1024;
+/// Maximum number of user images in one input.
+pub const MAX_INPUT_IMAGES: usize = 4;
+
+/// Identity of a user image saved in the recipient's Session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputImage {
+    pub(crate) mime: ImageMime,
+    pub(crate) digest: String,
+    pub(crate) bytes: usize,
+}
+
+impl InputImage {
+    /// Identify a bounded, encoded PNG or JPEG before saving it with the Session.
+    pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
+        let mime = ImageMime::detect(bytes)
+            .filter(|_| bytes.len() <= MAX_MODEL_IMAGE_BYTES)
+            .ok_or_else(|| {
+                crate::Error::InvalidArgument("image must be PNG or JPEG and at most 1 MiB".into())
+            })?;
+        Ok(Self {
+            mime,
+            digest: format!("{:x}", Sha256::digest(bytes)),
+            bytes: bytes.len(),
+        })
+    }
+
+    /// Media type of the encoded image.
+    pub fn media_type(&self) -> &'static str {
+        self.mime.as_str()
+    }
+
+    /// Number of encoded bytes before base64 wrapping.
+    pub fn byte_len(&self) -> usize {
+        self.bytes
+    }
+
+    pub(crate) fn key(&self, agent: &str) -> String {
+        format!("input:{agent}:{}", self.digest)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ImageMime {

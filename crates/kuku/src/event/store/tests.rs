@@ -380,6 +380,7 @@ fn nesting_probe_ignores_escaped_string_contents() {
         text: text.clone(),
         from: None,
         job_delivery: false,
+        images: Vec::new(),
     };
     store.append(event).unwrap();
     store

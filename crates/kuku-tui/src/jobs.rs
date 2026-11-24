@@ -133,9 +133,17 @@ pub(crate) enum Job {
     Web(Option<Target>),
     ReplySource(Selection, u64),
     Copy(String),
+    PasteClipboard(Selection, u64, crate::clipboard::PasteSource),
+    EncodeImages(Selection, crate::app::images::PrepareImages),
 }
 
 pub(crate) enum Update {
+    ClipboardPasted(Selection, u64, Result<crate::clipboard::Pasted, String>),
+    ImagesEncoded(
+        Selection,
+        u64,
+        Result<Vec<kuku_client::ImageAttachment>, String>,
+    ),
     SetupRequired,
     ModelEditorOpened(u64, Result<Box<crate::setup::ModelEditor>, String>),
     ModelEditorSaved(u64, Box<crate::setup::ModelEditor>, Result<bool, String>),
@@ -491,6 +499,24 @@ impl Jobs {
                 let options = self.options.clone();
                 self.spawn(async move { Update::Restarted(restart(&options, &identity).await) });
             }
+            Job::PasteClipboard(selection, ticket, source) => {
+                self.spawn(async move {
+                    let workspace = selection.target.workspace.clone();
+                    let result = tokio::task::spawn_blocking(move || source.read(&workspace))
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()));
+                    Update::ClipboardPasted(selection, ticket, result)
+                });
+            }
+            Job::EncodeImages(selection, preparation) => {
+                self.spawn(async move {
+                    let ticket = preparation.ticket;
+                    let result = tokio::task::spawn_blocking(move || preparation.encode())
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()));
+                    Update::ImagesEncoded(selection, ticket, result)
+                });
+            }
             Job::Copy(_) => unreachable!("clipboard belongs to the terminal"),
             connected => {
                 if let Some(connection) = self.connection.clone() {
@@ -706,6 +732,8 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::ClosePicker
         | Job::PrepareRestart(_)
         | Job::Restart(_)
+        | Job::PasteClipboard(..)
+        | Job::EncodeImages(..)
         | Job::Copy(_) => unreachable!("job requires service options or terminal"),
     }
 }

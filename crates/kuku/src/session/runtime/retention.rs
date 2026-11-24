@@ -156,10 +156,12 @@ impl State {
     pub(super) fn pinned_outputs(&self) -> HashSet<String> {
         let mut pinned = self.values.pinned_outputs();
         pinned.extend(self.model_images.iter().filter_map(|(id, retained)| {
+            let Some(turn) = retained.turn else {
+                return retained.referenced.then(|| id.clone());
+            };
             let current = self.agents.get(&retained.agent)?.snapshot.turn?;
-            (current == retained.turn
-                || self.turns.previous(&retained.agent, current) == Some(retained.turn))
-            .then(|| id.clone())
+            (current == turn || self.turns.previous(&retained.agent, current) == Some(turn))
+                .then(|| id.clone())
         }));
         pinned
     }

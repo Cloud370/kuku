@@ -170,8 +170,9 @@ mod tests {
             kind: NoticeKind::ContextDrift { entries: truncated },
             severity: NoticeSeverity::Info,
         };
-        let rendered =
-            render_notice_body(&notice, &builtin_prompt_catalog()).expect("should render");
+        let rendered = render_notice_body(&notice, &builtin_prompt_catalog())
+            .unwrap()
+            .expect("should render");
 
         assert!(rendered.contains("Changed tracked files:"));
         assert!(rendered.contains("file-0.md"));
@@ -259,7 +260,9 @@ mod tests {
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
         });
-        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
+        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog())
+            .unwrap()
+            .unwrap();
 
         assert_eq!(notices.len(), 1);
         assert!(rendered.contains("AGENTS.md"));
@@ -312,7 +315,9 @@ mod tests {
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
         });
-        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
+        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog())
+            .unwrap()
+            .unwrap();
 
         assert_eq!(notices.len(), 1);
         assert!(rendered.contains("deleted.md"));
@@ -342,7 +347,9 @@ mod tests {
             context_budget_tier: ContextBudgetTier::Normal,
             conversation: &ConversationAddress::MAIN,
         });
-        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog()).unwrap();
+        let rendered = render_notice_body(&notices[0], &builtin_prompt_catalog())
+            .unwrap()
+            .unwrap();
 
         assert_eq!(notices.len(), 1);
         assert!(rendered.contains("memory.md"));

@@ -2,53 +2,48 @@ use crate::prompt::PromptCatalog;
 
 use super::types::{ContextDriftStatus, Notice, NoticeKind};
 
-/// Get a block template from the catalog, falling back to an inline string.
-fn block_tmpl<'a>(catalog: &'a PromptCatalog, name: &str, fallback: &'a str) -> &'a str {
-    catalog
-        .blocks
-        .get(name)
-        .map(|a| a.text.as_str())
-        .unwrap_or(fallback)
-}
-
 const NOTICE_IGNORE_HINT: &str =
     "\nIf not relevant to your current task, ignore. Do not mention to the user.\n";
 
 /// Render a notice body, wrapped in `<kuku_system_notice>` where the template
 /// does not already include it.
-pub(crate) fn render_notice_body(notice: &Notice, catalog: &PromptCatalog) -> Option<String> {
-    match &notice.kind {
+pub(crate) fn render_notice_body(
+    notice: &Notice,
+    catalog: &PromptCatalog,
+) -> crate::Result<Option<String>> {
+    let renderer = catalog.renderer();
+    let text = match &notice.kind {
         NoticeKind::ContextDrift { entries } => {
-            let rendered_entries: String = entries
+            let entries = entries
                 .iter()
                 .map(render_context_drift_entry)
                 .collect::<Vec<_>>()
                 .join("\n");
-            let body_tmpl = block_tmpl(
-                catalog,
-                "notice-context-drift",
-                "Previously loaded file-backed context has changed.\n\nChanged tracked files:\n{{entries}}",
-            );
-            let body = body_tmpl.replace("{{entries}}", &rendered_entries);
-            let wrapper = block_tmpl(
-                catalog,
-                "system-notice",
-                "<kuku_system_notice>\n{{notice_body}}\n</kuku_system_notice>",
-            );
-            Some(wrapper.replace("{{notice_body}}", &format!("{body}{NOTICE_IGNORE_HINT}")))
+            let body = renderer.render(
+                "blocks/notice-context-drift.md",
+                minijinja::context! { entries },
+            )?;
+            renderer.render(
+                "blocks/system-notice.md",
+                minijinja::context! {
+                    notice_body => format!("{body}{NOTICE_IGNORE_HINT}"),
+                },
+            )?
         }
         NoticeKind::LoadedSkills { skills } => {
             if skills.is_empty() {
-                return None;
+                return Ok(None);
             }
-            let tmpl = block_tmpl(
-                catalog,
-                "notice-loaded-skills",
-                "<kuku_system_notice>\nLoaded skills:\n{{skill_list}}\n</kuku_system_notice>",
-            );
-            Some(tmpl.replace("{{skill_list}}", &skills.join(", ")))
+            renderer.render(
+                "blocks/notice-loaded-skills.md",
+                minijinja::context! {
+                    skill_list => skills.join(", "),
+                    skills => minijinja::value::Serde(skills),
+                },
+            )?
         }
-    }
+    };
+    Ok(Some(text))
 }
 
 fn render_context_drift_entry(entry: &super::types::ContextDriftEntry) -> String {
@@ -88,7 +83,9 @@ mod tests {
             severity: NoticeSeverity::Info,
         };
 
-        let rendered = render_notice_body(&notice, &catalog).expect("should render");
+        let rendered = render_notice_body(&notice, &catalog)
+            .unwrap()
+            .expect("should render");
         assert!(rendered.contains("Only unacknowledged drift is reported here."));
         assert!(rendered.contains("successful full-file reads or writes"));
         assert!(rendered.contains("- AGENTS.md (updated)"));

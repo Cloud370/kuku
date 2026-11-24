@@ -343,6 +343,16 @@ pub(crate) struct ProviderRequest<'a> {
     pub(crate) thinking: crate::config::ResolvedThinking,
 }
 
+impl ProviderRequest<'_> {
+    pub(crate) fn render_handoff(&self) -> crate::error::Result<Option<String>> {
+        self.assembly
+            .handoff_summary
+            .as_deref()
+            .map(|summary| self.catalog.render_handoff(summary, &self.assembly.tools))
+            .transpose()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CanonicalPromptInput {
     pub(crate) parts: Vec<CanonicalMessage>,

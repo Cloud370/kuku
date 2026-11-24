@@ -232,6 +232,7 @@ mod tests {
                 text: "a".repeat(20_000),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             })
             .unwrap();
         let mut saved = Projection::new(&outputs, "session", original_limit).unwrap();

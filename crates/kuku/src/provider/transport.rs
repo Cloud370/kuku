@@ -82,7 +82,7 @@ async fn send(
                 }
             }
             if prepared.kind == ProviderKind::OpenAiResponses {
-                super::openai_responses::redact_tool_images(&mut body);
+                super::openai_responses::redact_images(&mut body);
             }
             body
         });

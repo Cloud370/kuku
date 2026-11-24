@@ -6,6 +6,7 @@ use kuku_client::ConnectionOptions;
 
 mod app;
 mod browser;
+mod clipboard;
 mod config;
 mod config_file;
 mod contextual;

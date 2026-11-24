@@ -279,6 +279,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     text: "rewound target input".into(),
                     from: None,
                     job_delivery: false,
+                    images: Vec::new(),
                 })
                 .unwrap(),
         )
@@ -312,6 +313,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
                     text: "rewound target input".into(),
                     from: None,
                     job_delivery: false,
+                    images: Vec::new(),
                 })
                 .unwrap()
         }
@@ -356,6 +358,7 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
             text: "new input after rewind".into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     drop(writer);

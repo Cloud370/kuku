@@ -58,7 +58,15 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
             "/sessions/{id}/values/{name}",
             put(values::save).layer(DefaultBodyLimit::disable()),
         )
-        .route("/sessions/{id}/commands", post(commands::submit))
+        .route(
+            "/sessions/{id}/commands",
+            post(commands::submit).layer(DefaultBodyLimit::max(
+                2 * 1024 * 1024
+                    + kuku::execution::MAX_INPUT_IMAGES
+                        * kuku::execution::MAX_MODEL_IMAGE_BYTES.div_ceil(3)
+                        * 4,
+            )),
+        )
         .route(
             "/sessions/{id}/receipts/{command_id}",
             get(commands::receipt),

@@ -486,6 +486,29 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     }
     let pane = app.pane();
     let mut lines = Vec::new();
+    let images = pane.attached_images().count();
+    if images > 0 {
+        let label = if images == 1 {
+            "1 image".to_owned()
+        } else {
+            format!("{images} images")
+        };
+        let transparency = if pane.has_transparent_images() {
+            " · Transparency kept (PNG)"
+        } else {
+            ""
+        };
+        lines.push(Line::styled(
+            shorten(&format!("{label} attached{transparency}"), width),
+            Style::new().fg(ACCENT),
+        ));
+    }
+    if let Some(activity) = pane.image_activity() {
+        lines.push(Line::styled(
+            shorten(activity, width),
+            Style::new().fg(MUTED),
+        ));
+    }
     let stopped_retry = pane
         .retry_metadata()
         .is_some_and(|retry| crate::retry_notice::decision(retry) == Some(false));

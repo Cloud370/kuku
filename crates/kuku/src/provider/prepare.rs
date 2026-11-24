@@ -38,8 +38,10 @@ pub(crate) fn prepare_provider_request_with_media(
     correlation: &ProviderCorrelation,
     limit: usize,
     load: impl FnMut(&ModelImage) -> crate::Result<Vec<u8>>,
+    load_user: impl FnMut(&crate::execution::InputImage) -> crate::Result<Vec<u8>>,
 ) -> Result<PreparedProviderRequest, ProviderFailure> {
     let mut load = load;
+    let mut load_user = load_user;
     prepare(
         config,
         request,
@@ -47,6 +49,7 @@ pub(crate) fn prepare_provider_request_with_media(
         Some(Media {
             limit,
             load: &mut load,
+            load_user: &mut load_user,
         }),
         RequestPurpose::Inference,
     )
@@ -55,6 +58,7 @@ pub(crate) fn prepare_provider_request_with_media(
 struct Media<'a> {
     limit: usize,
     load: &'a mut dyn FnMut(&ModelImage) -> crate::Result<Vec<u8>>,
+    load_user: &'a mut dyn FnMut(&crate::execution::InputImage) -> crate::Result<Vec<u8>>,
 }
 
 fn prepare(
@@ -89,7 +93,7 @@ fn prepare(
     }
     validate_replay(config, request)?;
     let url = request_url(config)?;
-    let mut images = Vec::new();
+    let mut images = super::openai_responses::ImageTargets::default();
     let media = media.filter(|_| {
         config.capabilities.media_adapter
             == crate::config::MediaAdapterSupport::ResponsesImageToolResults
@@ -101,11 +105,24 @@ fn prepare(
             request,
             media.as_ref().map(|_| &mut images),
         ),
-    };
+    }
+    .map_err(|error| invalid_request(&error.to_string()))?;
     apply_settings(config, &mut body, true);
     let correlation_id = correlation.map(super::request_fields::correlation_id);
     if let Some(media) = media {
-        super::openai_responses::attach_tool_images(&mut body, images, media.limit, media.load);
+        super::openai_responses::attach_user_images(
+            &mut body,
+            images.user,
+            media.limit,
+            media.load_user,
+        )
+        .map_err(|error| invalid_request(&error.to_string()))?;
+        super::openai_responses::attach_tool_images(
+            &mut body,
+            images.tools,
+            media.limit,
+            media.load,
+        );
     }
     let fields = super::request_fields::prepare(
         config,

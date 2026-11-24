@@ -66,6 +66,12 @@ Without a network flag, `login` uses the saved account setting or follows the en
 | Edit a queued message | Click it, or press `↑` from an empty composer. `Enter` edits it; `Delete` removes it. |
 | Interrupt the current Turn | Press `Esc` while the Agent is running. Output already shown stays visible. |
 
+Press `Ctrl+V` in the composer to paste an image from the local clipboard. Use `Ctrl+Alt+V` when your terminal handles `Ctrl+V` itself. A pasted image appears as `[Image #1]` in the draft. Delete its marker before sending to remove the image. Text paste continues to use the terminal's usual shortcut. A paste containing a single readable PNG or JPEG file path attaches that image too. On WSL, kuku resolves Windows drive paths through the mounted drive. An attachment hint above the composer shows the image count and whether PNG preserves transparency.
+
+Press `Enter` to review the image quality above the draft. **Compressed** is selected initially and sends after three seconds without input. Compressed images use JPEG with quality 85, or PNG when there are transparent pixels. Choose **Original** with `Tab`, the arrow keys, or a click to preserve the source dimensions and pixels. Interacting with the picker cancels the countdown. Press `Enter` to send your selection or `Esc` to keep editing. Each submitted image must fit 1 MiB, with up to four images per message.
+
+An image stays in the draft until you send it. When the selected model cannot accept images, kuku keeps the draft so you can switch models or remove the attachments.
+
 ### Rewinding and branching
 
 When the Agent is idle, press `Ctrl+G` or run `/rewind` (or `/jump`) to open conversation history. Active Turns and saved branches appear in chronological order with the latest Turn selected; scroll up to load older Turns.

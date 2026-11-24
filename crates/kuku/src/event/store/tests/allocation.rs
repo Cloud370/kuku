@@ -59,6 +59,7 @@ fn oversized_known_and_unknown_payloads_do_not_allocate_another_input_sized_copy
                     text,
                     from: None,
                     job_delivery: false,
+                    images: Vec::new(),
                 }
             } else {
                 EventPayload::Unknown(serde_json::json!({

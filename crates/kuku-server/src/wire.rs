@@ -2,9 +2,11 @@
 
 use std::path::PathBuf;
 
+use base64::Engine;
 use kuku::UiEvent;
 use kuku::event::{EventPayload, StoredEvent};
 use kuku::execution::OutputReference;
+use kuku::execution::{MAX_INPUT_IMAGES, MAX_MODEL_IMAGE_BYTES};
 use kuku::session::{
     AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt, ReplyPreview,
 };
@@ -32,6 +34,8 @@ pub(crate) enum Command {
         timing: SendTiming,
         #[serde(default)]
         values: Vec<OutputReference>,
+        #[serde(default)]
+        images: Vec<SendImage>,
         bootstrap_skill: Option<String>,
         create: Option<Box<AgentConfig>>,
         config_patch: Option<Box<AgentConfig>>,
@@ -79,6 +83,12 @@ pub(crate) enum Command {
     },
 }
 
+#[derive(Deserialize)]
+pub(crate) struct SendImage {
+    label: String,
+    data: String,
+}
+
 impl Command {
     pub(crate) fn creation(&self) -> Option<&AgentConfig> {
         if let Self::Send { create, .. } = self {
@@ -94,6 +104,44 @@ impl Command {
         } else {
             &[]
         }
+    }
+
+    pub(crate) fn decode_images(&self) -> kuku::Result<Vec<Vec<u8>>> {
+        let Self::Send { images, text, .. } = self else {
+            return Ok(Vec::new());
+        };
+        if images.len() > MAX_INPUT_IMAGES {
+            return Err(kuku::Error::InvalidArgument(format!(
+                "attach up to {MAX_INPUT_IMAGES} images"
+            )));
+        }
+        let mut ordered = images
+            .iter()
+            .map(|image| {
+                text.find(&image.label)
+                    .filter(|_| !image.label.is_empty())
+                    .map(|offset| (offset, &image.data))
+                    .ok_or_else(|| {
+                        kuku::Error::InvalidArgument(
+                            "image label must appear in the input text".into(),
+                        )
+                    })
+            })
+            .collect::<kuku::Result<Vec<_>>>()?;
+        ordered.sort_unstable_by_key(|(offset, _)| *offset);
+        ordered
+            .into_iter()
+            .map(|(_, value)| {
+                if value.len() > MAX_MODEL_IMAGE_BYTES.div_ceil(3) * 4 {
+                    return Err(kuku::Error::InvalidArgument(
+                        "each encoded image must be at most 1 MiB before base64".into(),
+                    ));
+                }
+                base64::engine::general_purpose::STANDARD
+                    .decode(value)
+                    .map_err(|_| kuku::Error::InvalidArgument("invalid base64 image".into()))
+            })
+            .collect()
     }
 
     pub(crate) fn input(&self, command_id: &str, address: &str) -> kuku::Result<Option<Input>> {
@@ -715,6 +763,7 @@ mod retry_tests {
                 text: "Input to the model".into(),
                 from: None,
                 job_delivery,
+                images: Vec::new(),
             },
         };
         let entry = history_entry(&message(false), &turns).unwrap();

@@ -390,7 +390,7 @@ pub struct ResolvedThinking {
 }
 
 /// Lightweight tier info for prompt injection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TierInfo {
     pub name: String,
     pub purpose: String,

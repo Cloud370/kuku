@@ -16,6 +16,7 @@ pub(super) struct OwnedRequestBase {
     thinking: crate::config::ResolvedThinking,
     current_user_index: usize,
     recovery: PromptAsset,
+    recovery_notice: String,
 }
 
 impl OwnedRequestBase {
@@ -37,6 +38,18 @@ impl OwnedRequestBase {
         let recovery = catalog.runtime.get("recovery").cloned().ok_or_else(|| {
             crate::error::Error::PromptRender("missing runtime/recovery template".to_string())
         })?;
+        let tools: Vec<_> = assembly
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        let recovery_notice = catalog.render(
+            "runtime/recovery.md",
+            minijinja::context! {
+                step => minijinja::context! { stop_reason => "length" },
+                tools => minijinja::value::Serde(&tools),
+            },
+        )?;
         let history_message = assembly.history.get(current_user_index).ok_or_else(|| {
             crate::error::Error::InvalidEventStream(
                 "frozen request has no current history message".to_string(),
@@ -63,6 +76,7 @@ impl OwnedRequestBase {
             thinking,
             current_user_index,
             recovery,
+            recovery_notice,
         })
     }
 
@@ -129,22 +143,22 @@ impl OwnedRequestBase {
         self.max_output_tokens = self.max_output_tokens.map(|limit| limit.min(available));
     }
 
-    pub(super) fn checkpoint_instruction(&self) -> Option<&str> {
+    pub(super) fn checkpoint_instruction(&self) -> crate::Result<Option<String>> {
         self.catalog
             .runtime
             .get("compaction-instruction")
-            .map(|asset| asset.text.as_str())
+            .map(|_| {
+                self.catalog
+                    .render("runtime/compaction-instruction.md", minijinja::context! {})
+            })
+            .transpose()
     }
 
-    pub(super) fn render_checkpoint(&self, summary: &str) -> crate::Result<String> {
-        let template = self
-            .catalog
-            .runtime
-            .get("compaction-context")
-            .ok_or_else(|| {
-                crate::Error::PromptRender("missing runtime/compaction-context template".into())
-            })?;
-        Ok(template.text.replace("{{checkpoint}}", summary))
+    pub(super) fn render_checkpoint(&self, checkpoint: &str) -> crate::Result<String> {
+        self.catalog.render(
+            "runtime/compaction-context.md",
+            minijinja::context! { checkpoint },
+        )
     }
 
     pub(super) fn recovery_request(&self) -> crate::error::Result<RecoveredRequest> {
@@ -164,7 +178,7 @@ impl OwnedRequestBase {
         }
         message
             .blocks
-            .push(MessageBlock::Text(self.recovery.text.clone()));
+            .push(MessageBlock::Text(self.recovery_notice.clone()));
 
         let mut current_input = self.current_input.clone();
         let input = current_input.parts.last_mut().ok_or_else(|| {
@@ -179,7 +193,7 @@ impl OwnedRequestBase {
         }
         input
             .blocks
-            .push(MessageBlock::Text(self.recovery.text.clone()));
+            .push(MessageBlock::Text(self.recovery_notice.clone()));
 
         Ok(RecoveredRequest {
             assembly,
@@ -191,6 +205,10 @@ impl OwnedRequestBase {
             think_level: self.think_level,
             thinking: self.thinking.clone(),
         })
+    }
+
+    pub(super) fn recovery_notice(&self) -> &str {
+        &self.recovery_notice
     }
 
     pub(super) fn recovery_asset(&self) -> &PromptAsset {
@@ -235,6 +253,7 @@ pub(super) fn estimated_message_tokens<'a>(
                     MessageBlock::ToolResult(result) => estimate_text(&result.model_content)
                         .saturating_add(estimate_text(&result.tool_call_id)),
                     MessageBlock::ProviderReplay { value, .. } => estimate_json(value),
+                    MessageBlock::InputImage(_) => 1_200,
                 };
                 tokens.saturating_add(addition)
             })

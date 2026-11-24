@@ -170,6 +170,7 @@ pub enum EventPayload {
         text: String,
         from: Option<String>,
         job_delivery: bool,
+        images: Vec<crate::execution::InputImage>,
     },
     MessageAssistant {
         ts: String,
@@ -414,6 +415,10 @@ impl EventPayload {
                 turn: u64_field(object, "turn")?,
                 text: string_field(object, "text")?,
                 from: optional_string_field(object, "from"),
+                images: match object.get("images") {
+                    Some(value) => serde_json::from_value(value.clone()).ok()?,
+                    None => Vec::new(),
+                },
                 job_delivery: object
                     .get("job_delivery")
                     .and_then(Value::as_bool)
@@ -524,6 +529,7 @@ impl EventPayload {
                 conversation,
                 from,
                 job_delivery,
+                images,
             } => {
                 let mut map = Map::new();
                 map.insert("id".into(), Value::from(id));
@@ -537,6 +543,9 @@ impl EventPayload {
                 }
                 if *job_delivery {
                     map.insert("job_delivery".into(), Value::Bool(true));
+                }
+                if !images.is_empty() {
+                    map.insert("images".into(), serde_json::to_value(images)?);
                 }
                 Ok(Value::Object(map))
             }

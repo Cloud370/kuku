@@ -41,6 +41,7 @@ async fn ledger_events_decode_known_and_unknown_payloads_from_the_server_envelop
                 ts:"2026-11-20T00:00:00Z".into(),conversation:"main".into(),turn:7,
                 text:"retained input".into(),from:None,
                 job_delivery: false,
+                images: Vec::new(),
             }},
             {"id":10,"payload":EventPayload::Unknown(json!({
                 "id":10,"kind":"runtime.step_prepared","agent":"main","turn":7,
@@ -322,6 +323,7 @@ async fn missing_acknowledgement_reopens_exact_command_and_checks_receipt_before
             text: "Inspect the workspace".into(),
             timing: Timing::Steer,
             values: Vec::new(),
+            images: Vec::new(),
             bootstrap_skill: None,
             create: Some(Box::default()),
             config_patch: None,

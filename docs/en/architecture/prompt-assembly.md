@@ -26,15 +26,19 @@ Editing a workspace instruction or Memory file cannot change text the model alre
 
 At the provider boundary, Kuku requests automatic prompt caching on OpenRouter Chat only when the model ID starts with `anthropic/claude-`, using a top-level ephemeral marker. The Anthropic Messages adapter retains its separate top-level marker behavior. These markers request caching; model eligibility, minimum prefix size, upstream routing, and actual cache reads or writes remain provider-specific and should be checked in returned usage. This OpenRouter Chat rule does not apply to arbitrary Claude-compatible gateways, and Kuku does not add explicit breakpoints at a shared-prelude boundary. DeepSeek Chat uses provider-side automatic caching without this marker.
 
-## Conditional Prompt templates (design)
+## Conditional Prompt templates
 
 Use [MiniJinja](https://docs.rs/minijinja/latest/minijinja/syntax/) as the common runtime renderer for PromptCatalog assets. Built-in templates and host overrides use the same syntax in `system.md`, `agents/`, `blocks/`, `runtime/`, `tools/`, and `memory/`. Rust supplies structured facts and chooses where to place the result. The template owns model-facing wording, conditions, and layout.
+
+The first migration covers model and image capabilities, project policy and model selection, tool guidance, delegation, workspace permissions, and handoff context. These templates render after the relevant facts are resolved. An already committed segment reuses its recorded Prompt.
 
 MiniJinja supports loading templates as strings and limiting rendering work. Tera also supports runtime templates. Askama generates Rust at build time, which fits bundled assets and would require a separate path for runtime overrides. Keep one renderer for kuku. [MiniJinja environment](https://docs.rs/minijinja/latest/minijinja/struct.Environment.html) · [Tera](https://docs.rs/tera/latest/tera/) · [Askama](https://askama.rs/en/stable/)
 
 ### Authoring
 
 Use `{{ value }}` for interpolation and standard `if`, `elif`, `else`, and `for` blocks. Conditions can combine booleans, membership and comparisons over typed values. Use filters such as `join` for presentation, and macros or catalog includes for reused text. Use raw blocks for literal template syntax.
+
+Keep template filenames in kebab-case and fact names in snake_case. Put control tags on their own lines for multiline branches. Write interpolation as `{{ value }}` and separate prose sections with one blank line. A format-only change preserves the wording and the runtime tags such as `<kuku_delegation>`.
 
 Have the renderer choose capability statements. Keep behavioral guidance about the task in the selected prose. The image-input example gives the model its effective ability and puts the tool instruction only in a branch where the tool is available.
 
@@ -68,15 +72,15 @@ The same renderer can present a list of candidate models without constructing th
 | `tools` | Final tool names after selection and policy filtering. |
 | `models` | Candidate routes with declared and effective modalities. |
 | `step.permission_mode` | Effective permission mode for the current Step. |
-| `host` | Read-only values supplied by an SDK host for its own templates. |
+| `host` | Reserved for read-only values supplied by an SDK host. |
 
 Expose facts from their existing owners. For example, the model resolver merges manual declarations with discovered values, and the tool registry resolves the actual tool set. Add a named fact when a template needs a new runtime decision. Keep decisions involving side effects, such as authorization and dispatch, in the runtime.
 
-Choose template data by its placement. System and prelude assets receive segment facts, such as the Agent's model, tools and workspace. A Step-local asset can also use changing facts, such as a permission mode. Put frequently changing guidance in the Step suffix. Every asset uses the same grammar.
+Choose template data by its placement. System and prelude assets receive segment facts, such as the Agent's model, tools and workspace. A Step-local asset can also use changing facts, such as a permission mode. Put frequently changing guidance in the Step suffix. Every asset uses the same grammar. A catalog preset receives the preset name, configured tier, configured tool names, and workspace when the runtime materializes its role instructions. Later Steps reuse those instructions. Direct Agent instructions are inserted as text.
 
 ### Rendering and verification
 
 - Compile templates once per loaded catalog. Reuse the compiled environment and the rendered segment when its facts stay stable. At a configuration boundary, render the affected segment with the new facts. Replay committed text from existing Session records.
 - Resolve includes and imports from the loaded catalog by name. Treat workspace instructions, memory contents, skill bodies, user messages and tool output as input values. Interpret template directives only in the catalog source, before inserting values.
 - Render plaintext with strict undefined handling. Report the asset name and location for invalid syntax or an undefined required field before dispatch. Represent known absence explicitly with `none`, an empty collection, or `false`, according to the field contract. Bound render work and output, including loops and includes. [Environment settings](https://docs.rs/minijinja/latest/minijinja/struct.Environment.html) · [Strict undefined](https://docs.rs/minijinja/latest/minijinja/enum.UndefinedBehavior.html)
-- Migrate the modality and tool guidance first. Convert existing tool markers and manual substitutions as their assets move to the common renderer. A migrated asset has one render path. Cover built-in and overridden assets, both sides of capability conditions, literal template syntax in inserted data, and stable request prefixes across repeated Steps.
+- Convert existing tool markers and manual substitutions as assets move to the common renderer. The loader normalizes older recorded tool markers into the common template syntax. A migrated asset has one render path. Cover built-in and overridden assets, both sides of capability conditions, literal template syntax in inserted data, and stable request prefixes across repeated Steps.

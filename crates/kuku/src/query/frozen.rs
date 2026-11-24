@@ -61,7 +61,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         .expect("resolved runtime exists")
         .config
         .clone();
-    let tools = crate::tool::to_tool_schemas(
+    let mut tools = crate::tool::to_tool_schemas(
         &pending
             .resolved
             .as_ref()
@@ -86,12 +86,8 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         .clone()
         .unwrap_or_else(|| pending.catalog.clone());
     let current_date = current_date_string();
-    let behavior = pending
-        .query
-        .agent_instructions
-        .clone()
-        .or_else(|| catalog.agents.get("main").map(|asset| asset.text.clone()))
-        .unwrap_or_default();
+    super::provider::render_tool_descriptions(&mut tools, &catalog)?;
+    let behavior = super::provider::render_agent_behavior(pending, &tools, &catalog)?;
     let handoff = cursor
         .handoff
         .as_ref()
@@ -208,23 +204,30 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
             &resolved,
             pending.query.model_adapter.is_none(),
             &catalog,
-        );
+        )?;
         segment.tools = tools;
         adapt_new_segment_tools(&resolved, &mut segment.tools);
-        if handoff_changed {
-            if let Some(EventPayload::Handoff { summary, .. }) =
-                cursor.handoff.as_ref().map(|event| &event.payload)
-            {
-                let template = catalog.runtime.get("handoff-context").ok_or_else(|| {
-                    Error::PromptRender("missing frozen handoff-context template".into())
-                })?;
-                if let Some(index) = segment.handoff_prelude.take() {
-                    segment.prelude.remove(index);
-                }
-                segment.handoff_prelude = Some(segment.prelude.len());
-                segment.prelude.push(CanonicalMessage::user_text(
-                    template.text.replace("{{handoff_summary}}", summary),
+        if handoff != 0 && (handoff_changed || tool_names_changed) {
+            let event = if let Some(event) = &cursor.handoff {
+                event.clone()
+            } else {
+                EventStore::read_page(&pending.events_path, handoff - 1, 1)?
+                    .into_iter()
+                    .next()
+                    .filter(|event| event.id == handoff)
+                    .ok_or_else(|| Error::InvalidEventStream("missing committed handoff".into()))?
+            };
+            let EventPayload::Handoff { summary, .. } = event.payload else {
+                return Err(Error::InvalidEventStream(
+                    "invalid committed handoff".into(),
                 ));
+            };
+            let text = catalog.render_handoff(&summary, &segment.tools)?;
+            if let Some(index) = segment.handoff_prelude {
+                segment.prelude[index] = CanonicalMessage::user_text(text);
+            } else {
+                segment.handoff_prelude = Some(segment.prelude.len());
+                segment.prelude.push(CanonicalMessage::user_text(text));
             }
         }
     }
@@ -243,6 +246,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
     let permission_mode = append_permission_mode(
         pending,
         &mut messages,
+        &segment.tools,
         &catalog,
         if new_segment {
             0
@@ -261,6 +265,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
                 && (admitted.turn == pending.turn || admitted.turn == source_turn)
         });
         let mut source_sender = None;
+        let mut source_images = Vec::new();
         let admitted_at = if input_is_present {
             0
         } else {
@@ -274,6 +279,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
                         conversation,
                         text,
                         from,
+                        images,
                         ..
                     } = event.payload
                     {
@@ -284,6 +290,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
                         {
                             admitted_at = Some(event.id);
                             source_sender = from;
+                            source_images = images;
                         }
                     }
                     Ok(())
@@ -293,13 +300,20 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         };
         let prompt = source_sender
             .map(|from| crate::context::replay::render_agent_message(&pending.query.prompt, &from));
-        resumed_current_input(
+        let index = resumed_current_input(
             &mut messages,
             pending.turn,
             pending.query.resume_input_turn,
             prompt.as_deref().unwrap_or(&pending.query.prompt),
             admitted_at,
-        )
+        );
+        if let Some(index) = index {
+            messages[index]
+                .message
+                .blocks
+                .extend(source_images.into_iter().map(MessageBlock::InputImage));
+        }
+        index
     } else {
         messages.iter().rposition(|admitted| {
             admitted.turn == pending.turn && admitted.origin == MessageOrigin::Input
@@ -653,14 +667,8 @@ fn append_dynamic(
         );
     }
     if !pending.hook_context.is_empty() {
-        let template = catalog
-            .blocks
-            .get("hook-context")
-            .ok_or_else(|| Error::PromptRender("missing frozen hook-context template".into()))?;
-        let text = template.text.replace(
-            "{{hook_text}}",
-            &std::mem::take(&mut pending.hook_context).join("\n"),
-        );
+        let hook_text = std::mem::take(&mut pending.hook_context).join("\n");
+        let text = catalog.render("blocks/hook-context.md", minijinja::context! { hook_text })?;
         messages.push(AdmittedMessage {
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
@@ -674,19 +682,26 @@ fn append_dynamic(
 fn append_permission_mode(
     pending: &PendingRun,
     messages: &mut Vec<AdmittedMessage>,
+    tools: &[crate::context::ToolSchema],
     catalog: &PromptCatalog,
     frozen_head: usize,
 ) -> Result<CanonicalMessage> {
     use crate::permission::PermissionMode;
 
     const TAG: &str = "<kuku_permission_mode>";
-    let mode = match super::runtime_tools::effective_permission_mode(pending)? {
+    let permission_mode = super::runtime_tools::effective_permission_mode(pending)?;
+    let mode = match permission_mode {
         PermissionMode::Full => "Full",
         PermissionMode::Ask => "Ask",
         PermissionMode::ReadOnly => "Read-only",
     };
-    let template = &catalog.runtime["permission-mode"].text;
-    let message = CanonicalMessage::user_text(template.replace("{{mode}}", mode));
+    let tools: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    let text = catalog.renderer().render("runtime/permission-mode.md", minijinja::context! {
+        step => minijinja::context! { permission_mode => minijinja::value::Serde(permission_mode) },
+        tools => minijinja::value::Serde(&tools),
+        mode,
+    })?;
+    let message = CanonicalMessage::user_text(text);
     let last = messages.iter().rev().find(|entry| {
         entry.origin == MessageOrigin::Runtime
             && entry

@@ -249,8 +249,19 @@ async fn call_secondary_llm(
     let truncated = &content[..end];
     let user_text = format!("{prompt}\n\n---\n\n{truncated}");
 
+    let system_prompt = catalog
+        .render(
+            "tools/fetch-web.md",
+            minijinja::context! {
+                model => &resolved.model,
+                tools => Vec::<String>::new(),
+            },
+        )
+        .map_err(|error| {
+            ToolResultEnvelope::error("failed: render fetch_web prompt", error.to_string())
+        })?;
     let assembly = crate::context::ContextAssembly {
-        system_prompt: catalog.tools["fetch-web"].text.clone(),
+        system_prompt,
         prelude_messages: vec![crate::context::CanonicalMessage {
             role: crate::context::Role::User,
             blocks: vec![crate::context::MessageBlock::Text(user_text)],

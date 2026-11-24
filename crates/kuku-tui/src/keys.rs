@@ -43,6 +43,12 @@ impl Shortcut {
     pub(crate) const NEW_LINE: Self = Self::new(KeyCode::Enter, KeyModifiers::SHIFT, "Shift+Enter");
     pub(crate) const CONTROL_NEW_LINE: Self = Self::control('j', "Ctrl+J");
     pub(crate) const NEXT_TURN: Self = Self::new(KeyCode::Enter, KeyModifiers::ALT, "Alt+Enter");
+    pub(crate) const PASTE: Self = Self::control('v', "Ctrl+V");
+    pub(crate) const PASTE_IMAGE_ALIAS: Self = Self::new(
+        KeyCode::Char('v'),
+        KeyModifiers::CONTROL.union(KeyModifiers::ALT),
+        "Ctrl+Alt+V",
+    );
     pub(crate) const CLEAR: Self = Self::control('c', "Ctrl+C");
     pub(crate) const RECONNECT: Self = Self::control('r', "Ctrl+R");
     pub(crate) const REWIND: Self = Self::control('g', "Ctrl+G");

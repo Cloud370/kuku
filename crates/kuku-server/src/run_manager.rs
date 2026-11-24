@@ -299,7 +299,14 @@ impl RunManager {
         }
         let path =
             kuku::session::session_events_path(&options.data_dir, &options.workspace, session_id)?;
-        let input = command.input(command_id, address)?;
+        let images = command.decode_images()?;
+        let mut input = command.input(command_id, address)?;
+        if let Some(input) = &mut input {
+            input.images = images
+                .iter()
+                .map(|bytes| kuku::execution::InputImage::from_bytes(bytes))
+                .collect::<kuku::Result<_>>()?;
+        }
         let slot = self.slot(&path, &options.workspace, session_id);
         let mut open = slot.open.lock().await;
         let _operation = SessionOperation::begin(&slot.active_operation);
@@ -312,6 +319,7 @@ impl RunManager {
                     command_id,
                     command,
                     input,
+                    images,
                     replay_only,
                 },
                 &path,
@@ -523,6 +531,7 @@ struct CommandExecution<'a> {
     command_id: &'a str,
     command: Command,
     input: Option<Input>,
+    images: Vec<Vec<u8>>,
     replay_only: bool,
 }
 

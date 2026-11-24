@@ -24,7 +24,6 @@ use crate::notice::{
     NoticeAssemblyInput, build_runtime_notices, compute_context_headroom, render_notice_body,
     types::ContextHeadroom,
 };
-use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
 use crate::tool;
 
 use super::helpers::{
@@ -70,7 +69,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         crate::prompt::builtin_prompt_catalog()
     };
 
-    let tools = tool::to_tool_schemas(&registry);
+    let mut tools = tool::to_tool_schemas(&registry);
+    render_tool_descriptions(&mut tools, &catalog)?;
+    let behavior = render_agent_behavior(&pending, &tools, &catalog)?;
     let (skills_text, runtime_blocks) = build_runtime_blocks(
         &pending.workspace,
         pending.conversation.as_str(),
@@ -91,12 +92,12 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     "Plugins loaded: {pkg_names}. \
                      If not relevant to your current task, ignore."
                 );
-                let wrapper_tmpl = catalog
-                    .blocks
-                    .get("system-notice")
-                    .map(|a| a.text.as_str())
-                    .unwrap_or("<kuku_system_notice>\n{{notice_body}}\n</kuku_system_notice>");
-                let wrapped = wrapper_tmpl.replace("{{notice_body}}", &notice);
+                let wrapped = catalog.render(
+                    "blocks/system-notice.md",
+                    minijinja::context! {
+                        notice_body => notice,
+                    },
+                )?;
                 Some(match runtime_blocks {
                     Some(existing) => format!("{existing}\n\n{wrapped}"),
                     None => wrapped,
@@ -126,12 +127,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             model_tiers,
             runtime_blocks,
             enable_memory: true,
-            agent_instructions: pending
-                .query
-                .agent_instructions
-                .clone()
-                .or_else(|| catalog.agents.get("main").map(|a| a.text.clone()))
-                .unwrap_or_default(),
+            agent_instructions: behavior,
             response_contract: pending.query.response_contract.clone(),
         },
         &catalog,
@@ -189,7 +185,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         &resolved_config,
         false,
         &catalog,
-    );
+    )?;
     assembly.handoff_summary = handoff_summary;
 
     let estimated_input = last_input_tokens(
@@ -214,12 +210,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         {
             pending.handoff_triggered = true;
             pending.handoff_keep_turns = handoff_config.keep_turns;
-            Some(if let Some(dir) = &pending.prompts_dir {
-                load_prompt_template(dir, "runtime/handoff-instruction")
-                    .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
-            } else {
-                builtin_handoff_instruction().to_string()
-            })
+            Some(catalog.render("runtime/handoff-instruction.md", minijinja::context! {})?)
         } else {
             None
         }
@@ -242,13 +233,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .map(|skill| skill.body.as_str()),
         runtime_date.as_deref(),
         &catalog,
-    );
+    )?;
     let mut current_turn_prefix = pending
         .frozen_turn_prefix
         .freeze_or_reuse(dynamic_turn_prefix);
     if let Some(instruction) = handoff_instruction {
         current_turn_prefix =
-            append_handoff_instruction(current_turn_prefix, &instruction, &catalog);
+            append_handoff_instruction(current_turn_prefix, &instruction, &catalog)?;
         pending
             .frozen_turn_prefix
             .replace(current_turn_prefix.clone());
@@ -274,15 +265,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .rev()
             .find(|m| m.role == crate::context::Role::User)
         {
-            let hook_tmpl = catalog
-                .blocks
-                .get("hook-context")
-                .map(|a| a.text.as_str())
-                .unwrap_or("<kuku_hook_context>\n{{hook_text}}\n</kuku_hook_context>");
-            insert_current_turn_metadata_block(
-                last_user,
-                hook_tmpl.replace("{{hook_text}}", &hook_text),
-            );
+            let text =
+                catalog.render("blocks/hook-context.md", minijinja::context! { hook_text })?;
+            insert_current_turn_metadata_block(last_user, text);
         }
     }
 
@@ -639,7 +624,7 @@ fn build_runtime_blocks(
             conversation: &conversation,
         });
         for notice in &notices {
-            if let Some(body) = render_notice_body(notice, catalog) {
+            if let Some(body) = render_notice_body(notice, catalog)? {
                 notice_bodies.push(body);
             }
         }
@@ -647,12 +632,12 @@ fn build_runtime_blocks(
             .as_ref()
             .and_then(crate::skill::catalog::render_skill_change_notice);
         if let Some(change_line) = skill_change_line {
-            let template = catalog
-                .blocks
-                .get("notice-skill-changes")
-                .map(|asset| asset.text.as_str())
-                .unwrap_or("<kuku_system_notice>\n{{skill_changes}}\n</kuku_system_notice>");
-            notice_bodies.push(template.replace("{{skill_changes}}", &change_line));
+            notice_bodies.push(catalog.render(
+                "blocks/notice-skill-changes.md",
+                minijinja::context! {
+                    skill_changes => change_line,
+                },
+            )?);
         }
     }
 
@@ -672,32 +657,74 @@ fn assembly_runtime_prefix(
     skill_body: Option<&str>,
     runtime_date: Option<&str>,
     catalog: &crate::prompt::PromptCatalog,
-) -> Option<String> {
+) -> Result<Option<String>> {
+    let renderer = catalog.renderer();
     let mut parts = Vec::new();
     if let Some(runtime_context) = runtime_context.filter(|value| !value.is_empty()) {
-        let tmpl = catalog
-            .blocks
-            .get("runtime-notices")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
-        parts.push(tmpl.replace("{{runtime_notices_content}}", runtime_context));
+        parts.push(renderer.render(
+            "blocks/runtime-notices.md",
+            minijinja::context! {
+                runtime_notices_content => runtime_context
+            },
+        )?);
     }
     if let Some(runtime_date) = runtime_date.filter(|value| !value.is_empty()) {
         parts.push(runtime_date.to_string());
     }
     if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
-        let tmpl = catalog
-            .blocks
-            .get("skill-input")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_skill_input>{{skill_input_content}}</kuku_skill_input>");
-        parts.push(tmpl.replace("{{skill_input_content}}", skill_body));
+        parts.push(renderer.render(
+            "blocks/skill-input.md",
+            minijinja::context! {
+                skill_input_content => skill_body
+            },
+        )?);
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n"))
+    Ok((!parts.is_empty()).then(|| parts.join("\n")))
+}
+
+pub(super) fn render_tool_descriptions(
+    tools: &mut [crate::context::ToolSchema],
+    catalog: &crate::prompt::PromptCatalog,
+) -> Result<()> {
+    if let Some(index) = tools.iter().position(|tool| tool.name == "run_js") {
+        let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        let description = catalog.render(
+            "tools/run-js.md",
+            minijinja::context! {
+                tools => minijinja::value::Serde(&names),
+            },
+        )?;
+        let description = description.trim();
+        let original = &mut tools[index].description;
+        if let Some(suffix) = original
+            .strip_prefix(crate::tool::run_js::SCRIPT_DESCRIPTION)
+            .filter(|suffix| !suffix.is_empty())
+        {
+            *original = format!("{description}\n{suffix}");
+        } else {
+            *original = description.to_owned();
+        }
     }
+    Ok(())
+}
+
+pub(super) fn render_agent_behavior(
+    pending: &PendingRun,
+    tools: &[crate::context::ToolSchema],
+    catalog: &crate::prompt::PromptCatalog,
+) -> Result<String> {
+    if let Some(instructions) = &pending.query.agent_instructions {
+        return Ok(instructions.clone());
+    }
+    let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    catalog.render(
+        "agents/main.md",
+        minijinja::context! {
+            agent => minijinja::context! { address => pending.conversation.as_str() },
+            tools => minijinja::value::Serde(&names),
+            workspace_root => pending.workspace.to_string_lossy().as_ref(),
+        },
+    )
 }
 
 const MODEL_MODALITIES_TAG: &str = "<kuku_model_modalities>";
@@ -714,53 +741,48 @@ pub(super) fn set_model_modalities(
     resolved: &crate::provider::types::ResolvedProvider,
     builtin_adapter: bool,
     catalog: &crate::prompt::PromptCatalog,
-) {
-    let template = catalog.runtime.get("model-modalities").map_or(
-        include_str!("../../prompts/runtime/model-modalities.md"),
-        |asset| asset.text.as_str(),
-    );
+) -> Result<()> {
+    use crate::config::{ImageInputSupport, RequestedOutput};
     use crate::context::assembly::render_modalities;
 
-    let image_input = resolved.capabilities.image_input_support(builtin_adapter);
-    let image_visibility = match image_input {
-        crate::config::ImageInputSupport::Supported => "can see image attachments",
-        _ => "cannot see any images",
-    };
-    let output = match resolved.output {
-        crate::config::RequestedOutput::Text => "text",
-        crate::config::RequestedOutput::Image => "image",
-    };
-    let view_image = if tools.iter().any(|tool| tool.name == "view_image") {
-        "available"
-    } else {
-        "unavailable"
-    };
-    let text = template
-        .replace(
-            "{{input_modalities}}",
-            &render_modalities(
-                resolved
-                    .capabilities
-                    .input_modalities
-                    .as_ref()
-                    .map(|entry| entry.value.as_slice()),
-            ),
-        )
-        .replace(
-            "{{output_modalities}}",
-            &render_modalities(
-                resolved
-                    .capabilities
-                    .output_modalities
-                    .as_ref()
-                    .map(|entry| entry.value.as_slice()),
-            ),
-        )
-        .replace("{{route_input}}", &image_input.modalities().join(", "))
-        .replace("{{output_modality}}", output)
-        .replace("{{image_input}}", image_input.label())
-        .replace("{{image_visibility}}", image_visibility)
-        .replace("{{view_image}}", view_image);
+    let capabilities = &resolved.capabilities;
+    let image_input = capabilities.image_input_support(builtin_adapter);
+    let supported = image_input == ImageInputSupport::Supported;
+    let declared_input = capabilities
+        .input_modalities
+        .as_ref()
+        .map(|entry| entry.value.as_slice());
+    let declared_output = capabilities
+        .output_modalities
+        .as_ref()
+        .map(|entry| entry.value.as_slice());
+    let tools: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    let text = catalog.renderer().render("runtime/model-modalities.md", minijinja::context! {
+        agent => minijinja::context! {
+            model => minijinja::context! {
+                input_modalities => minijinja::value::Serde(declared_input),
+                output_modalities => minijinja::value::Serde(declared_output),
+            },
+            image_input => minijinja::context! {
+                supported => supported,
+                status => minijinja::value::Serde(image_input),
+            },
+            effective_input_modalities => minijinja::value::Serde(image_input.modalities()),
+            output => minijinja::value::Serde(resolved.output),
+        },
+        tools => minijinja::value::Serde(&tools),
+        // These values also support previously recorded catalog assets.
+        input_modalities => render_modalities(declared_input),
+        output_modalities => render_modalities(declared_output),
+        route_input => image_input.modalities().join(", "),
+        output_modality => match resolved.output {
+            RequestedOutput::Text => "text",
+            RequestedOutput::Image => "image",
+        },
+        image_input => image_input.label(),
+        image_visibility => if supported { "can see image attachments" } else { "cannot see any images" },
+        view_image => if tools.contains(&"view_image") { "available" } else { "unavailable" },
+    })?;
     let message = CanonicalMessage::user_text(format!(
         "{MODEL_MODALITIES_TAG}\n{}\n</kuku_model_modalities>",
         text.trim_end(),
@@ -770,6 +792,7 @@ pub(super) fn set_model_modalities(
     } else {
         prelude.push(message);
     }
+    Ok(())
 }
 
 fn contains_current_date(assembly: &crate::context::ContextAssembly, runtime_date: &str) -> bool {
@@ -802,31 +825,32 @@ pub(super) fn append_handoff_instruction(
     prefix: Option<String>,
     instruction: &str,
     catalog: &crate::prompt::PromptCatalog,
-) -> Option<String> {
+) -> Result<Option<String>> {
     let Some(prefix) = prefix else {
-        let notices_tmpl = catalog
-            .blocks
-            .get("runtime-notices")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
-        let inbox_tmpl = catalog
-            .blocks
-            .get("skill-input")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_skill_input>{{skill_input_content}}</kuku_skill_input>");
-        return Some(format!(
-            "{}\n{}",
-            notices_tmpl.replace("{{runtime_notices_content}}", instruction),
-            inbox_tmpl.replace("{{skill_input_content}}", ""),
-        ));
+        let renderer = catalog.renderer();
+        let notices = renderer.render(
+            "blocks/runtime-notices.md",
+            minijinja::context! {
+                runtime_notices_content => instruction,
+            },
+        )?;
+        let inbox = renderer.render(
+            "blocks/skill-input.md",
+            minijinja::context! {
+                skill_input_content => "",
+            },
+        )?;
+        return Ok(Some(format!("{notices}\n{inbox}")));
     };
 
-    if let Some(index) = prefix.rfind("</kuku_runtime_notices>") {
-        let (before, after) = prefix.split_at(index);
-        Some(format!("{before}\n\n{instruction}{after}"))
-    } else {
-        Some(format!("{prefix}\n{instruction}"))
-    }
+    Ok(Some(
+        if let Some(index) = prefix.rfind("</kuku_runtime_notices>") {
+            let (before, after) = prefix.split_at(index);
+            format!("{before}\n\n{instruction}{after}")
+        } else {
+            format!("{prefix}\n{instruction}")
+        },
+    ))
 }
 
 fn build_current_user_message(

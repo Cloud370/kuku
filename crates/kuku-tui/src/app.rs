@@ -29,6 +29,7 @@ mod contextual;
 mod delivery;
 mod history;
 pub(crate) mod history_jump;
+pub(crate) mod images;
 mod model_default;
 mod model_editor;
 mod navigation;
@@ -134,6 +135,12 @@ pub(crate) struct Pane {
     pub(crate) model_problem: Option<String>,
     pub(crate) opening: bool,
     pub(crate) sending: bool,
+    pub(crate) draft_images: Vec<images::DraftImage>,
+    pub(crate) sent_images: Vec<images::DraftImage>,
+    pub(crate) encoded_images: Vec<kuku_client::ImageAttachment>,
+    pub(crate) clipboard_ticket: Option<u64>,
+    image_send: Option<images::ImageSend>,
+    next_image: usize,
     pub(crate) value_attachments: Vec<(String, OutputReference)>,
     pub(crate) value_saving: bool,
     creation_rejected: bool,
@@ -626,6 +633,7 @@ impl App {
             .into_iter()
             .chain(self.alias_hint.as_ref().and_then(Notice::deadline))
             .chain(self.pane().cleanup_at)
+            .chain(self.image_countdown_deadline(Instant::now()))
             .chain(
                 self.model_editor
                     .as_ref()
@@ -650,11 +658,17 @@ impl App {
             .model_editor
             .as_mut()
             .is_some_and(|editor| editor.poll_probes());
-        expired || alias_expired || probes
+        self.tick_image_countdown(now) || expired || alias_expired || probes
     }
 
     pub(crate) fn update(&mut self, update: Update) {
         match update {
+            Update::ClipboardPasted(selection, ticket, result) => {
+                self.clipboard_pasted(selection, ticket, result);
+            }
+            Update::ImagesEncoded(selection, ticket, result) => {
+                self.images_encoded(selection, ticket, result);
+            }
             Update::SetupRequired => self.need_model_setup(),
             Update::Connected {
                 endpoint,

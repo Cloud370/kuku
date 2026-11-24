@@ -488,6 +488,9 @@ pub struct Input {
     pub target: String,
     /// Material selected for this recipient's independent context.
     pub text: String,
+    /// Saved user images owned by the recipient.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::execution::InputImage>,
     /// Whether an idle recipient should advance.
     pub activation: Activation,
     /// Optional external work or message association.
@@ -512,6 +515,7 @@ impl Input {
             source: InputSource::Host("local".into()),
             target: target.into(),
             text: text.into(),
+            images: Vec::new(),
             activation: Activation::Wake,
             correlation: None,
             timing: InputTiming::NextStep,

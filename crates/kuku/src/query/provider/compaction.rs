@@ -115,7 +115,7 @@ pub(super) async fn compact(
     if pressure && material_tokens < minimum_savings.max(COMPACTION_RELIEF_TOKENS) {
         return Ok(Outcome::Keep);
     }
-    let Some(instruction) = task.checkpoint_instruction().map(str::to_owned) else {
+    let Some(instruction) = task.checkpoint_instruction()? else {
         return Ok(Outcome::Keep);
     };
     let mut candidate = context.clone();

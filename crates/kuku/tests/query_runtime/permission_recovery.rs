@@ -112,6 +112,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
             text: "run interrupted command".to_string(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     store

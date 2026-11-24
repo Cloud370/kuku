@@ -37,9 +37,25 @@ impl App {
             self.credential_repair_input(event);
             return;
         }
+        if matches!(&event,
+            Event::Key(key) if key.kind != KeyEventKind::Release)
+            || matches!(
+                &event,
+                Event::Paste(_)
+                    | Event::FocusLost
+                    | Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::Down(_)
+                            | MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown,
+                        ..
+                    })
+            )
+        {
+            self.cancel_image_countdown();
+        }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key),
-            Event::Paste(text) => self.paste(&text),
+            Event::Paste(text) => self.paste_transfer(text),
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::ScrollUp,
                 ..
@@ -177,10 +193,16 @@ impl App {
         }
         let editing = self.composer_focused();
         match key {
+            key if Shortcut::PASTE.matches(key) || Shortcut::PASTE_IMAGE_ALIAS.matches(key) => {
+                self.paste_clipboard();
+            }
             key if Shortcut::CLEAR.matches(key) => {
                 let pane = self.pane_mut();
-                let empty = pane.draft.take_text().is_empty() && pane.value_attachments.is_empty();
+                let empty = pane.draft.take_text().is_empty()
+                    && pane.value_attachments.is_empty()
+                    && pane.clipboard_ticket.is_none();
                 pane.value_attachments.clear();
+                pane.clear_draft_images();
                 if empty && key.kind == KeyEventKind::Press {
                     self.exit();
                 }
@@ -444,7 +466,7 @@ impl App {
         })));
     }
 
-    fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
+    pub(crate) fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
         if matches!(picker, PickerKind::Rewind | PickerKind::HistoryJump)
             && !self.rewind_picker_current(ticket)
         {
@@ -549,6 +571,13 @@ impl App {
             ChoiceKind::Value(value) => self.open_value(value),
             ChoiceKind::AttachValue(value) => self.attach_value(value),
             ChoiceKind::ReadValue(value) => self.read_value(value),
+            ChoiceKind::SendImages {
+                original,
+                timing,
+                route,
+            } => {
+                self.encode_draft_images(original, timing, route.map(|route| *route));
+            }
             ChoiceKind::ClearValues => self.clear_values(),
             ChoiceKind::ConfirmRestart(identity) => self.confirm_restart(*identity),
         }

@@ -786,6 +786,7 @@ mod tests {
                 text: text.into(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
         }
     }

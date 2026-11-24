@@ -353,3 +353,99 @@ fn tool_response(calls: &[(&str, &str)]) -> String {
     ));
     stream
 }
+
+#[tokio::test]
+async fn user_image_reopens_and_reaches_only_an_image_capable_route() {
+    const PATH: &str = "/pasted-image/responses";
+    const DONE: &str = concat!(
+        "event: response.output_text.delta\ndata: {\"delta\":\"image check complete\"}\n\n",
+        "event: response.completed\ndata: {\"response\":{\"id\":\"pasted\",\"status\":\"completed\",\"output\":[]}}\n\n"
+    );
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let vision = server
+        .mock_async(|when, then| {
+            when.method(POST).path(PATH).matches(|request| {
+                body(request)["input"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item["role"] == "user"
+                            && item["content"][0]["text"] == "Describe [Image #1]"
+                            && item["content"][1]["image_url"]
+                                == format!("data:image/png;base64,{PNG}")
+                    })
+                })
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(DONE);
+        })
+        .await;
+    let text_only = server
+        .mock_async(|when, then| {
+            when.method(POST).path(PATH).matches(|request| {
+                let body = body(request);
+                body["model"] == "text-fixture" && !body.to_string().contains("data:image/")
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(DONE);
+        })
+        .await;
+    let mut options = SessionOptions::new(
+        work.path(),
+        data.path(),
+        media_config(&server, "/pasted-image"),
+    );
+    let session = Session::open(options.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let mut input = Input::new("pasted", "main", "Describe [Image #1]");
+    let image = session
+        .save_input_image("main", &STANDARD.decode(PNG).unwrap())
+        .await
+        .unwrap();
+    input.images.push(image.clone());
+    session.send(input.clone()).unwrap();
+    let finished = session.wait_for_agent("main").await.unwrap();
+    assert_eq!(
+        finished.last_output.as_deref(),
+        Some("image check complete")
+    );
+    options.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+
+    let reopened = Session::open(options).await.unwrap();
+    assert_eq!(reopened.send(input).unwrap().command_id, "pasted");
+    run(&reopened, "follow-up", "Now describe the same image again").await;
+    reopened
+        .configure_agent(
+            "switch",
+            "main",
+            AgentConfig {
+                model: Some("text-fixture".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut incompatible = Input::new("blocked", "main", "[Image #1]");
+    incompatible.images.push(image);
+    assert!(
+        reopened
+            .send(incompatible)
+            .unwrap_err()
+            .to_string()
+            .contains("cannot receive images")
+    );
+    assert!(reopened.receipt("blocked").unwrap().is_none());
+    run(&reopened, "text", "A text question").await;
+    reopened.close().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(reopened.events_path())
+            .unwrap()
+            .contains(PNG)
+    );
+    vision.assert_hits_async(2).await;
+    text_only.assert_hits_async(1).await;
+}

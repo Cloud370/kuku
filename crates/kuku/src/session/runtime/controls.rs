@@ -866,6 +866,7 @@ mod rewind_guard_tests {
                     text: "same prompt".into(),
                     from: None,
                     job_delivery: false,
+                    images: Vec::new(),
                 },
             },
         ];

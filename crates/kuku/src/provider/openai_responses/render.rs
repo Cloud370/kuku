@@ -2,15 +2,21 @@ use serde_json::{Value, json};
 
 use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
-use crate::execution::ModelImage;
+use crate::execution::{InputImage, ModelImage};
 
 use super::super::replay::native_replay;
 use super::super::types::ProviderRequest;
 
+#[derive(Default)]
+pub(crate) struct ImageTargets {
+    pub(crate) tools: Vec<(usize, ModelImage)>,
+    pub(crate) user: Vec<(usize, InputImage)>,
+}
+
 fn convert_to_input_items(
     message: &CanonicalMessage,
     input_offset: usize,
-    mut images: Option<&mut Vec<(usize, ModelImage)>>,
+    mut images: Option<&mut ImageTargets>,
 ) -> Vec<Value> {
     if message.role == Role::Assistant {
         if let Some(items) = native_replay(message, ProviderFormat::OpenAiResponses)
@@ -28,6 +34,16 @@ fn convert_to_input_items(
             for block in &message.blocks {
                 match block {
                     MessageBlock::Text(text) => text_parts.push(text.clone()),
+                    MessageBlock::InputImage(image) => {
+                        if let Some(images) = images.as_deref_mut() {
+                            images
+                                .user
+                                .push((input_offset + items.len(), image.clone()));
+                            if text_parts.is_empty() {
+                                text_parts.push(String::new());
+                            }
+                        }
+                    }
                     MessageBlock::ToolResult(result) => {
                         if !text_parts.is_empty() {
                             items.push(json!({
@@ -43,7 +59,7 @@ fn convert_to_input_items(
                                 .as_ref()
                                 .and_then(ModelImage::from_tool_result)
                             {
-                                images.push((input_offset + items.len(), image));
+                                images.tools.push((input_offset + items.len(), image));
                             }
                         }
                         items.push(json!({
@@ -77,7 +93,8 @@ fn convert_to_input_items(
                     MessageBlock::Text(text) => Some(text.as_str()),
                     MessageBlock::ToolUse(_)
                     | MessageBlock::ToolResult(_)
-                    | MessageBlock::Thinking(_) => None,
+                    | MessageBlock::Thinking(_)
+                    | MessageBlock::InputImage(_) => None,
                     MessageBlock::ProviderReplay { .. } => None,
                 })
                 .collect::<Vec<_>>()
@@ -98,7 +115,7 @@ fn convert_to_input_items(
                     "name": tool_use.name,
                     "arguments": serde_json::to_string(&tool_use.args).expect("tool arguments are JSON"),
                 })),
-                MessageBlock::Text(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) | MessageBlock::ProviderReplay { .. } => {
+                MessageBlock::Text(_) | MessageBlock::ToolResult(_) | MessageBlock::Thinking(_) | MessageBlock::InputImage(_) | MessageBlock::ProviderReplay { .. } => {
                     None
                 }
             }));
@@ -118,14 +135,14 @@ fn input_text_parts(text_parts: &[String]) -> Value {
 }
 
 #[cfg(test)]
-pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
+pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result<Value> {
     render_body_with_images(request, None)
 }
 
 pub(crate) fn render_body_with_images(
     request: &ProviderRequest<'_>,
-    mut images: Option<&mut Vec<(usize, ModelImage)>>,
-) -> Value {
+    mut images: Option<&mut ImageTargets>,
+) -> crate::error::Result<Value> {
     let mut input_items = Vec::new();
 
     if !request.assembly.system_prompt.is_empty() {
@@ -143,9 +160,7 @@ pub(crate) fn render_body_with_images(
             images.as_deref_mut(),
         ));
     }
-    if let Some(summary) = &request.assembly.handoff_summary {
-        let template = &request.catalog.runtime["handoff-context"].text;
-        let content = template.replace("{{handoff_summary}}", summary);
+    if let Some(content) = request.render_handoff()? {
         input_items.push(json!({
             "role": "user",
             "content": content,
@@ -200,5 +215,5 @@ pub(crate) fn render_body_with_images(
         );
     }
 
-    body
+    Ok(body)
 }

@@ -26,7 +26,7 @@ pub(crate) use runtime::execute;
 const MAX_SCRIPT_ACTIONS: usize = 2048;
 const MAX_SCRIPT_RESULT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_OUTPUT_TEXT_BYTES: usize = 1024 * 1024;
-const SCRIPT_DESCRIPTION: &str = include_str!("../../../prompts/tools/run-js.md");
+pub(crate) const SCRIPT_DESCRIPTION: &str = include_str!("../../../prompts/tools/run-js.md");
 
 /// Bounds one disposable workspace JavaScript worker and its host operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

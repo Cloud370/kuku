@@ -450,6 +450,13 @@ impl Session {
                 "skills are disabled for agent '{target}'"
             )));
         }
+        self.validate_input_images(
+            &state,
+            &input,
+            config
+                .as_ref()
+                .unwrap_or(&state.agent(&target)?.snapshot.config),
+        )?;
         let key = input.command_id.clone();
         self.commit(
             &mut state,

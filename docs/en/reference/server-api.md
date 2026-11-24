@@ -53,6 +53,8 @@ Pass `workspace` as a query parameter for both permission endpoints. Workspace m
 
 Choose a unique Session ID and command ID before the initial send. The body includes the absolute path to the workspace on the server, the target Agent address and the command identity. Include `create` with initial Agent configuration when sending to a new Session.
 
+The optional `images` array on `send` pairs a label that appears in `text` with base64-encoded PNG or JPEG bytes in `data`. Send at most four images of 1 MiB each before base64 encoding. Images are stored under the recipient in the Session and admitted only by an image-capable route. The command identity covers the image contents as well as the text.
+
 ```json
 {
   "workspace": "/code/my-project",

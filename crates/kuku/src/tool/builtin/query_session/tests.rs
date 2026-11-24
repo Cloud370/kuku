@@ -28,6 +28,7 @@ fn message_user(turn: u64, text: &str) -> EventPayload {
         text: text.into(),
         from: None,
         job_delivery: false,
+        images: Vec::new(),
     }
 }
 
@@ -145,6 +146,7 @@ fn query_session_turn_filtering() {
                 text: "first turn".into(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
             EventPayload::TurnCompleted {
                 turn: 1,
@@ -158,6 +160,7 @@ fn query_session_turn_filtering() {
                 text: "second turn".into(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
             EventPayload::TurnCompleted {
                 turn: 2,
@@ -336,6 +339,7 @@ fn query_session_filters_single_conversation() {
                 text: "review text".into(),
                 from: Some("main".into()),
                 job_delivery: false,
+                images: Vec::new(),
             },
             EventPayload::MessageUser {
                 ts: ts("t"),
@@ -344,6 +348,7 @@ fn query_session_filters_single_conversation() {
                 text: "explore text".into(),
                 from: Some("main".into()),
                 job_delivery: false,
+                images: Vec::new(),
             },
         ],
     );

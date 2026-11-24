@@ -379,14 +379,14 @@ pub(super) fn prepare_request(
             resolved,
             &request,
             correlation,
-            pending
-                .query
-                .runtime_limits
-                .max_request_bytes
-                .unwrap_or(usize::MAX),
+            pending.query.runtime_limits.context_replay_bytes(),
             |image| {
                 super::super::runtime_tools::runtime_session(pending)?
                     .read_model_image(pending.conversation.as_str(), image)
+            },
+            |image| {
+                super::super::runtime_tools::runtime_session(pending)?
+                    .read_input_image(pending.conversation.as_str(), image)
             },
         )
     } else {

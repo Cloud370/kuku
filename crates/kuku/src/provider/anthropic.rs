@@ -19,16 +19,14 @@ const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before message_sto
 #[path = "anthropic_thinking_tests.rs"]
 mod thinking_tests;
 
-pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
+pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result<Value> {
     let mut messages = request
         .assembly
         .prelude_messages
         .iter()
         .map(convert_canonical_message)
         .collect::<Vec<_>>();
-    if let Some(summary) = &request.assembly.handoff_summary {
-        let template = &request.catalog.runtime["handoff-context"].text;
-        let content = template.replace("{{handoff_summary}}", summary);
+    if let Some(content) = request.render_handoff()? {
         messages.push(json!({
             "role": "user",
             "content": content,
@@ -87,7 +85,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
                 .collect::<Vec<_>>()
         );
     }
-    body
+    Ok(body)
 }
 
 fn convert_canonical_message(message: &CanonicalMessage) -> Value {
@@ -115,6 +113,7 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
                     })),
                     MessageBlock::ToolUse(_)
                     | MessageBlock::Thinking(_)
+                    | MessageBlock::InputImage(_)
                     | MessageBlock::ProviderReplay { .. } => None,
                 })
                 .collect::<Vec<_>>();
@@ -136,7 +135,9 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
                         "name": tool_use.name,
                         "input": tool_use.args,
                     })),
-                    MessageBlock::ToolResult(_) | MessageBlock::ProviderReplay { .. } => None,
+                    MessageBlock::ToolResult(_)
+                    | MessageBlock::InputImage(_)
+                    | MessageBlock::ProviderReplay { .. } => None,
                 })
                 .collect::<Vec<_>>();
 
@@ -612,7 +613,8 @@ mod tests {
     #[test]
     fn render_body_adaptive_thinking_high() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request(crate::config::ThinkLevel::High, &catalog));
+        let body =
+            render_body(&minimal_request(crate::config::ThinkLevel::High, &catalog)).unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
         assert_eq!(body["output_config"]["effort"], "max");
@@ -625,7 +627,8 @@ mod tests {
         let body = render_body(&minimal_request(
             crate::config::ThinkLevel::Medium,
             &catalog,
-        ));
+        ))
+        .unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "medium");
     }
@@ -633,7 +636,7 @@ mod tests {
     #[test]
     fn render_body_adaptive_thinking_low() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request(crate::config::ThinkLevel::Low, &catalog));
+        let body = render_body(&minimal_request(crate::config::ThinkLevel::Low, &catalog)).unwrap();
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "low");
     }
@@ -641,7 +644,7 @@ mod tests {
     #[test]
     fn render_body_no_thinking_when_off() {
         let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
+        let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog)).unwrap();
         assert!(body.get("thinking").is_none());
         assert!(body.get("output_config").is_none());
     }

@@ -85,6 +85,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
             text: "resume this turn".to_string(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     store
@@ -208,6 +209,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
             text: "resume this turn".to_string(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     store
@@ -316,6 +318,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
             text: "resume this turn".to_string(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     store

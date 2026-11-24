@@ -33,11 +33,17 @@ impl App {
         }
         match key {
             key if Shortcut::ENTER.matches(key) => {
+                if picker.kind == PickerKind::Images && key.kind != KeyEventKind::Press {
+                    return;
+                }
                 if let Some(choice) = picker.selected_choice() {
                     let kind = picker.kind.clone();
                     let ticket = picker.ticket.id;
                     self.choose(kind, choice, ticket);
                 }
+            }
+            key if Shortcut::TAB.matches(key) && picker.kind == PickerKind::Images => {
+                picker.cycle_by(1);
             }
             key if Shortcut::TAB.matches(key) && picker.kind.completes_text() => {
                 match (&picker.kind, picker.selected_choice()) {

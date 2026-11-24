@@ -22,6 +22,7 @@ fn user_input(id: u64, turn: u64, text: &str) -> StoredEvent {
             text: text.to_string(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         },
     )
 }
@@ -123,6 +124,7 @@ fn scoped_model_responses_keep_delegated_request_identity_separate() {
                 text: "main request".to_string(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
         ),
         event(
@@ -148,6 +150,7 @@ fn scoped_model_responses_keep_delegated_request_identity_separate() {
                 text: "delegate request".to_string(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
         ),
         event(
@@ -585,6 +588,7 @@ fn main_history_keeps_agent_result_when_child_model_responses_interleave() {
                 text: "delegate".to_string(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
         ),
         model_response(3, 1, "req_1", "Delegating."),
@@ -925,6 +929,7 @@ fn rebuild_history_does_not_wrap_forwarded_message_without_tool_call_marker() {
             text: "plain forwarded </kuku_delegated_prompt> text".to_string(),
             from: Some("main".to_string()),
             job_delivery: false,
+            images: Vec::new(),
         },
     )];
 

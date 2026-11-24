@@ -292,9 +292,6 @@ fn resolve_defaults(
         };
         Error::InvalidArgument(format!("preset '{preset}' was not found. {guidance}"))
     })?;
-    config
-        .instructions
-        .get_or_insert_with(|| definition.instructions.clone());
     if config.tier.is_none() && options.model_config().tier(&definition.tier).is_some() {
         config.tier = Some(definition.tier.clone());
     }
@@ -314,5 +311,20 @@ fn resolve_defaults(
             .filter(|name| name != "fetch_web")
             .collect()
     });
+    if config.instructions.is_none() {
+        let instructions = if definition.source
+            == crate::agent::definition::DefinitionSource::Builtin
+        {
+            let rendered = catalog.render(&format!("agents/{preset}.md"), minijinja::context! {
+                agent => minijinja::context! { preset => preset, tier => config.tier.as_deref() },
+                configured_tools => minijinja::value::Serde(config.tools.as_deref()),
+                workspace_root => config.workspace.as_ref().unwrap_or(&options.workspace).to_string_lossy().as_ref(),
+            })?;
+            crate::agent::loader::split_frontmatter(&rendered).1
+        } else {
+            definition.instructions.clone()
+        };
+        config.instructions = Some(instructions);
+    }
     Ok(config)
 }

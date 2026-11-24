@@ -347,6 +347,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
             text: "first".to_string(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     drop(store);

@@ -144,6 +144,7 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
         )),
         Line::raw("Ctrl+P/F1   Show this help"),
         Line::raw("Ctrl+G      Rewind to a message"),
+        Line::raw("Ctrl+V      Paste · Ctrl+Alt+V also works"),
         Line::raw("/           Search actions and Skills"),
         Line::default(),
     ];
@@ -258,6 +259,11 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
     let field_width = render_header(frame, header, &title_line, picker);
     let count = usize::from(list.height).max(1);
     let range = picker.composer_rows(count, picker.visible_choices().len());
+    if list.height >= 2
+        && let Some(countdown) = &mut picker.image_auto_send
+    {
+        countdown.begin(std::time::Instant::now());
+    }
     let choices = picker.visible_choices();
     let model_column = if picker.kind == PickerKind::Models {
         choices
@@ -303,6 +309,8 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
         SAVE_HELP
     } else if matches!(picker.kind, PickerKind::Thinking | PickerKind::CustomSpeed) {
         THINKING_HELP
+    } else if picker.kind == PickerKind::Images {
+        "Tab / ↑↓ Choose · Enter Send · Esc Keep draft"
     } else if picker.kind == PickerKind::Speed {
         "↑↓ Move · Tab Complete · Enter Apply · Type to add"
     } else if picker.kind == PickerKind::Models {
@@ -314,10 +322,19 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
     } else {
         MODEL_HELP
     };
+    let countdown = picker
+        .image_auto_send
+        .as_ref()
+        .and_then(|countdown| countdown.seconds(std::time::Instant::now()))
+        .map(|seconds| {
+            format!("Auto in {seconds}s · Tab / ↑↓ Choose · Enter Send · Esc Keep draft")
+        });
     let (hint, color) = picker
         .problem
         .as_ref()
-        .map_or((help, MUTED), |error| (error.as_str(), ERROR));
+        .map_or((countdown.as_deref().unwrap_or(help), MUTED), |error| {
+            (error.as_str(), ERROR)
+        });
     frame.render_widget(
         Paragraph::new(shorten(hint, width)).style(Style::new().fg(color)),
         footer,

@@ -20,7 +20,7 @@ pub enum MediaAdapterSupport {
     /// Built-in adapters currently send and receive text.
     #[default]
     TextOnly,
-    /// Send input images in Responses tool results for a declared image-capable model.
+    /// Send Responses user images and tool-result images for a declared image-capable model.
     ResponsesImageToolResults,
 }
 
@@ -28,7 +28,7 @@ pub enum MediaAdapterSupport {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageInputSupport {
-    /// The route accepts tool-result images.
+    /// The route accepts images.
     Supported,
     /// The model declares input modalities without images.
     UnsupportedByModel,

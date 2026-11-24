@@ -351,6 +351,7 @@ impl Session {
         query.runtime_execution = Some(work.execution);
         query.turn_override = Some(work.turn);
         query.skip_user_message = work.skip_user_message;
+        query.input_images = work.images;
         query.resume_input_turn = work.resume_input_turn;
         Ok(query)
     }

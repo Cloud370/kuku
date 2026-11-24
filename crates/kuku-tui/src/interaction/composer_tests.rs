@@ -707,3 +707,58 @@ fn model_picker_aligns_details_and_fits_the_account_and_route_markers() {
     );
     position(&screen, "ali***e@exa***.com · Current · Default");
 }
+
+#[test]
+fn image_quality_defaults_to_compressed_and_tab_stops_auto_send() {
+    use std::time::{Duration, Instant};
+
+    for choose_original in [false, true] {
+        let mut app = connected_app();
+        app.paste_clipboard();
+        let ticket = app.pane().clipboard_ticket.unwrap();
+        let rgba = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 120, 0, 0]));
+        app.update(Update::ClipboardPasted(
+            app.selection(),
+            ticket,
+            Ok(crate::clipboard::Pasted::Image(
+                crate::clipboard::ClipboardImage {
+                    pixels: image::DynamicImage::ImageRgba8(rgba),
+                    encoded: None,
+                    transparent: true,
+                },
+            )),
+        ));
+        app.effects.clear();
+        assert_eq!(app.pane().draft.text().trim(), "[Image #1]");
+        assert!(
+            lines(&frame(&mut app, 100))
+                .join("\n")
+                .contains("1 image attached · Transparency kept")
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+            if picker.kind == PickerKind::Images && picker.selected == 0));
+        let painted = lines(&frame(&mut app, 100)).join("\n");
+        assert!(
+            painted.contains("Compressed")
+                && painted.contains("Original")
+                && painted.contains("Auto in 3s")
+        );
+        let after = Instant::now() + Duration::from_secs(4);
+        if choose_original {
+            let screen = frame(&mut app, 100);
+            app.event(
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+                &screen,
+            );
+            assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 1));
+            assert!(!app.tick_image_countdown(after));
+            press(&mut app, KeyCode::Enter);
+        } else {
+            assert!(app.tick_image_countdown(after));
+        }
+        assert!(app.effects.iter().any(|effect| matches!(effect,
+            Job::EncodeImages(_, preparation) if preparation.original == choose_original)));
+        assert_eq!(app.pane().draft.text().trim(), "[Image #1]");
+    }
+}

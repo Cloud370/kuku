@@ -19,11 +19,11 @@ mod reasoning;
 #[path = "openai_responses/render.rs"]
 mod render;
 
-pub(super) use media::{attach_tool_images, redact_tool_images};
+pub(super) use media::{attach_tool_images, attach_user_images, redact_images};
 use reasoning::{PublishedReasoning, ReasoningText};
 #[cfg(test)]
 pub(crate) use render::render_body;
-pub(crate) use render::render_body_with_images;
+pub(crate) use render::{ImageTargets, render_body_with_images};
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before response.completed";
 

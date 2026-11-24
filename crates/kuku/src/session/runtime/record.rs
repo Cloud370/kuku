@@ -82,7 +82,7 @@ pub(super) enum Record {
     },
     ModelImageSaved {
         agent: String,
-        turn: u64,
+        turn: Option<u64>,
         digest: String,
         image: ModelImage,
     },
@@ -488,6 +488,7 @@ impl State {
                         turn,
                         digest,
                         image,
+                        referenced: false,
                     },
                 );
             }
@@ -1032,6 +1033,13 @@ impl State {
             );
         }
         self.values.grant(&input.target, &values);
+        for image in &input.images {
+            if let Some(id) = self.model_image_ids.get(&image.key(&input.target))
+                && let Some(retained) = self.model_images.get_mut(id)
+            {
+                retained.referenced = true;
+            }
+        }
         let agent = self.agent_mut(&input.target)?;
         agent.inbox.push_back(QueuedDelivery {
             queued_at: event_id,

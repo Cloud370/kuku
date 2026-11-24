@@ -38,6 +38,8 @@ The lower-level `Query` `Run` exposes host events through the non-exhaustive `Ui
 
 `AgentSnapshot.config` is the requested configuration, and `active_config` records the configuration used by active or waiting execution. Model and reasoning settings can change at the next unprepared model request. Workspace, behavior and tool settings take effect on the next Turn.
 
+Call `Session::save_input_image(agent, bytes).await` to retain a PNG or JPEG for the recipient, then add its returned reference to `Input.images`. The built-in Session transport accepts images when the selected route reports support in `AgentSelection.image_input`. The SDK bounds each image at 1 MiB and each input at four images.
+
 When exposing retryable creation over a transport, `open_for_creation` checks the initial input, configuration and optional Prompt directory against the persistent claim. The host still creates the Agent and submits its input using stable command identities. Use `verify_creation(&input, &config, prompts_dir)` if the claimed Session is already open.
 
 `Session::read_agents` reconstructs offline recovery state from the journal and maps an unterminated `Running` state to `Interrupted`, even while another runtime is active. Use an open Session's `agent` or `agents` methods for its current live state.

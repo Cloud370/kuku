@@ -702,6 +702,7 @@ pub(super) async fn execute(
                 correlation: Some(call.id.clone()),
                 timing: crate::InputTiming::NextStep,
                 bootstrap_skill: None,
+                images: Vec::new(),
             };
             serde_json::to_value(
                 session.send_with_values(input, &values::handoff_values(&call.args)?)?,

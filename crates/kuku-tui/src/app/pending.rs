@@ -13,6 +13,9 @@ impl App {
     }
 
     pub(super) fn send_with_route(&mut self, timing: Timing, confirmed: Option<&RouteChange>) {
+        if self.pane().clipboard_ticket.is_some() {
+            return;
+        }
         let empty =
             self.pane().draft.text().trim().is_empty() && self.pane().value_attachments.is_empty();
         if empty || !self.require_service() {
@@ -51,6 +54,9 @@ impl App {
             }
             return;
         }
+        if self.prepare_draft_images(timing, confirmed) {
+            return;
+        }
         if self.pane().creation_rejected && !self.pane().exists {
             self.renew_draft_identity();
         }
@@ -64,6 +70,9 @@ impl App {
             .map(str::to_owned);
         let create = (!pane.exists).then(|| Box::new(pane.initial_config.clone()));
         let values = pane.take_values();
+        let images = std::mem::take(&mut pane.encoded_images);
+        pane.sent_images = std::mem::take(&mut pane.draft_images);
+        pane.clear_draft_images();
         pane.sending = true;
         self.issue(
             active,
@@ -71,6 +80,7 @@ impl App {
                 text,
                 timing,
                 values,
+                images,
                 create,
                 create_agent_if_missing: false,
                 config_patch: None,
@@ -635,6 +645,7 @@ impl App {
             text,
             create,
             values,
+            images,
             ..
         } = item.command.action
         {
@@ -645,6 +656,7 @@ impl App {
                 pane.creation_rejected = true;
             }
             pane.restore_values(values);
+            let text = pane.restore_draft_images(&text, images);
             self.append_to_draft(&text);
             self.message("Restored rejected text to draft");
         }
@@ -704,6 +716,7 @@ impl App {
                         }
                         if matches!(item.command.action, Action::Send { .. }) {
                             pane.sending = false;
+                            pane.sent_images.clear();
                         }
                         if let Action::Cancel { execution_id } = item.command.action {
                             pane.finish_interrupt(execution_id);
@@ -810,13 +823,15 @@ impl App {
                 text,
                 create,
                 values,
+                images,
                 ..
             } = &item.command.action
             {
                 pane.sending = false;
                 pane.creation_rejected |= rejected && create.is_some();
                 if clear && pane.draft.text().is_empty() {
-                    pane.draft.set_text(text.clone());
+                    let text = pane.restore_draft_images(text, images.clone());
+                    pane.draft.set_text(text);
                     pane.restore_values(values.clone());
                     restored = true;
                 }
@@ -864,6 +879,7 @@ impl App {
                 let initial = !pane.exists;
                 pane.exists = true;
                 pane.sending = false;
+                pane.sent_images.clear();
                 pane.record_submission(
                     ack.receipt.event_id,
                     SubmissionStatus::from_receipt(ack.status),
