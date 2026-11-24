@@ -208,23 +208,29 @@ While the SDK runs, the selector samples SDK RSS/high-water RSS, CPU time and th
 
 ### Watch a TUI run together (optional)
 
-For collaborative TUI debugging, a named tmux session gives the developer and coding Agent the same terminal to reproduce, change, and verify an interaction together. Run from the checkout or worktree under test:
+For collaborative TUI debugging, use a named tmux session so the developer and coding Agent can share the same terminal. Run from the checkout or worktree under test. This example starts a dedicated tmux server with default key bindings and enables 256 colors for the TUI.
 
 ```sh
 cargo build --locked -p kuku-app --bin kuku
-tmux new-session -d -s kuku-review -c "$PWD" \
-  "$PWD/target/debug/kuku" --workspace "$PWD"
-tmux set-option -t kuku-review mouse on
-tmux capture-pane -p -t kuku-review
+tmux -L kuku-review -f /dev/null new-session -d -s kuku-review -c "$PWD"
+tmux -L kuku-review set-option -g default-terminal tmux-256color
+tmux -L kuku-review set-option -t kuku-review mouse on
+tmux -L kuku-review respawn-pane -k -t kuku-review \
+  env -u NO_COLOR "$PWD/target/debug/kuku" --workspace "$PWD"
+tmux -L kuku-review capture-pane -p -t kuku-review
 ```
 
-Wait for `Ready`, navigate to the screen under review, and capture the pane once to verify it. For a resume check, open `/resume` and leave the picker ready. Share `tmux attach -t kuku-review` for a regular shell, or `tmux switch-client -t kuku-review` for a shell already inside tmux. Use the mouse wheel or Page Up and Page Down to scroll in the TUI, and Ctrl+End to return to the latest output.
+Wait for `Ready`, navigate to the screen under review, and capture the pane once to verify it. For a resume check, open `/resume` and leave the picker ready. From a regular shell, attach with `tmux -L kuku-review attach -t kuku-review`. A client already on that server can use `tmux switch-client -t kuku-review`. Use the mouse wheel or Page Up and Page Down to scroll in the TUI, and Ctrl+End to return to the latest output.
 
 Let the developer drive the reproduction while the Agent captures the same pane and checks the corresponding events. Discuss the change in the coding session, then rebuild from the edited checkout. Start the new build in another tmux window with its own fixture copy and data directory. Keep the original window available so both can compare the same interaction and iterate. Take turns sending keystrokes to a shared pane.
 
-Name the comparison windows so both participants can target the same build. Press `Ctrl+b` then `w` to choose a window, or `Ctrl+b` then its window number to switch directly. For a window named `after`, capture it with `tmux capture-pane -p -t kuku-review:after` even while the developer is working in another window.
+Name the comparison windows so both participants can target the same build. Press `Ctrl+b` then `w` to choose a window, or `Ctrl+b` then its window number to switch directly. For a window named `after`, use `tmux -L kuku-review capture-pane -p -t kuku-review:after` even while the developer is working in another window.
 
-Use one session name per concurrent case. To isolate worktrees or compare builds side by side, also use a separate `--data-dir` and an explicit `--config` for each managed service. For progress, tool results, and request boundaries, use a bounded `kuku events SESSION_ID --limit 40` query with the same connection and workspace options. Switch to `capture-pane` to check the actual presentation and keep relevant captures with the evidence. When checking picker navigation, prepare at least two choices. If colors are missing, check the launcher's `TERM` and `NO_COLOR` and confirm the terminal's capabilities with `infocmp`.
+Use one session name per concurrent case. To isolate worktrees or compare builds side by side, also use a separate `--data-dir` and an explicit `--config` for each managed service. For progress, tool results, and request boundaries, use a bounded `kuku events SESSION_ID --limit 40` query with the same connection and workspace options. Switch to `capture-pane` to check the actual presentation and keep relevant captures with the evidence. When checking picker navigation, prepare at least two choices.
+
+If colors are missing, check `TERM` and `NO_COLOR` inside the pane. Use `infocmp tmux-256color` to confirm the terminal description is installed. Use `screen-256color` as the example's `default-terminal` if that is the available 256-color description. True color also depends on the attached terminal's capabilities.
+
+In a custom tmux server, `bind -n M-Left` and other bindings in the `root` key table intercept those keys before they reach kuku. Check the table with `tmux list-keys -T root`. Move conflicting Alt bindings behind the tmux prefix to let kuku receive Alt+Left, Alt+Right, and Alt+Up.
 
 For an upstream benchmark, run the kuku service in the pinned task container. If kuku is already available and configured in that container, run the TUI there through the host's tmux. Set `benchmark_container` to the running task container's name:
 
