@@ -20,7 +20,7 @@ fn concurrent_first_reads_share_a_full_cache_and_repair_corruption() {
     let parent = home.path().join("skill-resources").join(NAME);
     let cache_path = parent.join(CURRENT);
     assert!(!parent.exists());
-    retain(home.path(), CURRENT).unwrap();
+    retain_cancellable(home.path(), CURRENT, &|| false).unwrap();
     assert!(cache_path.with_extension("bundle").is_file());
     assert!(!cache_path.exists());
 
@@ -30,7 +30,9 @@ fn concurrent_first_reads_share_a_full_cache_and_repair_corruption() {
             .map(|_| {
                 scope.spawn(|| {
                     barrier.wait();
-                    let result = read_index().execute(home.path(), CURRENT).unwrap();
+                    let result = read_index()
+                        .execute(home.path(), CURRENT, &|| false)
+                        .unwrap();
                     assert_eq!(result.status, "ok");
                     assert_eq!(result.structured.unwrap()["version"], CURRENT);
                     let (index, _) = archive_parts(CONTENT, CURRENT).unwrap();
@@ -59,7 +61,9 @@ fn concurrent_first_reads_share_a_full_cache_and_repair_corruption() {
 
     let index = cache_path.join(RESOURCE_ROOT).join("en/index.md");
     fs::write(&index, "tampered document").unwrap();
-    let result = read_index().execute(home.path(), CURRENT).unwrap();
+    let result = read_index()
+        .execute(home.path(), CURRENT, &|| false)
+        .unwrap();
     assert_eq!(result.status, "ok");
     assert!(!result.model_content.contains("tampered document"));
     let persisted = fs::read_to_string(index).unwrap();
@@ -103,11 +107,17 @@ fn an_interrupted_cache_uses_the_retained_version_on_retry() {
 
     let archive_path = path.with_extension("bundle");
     fs::write(&archive_path, &archive[..archive.len() - 3]).unwrap();
-    assert!(read_index().execute(home.path(), &version).is_err());
+    assert!(
+        read_index()
+            .execute(home.path(), &version, &|| false)
+            .is_err()
+    );
     assert!(!path.exists());
 
     fs::write(&archive_path, archive).unwrap();
-    let result = read_index().execute(home.path(), &version).unwrap();
+    let result = read_index()
+        .execute(home.path(), &version, &|| false)
+        .unwrap();
     assert!(result.model_content.contains("Previous behavior."));
     assert_eq!(result.structured.unwrap()["version"], version);
     assert!(!path.with_file_name(CURRENT).exists());
@@ -120,14 +130,18 @@ fn a_cache_symlink_cannot_supply_resource_bytes() {
     let home = tempfile::tempdir().unwrap();
     let outside = tempfile::NamedTempFile::new().unwrap();
     fs::write(outside.path(), "outside docs scope").unwrap();
-    read_index().execute(home.path(), CURRENT).unwrap();
+    read_index()
+        .execute(home.path(), CURRENT, &|| false)
+        .unwrap();
     let target = version_path(home.path(), CURRENT)
         .unwrap()
         .join(RESOURCE_ROOT)
         .join("en/index.md");
     fs::remove_file(&target).unwrap();
     std::os::unix::fs::symlink(outside.path(), &target).unwrap();
-    let result = read_index().execute(home.path(), CURRENT).unwrap();
+    let result = read_index()
+        .execute(home.path(), CURRENT, &|| false)
+        .unwrap();
     assert_eq!(result.status, "ok");
     assert!(!result.model_content.contains("outside docs scope"));
     assert!(!fs::symlink_metadata(&target).unwrap().is_symlink());

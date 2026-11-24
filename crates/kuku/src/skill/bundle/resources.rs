@@ -104,10 +104,15 @@ impl Request {
         })
     }
 
-    pub(crate) fn execute(&self, home: &Path, version: &str) -> io::Result<ToolResultEnvelope> {
-        super::with_cache(home, version, |cache| match &self.action {
+    pub(crate) fn execute(
+        &self,
+        home: &Path,
+        version: &str,
+        cancelled: &impl Fn() -> bool,
+    ) -> io::Result<ToolResultEnvelope> {
+        super::with_cache(home, version, cancelled, |cache| match &self.action {
             Action::List => Ok(self.list(cache, version)),
-            Action::Search(query) => self.search(cache, version, query),
+            Action::Search(query) => self.search(cache, version, query, cancelled),
             Action::Read => self.read(cache, version),
         })
     }
@@ -144,11 +149,18 @@ impl Request {
         ToolResultEnvelope::ok(summary, payload.to_string(), payload)
     }
 
-    fn search(&self, cache: &Cache, version: &str, query: &str) -> io::Result<ToolResultEnvelope> {
+    fn search(
+        &self,
+        cache: &Cache,
+        version: &str,
+        query: &str,
+        cancelled: &impl Fn() -> bool,
+    ) -> io::Result<ToolResultEnvelope> {
         let mut matches = Vec::new();
         let mut total = 0_usize;
         let mut found_path = false;
         for (path, entry) in self.files(cache) {
+            super::ensure_active(cancelled)?;
             found_path = true;
             let bytes = cache.file(path, entry)?;
             let Ok(text) = std::str::from_utf8(&bytes) else {

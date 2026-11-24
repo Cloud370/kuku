@@ -18,7 +18,10 @@ use super::helpers::{
 };
 use super::job_slots::ForegroundJob;
 use super::run::find_tool_definition;
-use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
+use super::tool_exec::{
+    execute_tool_call, prepare_skill_bundle_operation, run_tool_pre_hooks, spawn_skill_bundle_slot,
+    uses_skill_bundle,
+};
 use super::types::{
     ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, SlotEvent, ToolKind, ToolPreparation, UiEvent, WorkspaceAccess,
@@ -192,12 +195,23 @@ pub(super) async fn dispatch(
             ToolResultEnvelope::blocked("tool capacity reached", "the action was not dispatched"),
         );
     }
+    if uses_skill_bundle(&pending, &queued.tool_call) {
+        let operation = prepare_skill_bundle_operation(&pending, &queued.tool_call)?;
+        if pending.query.runtime.is_some() {
+            mark_dispatched(&pending, &queued)?;
+        }
+        let operation = match operation {
+            Ok(operation) => operation,
+            Err(result) => return finish_inline(pending, queued, result),
+        };
+        let slot = spawn_skill_bundle_slot(&pending, &queued, operation, event_tx);
+        pending.skill_bundle_call = Some(queued.tool_call.id.clone());
+        return start_slot(pending, queued, slot);
+    }
     if pending.query.runtime.is_none() {
         return dispatch_standalone(pending, queued, event_tx).await;
     }
-    if super::helpers::is_inline_skill_tool(&queued.tool_call.name)
-        || is_inline(&queued.tool_call.name)
-    {
+    if super::helpers::is_skill_tool(&queued.tool_call.name) || is_inline(&queued.tool_call.name) {
         mark_dispatched(&pending, &queued)?;
         pending.record_tool_call(&queued.tool_call.name);
         let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
@@ -354,7 +368,7 @@ async fn dispatch_standalone(
     queued: QueuedToolCall,
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
 ) -> Result<PendingStep> {
-    if super::helpers::is_inline_skill_tool(&queued.tool_call.name) {
+    if super::helpers::is_skill_tool(&queued.tool_call.name) {
         pending.record_tool_call(&queued.tool_call.name);
         let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
         return finish_inline_event(pending, queued, result);

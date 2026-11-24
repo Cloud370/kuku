@@ -49,7 +49,7 @@ pub(super) fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, ke
     messages.retain(|message| message.turn > through || retained.contains(&message.turn));
 }
 
-pub(super) fn append_input_skills(
+pub(super) async fn append_input_skills(
     pending: &mut PendingRun,
     messages: &mut Vec<AdmittedMessage>,
 ) -> Result<Vec<String>> {
@@ -88,7 +88,7 @@ pub(super) fn append_input_skills(
         ) {
             names.retain(|name| name != bundle::NAME);
         } else {
-            bundle::retain(&pending.kuku_home, version)?;
+            bundle::retain(&pending.kuku_home, version).await?;
         }
     }
     let discovered = names

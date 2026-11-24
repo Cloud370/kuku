@@ -20,10 +20,16 @@ impl Run {
         {
             return Ok(None);
         }
+        // Skill discovery and reads must see the result of any earlier Skill load.
+        let skill_call_running = pending
+            .skill_bundle_call
+            .as_ref()
+            .is_some_and(|id| self.slots.contains_key(id));
         let index = pending.queued_tool_calls.iter().position(|queued| {
             let access =
                 crate::query::runtime_tools::workspace_access(pending, &queued.tool_call.name);
-            ready_after(&mut barrier, access)
+            (!skill_call_running || !crate::query::helpers::is_skill_tool(&queued.tool_call.name))
+                && ready_after(&mut barrier, access)
         });
         let Some(index) = index else { return Ok(None) };
         let RunState::Pending(mut pending) =

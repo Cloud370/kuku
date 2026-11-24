@@ -143,11 +143,9 @@ impl Query {
         validate_session_id(&session_id)?;
 
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
-        let run_lock_path = if acquire_lock {
-            StartupLockGuard::acquire(lock_path.clone())?.into_path()
-        } else {
-            lock_path.with_extension("nested")
-        };
+        let startup_lock = acquire_lock
+            .then(|| StartupLockGuard::acquire(lock_path.clone()))
+            .transpose()?;
         let events_path = match &self.events_path_override {
             Some(path) => path.clone(),
             None => session_events_path(&kuku_home, &workspace, &session_id)?,
@@ -327,10 +325,7 @@ impl Query {
                             (registry, bootstrap_loaded_names(bootstrap_skill.as_ref()))
                         };
                     if loads_current_docs {
-                        let home = kuku_home.clone();
-                        tokio::task::spawn_blocking(move || bundle::retain(&home, bundle::CURRENT))
-                            .await
-                            .map_err(std::io::Error::other)??;
+                        bundle::retain(&kuku_home, bundle::CURRENT).await?;
                         bootstrap_loaded.retain(|name| name != bundle::NAME);
                         bootstrap_loaded.push(bundle::NAME.into());
                         let definition = registry
@@ -494,6 +489,7 @@ impl Query {
             resolved: None,
             admitted_tool_call_ids,
             queued_tool_calls: resumed_state.queued_tool_calls,
+            skill_bundle_call: None,
             resumed_permission_requests: resumed_state.resumed_permission_requests,
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,
@@ -544,7 +540,10 @@ impl Query {
             slot_event_tx,
             slot_event_rx,
             cancel_token,
-            lock_path: run_lock_path,
+            lock_path: startup_lock.map_or_else(
+                || lock_path.with_extension("nested"),
+                StartupLockGuard::into_path,
+            ),
             deferred_runtime_logs: std::collections::VecDeque::new(),
         })
     }

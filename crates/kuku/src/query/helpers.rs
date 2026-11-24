@@ -12,7 +12,7 @@ use crate::session::{global_memory_path, project_memory_path};
 
 use super::types::{PendingRun, PermissionChoice, PermissionRequest};
 
-pub(super) fn is_inline_skill_tool(name: &str) -> bool {
+pub(super) fn is_skill_tool(name: &str) -> bool {
     matches!(
         name,
         "list_skills" | "search_skills" | "use_skill" | crate::skill::bundle::resources::TOOL_NAME
@@ -20,7 +20,7 @@ pub(super) fn is_inline_skill_tool(name: &str) -> bool {
 }
 
 pub(super) fn resolved_tool_available(pending: &PendingRun, name: &str) -> bool {
-    if is_inline_skill_tool(name) && pending.query.disable_skills {
+    if is_skill_tool(name) && pending.query.disable_skills {
         return false;
     }
     if let Some(resolved) = pending.resolved.as_ref() {

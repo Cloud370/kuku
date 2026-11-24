@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::path::{Component, Path};
 
 use flate2::{Compression, GzBuilder};
-use pulldown_cmark::{Event, LinkType, Parser, Tag};
+use pulldown_cmark::{CowStr, Event, LinkType, Parser, Tag};
 
 use crate::bundle_format::{
     FileEntry, HEADER, MAX_CONTENT_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, Manifest,
@@ -124,17 +124,29 @@ fn rewrite_links(path: &str, text: &str, revision: &str) -> io::Result<String> {
     }
     let parser = Parser::new(text);
     let mut replacements = BTreeMap::<usize, (Range<usize>, String)>::new();
-    let mut add = |span: Range<usize>, marker: &str, destination: &str| -> io::Result<()> {
+    let mut add = |span: Range<usize>, marker: &str, destination: &CowStr<'_>| -> io::Result<()> {
         let Some(href) = repository_link(path, destination, revision)? else {
             return Ok(());
         };
-        let start =
-            destination_start(&text[span.clone()], marker, destination).ok_or_else(|| {
-                io::Error::other(format!(
-                    "cannot locate repository link {destination:?} in {path}"
-                ))
-            })? + span.start;
-        replacements.insert(start, (start..start + destination.len(), href));
+        let source = &text[span.clone()];
+        let raw = destination_range(source, marker, destination).ok_or_else(|| {
+            io::Error::other(format!(
+                "cannot locate repository link {destination:?} in {path}"
+            ))
+        })?;
+        let start = span.start + raw.start;
+        let end = span.start + raw.end;
+        let href = href
+            .replace('&', "&amp;")
+            .replace('<', "%3C")
+            .replace('>', "%3E")
+            .replace('\\', "%5C");
+        let replacement = if source[..raw.start].ends_with('<') {
+            href
+        } else {
+            format!("<{href}>")
+        };
+        replacements.insert(start, (start..end, replacement));
         Ok(())
     };
     for (_, definition) in parser.reference_definitions().iter() {
@@ -164,14 +176,68 @@ fn rewrite_links(path: &str, text: &str, revision: &str) -> io::Result<String> {
     Ok(text)
 }
 
-fn destination_start(span: &str, marker: &str, destination: &str) -> Option<usize> {
-    span.rmatch_indices(marker).find_map(|(index, marker)| {
-        let after = &span[index + marker.len()..];
-        let start = after.trim_start().trim_start_matches('<');
-        let suffix = start.strip_prefix(destination)?;
-        (suffix.is_empty() || suffix.starts_with([')', '>', ' ', '\n', '\t']))
-            .then_some(span.len() - start.len())
+fn destination_range(span: &str, marker: &str, destination: &CowStr<'_>) -> Option<Range<usize>> {
+    // Unescaped destinations are borrowed directly from the Markdown source.
+    if let CowStr::Borrowed(value) = destination
+        && let Some(start) = (value.as_ptr() as usize).checked_sub(span.as_ptr() as usize)
+        && start
+            .checked_add(value.len())
+            .is_some_and(|end| end <= span.len())
+    {
+        return Some(start..start + value.len());
+    }
+
+    span.match_indices(marker).find_map(|(index, _)| {
+        // Test the entire tail so markers in nested labels and titles cannot supply the URL.
+        let probe = format!("[link]{}", &span[index + 1..]);
+        let parser = Parser::new(&probe);
+        let matches = if marker == "]:" {
+            parser.reference_definitions().iter().any(|(_, def)| {
+                def.span.end == probe.len() && def.dest == *destination
+            })
+        } else {
+            parser.into_offset_iter().any(|(event, range)| {
+                range.end == probe.len()
+                    && matches!(event, Event::Start(Tag::Link { dest_url, .. }) if dest_url == *destination)
+            })
+        };
+        if !matches {
+            return None;
+        }
+        let after = span[index + marker.len()..].trim_start();
+        let angled = after.starts_with('<');
+        let raw = after.strip_prefix('<').unwrap_or(after);
+        let length = raw_destination_length(raw, angled);
+        let start = span.len() - raw.len();
+        Some(start..start + length)
     })
+}
+
+fn raw_destination_length(text: &str, angled: bool) -> usize {
+    let mut parentheses = 0_u32;
+    let mut bytes = text.bytes().enumerate().peekable();
+    while let Some((index, byte)) = bytes.next() {
+        if byte == b'\\'
+            && bytes
+                .peek()
+                .is_some_and(|(_, next)| next.is_ascii_punctuation())
+        {
+            bytes.next();
+        } else if angled {
+            if byte == b'>' {
+                return index;
+            }
+        } else {
+            match byte {
+                0..=b' ' => return index,
+                b'(' => parentheses += 1,
+                b')' if parentheses == 0 => return index,
+                b')' => parentheses -= 1,
+                _ => {}
+            }
+        }
+    }
+    text.len()
 }
 
 fn repository_link(path: &str, destination: &str, revision: &str) -> io::Result<Option<String>> {

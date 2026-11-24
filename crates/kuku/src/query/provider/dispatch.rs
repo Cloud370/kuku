@@ -166,7 +166,7 @@ pub(super) async fn dispatch_provider_step(
             "reason": failure.kind.as_event_kind(),
         }))])?;
         pending.model_request_count += 1;
-        let selection = crate::query::frozen::prepare(&mut pending, false)?;
+        let selection = crate::query::frozen::prepare(&mut pending, false).await?;
         pending.request_base = Some(selection.request);
         let mut context = selection.commit;
         match Box::pin(compaction::compact(

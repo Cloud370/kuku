@@ -17,8 +17,10 @@ pub(crate) fn load_from_dir(dir: &Path, source: SkillSource) -> Result<Vec<Skill
         if !skill_md.exists() {
             continue;
         }
-        let content = std::fs::read_to_string(&skill_md)?;
-        match parse_skill(&content, &skill_dir, &source) {
+        let definition = std::fs::read_to_string(&skill_md)
+            .map_err(Error::from)
+            .and_then(|content| parse_skill(&content, &skill_dir, &source));
+        match definition {
             Ok(def) => defs.push(def),
             Err(e) => {
                 eprintln!("warning: skipping skill at {}: {e}", skill_dir.display());
@@ -198,6 +200,19 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"tdd"));
         assert!(names.contains(&"review"));
+    }
+
+    #[test]
+    fn load_from_dir_keeps_other_skills_when_a_skill_file_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        create_skill(dir.path(), "real", "Read these instructions.");
+        let malformed = dir.path().join("malformed");
+        std::fs::create_dir(&malformed).unwrap();
+        std::fs::write(malformed.join("SKILL.md"), [0xff]).unwrap();
+
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "real");
     }
 
     #[test]

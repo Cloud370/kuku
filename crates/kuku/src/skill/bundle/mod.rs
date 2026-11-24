@@ -32,7 +32,26 @@ pub(super) fn definition() -> SkillDefinition {
 }
 
 /// Save the compressed source before a loaded Skill becomes part of a Turn.
-pub(crate) fn retain(home: &Path, version: &str) -> io::Result<()> {
+pub(crate) async fn retain(home: &Path, version: &str) -> io::Result<()> {
+    let home = home.to_path_buf();
+    let version = version.to_owned();
+    // The blocking worker can observe the caller dropping this future.
+    let (cancel, waiting) = tokio::sync::oneshot::channel::<()>();
+    let result = tokio::task::spawn_blocking(move || {
+        retain_cancellable(&home, &version, &|| cancel.is_closed())
+    })
+    .await
+    .map_err(io::Error::other)?;
+    drop(waiting);
+    result
+}
+
+pub(crate) fn retain_cancellable(
+    home: &Path,
+    version: &str,
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<()> {
+    ensure_active(cancelled)?;
     let path = version_path(home, version)?;
     let archive = path.with_extension("bundle");
     if version != CURRENT {
@@ -43,13 +62,14 @@ pub(crate) fn retain(home: &Path, version: &str) -> io::Result<()> {
     if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
         return Ok(());
     }
-    let _lock = lock(&path)?;
+    let _lock = lock(&path, cancelled)?;
     if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
         return Ok(());
     }
     let mut staged = tempfile::NamedTempFile::new_in(path.parent().expect("cache has a parent"))?;
     staged.write_all(CONTENT)?;
     staged.as_file().sync_all()?;
+    ensure_active(cancelled)?;
     staged.persist(&archive).map_err(|error| error.error)?;
     sync_cache_parent(&archive)
 }
@@ -94,17 +114,19 @@ impl Cache {
 fn with_cache<T>(
     home: &Path,
     version: &str,
+    cancelled: &impl Fn() -> bool,
     read: impl Fn(&Cache) -> io::Result<T>,
 ) -> io::Result<T> {
+    ensure_active(cancelled)?;
     let path = version_path(home, version)?;
     if let Some(result) = try_cache(&path, version, &read)? {
         return Ok(result);
     }
-    let _lock = lock(&path)?;
+    let _lock = lock(&path, cancelled)?;
     if let Some(result) = try_cache(&path, version, &read)? {
         return Ok(result);
     }
-    publish(&path, version)?;
+    publish(&path, version, cancelled)?;
     read(&Cache::open(&path, version)?)
 }
 
@@ -127,7 +149,7 @@ fn try_cache<T>(
     }
 }
 
-fn publish(path: &Path, version: &str) -> io::Result<()> {
+fn publish(path: &Path, version: &str, cancelled: &impl Fn() -> bool) -> io::Result<()> {
     let retained;
     let bytes = if version == CURRENT {
         CONTENT
@@ -141,6 +163,7 @@ fn publish(path: &Path, version: &str) -> io::Result<()> {
     let prefix = format!(".extract-{version}-");
     // This version's interprocess lock also covers staging left by a killed process.
     for entry in fs::read_dir(parent)? {
+        ensure_active(cancelled)?;
         let entry = entry?;
         if entry.file_name().to_string_lossy().starts_with(&prefix) && entry.file_type()?.is_dir() {
             fs::remove_dir_all(entry.path())?;
@@ -152,12 +175,13 @@ fn publish(path: &Path, version: &str) -> io::Result<()> {
     let version_dir = staged.path().join("version");
     let docs = version_dir.join(RESOURCE_ROOT);
     fs::create_dir_all(&docs)?;
-    unpack(&docs, manifest, compressed)?;
+    unpack(&docs, manifest, compressed, cancelled)?;
     File::create(version_dir.join(MANIFEST)).and_then(|mut file| {
         file.write_all(index)?;
         file.sync_all()
     })?;
     sync_tree(&version_dir)?;
+    ensure_active(cancelled)?;
     match fs::symlink_metadata(path) {
         Ok(_) => fs::rename(path, staged.path().join("invalid"))?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -167,9 +191,15 @@ fn publish(path: &Path, version: &str) -> io::Result<()> {
     sync_cache_parent(path)
 }
 
-fn unpack(docs: &Path, manifest: Manifest, compressed: &[u8]) -> io::Result<()> {
+fn unpack(
+    docs: &Path,
+    manifest: Manifest,
+    compressed: &[u8],
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<()> {
     let mut reader = GzDecoder::new(compressed);
     for (relative, entry) in manifest.files {
+        ensure_active(cancelled)?;
         let mut contents = vec![0; entry.bytes];
         reader.read_exact(&mut contents)?;
         if fingerprint(&contents) != entry.sha256 {
@@ -244,10 +274,26 @@ fn version_path(home: &Path, version: &str) -> io::Result<PathBuf> {
     Ok(path.join(version))
 }
 
-fn lock(path: &Path) -> io::Result<fslock::LockFile> {
+fn lock(path: &Path, cancelled: &impl Fn() -> bool) -> io::Result<fslock::LockFile> {
     let mut lock = fslock::LockFile::open(&path.with_extension("lock"))?;
-    lock.lock()?;
-    Ok(lock)
+    loop {
+        ensure_active(cancelled)?;
+        if lock.try_lock()? {
+            return Ok(lock);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn ensure_active(cancelled: &impl Fn() -> bool) -> io::Result<()> {
+    if cancelled() {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Skill resource access cancelled",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn read_regular(path: &Path, max_bytes: usize) -> io::Result<Vec<u8>> {

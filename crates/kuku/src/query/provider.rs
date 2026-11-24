@@ -41,7 +41,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
     if pending.query.runtime.is_some() {
-        let context = super::frozen::prepare(&mut pending, false)?;
+        let context = super::frozen::prepare(&mut pending, false).await?;
         pending.request_base = Some(context.request);
         return dispatch_provider_step(pending, resolved_config, Vec::new(), Some(context.commit))
             .await;
@@ -458,7 +458,7 @@ pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) 
         _ = pending.cancel_token.notified() => return Ok(()),
         permit = capacity.acquire_owned() => permit.map_err(|_| crate::Error::InvalidArgument("session model capacity is closed".into()))?,
     };
-    let mut context = super::frozen::prepare(&mut pending, true)?;
+    let mut context = super::frozen::prepare(&mut pending, true).await?;
     let correlation = request_correlation(&pending, &resolved);
     let before_bytes =
         match dispatch::prepare_request(&pending, &resolved, &correlation, &context.request) {

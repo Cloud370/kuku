@@ -86,5 +86,6 @@ required-features = ["test_support"]
 [dev-dependencies]
 boring2 = "5.0.0-alpha.13"
 httpmock = "0.7"
+pulldown-cmark = { version = "0.13", default-features = false }
 tokio-boring2 = "5.0.0-alpha.13"
 tokio-test = "0.4"

@@ -53,7 +53,10 @@ pub(super) struct ContextCommit {
     input_skills: Vec<String>,
 }
 
-pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<PreparedContext> {
+pub(super) async fn prepare(
+    pending: &mut PendingRun,
+    compact_only: bool,
+) -> Result<PreparedContext> {
     let started = Instant::now();
     let resolved = pending
         .resolved
@@ -230,7 +233,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
             }
         }
     }
-    let input_skills = append_input_skills(pending, &mut messages)?;
+    let input_skills = append_input_skills(pending, &mut messages).await?;
     append_dynamic(
         pending,
         &mut messages,

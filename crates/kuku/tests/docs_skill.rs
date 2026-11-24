@@ -22,6 +22,7 @@ const INDEX: &str = "references/docs/en/index.md";
 enum Reply {
     Text,
     Call(&'static str, &'static str, Value),
+    Batch(Vec<(&'static str, &'static str, Value)>),
 }
 
 #[derive(Debug)]
@@ -68,28 +69,32 @@ impl ModelAdapter for Model {
             let mut events = vec![ModelEvent::StreamStart {
                 request_id: "docs-fixture".into(),
             }];
-            let reason = match reply {
-                Reply::Text => {
-                    events.push(ModelEvent::TextDelta {
-                        text: "fixture reply".into(),
-                    });
-                    ModelStopReason::EndTurn
-                }
-                Reply::Call(id, name, args) => {
+            let calls = match reply {
+                Reply::Text => Vec::new(),
+                Reply::Call(id, name, args) => vec![(id, name, args)],
+                Reply::Batch(calls) => calls,
+            };
+            let reason = if calls.is_empty() {
+                events.push(ModelEvent::TextDelta {
+                    text: "fixture reply".into(),
+                });
+                ModelStopReason::EndTurn
+            } else {
+                for (index, (id, name, args)) in (0_u64..).zip(calls) {
                     events.extend([
                         ModelEvent::ToolCallStart {
-                            index: 0,
+                            index,
                             id: id.into(),
                             name: name.into(),
                         },
                         ModelEvent::ToolCallArgDelta {
-                            index: 0,
+                            index,
                             fragment: args.to_string(),
                         },
-                        ModelEvent::ToolCallStop { index: 0 },
+                        ModelEvent::ToolCallStop { index },
                     ]);
-                    ModelStopReason::ToolUse
                 }
+                ModelStopReason::ToolUse
             };
             events.push(ModelEvent::StopReason { reason });
             events.push(ModelEvent::StreamEnd);
@@ -124,6 +129,21 @@ fn options(workspace: &Path, data: &Path, model: Arc<Model>, gate: Arc<Gate>) ->
     options.model_adapter = Some(model);
     options.authorizer = gate;
     options
+}
+
+fn docs_archive_lock(options: &SessionOptions, model: &Model) -> (PathBuf, fslock::LockFile) {
+    let registry = kuku::skill::build_registry_snapshot_for_host(
+        &options.data_dir,
+        &options.workspace,
+        &options.config,
+    )
+    .unwrap();
+    let registry = serde_json::to_value(registry).unwrap();
+    let version = registry["docs_bundle"].as_str().unwrap();
+    std::fs::create_dir_all(&model.cache_root).unwrap();
+    let archive = model.cache_root.join(version).with_extension("bundle");
+    let lock = fslock::LockFile::open(&archive.with_extension("lock")).unwrap();
+    (archive, lock)
 }
 
 async fn settled(session: &Session, status: AgentStatus) -> AgentSnapshot {
@@ -440,5 +460,266 @@ async fn configured_docs_skill_uses_turn_admissions_and_reports_when_released() 
         !matches!(&record.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.context_segment"
             && value["prelude"].to_string().contains(SKILL_BODY))
     }));
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_docs_io_while_the_version_is_locked_settles_the_call() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(
+        data.path(),
+        [
+            Reply::Call("held-load", "use_skill", json!({"skill_name":NAME})),
+            Reply::Call("load", "use_skill", json!({"skill_name":NAME})),
+            Reply::Text,
+            Reply::Call(
+                "held-read",
+                TOOL,
+                json!({"skill_name":NAME,"action":"read","path":INDEX}),
+            ),
+            Reply::Text,
+        ],
+    );
+    let options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    let (archive, mut lock) = docs_archive_lock(&options, &model);
+
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    for call in ["held-load", "held-read"] {
+        assert!(lock.try_lock().unwrap());
+        let mut input = Input::new(call, "main", "Explain this version of kuku.");
+        if call == "held-read" {
+            input.bootstrap_skill = Some(NAME.into());
+        }
+        session.send(input).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let dispatched = session.events(0, 512).unwrap().iter().any(|event| {
+                    matches!(&event.payload, EventPayload::Unknown(value)
+                        if value["kind"] == "runtime.tool_dispatched" && value["tool_call_id"] == call)
+                });
+                if dispatched {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("resource operation should dispatch");
+        let execution = session.agent("main").unwrap().execution_id.unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            session.cancel_execution(&format!("cancel-{call}"), "main", execution),
+        )
+        .await
+        .expect("cancellation should not wait for the cache lock")
+        .unwrap();
+        settled(&session, AgentStatus::Stopped).await;
+        assert_eq!(tool_result(&session, call).0, "cancelled");
+        assert!(!model.extracted());
+        assert_eq!(archive.exists(), call == "held-read");
+        lock.unlock().unwrap();
+
+        session
+            .send(Input::new(format!("continue-{call}"), "main", "Say hello."))
+            .unwrap();
+        assert_eq!(
+            settled(&session, AgentStatus::Idle)
+                .await
+                .last_output
+                .as_deref(),
+            Some("fixture reply")
+        );
+        assert!(!model.extracted());
+    }
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_a_first_explicit_docs_input_does_not_wait_for_the_version_lock() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(data.path(), [Reply::Text, Reply::Text]);
+    let options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    let (archive, mut lock) = docs_archive_lock(&options, &model);
+    assert!(lock.try_lock().unwrap());
+    let (release_lock, wait_for_release) = std::sync::mpsc::channel();
+    let watchdog = std::thread::spawn(move || {
+        // Bound the test even if a regression blocks this single-thread Tokio runtime.
+        let released = wait_for_release
+            .recv_timeout(Duration::from_secs(12))
+            .is_ok();
+        drop(lock);
+        released
+    });
+
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let explicit_input = |command| {
+        let mut input = Input::new(command, "main", "Explain this version of kuku.");
+        input.bootstrap_skill = Some(NAME.into());
+        input
+    };
+    session.send(explicit_input("first-docs-input")).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if session.events(0, 512).unwrap().iter().any(|event| {
+                matches!(&event.payload, EventPayload::ContextSkills { conversation, .. } if conversation == "main")
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the explicit Turn should reach Skill admission");
+    assert!(!archive.exists());
+    let execution = session.agent("main").unwrap().execution_id.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        session.cancel_execution("cancel-docs-input", "main", execution),
+    )
+    .await
+    .expect("cancellation should not wait for a retained archive")
+    .unwrap();
+    settled(&session, AgentStatus::Stopped).await;
+    assert!(model.requests.lock().unwrap().is_empty());
+
+    session
+        .send(Input::new("continue", "main", "Say hello."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert!(!archive.exists());
+    assert!(
+        !model.requests.lock().unwrap()[0]
+            .0
+            .to_string()
+            .contains(SKILL_BODY)
+    );
+
+    release_lock.send(()).unwrap();
+    assert!(watchdog.join().unwrap());
+    session.send(explicit_input("retry-docs-input")).unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert!(archive.is_file());
+    assert!(
+        model.requests.lock().unwrap()[1]
+            .0
+            .to_string()
+            .contains(SKILL_BODY)
+    );
+    assert!(!model.extracted());
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn dropping_standalone_docs_start_releases_its_session_lock() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(data.path(), []);
+    let options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    let (archive, mut lock) = docs_archive_lock(&options, &model);
+    assert!(lock.try_lock().unwrap());
+    let query = |prompt| {
+        kuku::query(prompt)
+            .session("docs-start-cancelled")
+            .workspace(workspace.path())
+            .kuku_home(data.path())
+            .config(options.config.clone())
+    };
+    let start = query("Explain this version of kuku.")
+        .bootstrap_skill(NAME, String::new())
+        .start();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), start)
+            .await
+            .is_err()
+    );
+    let run = query("Say hello.").start().await.unwrap();
+    drop(run);
+    assert!(!archive.exists());
+    lock.unlock().unwrap();
+}
+
+#[tokio::test]
+async fn same_batch_skill_tools_see_the_load_across_a_permission_wait() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(
+        data.path(),
+        [
+            Reply::Batch(vec![
+                ("batch-load", "use_skill", json!({"skill_name":NAME})),
+                (
+                    "defer",
+                    "write_file",
+                    json!({"path":"permission-check.txt","content":"fixture"}),
+                ),
+                ("batch-list", "list_skills", json!({})),
+                (
+                    "batch-read",
+                    TOOL,
+                    json!({"skill_name":NAME,"action":"read","path":INDEX}),
+                ),
+            ]),
+            Reply::Text,
+        ],
+    );
+    let session = Session::open(options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new(
+            "mixed-batch",
+            "main",
+            "Explain this version of kuku.",
+        ))
+        .unwrap();
+    let waiting = settled(&session, AgentStatus::Waiting).await;
+    let permission = waiting.permission.unwrap();
+    assert_eq!(permission.tool_call_id, "defer");
+    assert_eq!(tool_result(&session, "batch-load").0, "ok");
+
+    session
+        .reply_permission("deny", "main", &permission.id, false)
+        .unwrap();
+    assert_eq!(
+        settled(&session, AgentStatus::Idle).await.turn,
+        waiting.turn
+    );
+    assert_eq!(
+        tool_result(&session, "batch-list").2["skills"][0]["loaded"],
+        true
+    );
+    assert_eq!(tool_result(&session, "batch-read").0, "ok");
+    assert!(!workspace.path().join("permission-check.txt").exists());
     session.close().await.unwrap();
 }
