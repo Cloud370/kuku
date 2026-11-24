@@ -642,12 +642,17 @@ fn model_picker_letters_are_actions_until_search_is_focused() {
             _ => None,
         })
         .expect("queue the default save directly");
+    app.pane_mut().draft.insert("Keep this draft");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.effects.is_empty());
+    assert_eq!(app.pane().draft.text(), "Keep this draft");
     app.update(Update::ModelDefaultAndSwitchSaved(
         selection.clone(),
         tier.clone(),
         Err("Save failed".into()),
     ));
     assert!(app.pane().config().tier.is_none());
+    app.save_and_use_model(tier.clone());
     app.update(Update::ModelDefaultAndSwitchSaved(
         selection,
         tier,

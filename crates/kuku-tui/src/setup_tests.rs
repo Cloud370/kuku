@@ -96,6 +96,38 @@ async fn stored_key_paste_is_masked_and_small_terminals_are_safe() {
 }
 
 #[tokio::test]
+async fn chatgpt_test_model_uses_the_displayed_automatic_thinking_level() {
+    use kuku::adapter::{ModelTrial, Probe};
+    use kuku::config::{ProviderProxy, SubscriptionAccount, SubscriptionChannel};
+
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path())).await.unwrap();
+    let account =
+        SubscriptionAccount::new(&settings.data_dir, SubscriptionChannel::ChatGpt, "test").unwrap();
+    let connection = settings
+        .save_subscription_connection(&account, &ProviderProxy::Direct)
+        .unwrap();
+    let settings = settings.reload().unwrap();
+    let mut state = SetupState::new(&settings);
+    state.selected = state.choices.iter().position(|choice| {
+        matches!(choice, super::ConnectionChoice::Existing(name) if name == &connection)
+    }).unwrap();
+    state.load_selection(&settings);
+    state.model.set_text("gpt-5".into());
+    assert_eq!(
+        state.displayed_reasoning(&settings).as_deref(),
+        Some("medium")
+    );
+    assert!(!state.reasoning_changed);
+
+    state.test_model(&settings);
+    assert!(matches!(&state.trials.rows()[0].probe, Probe::Trial {
+        check: ModelTrial::Text { effort: Some(effort), .. }, ..
+    } if effort == "medium"));
+    state.trials.stop();
+}
+
+#[tokio::test]
 async fn source_selection_backtracking_and_cancel_do_not_write_config_or_keys() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path())).await.unwrap();

@@ -521,13 +521,17 @@ impl SetupState {
             Some((route, effort))
         });
         let primary = self.primary_model();
+        let subscription = connection.options.subscription.is_some();
         let models = self.model_ids().into_iter().flatten().map(|model| {
             let existing = original.as_ref().filter(|(route, _)| {
                 route.model == model
                     && matches!(self.choice(), ConnectionChoice::Existing(name) if &route.provider == name)
             });
-            let effort = if self.reasoning_changed && primary.as_ref() == Some(&model) {
-                self.reasoning.clone().filter(|effort| effort != ThinkLevel::ProviderDefault.as_str())
+            let inferred = subscription
+                && existing.is_none_or(|(route, _)| !has_configured_reasoning(route));
+            let effort = if primary.as_ref() == Some(&model) && (self.reasoning_changed || inferred) {
+                self.displayed_reasoning(settings)
+                    .filter(|effort| effort != ThinkLevel::ProviderDefault.as_str())
             } else {
                 existing.and_then(|(_, effort)| effort.clone())
             };

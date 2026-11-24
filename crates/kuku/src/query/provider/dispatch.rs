@@ -408,7 +408,19 @@ async fn dispatch_prepared(
     trace: Option<crate::provider::trace::ProviderTraceMetadata>,
     recover_context: bool,
 ) -> Result<DispatchOutcome> {
-    super::require_runtime_execution(pending)?;
+    if let Some(execution) = pending.query.runtime_execution {
+        super::runtime_session(pending, execution)?.commit_model_facts(
+            pending.conversation.as_str(),
+            execution,
+            [EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.model_dispatched",
+                "ts": now_timestamp()?,
+                "agent": pending.conversation.as_str(),
+                "turn": pending.turn,
+                "request_id": request_id,
+            }))],
+        )?;
+    }
     let mut failed_attempt = 1;
     let mut started = Instant::now();
     let mut result = crate::query::adapters::model_stream(

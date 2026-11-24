@@ -37,7 +37,9 @@ pub use setup_probes::{
     TrialSelection,
 };
 pub use setup_reasoning::{ReasoningCheck, ReasoningCheckResult};
-pub use trial::{trial_model, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS};
+pub use trial::{
+    trial_model, trial_model_with_route_request, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS,
+};
 pub use types::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
     ProviderSettings, ProviderUsage,

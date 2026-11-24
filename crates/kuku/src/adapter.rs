@@ -14,10 +14,11 @@ use crate::permission::ToolAuthorization;
 pub use crate::provider::{
     discover_models, model_list_targets, openrouter_quote_url, openrouter_quotes,
     plan_model_trials, route_quote_for_display, setup_api_candidates, setup_endpoint_format,
-    setup_model_list_targets, setup_requires_responses_for_tools, trial_model, DiscoveredModel,
-    EstimateBasis, ModelListTarget, ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult,
-    ProbeRow, ReasoningCheck, ReasoningCheckResult, RequestCost, RouteQuote, SetupApiEvidence,
-    SetupTextCheck, TrialResult, TrialSelection, TRIAL_OUTPUT_TOKENS,
+    setup_model_list_targets, setup_requires_responses_for_tools, trial_model,
+    trial_model_with_route_request, DiscoveredModel, EstimateBasis, ModelListTarget, ModelTrial,
+    Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, ReasoningCheck, ReasoningCheckResult,
+    RequestCost, RouteQuote, SetupApiEvidence, SetupTextCheck, TrialResult, TrialSelection,
+    TRIAL_OUTPUT_TOKENS,
 };
 use crate::{ProviderCapabilities, ProviderSettings, Result};
 

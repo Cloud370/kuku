@@ -824,7 +824,7 @@ pub struct AgentSnapshot {
     /// Measured low cache reads on the current route, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_warning: Option<CacheWarning>,
-    /// Most recent request route for the selected Turn, when known.
+    /// Most recent dispatched request route through the selected Turn, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_model_route: Option<ModelRequestRoute>,
     /// Durable identity of the observed execution, including a pending wait or cleanup.

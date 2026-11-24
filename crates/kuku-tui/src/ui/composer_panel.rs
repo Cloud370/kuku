@@ -29,6 +29,7 @@ pub(super) fn render(
     let modal = app.modal.as_mut()?;
     let height = match modal {
         Modal::ExitConfirmation => 1,
+        Modal::SendRouteConfirmation(review) if review.shows_connections() => 4,
         Modal::SendRouteConfirmation(_) => 3,
         Modal::Picker(picker) => match &picker.thinking {
             Some(thinking) if thinking.confirm.is_some() => 3,
@@ -61,21 +62,31 @@ pub(super) fn render(
         }
         Modal::SendRouteConfirmation(review) => {
             let width = usize::from(inner.width);
+            let show_connections = review.shows_connections();
+            let label_width = if show_connections {
+                width.saturating_sub(2)
+            } else {
+                width.saturating_sub(3) / 2
+            };
             let [previous, next] = review.change_labels().map(|label| {
-                crate::text::shorten_middle(
-                    &crate::text::single_line(&label),
-                    width.saturating_sub(3) / 2,
-                )
+                crate::text::shorten_middle(&crate::text::single_line(&label), label_width)
             });
             let mut lines = vec![Line::styled(
                 shorten(review.title(), width),
                 emphasis(crate::theme::WARNING),
             )];
-            if inner.height >= 3 {
+            if show_connections {
+                review.labels_visible =
+                    inner.height >= 4 && review.has_distinct_labels() && previous != next;
+                if inner.height >= 4 {
+                    lines.push(Line::raw(format!("← {previous}")));
+                    lines.push(Line::raw(format!("→ {next}")));
+                }
+            } else if inner.height >= 3 {
                 lines.push(Line::raw(format!("{previous} → {next}")));
             }
             lines.push(Line::styled(
-                shorten("Enter Send · Esc Keep draft", width),
+                shorten(review.send_hint(), width),
                 Style::new().fg(MUTED),
             ));
             frame.render_widget(Paragraph::new(lines), inner);

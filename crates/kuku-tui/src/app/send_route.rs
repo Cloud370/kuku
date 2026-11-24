@@ -19,10 +19,35 @@ pub(crate) struct SendRouteConfirmation {
     draft_revision: u64,
     timing: Timing,
     change: RouteChange,
-    labels: [Option<String>; 2],
+    labels: Option<[Option<String>; 2]>,
+    pub(crate) labels_visible: bool,
 }
 
 impl SendRouteConfirmation {
+    pub(crate) fn send_hint(&self) -> &'static str {
+        if self.can_confirm() {
+            "Enter Send · Esc Keep draft"
+        } else if self.labels.is_none() {
+            "Identifying connections… · Esc Keep draft"
+        } else if self.has_distinct_labels() {
+            "Widen the terminal · Esc Keep draft"
+        } else {
+            "Connection labels unavailable · Esc Keep draft"
+        }
+    }
+
+    fn can_confirm(&self) -> bool {
+        !self.shows_connections() || self.labels_visible
+    }
+
+    pub(crate) fn shows_connections(&self) -> bool {
+        self.change.previous.connection != self.change.next.connection
+    }
+
+    pub(crate) fn has_distinct_labels(&self) -> bool {
+        matches!(&self.labels, Some([Some(previous), Some(next)]) if previous != next)
+    }
+
     pub(crate) fn title(&self) -> &'static str {
         if self.change.previous.same_route(&self.change.next) {
             "Service tier changed · Cache may miss"
@@ -46,7 +71,6 @@ impl SendRouteConfirmation {
         if routes[0].same_route(routes[1]) {
             return std::array::from_fn(|index| tier_label(index).to_owned());
         }
-        let show_connection = routes[0].connection != routes[1].connection;
         std::array::from_fn(|index| {
             let model = &routes[index].model;
             let model = if self.change.tier_changed {
@@ -54,11 +78,13 @@ impl SendRouteConfirmation {
             } else {
                 model.clone()
             };
-            if show_connection {
-                let label = self.labels[index]
-                    .as_deref()
+            if self.shows_connections() {
+                let label = self
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels[index].as_deref())
                     .unwrap_or(["Previous connection", "New connection"][index]);
-                format!("{model} · {label}")
+                format!("{label} · {model}")
             } else {
                 model
             }
@@ -93,6 +119,9 @@ impl App {
     }
 
     pub(super) fn send_route_is_updating(&self) -> bool {
+        if self.default_switch_pending() {
+            return true;
+        }
         let Some(snapshot) = &self.pane().snapshot else {
             return false;
         };
@@ -129,12 +158,17 @@ impl App {
                 draft_revision: self.pane().draft_revision,
                 timing,
                 change,
-                labels: [None, None],
+                labels: None,
+                labels_visible: false,
             },
         )));
     }
 
     pub(crate) fn confirm_send_route(&mut self) {
+        if matches!(&self.modal, Some(Modal::SendRouteConfirmation(review)) if !review.can_confirm())
+        {
+            return;
+        }
         let Some(Modal::SendRouteConfirmation(review)) = self.modal.take() else {
             return;
         };
@@ -149,7 +183,9 @@ impl App {
     pub(super) fn send_route_labels(&mut self, ticket: u64, labels: [Option<String>; 2]) {
         if let Some(Modal::SendRouteConfirmation(review)) = &mut self.modal {
             if review.ticket == ticket {
-                review.labels = labels;
+                review.labels_visible = false;
+                review.labels =
+                    Some(labels.map(|label| label.map(|label| crate::text::single_line(&label))));
             }
         }
     }
@@ -264,7 +300,7 @@ mod tests {
         };
         assert_eq!(
             review.change_labels(),
-            ["same · Previous connection", "same · New connection"]
+            ["Previous connection · same", "New connection · same"]
         );
         key(
             &mut app,
@@ -291,6 +327,56 @@ mod tests {
         );
         assert!(matches!(app.modal, Some(Modal::SendRouteConfirmation(_))));
         assert!(sent(&app).is_empty());
+    }
+
+    #[test]
+    fn switching_connections_requires_distinct_labels_before_confirmation() {
+        let mut app = ready(&model("old", "same"), model("new", "same"));
+        app.send(Timing::Steer);
+        let ticket = app
+            .effects
+            .iter()
+            .find_map(|job| match job {
+                Job::SendRouteLabels(ticket, _) => Some(*ticket),
+                _ => None,
+            })
+            .unwrap();
+        app.confirm_send_route();
+        assert!(sent(&app).is_empty());
+        assert_eq!(app.pane().draft.text(), "Keep this draft");
+
+        app.update(Update::SendRouteLabels(
+            ticket,
+            [Some("ChatGPT".into()), Some("ChatGPT".into())],
+        ));
+        app.confirm_send_route();
+        assert!(sent(&app).is_empty());
+
+        let labels = ["ChatGPT · a***@exa***.com", "ChatGPT · b***@exa***.com"];
+        app.update(Update::SendRouteLabels(
+            ticket,
+            labels.map(|label| Some(label.into())),
+        ));
+        let Some(Modal::SendRouteConfirmation(review)) = &app.modal else {
+            panic!("confirmation expected")
+        };
+        assert_eq!(
+            review.change_labels(),
+            labels.map(|label| format!("{label} · same"))
+        );
+        app.confirm_send_route();
+        assert!(sent(&app).is_empty());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        for label in labels {
+            assert!(screen.contains(label), "{screen}");
+        }
+        app.confirm_send_route();
+        assert_eq!(sent(&app), [Timing::Steer]);
     }
 
     #[test]

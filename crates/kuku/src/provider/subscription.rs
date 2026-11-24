@@ -169,10 +169,9 @@ pub(crate) async fn authorization_token(
 pub(super) fn apply_request_shape(channel: SubscriptionChannel, body: &mut Value) {
     match channel {
         SubscriptionChannel::ChatGpt => {
-            let object = body.as_object_mut().expect("request is an object");
-            for field in ["max_output_tokens", "temperature"] {
-                object.remove(field);
-            }
+            body.as_object_mut()
+                .expect("request is an object")
+                .remove("temperature");
             if let Some(Value::Array(tools)) = body.get_mut("tools").map(Value::take) {
                 body["tools"] = json!([{
                     "type": "namespace",
@@ -286,11 +285,9 @@ mod tests {
                 {"type":"function_call_output","call_id":"call_1","output":"fixture"}
             ],
             "tools": [{"type":"function","name":"read","parameters":{"type":"object"}}],
-            "max_output_tokens": 64,
             "temperature": 1
         });
         apply_request_shape(SubscriptionChannel::ChatGpt, &mut body);
-        assert!(body.get("max_output_tokens").is_none());
         assert!(body.get("temperature").is_none());
         assert_eq!("namespace", body["tools"][0]["type"]);
         assert_eq!("kuku", body["tools"][0]["name"]);

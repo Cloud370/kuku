@@ -56,12 +56,19 @@ impl App {
         if !self.require_service() {
             return;
         }
-        if self.model_change_in_flight() {
+        if self.saving_default_and_switch.is_some() || self.model_change_in_flight() {
             self.problem("Wait for the previous settings change to be resolved.");
             return;
         }
-        self.effects
-            .push(Job::SaveAndUseModel(self.selection(), tier));
+        let selection = self.selection();
+        self.saving_default_and_switch = Some(selection.clone());
+        self.effects.push(Job::SaveAndUseModel(selection, tier));
+    }
+
+    pub(super) fn default_switch_pending(&self) -> bool {
+        self.saving_default_and_switch
+            .as_ref()
+            .is_some_and(|selection| selection.target == self.target(&self.active))
     }
 
     pub(super) fn model_default_and_switch_saved(
@@ -70,6 +77,10 @@ impl App {
         tier: Box<kuku_client::TierSummary>,
         result: Result<bool, String>,
     ) {
+        if self.saving_default_and_switch.as_ref() != Some(&selection) {
+            return;
+        }
+        self.saving_default_and_switch = None;
         if matches!(result, Ok(true)) && selection == self.selection() {
             if self.model_change_in_flight() {
                 self.message(format!(
@@ -80,6 +91,8 @@ impl App {
             }
             self.use_model_route(&tier);
             self.confirmation(format!("Saved {} as default and switched", tier.model));
+        } else if matches!(result, Ok(false)) && selection == self.selection() {
+            self.problem("Saved the default model · the service timed out before switching");
         } else {
             self.model_setting_saved(result);
         }

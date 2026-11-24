@@ -267,7 +267,8 @@ impl App {
 
     pub(super) fn model_change_in_flight(&self) -> bool {
         let target = self.target(&self.active);
-        self.pane().waiting_for_configuration()
+        self.default_switch_pending()
+            || self.pane().waiting_for_configuration()
             || self.pending.values().any(|item| {
                 item.command.target == target
                     && matches!(item.command.action, Action::Configure { .. })

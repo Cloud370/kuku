@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::config::{
     ApiKey, MediaAdapterSupport, ProviderOptions, ProviderProfile, RequestedOutput,
+    SubscriptionChannel,
 };
 use crate::context::CanonicalMessage;
 use crate::context::ContextAssembly;
@@ -120,6 +121,21 @@ pub(crate) struct ResolvedProvider {
     pub(crate) route_request: Option<crate::config::RequestFields>,
     pub(crate) settings: ProviderSettings,
     pub(crate) capabilities: ProviderCapabilities,
+}
+
+impl ResolvedProvider {
+    pub(super) fn validate_output_limit(&self, limit: Option<u32>) -> Result<(), &'static str> {
+        if limit.is_some()
+            && self
+                .options
+                .subscription
+                .as_ref()
+                .is_some_and(|account| account.channel() == SubscriptionChannel::ChatGpt)
+        {
+            return Err("ChatGPT sign-in cannot enforce max_output_tokens. Choose a connection that supports output limits or remove the explicit ceiling.");
+        }
+        Ok(())
+    }
 }
 
 impl Default for ResolvedProvider {

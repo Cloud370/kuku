@@ -1,7 +1,9 @@
 use std::time::Duration;
 
-use kuku::adapter::{inspect_connection_model, inspect_model, trial_model, ModelTrial};
-use kuku::config::CustomServiceTier;
+use kuku::adapter::{
+    inspect_connection_model, inspect_model, trial_model_with_route_request, ModelTrial,
+};
+use kuku::config::{CustomServiceTier, RequestFields};
 use kuku_client::{Connection, ConnectionOptions};
 use toml_edit::{InlineTable, Item, TableLike, Value};
 
@@ -49,11 +51,22 @@ pub(crate) async fn custom_service_tier(
         .ok_or("Choose a configured connection before adding a service tier.")?;
     match work {
         SpeedWork::Probe(tier) => {
+            let tier_name = target
+                .config
+                .tier
+                .as_deref()
+                .unwrap_or_else(|| settings.resolved.default_tier());
+            let request = settings
+                .resolved
+                .tier(tier_name)
+                .filter(|model| model.provider == route.connection && model.model == route.model)
+                .and_then(|model| model.request.as_ref());
             probe(
                 provider,
                 &route.model,
                 route.settings.reasoning_effort,
                 tier,
+                request,
             )
             .await
         }
@@ -95,6 +108,7 @@ async fn probe(
     model: &str,
     effort: Option<String>,
     tier: String,
+    route_request: Option<&RequestFields>,
 ) -> Result<SpeedResult, String> {
     let mut candidate = provider.clone();
     candidate
@@ -106,13 +120,14 @@ async fn probe(
         .insert(tier.clone(), CustomServiceTier::Unverified);
     let capabilities =
         inspect_connection_model(&candidate, model).map_err(|error| error.to_string())?;
-    let result = trial_model(
+    let result = trial_model_with_route_request(
         &candidate,
         model,
         ModelTrial::Text {
             effort,
             service_tier: Some(tier.clone()),
         },
+        route_request,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -184,20 +199,21 @@ mod tests {
     use httpmock::{Method::POST, MockServer};
     use kuku::config::{
         ApiKey, ProviderConfig, ProviderFormat, ProviderOptions, ProviderProfile, ProviderProxy,
+        RequestFields,
     };
     use serde_json::json;
 
     use super::{probe, probe_result, SpeedResult};
 
     #[tokio::test]
-    async fn custom_tier_probe_uses_configured_proxy_with_synthetic_input() {
+    async fn custom_tier_probe_uses_configured_proxy_and_selected_route_with_synthetic_input() {
         let proxy = MockServer::start_async().await;
         let request = proxy.mock_async(|when, then| {
             when.method(POST)
                 .path("/v1/responses")
                 .header("host", "test-unchosen.invalid")
                 .header("authorization", "Bearer fixture-key")
-                .json_body_partial(r#"{"model":"fixture","service_tier":"turbo","input":[{"role":"user","content":[{"type":"input_text","text":"What is 17 times 23 minus 14? Reply with the number only."}]}]}"#);
+                .json_body_partial(r#"{"model":"fixture","service_tier":"turbo","provider":{"only":["route-upstream"]},"input":[{"role":"user","content":[{"type":"input_text","text":"What is 17 times 23 minus 14? Reply with the number only."}]}]}"#);
             then.status(200).json_body(json!({
                 "model":"fixture", "status":"completed", "service_tier":"turbo",
                 "output":[{"type":"message","content":[{"type":"output_text","text":"377"}]}]
@@ -208,6 +224,13 @@ mod tests {
             base_url: "http://test-unchosen.invalid/v1".into(),
             api_key: ApiKey::Plaintext("fixture-key".into()),
             options: ProviderOptions {
+                profile: ProviderProfile::OpenRouter,
+                request: Some(
+                    serde_json::from_value(
+                        json!({"body":{"provider":{"only":["connection-upstream"]}}}),
+                    )
+                    .unwrap(),
+                ),
                 proxy: ProviderProxy::Explicit {
                     url: proxy.base_url(),
                     auth: None,
@@ -215,8 +238,11 @@ mod tests {
                 ..Default::default()
             },
         };
+        let route: RequestFields =
+            serde_json::from_value(json!({"body":{"provider":{"only":["route-upstream"]}}}))
+                .unwrap();
         assert!(
-            matches!(probe(&connection, "fixture", None, "turbo".into()).await.unwrap(), SpeedResult::Confirmed(tier) if tier == "turbo")
+            matches!(probe(&connection, "fixture", None, "turbo".into(), Some(&route)).await.unwrap(), SpeedResult::Confirmed(tier) if tier == "turbo")
         );
         request.assert_hits_async(1).await;
         assert!(connection.options.model_capabilities.is_empty());

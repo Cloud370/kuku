@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_stream::StreamExt;
 
-use crate::config::ProviderConfig;
+use crate::config::{ProviderConfig, RequestFields};
 use crate::event::ModelStopReason;
 use crate::{Error, Result};
 
@@ -89,6 +89,18 @@ pub async fn trial_model(
         .map_err(|problem| *problem.error)
 }
 
+/// Test with the selected model route's request fields layered over the connection's fields.
+pub async fn trial_model_with_route_request(
+    connection: &ProviderConfig,
+    model: &str,
+    trial: ModelTrial,
+    request: Option<&RequestFields>,
+) -> Result<TrialResult> {
+    run_trial(connection, model, trial, None, request)
+        .await
+        .map_err(|problem| *problem.error)
+}
+
 pub(super) struct TrialProblem {
     pub error: Box<Error>,
     pub route_missing: bool,
@@ -116,7 +128,7 @@ pub(super) async fn trial_with_route_evidence(
     model: &str,
     trial: ModelTrial,
 ) -> std::result::Result<TrialResult, TrialProblem> {
-    run_trial(connection, model, trial, None).await
+    run_trial(connection, model, trial, None, None).await
 }
 
 pub(super) async fn run_trial(
@@ -124,10 +136,11 @@ pub(super) async fn run_trial(
     model: &str,
     trial: ModelTrial,
     probe_effort: Option<&str>,
+    route_request: Option<&RequestFields>,
 ) -> std::result::Result<TrialResult, TrialProblem> {
     tokio::time::timeout(
         TRIAL_TIMEOUT,
-        trial_request(connection, model, trial, probe_effort),
+        trial_request(connection, model, trial, probe_effort, route_request),
     )
     .await
     .map_err(|_| Error::Provider {
@@ -143,6 +156,7 @@ async fn trial_request(
     model: &str,
     trial: ModelTrial,
     probe_effort: Option<&str>,
+    route_request: Option<&RequestFields>,
 ) -> std::result::Result<TrialResult, TrialProblem> {
     let capabilities = crate::adapter::inspect_connection_model(connection, model)?;
     let mut challenge = None;
@@ -183,6 +197,7 @@ async fn trial_request(
         base_url: connection.base_url.clone(),
         api_key: SecretString::from_config(connection.api_key.clone()),
         options: connection.options.clone(),
+        route_request: route_request.cloned(),
         capabilities,
         settings,
         ..ResolvedProvider::default()
@@ -365,6 +380,9 @@ fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
     }
     let messages = json!([{"role":"user","content":content}]);
     match config.kind {
+        ProviderKind::OpenAiResponses if config.options.subscription.is_some() => json!({
+            "model":config.model,"input":messages
+        }),
         ProviderKind::OpenAiResponses => json!({
             "model":config.model,"input":messages,"max_output_tokens":TRIAL_OUTPUT_TOKENS
         }),

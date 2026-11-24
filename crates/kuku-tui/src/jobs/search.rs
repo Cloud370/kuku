@@ -218,6 +218,7 @@ pub(super) async fn send_route_labels(
                     .cloned()
                     .unwrap_or_else(|| connection.name.clone())
             })
+            .or_else(|| (index == 0).then(|| "Removed connection".to_owned()))
     })
 }
 

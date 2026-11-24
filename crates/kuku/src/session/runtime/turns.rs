@@ -171,17 +171,16 @@ impl TurnIndex {
             .cache
             .get(&snapshot.address)
             .and_then(CacheHistory::warning);
-        let Some((_, turn)) = snapshot
+        let Some((position, turn)) = snapshot
             .turn
             .and_then(|id| self.indexed(&snapshot.address, id))
         else {
             return;
         };
-        snapshot.last_model_route = turn
-            .prepared_model_route
-            .as_ref()
-            .filter(|_| snapshot.status == AgentStatus::Running)
-            .or(turn.last_model_route.as_ref())
+        snapshot.last_model_route = self.by_agent[&snapshot.address][..=position]
+            .iter()
+            .rev()
+            .find_map(|turn| turn.last_model_route.as_ref())
             .cloned();
         snapshot.turn_started_at_ms = turn.start;
         snapshot.turn_elapsed_ms = turn
@@ -241,17 +240,21 @@ impl TurnIndex {
                     self.preview(conversation, *turn, text);
                 }
                 match &event.payload {
-                    EventPayload::Unknown(value) => self.observe_prepared(value),
+                    EventPayload::Unknown(value) => match value["kind"].as_str() {
+                        Some("runtime.step_prepared") => self.observe_prepared(value),
+                        Some("runtime.model_dispatched") => {
+                            if let (Some(address), Some(turn)) =
+                                (value["agent"].as_str(), value["turn"].as_u64())
+                            {
+                                self.promote_route(address, turn);
+                            }
+                        }
+                        _ => {}
+                    },
                     EventPayload::ModelResponse {
                         conversation, turn, ..
                     } => {
-                        if let Some(index) =
-                            self.open_turn(conversation.as_deref().unwrap_or("main"), *turn)
-                        {
-                            if let Some(route) = index.prepared_model_route.take() {
-                                index.last_model_route = Some(route);
-                            }
-                        }
+                        self.promote_route(conversation.as_deref().unwrap_or("main"), *turn);
                     }
                     _ => {}
                 }
@@ -275,9 +278,6 @@ impl TurnIndex {
     }
 
     fn observe_prepared(&mut self, value: &serde_json::Value) {
-        if value["kind"] != "runtime.step_prepared" {
-            return;
-        }
         let (Some(address), Some(id)) = (value["agent"].as_str(), value["turn"].as_u64()) else {
             return;
         };
@@ -307,6 +307,14 @@ impl TurnIndex {
         let cache = &turn.cache;
         if let Some(history) = self.cache.get_mut(address) {
             history.observe_prefix(cache);
+        }
+    }
+
+    fn promote_route(&mut self, address: &str, id: u64) {
+        if let Some(turn) = self.open_turn(address, id) {
+            if let Some(route) = turn.prepared_model_route.take() {
+                turn.last_model_route = Some(route);
+            }
         }
     }
 

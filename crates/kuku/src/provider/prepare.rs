@@ -74,6 +74,9 @@ fn prepare(
             "transport correlation belongs to another connection",
         ));
     }
+    config
+        .validate_output_limit(request.max_output_tokens)
+        .map_err(invalid_request)?;
     if config.output == crate::config::RequestedOutput::Image {
         return Err(invalid_request(
             "This Agent requests image output. The built-in runtime supports text output only.",

@@ -358,6 +358,50 @@ fn host_ceiling_bounds_explicit_agent_or_tier_output() {
 }
 
 #[test]
+fn chatgpt_sign_in_rejects_agent_tier_and_host_output_ceilings() {
+    use kuku::config::{SubscriptionAccount, SubscriptionChannel};
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = default_config();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.format = config::ProviderFormat::OpenAiResponses;
+    provider.base_url = "https://api.openai.com/v1".into();
+    provider.options = config::ProviderOptions {
+        subscription: Some(
+            SubscriptionAccount::new(temp.path(), SubscriptionChannel::ChatGpt, "test").unwrap(),
+        ),
+        ..Default::default()
+    };
+    let name = config.default_tier.clone();
+    let tier = config.tiers.get_mut(&name).unwrap();
+    tier.model = "gpt-5".into();
+    tier.think = ThinkLevel::ProviderDefault;
+    assert!(matches!(
+        resolve_config(ResolveConfigInput { config: Some(config.clone()), ..Default::default() }),
+        Err(Error::InvalidArgument(message)) if message.contains("cannot enforce max_output_tokens")
+    ));
+    config.tiers.get_mut(&name).unwrap().max_output_tokens = None;
+    let input = ResolveConfigInput {
+        config: Some(config),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_config(input.clone()).unwrap().max_output_tokens,
+        None
+    );
+    for (agent, host) in [(Some(256), None), (None, Some(256))] {
+        assert!(matches!(
+            resolve_config(ResolveConfigInput {
+                max_output_tokens: agent,
+                max_output_tokens_per_request: host,
+                ..input.clone()
+            }),
+            Err(Error::InvalidArgument(message)) if message.contains("cannot enforce max_output_tokens")
+        ));
+    }
+}
+
+#[test]
 fn optional_protocol_does_not_inherit_an_unrelated_messages_presets_limit() {
     let mut config = default_config();
     config.providers.insert(
