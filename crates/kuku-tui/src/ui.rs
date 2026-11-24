@@ -1001,6 +1001,17 @@ fn render_editor_view(
             Paragraph::new(view.lines.into_iter().map(Line::raw).collect::<Vec<_>>()),
             area,
         );
+        for (row, columns) in view.atoms {
+            frame.buffer_mut().set_style(
+                Rect::new(
+                    area.x + columns.start as u16,
+                    area.y + row as u16,
+                    columns.len() as u16,
+                    1,
+                ),
+                emphasis(ACCENT),
+            );
+        }
     }
     if focused {
         frame.set_cursor_position((area.x + view.cursor.0 as u16, area.y + view.cursor.1 as u16));

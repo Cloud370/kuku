@@ -136,7 +136,7 @@ pub(crate) struct Pane {
     pub(crate) opening: bool,
     pub(crate) sending: bool,
     pub(crate) draft_images: Vec<images::DraftImage>,
-    pub(crate) sent_images: Vec<images::DraftImage>,
+    sent_images: Vec<images::SentImage>,
     pub(crate) encoded_images: Vec<kuku_client::ImageAttachment>,
     pub(crate) clipboard_ticket: Option<u64>,
     image_send: Option<images::ImageSend>,

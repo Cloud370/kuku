@@ -708,26 +708,54 @@ fn model_picker_aligns_details_and_fits_the_account_and_route_markers() {
     position(&screen, "ali***e@exa***.com · Current · Default");
 }
 
+fn paste_fixture_image(app: &mut App) {
+    app.paste_clipboard();
+    let ticket = app.pane().clipboard_ticket.unwrap();
+    let rgba = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 120, 0, 0]));
+    app.update(Update::ClipboardPasted(
+        app.selection(),
+        ticket,
+        Ok(crate::clipboard::Pasted::Image(
+            crate::clipboard::ClipboardImage {
+                pixels: image::DynamicImage::ImageRgba8(rgba),
+                encoded: None,
+                transparent: true,
+            },
+        )),
+    ));
+}
+
+#[test]
+fn attached_image_marker_is_colored_and_deleted_as_one_unit() {
+    let mut app = connected_app();
+    paste_fixture_image(&mut app);
+    app.paste("[Image #1]");
+
+    let screen = frame(&mut app, 100);
+    let area = app.composer_area;
+    for offset in 0..10 {
+        assert_eq!(screen[(area.x + offset, area.y)].fg, crate::theme::ACCENT);
+        assert_ne!(
+            screen[(area.x + 11 + offset, area.y)].fg,
+            crate::theme::ACCENT
+        );
+    }
+
+    press(&mut app, KeyCode::Home);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.pane().draft.cursor(), "[Image #1]".len());
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.pane().draft.text(), " [Image #1]");
+    assert!(app.pane().draft_images.is_empty());
+}
+
 #[test]
 fn image_quality_defaults_to_compressed_and_tab_stops_auto_send() {
     use std::time::{Duration, Instant};
 
     for choose_original in [false, true] {
         let mut app = connected_app();
-        app.paste_clipboard();
-        let ticket = app.pane().clipboard_ticket.unwrap();
-        let rgba = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 120, 0, 0]));
-        app.update(Update::ClipboardPasted(
-            app.selection(),
-            ticket,
-            Ok(crate::clipboard::Pasted::Image(
-                crate::clipboard::ClipboardImage {
-                    pixels: image::DynamicImage::ImageRgba8(rgba),
-                    encoded: None,
-                    transparent: true,
-                },
-            )),
-        ));
+        paste_fixture_image(&mut app);
         app.effects.clear();
         assert_eq!(app.pane().draft.text().trim(), "[Image #1]");
         assert!(

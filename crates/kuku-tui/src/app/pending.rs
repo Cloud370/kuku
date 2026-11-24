@@ -62,6 +62,7 @@ impl App {
         }
         let active = self.active.clone();
         let pane = self.pane_mut();
+        pane.capture_sent_images();
         let text = pane.draft.take_text();
         let bootstrap_skill = text
             .strip_prefix("/skill:")
@@ -71,7 +72,6 @@ impl App {
         let create = (!pane.exists).then(|| Box::new(pane.initial_config.clone()));
         let values = pane.take_values();
         let images = std::mem::take(&mut pane.encoded_images);
-        pane.sent_images = std::mem::take(&mut pane.draft_images);
         pane.clear_draft_images();
         pane.sending = true;
         self.issue(
@@ -656,20 +656,18 @@ impl App {
                 pane.creation_rejected = true;
             }
             pane.restore_values(values);
-            let text = pane.restore_draft_images(&text, images);
-            self.append_to_draft(&text);
+            pane.restore_draft_images(&text, images);
             self.message("Restored rejected text to draft");
         }
     }
 
     fn append_to_draft(&mut self, text: &str) {
-        let editor = &mut self.pane_mut().draft;
-        let mut draft = editor.take_text();
-        if !draft.is_empty() {
-            draft.push_str("\n\n");
+        let pane = self.pane_mut();
+        if !pane.draft.text().is_empty() {
+            pane.draft.append("\n\n");
         }
-        draft.push_str(text);
-        editor.set_text(draft);
+        pane.draft.append(text);
+        pane.draft_changed();
     }
 
     pub(super) fn saved(&mut self, command: Command, result: Result<(), Error>) {
@@ -830,8 +828,7 @@ impl App {
                 pane.sending = false;
                 pane.creation_rejected |= rejected && create.is_some();
                 if clear && pane.draft.text().is_empty() {
-                    let text = pane.restore_draft_images(text, images.clone());
-                    pane.draft.set_text(text);
+                    pane.restore_draft_images(text, images.clone());
                     pane.restore_values(values.clone());
                     restored = true;
                 }
