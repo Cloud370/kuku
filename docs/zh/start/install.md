@@ -13,9 +13,29 @@ kuku --help
 
 ## 安装已发布版本
 
-当前 alpha 的一键安装命令可直接从 [README](../../../README.md#install) 复制。
+复制对应平台的命令，安装 [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4)。
 
-在 [GitHub Releases](https://github.com/Cloud370/kuku/releases) 里找到对应版本的 `latest.json` 链接，在仓库根目录运行安装脚本：
+**Linux（x86-64 或 ARM64）和 macOS（Apple Silicon）**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.4/scripts/install.sh | sh -s -- \
+  --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.4/latest.json \
+  --version 0.1.0-alpha.4
+```
+
+**Windows（x86-64）**
+
+在 PowerShell 中运行这组命令。
+
+```powershell
+$kukuTag = 'v0.1.0-alpha.4'
+$kukuInstaller = Invoke-RestMethod "https://raw.githubusercontent.com/Cloud370/kuku/$kukuTag/scripts/install.ps1"
+& ([scriptblock]::Create($kukuInstaller)) -Source "https://github.com/Cloud370/kuku/releases/download/$kukuTag/latest.json" -Version ($kukuTag.Substring(1))
+```
+
+安装后打开新终端，运行 `kuku`。
+
+要安装其他版本，先在 [GitHub Releases](https://github.com/Cloud370/kuku/releases) 找到对应版本的 `latest.json` 链接，再从仓库根目录运行对应的安装脚本。
 
 - Linux（x86-64 / ARM64）和 macOS（Apple Silicon）：
   ```bash
