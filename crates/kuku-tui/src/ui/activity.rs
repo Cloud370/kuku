@@ -283,7 +283,7 @@ pub(super) fn render_heading(
     let show_thinking = left_width >= core_width + key_width
         && app.modal.is_none()
         && app.available()
-        && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
+        && app.pane().effective_model_settings().is_some_and(|(_, caps)| {
             caps.selectable_reasoning_efforts()
                 .any(|level| level != ThinkLevel::ProviderDefault.as_str())
         });

@@ -421,8 +421,8 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
         "model": "openai/gpt-6-luna",
         "context_window_tokens": 100_000,
         "max_output_tokens": 4_000,
-        "settings": {"reasoning_effort": "high"},
-        "capabilities": {"profile": "openai", "reasoning_efforts": ["high"], "service_tiers": []},
+        "settings": {"reasoning_effort": "xhigh", "service_tier": "ultrafast"},
+        "capabilities": {"profile": "openai", "reasoning_efforts": ["xhigh"], "service_tiers": ["ultrafast"]},
     }))
     .unwrap();
     app.update(Update::DefaultModel(version, Ok(model)));
@@ -431,7 +431,9 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
         let rows = screen(&mut app, &layout, width, 20);
         let identity = &rows[if width == 60 { 18 } else { 19 }];
         assert!(
-            identity.trim().starts_with("openai/gpt-6-luna · High"),
+            identity
+                .trim()
+                .starts_with("openai/gpt-6-luna xhigh ultrafast"),
             "{identity}"
         );
     }
@@ -439,7 +441,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     let rows = screen(&mut app, &configured, 140, 20);
     assert!(rows[19]
         .trim()
-        .strip_prefix("openai/gpt-6-luna (configured-model-gateway · High)")
+        .strip_prefix("openai/gpt-6-luna xhigh ultrafast (configured-model-gateway)")
         .is_some_and(|remaining| remaining.trim_start().starts_with('·')));
     let lines = layout.render_rows(&app, 80, 20, app.pane().activity());
     assert_eq!(Some(MODEL), lines[0].spans[0].style.fg);
@@ -447,11 +449,22 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     let long = Segment::model(
         "custom/a-long-model-from-a-named-provider".into(),
         None,
-        Some("High".into()),
+        Some("high".into()),
+        Some("ultrafast".into()),
         4,
     );
     assert!(long.fit(18).contains('…'));
-    assert!(long.fit(18).ends_with(" · High"));
+    assert!(long.fit(18).ends_with(" high"));
+
+    let exact = "gpt-6.2-sol xhigh ultrafast";
+    let model = Segment::model(
+        "gpt-6.2-sol".into(),
+        None,
+        Some("xhigh".into()),
+        Some("ultrafast".into()),
+        "Default".width(),
+    );
+    assert_eq!(model.fit(exact.width()), exact);
 }
 
 #[test]

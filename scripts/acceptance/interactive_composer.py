@@ -120,7 +120,7 @@ def composer_actions(client):
 
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=28, cols=60)
-        terminal.expect(f"{model} · None")
+        terminal.expect(f"{model} none")
         terminal.press("/")
         terminal.expect("›/new", also=("Actions and Skills",))
         terminal.press("\x1b[A")
@@ -141,16 +141,16 @@ def composer_actions(client):
         assert position(models, "Model route")[0] < position(models, "Ready")[0]
         screens.append(("Models at 60 columns", models))
         terminal.press("\x1b")
-        terminal.expect(f"{model} · None", absent=("Model route",))
+        terminal.expect(f"{model} none", absent=("Model route",))
         terminal.press("\x1b[200~/models\x1b[201~\r")
         terminal.expect("/models → /model", also=("Model route",))
         terminal.press("\x1b")
-        terminal.expect(f"{model} · None", absent=("Model route",))
+        terminal.expect(f"{model} none", absent=("Model route",))
 
         terminal.type(draft)
-        previous = terminal.expect(f"{model} · None", also=("Ctrl+T think", draft))["screen"]
+        previous = terminal.expect(f"{model} none", also=("Ctrl+T think", draft))["screen"]
         terminal.press("\x1b[D\x14")
-        leveled = terminal.expect(f"{model} · Low", also=("Ctrl+T think", draft))["screen"]
+        leveled = terminal.expect(f"{model} low", also=("Ctrl+T think", draft))["screen"]
         assert position(previous, "Agent main") == position(leveled, "Agent main"), leveled
         assert position(previous, draft) == position(leveled, draft), leveled
         for width in (60, 120):
@@ -185,11 +185,11 @@ def composer_actions(client):
         terminal.type(draft)
         terminal.press("\x14")
         eventually("Medium selected at the next request boundary", lambda: selected("medium"))
-        terminal.expect("Next Medium", also=(f"{model} · Low", draft), absent=("Next model request",))
+        terminal.expect("Next Medium", also=(f"{model} low", draft), absent=("Next model request",))
         thinking(terminal)
         terminal.press("\x1b[B\x1b[B\x1b[B\x1b[B\r")
         eventually("High selected at the next request boundary", lambda: selected("high"))
-        terminal.expect("Next High", also=(f"{model} · Low", draft), absent=("Next model request",))
+        terminal.expect("Next High", also=(f"{model} low", draft), absent=("Next model request",))
 
         original_config = config.read_text(encoding="utf-8")
         thinking(terminal)

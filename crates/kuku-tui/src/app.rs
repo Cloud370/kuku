@@ -203,7 +203,7 @@ impl Pane {
                     .as_ref()
                     .map(|model| (&model.settings, &model.capabilities))
             })
-            .or_else(|| self.effective_reasoning())
+            .or_else(|| self.effective_model_settings())
     }
 
     pub(crate) fn waiting_for_configuration(&self) -> bool {

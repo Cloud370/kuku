@@ -358,7 +358,7 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         );
         assert!(text.contains("Medium ✓ · Agent override"), "{text}");
         assert!(text.contains("Provider declares · Max"), "{text}");
-        assert!(text.contains("gemini-4-neon · Low"), "{text}");
+        assert!(text.contains("gemini-4-neon low"), "{text}");
         assert!(
             text.contains("Thinking · gemini-4-neon · Next request"),
             "{text}"
@@ -448,8 +448,8 @@ fn thinking_cycle_keeps_the_draft_route_and_other_cells_stable_until_it_resolves
         model.settings.reasoning_effort = Some("medium".into());
         app.update(Update::DefaultModel(*version, Ok(model)));
         let after = frame(&mut app, width);
-        let (x, y) = position(&before, "Low");
-        assert_eq!((x, y), position(&after, "Medium"));
+        let (x, y) = position(&before, "low");
+        assert_eq!((x, y), position(&after, "medium"));
         assert_eq!(
             position(&before, "Ctrl+T think"),
             position(&after, "Ctrl+T think")
@@ -471,7 +471,7 @@ fn use_default_clears_a_legacy_override_without_reconfiguring_the_route() {
     app.open_thinking();
     let screen = frame(&mut app, 60);
     let text = lines(&screen).join("\n");
-    assert!(text.contains("gemini-4-neon · Default"), "{text}");
+    assert!(text.contains("gemini-4-neon Default"), "{text}");
     assert!(text.contains("Current · Default"), "{text}");
     assert!(!text.contains("Provider default"), "{text}");
     app.effects.clear();

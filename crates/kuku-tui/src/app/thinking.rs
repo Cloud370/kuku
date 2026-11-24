@@ -23,7 +23,9 @@ pub(crate) struct ThinkingPicker {
 }
 
 impl Pane {
-    pub(crate) fn effective_reasoning(&self) -> Option<(&ProviderSettings, &ProviderCapabilities)> {
+    pub(crate) fn effective_model_settings(
+        &self,
+    ) -> Option<(&ProviderSettings, &ProviderCapabilities)> {
         if let Some(snapshot) = &self.snapshot {
             snapshot
                 .selection

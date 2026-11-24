@@ -134,7 +134,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 
 ### Status and usage
 
-The default bottom status bar shows the active model and resolved thinking level (e.g. `gemini-4-neon · High`, with `Default` for provider-chosen), connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending model/thinking changes show under **Next model request**.
+The default bottom status bar shows the active model, resolved thinking level, and configured service tier, for example `gpt-6.2-sol xhigh ultrafast`, connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending settings show under **Next model request**.
 
 Above the composer, kuku displays the recipient (`To <agent>`), input delivery state (`Draft`, `Awaiting receipt`, `Input queued`, `Input accepted`), live elapsed Turn timer, and Agent execution state:
 
