@@ -13,7 +13,10 @@ env:
 
 jobs:
   test:
-    name: ${{ matrix.contract == 'workspace' && 'Contract' || matrix.contract == 'sdk' && 'Native SDK' || matrix.browser && 'Browser handoff' || 'Native smoke' }} (${{ matrix.terminal }})
+    name: >-
+      ${{ matrix.installed == 'desktop' && 'Windows Terminal' || format('{0} ({1})',
+          matrix.contract == 'workspace' && 'Contract' || matrix.contract == 'sdk' && 'Native SDK' ||
+          matrix.browser && 'Browser handoff' || 'Native smoke', matrix.terminal) }}
     env:
       INSTALLED_ACCEPTANCE: ${{ matrix.installed }}
       EMBED_WEB: ${{ matrix.web }}
@@ -117,7 +120,7 @@ jobs:
           key: ${{ steps.installed_cache.outputs.cache-primary-key }}
       - name: Prepare isolated Windows Terminal desktop
         id: windows_desktop
-        if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' && matrix.installed == 'full' && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' && runner.os == 'Windows' && (matrix.installed == 'full' || matrix.installed == 'desktop') }}
         timeout-minutes: 5
         run: |
           python3 -m pip install --disable-pip-version-check Pillow==12.2.0
@@ -139,7 +142,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/kuku-ci-pty
           key: kuku-pty-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ steps.install_identity.outputs.compiler }}-${{ hashFiles('apps/kuku/tests/**', 'apps/kuku/Cargo.toml', 'Cargo.toml', 'Cargo.lock', '.cargo/**') }}
-      - name: Installed client on ${{ matrix.terminal }}
+      - name: Installed client on ${{ matrix.installed == 'desktop' && 'Windows Terminal' || matrix.terminal }}
         id: interactive
         if: ${{ !cancelled() && steps.installed_revision.outcome == 'success' }}
         env:
@@ -150,7 +153,8 @@ jobs:
           --bridge-cache "${{ runner.temp }}/kuku-ci-pty/interactive_pty${{ runner.os == 'Windows' && '.exe' || '' }}"
           ${{ matrix.installed == 'smoke' && '--native-smoke' || '' }}
           ${{ matrix.cases != '' && format('--cases {0}', matrix.cases) || '' }}
-          ${{ runner.os == 'Windows' && matrix.installed == 'full' && '--desktop --windows-terminal "$env:KUKU_ACCEPTANCE_WINDOWS_TERMINAL"' || '' }}
+          ${{ matrix.installed == 'desktop' && '--desktop-only' || (runner.os == 'Windows' && matrix.installed == 'full') && '--desktop' || '' }}
+          ${{ runner.os == 'Windows' && (matrix.installed == 'full' || matrix.installed == 'desktop') && '--windows-terminal "$env:KUKU_ACCEPTANCE_WINDOWS_TERMINAL"' || '' }}
           ${{ matrix.installed == 'full' && matrix.browser && '--browser' || '' }}
       - name: Cache the validated native PTY helper
         if: ${{ !cancelled() && steps.interactive.outcome == 'success' && steps.pty_cache.outcome == 'success' && steps.pty_cache.outputs.cache-hit != 'true' }}

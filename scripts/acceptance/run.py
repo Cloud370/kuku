@@ -643,25 +643,30 @@ def run_desktop(args, binary, bridge, scratch, directory, record, checked):
 def run_interactive(args, directory, record):
     from interactive_fixture import EXE, scratch_directory
 
-    record["desktop"] = args.desktop
-    if args.native_smoke and any((args.desktop, args.browser, args.live, args.intent, args.upgrade_from)):
+    desktop = args.desktop or args.desktop_only
+    record["desktop"] = desktop
+    if args.desktop_only and (args.browser or args.upgrade_from):
+        raise ValueError("--desktop-only cannot be combined with --browser or --upgrade-from")
+    if args.native_smoke and any((desktop, args.browser, args.live, args.intent, args.upgrade_from)):
         raise ValueError("--native-smoke selects only controlled installed terminal cases")
-    if args.cases is not None and any((args.native_smoke, args.desktop, args.browser,
+    if args.cases is not None and any((args.native_smoke, desktop, args.browser,
                                        args.live, args.intent, args.upgrade_from)):
         raise ValueError("--cases selects its own controlled installed scenarios")
     cases = args.cases.split(",") if args.cases is not None else []
     if cases:
         record["cases"] = cases
     record["scenario"] = "selected" if cases else "native-smoke" if args.native_smoke else "full"
-    if args.windows_terminal and (not args.desktop or os.name != "nt"):
-        raise ValueError("--windows-terminal requires --desktop on a dedicated Windows test desktop")
-    if args.desktop and os.name == "nt":
+    if args.desktop_only:
+        record["scenario"] = "desktop"
+    if args.windows_terminal and (not desktop or os.name != "nt"):
+        raise ValueError("--windows-terminal requires --desktop or --desktop-only on a dedicated Windows test desktop")
+    if desktop and os.name == "nt":
         from desktop.windows_setup import require_active_desktop
 
         if args.windows_terminal is None:
             raise ValueError("Select the WindowsTerminal.exe of the dedicated test desktop with --windows-terminal")
         require_active_desktop()
-    elif args.desktop and (sys.platform != "linux" or not shutil.which("docker")):
+    elif desktop and (sys.platform != "linux" or not shutil.which("docker")):
         raise ValueError("Desktop interactive acceptance requires Linux and Docker")
     if args.live and (not args.archive or not args.secrets or not args.ledger):
         raise ValueError("Live interactive acceptance requires --archive, --secrets and --ledger")
@@ -741,6 +746,10 @@ def run_interactive(args, directory, record):
         bridge = scratch_dir / f"interactive_pty{EXE}"
         shutil.copy2(bridge_source, bridge)
         record["bridge"] = config_record(bridge)
+        if args.desktop_only:
+            run_desktop(args, binary, bridge, scratch_dir, directory, record, checked)
+            record["passed"] = True
+            return
         command = [sys.executable, str(Path(__file__).with_name("interactive.py")), "--binary", str(binary),
                    "--bridge", str(bridge), "--directory", str(scratch_dir / "test")]
         if args.upgrade_from:
@@ -769,7 +778,7 @@ def run_interactive(args, directory, record):
                     lifecycle[name] = str(destination)
             if lifecycle:
                 record["lifecycle"] = lifecycle
-            if args.desktop:
+            if desktop:
                 run_desktop(args, binary, bridge, scratch_dir, directory, record, checked)
     record["passed"] = True
 
@@ -795,6 +804,7 @@ def parser():
     interactive.add_argument("--bridge-cache", type=Path, help="reuse or populate the native PTY helper at this keyed cache path")
     scenario = interactive.add_mutually_exclusive_group()
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
+    scenario.add_argument("--desktop-only", action="store_true", help="exercise only the isolated graphical terminal")
     scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
     scenario.add_argument("--intent", choices=("deepseek", "openrouter"), help="run budgeted native reply, edit, and first-delegation checks")
     interactive.add_argument("--intent-case", choices=("all", "delivery", "delegation", "release-review"), default="all")

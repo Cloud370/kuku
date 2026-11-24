@@ -14,6 +14,8 @@
 | Linux 桌面和 IBus | `--archive ARCHIVE --desktop` |
 | Windows Terminal | `--archive ARCHIVE --desktop --windows-terminal WINDOWS_TERMINAL_EXE` |
 
+用 `--desktop-only` 替换 `--desktop` 可以只运行图形场景。需要在托管桌面上重跑 Windows Terminal 验收时，手动触发 CI 并选择 `platform=windows-desktop`。该任务使用调试版客户端运行桌面场景。
+
 浏览器验收按 [CI](../../../.github/workflows/ci-platform.yml) 准备 Playwright Chromium。升级前后的包都要支持持久化 Session。核对重启延后、工具只完成一次，以及新服务能重新打开 Session。图形验收在 Linux 上需要 Docker，使用隔离的 Xvfb、Xfce Terminal 和 IBus。Windows 需要专用活动桌面、独立剪贴板、Pillow，以及夹具预期的键盘布局和快捷键。启用 Microsoft Pinyin 以覆盖拼音组合输入。分别记录实际通过的检查与缺失的 IME 覆盖。[安装场景](../../../scripts/acceptance/interactive.py) · [桌面夹具](../../../scripts/acceptance/desktop)
 
 比较终端画面时保持夹具输入和窗口尺寸一致。生成一个多轮结算场景，再用另一个二进制回放，回放不发模型请求。

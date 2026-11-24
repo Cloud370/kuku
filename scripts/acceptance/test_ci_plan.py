@@ -94,6 +94,16 @@ class CiPlanTests(TestCase):
         self.assertFalse(jobs[0]["browser"])
         self.assertFalse(verify_web)
 
+    def test_manual_windows_desktop_targets_only_the_graphical_client(self):
+        jobs, tooling, verify_web = plan("workflow_dispatch", platform="windows-desktop")
+        self.assertEqual(["windows-latest"], tooling)
+        windows, = jobs
+        self.assertEqual("windows-latest", windows["os"])
+        self.assertEqual("none", windows["contract"])
+        self.assertEqual("desktop", windows["installed"])
+        self.assertFalse(windows["web"])
+        self.assertFalse(verify_web)
+
     @patch("ci_plan.subprocess.check_output", return_value=b"old\nname\0new name\0")
     def test_changed_paths_use_merge_tree_and_preserve_both_rename_paths(self, git):
         self.assertEqual(("old\nname", "new name"), changed_paths())

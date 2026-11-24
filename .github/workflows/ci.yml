@@ -14,10 +14,10 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Platform for full acceptance (all for release candidates)
+        description: Full acceptance platform, or Windows Terminal only
         type: choice
         default: all
-        options: [all, linux, macos, windows]
+        options: [all, linux, macos, windows, windows-desktop]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, feat/interactive-clients]
@@ -59,6 +59,7 @@ jobs:
           --draft "$CI_DRAFT" --platform "$CI_PLATFORM" --output "$GITHUB_OUTPUT"
 
   fmt:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'windows-desktop' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -68,6 +69,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'windows-desktop' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

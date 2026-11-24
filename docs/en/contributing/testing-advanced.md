@@ -14,6 +14,8 @@ Use [Testing](testing.md) to select the routine checks. Run the recipes below on
 | Linux desktop and IBus | `--archive ARCHIVE --desktop` |
 | Windows Terminal | `--archive ARCHIVE --desktop --windows-terminal WINDOWS_TERMINAL_EXE` |
 
+Use `--desktop-only` in place of `--desktop` to run just the graphical scenario. For a Windows Terminal retry on a hosted desktop, dispatch CI with `platform=windows-desktop`. It runs the desktop scenario with a debug client.
+
 For browser checks, prepare Playwright Chromium as in [CI](../../../.github/workflows/ci-platform.yml). Both upgrade packages must support durable Sessions. Check that the restart defers, the tool finishes once, and the replacement reopens the Session. For graphical checks, Linux requires Docker and uses an isolated Xvfb/Xfce Terminal with IBus. Windows requires a dedicated active desktop, its own clipboard, Pillow, and the expected keyboard layout and shortcuts. Enable Microsoft Pinyin for composition coverage. Record missing IME coverage separately from the checks that passed. [Installed cases](../../../scripts/acceptance/interactive.py) · [Desktop fixtures](../../../scripts/acceptance/desktop)
 
 For a screen comparison, hold fixture inputs and grid sizes fixed. Generate a multi-Turn settlement case and replay it using another binary. Replay makes no provider requests.
