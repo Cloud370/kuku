@@ -395,13 +395,8 @@ fn render_step(
 }
 
 fn trial_usage(frame: &mut Frame<'_>, area: Rect, row: &mut u16, state: &SetupState) {
-    if state.authorized {
-        let message = if state.subscription.is_some() {
-            "Model tests use your ChatGPT plan."
-        } else {
-            "Model tests may use API balance."
-        };
-        line(frame, area, row, message, MUTED);
+    if state.authorized && state.subscription.is_none() {
+        line(frame, area, row, "Model tests may use API balance.", MUTED);
     }
 }
 
@@ -587,6 +582,9 @@ fn render_review_settings(
         ReviewAction::Service => Some(service.as_str()),
         ReviewAction::Output => Some(output),
         ReviewAction::Pricing => Some(state.pricing_label()),
+        ReviewAction::TestModel | ReviewAction::TestTools if state.subscription.is_some() => {
+            Some("Uses your ChatGPT plan")
+        }
         _ => None,
     });
 }

@@ -17,7 +17,7 @@ From setup, choose either:
 
 The wizard lets you pick a preset, reuse a saved connection, or enter a custom URL, network mode (system proxy env, direct, HTTP, SOCKS5, or SOCKS5H), and API key. For a custom base URL, setup probes eligible protocols (`Responses` → `Chat Completions` → `Messages`) after you select a model, and asks you to choose if results are ambiguous. If the model catalog cannot be read, you can still type a known model ID directly.
 
-Choose **Find and test models** once to allow model discovery and short text or image tests during setup. API key trials may use your API balance and request a 4096-token output limit. ChatGPT trials use your plan. Each trial has a 30-second timeout. **Edit config file** opens the config path with zero provider requests.
+Choose **Find and test models** once to allow model discovery and short text or image tests during setup. API key trials may use your API balance and request a 4096-token output limit. For ChatGPT subscriptions, setup reads your account catalog and generation tests are opt-in. Each trial has a 30-second timeout. **Edit config file** opens the config path with zero provider requests.
 
 Use the model picker to search and select one or more models (`Space` to multi-select, `Enter` to confirm), then review test outcomes in **Model tests** or adjust thinking, output limits, capabilities, and pricing under **Settings**. Run **Settings → Test tools** to verify synthetic tool calls on the route — a working text reply alone does not confirm tool support. If a Chat route requires Responses for tools, switch under **Settings → API type → Responses** and re-test before saving.
 
@@ -46,7 +46,7 @@ Setup defaults to the environment's proxy settings, with options for direct acce
 
 Adding or editing a ChatGPT model refreshes the model list with the selected account's access token. Setup shows the account name and masked email when available. Give registrations distinct names if you use multiple workspaces with the same email. OpenAI's public sign-in API does not specify a field for the plan name, such as Plus or Pro.
 
-In the model editor, choose **Settings → Service tier** to request Fast or Ultrafast. The picker marks those speeds as unconfirmed because availability depends on the account and model. **Model tests** shows the speed reported for a completed trial, when available, or the error returned by OpenAI.
+In the model editor, **Settings → Service tier** uses the speeds listed by OpenAI for the selected account and model. Speeds without a catalog declaration are marked unconfirmed. Choose **Settings → Test model** to opt into a text trial with the current model, speed, and thinking settings. The trial uses your ChatGPT plan. **Model tests** shows the speed reported for a completed trial, when available, or the error returned by OpenAI.
 
 For ChatGPT, open [Manage usage](https://chatgpt.com/settings/usage) to review plan and app limits. kuku can report a limit error from ChatGPT and the token counts returned by completed requests. Other subscription providers can expose remaining allowance when their integration supplies it.
 

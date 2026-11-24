@@ -6,6 +6,14 @@ use crate::setup::config::Settings;
 use crate::setup::state::SetupStep;
 use crate::setup::ConnectionChoice;
 
+pub(in crate::setup) fn same_service_tier(left: Option<&str>, right: Option<&str>) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            (Some("fast"), Some("priority")) | (Some("priority"), Some("fast"))
+        )
+}
+
 impl SetupState {
     pub(in crate::setup) fn service_override(&self, model: &str) -> Option<Option<&str>> {
         let (selected_model, tier) = self.selected_service.as_ref()?;
@@ -46,7 +54,7 @@ impl SetupState {
         self.models.cursor = self
             .service_choices(settings)
             .iter()
-            .position(|choice| choice.as_deref() == service)
+            .position(|choice| same_service_tier(choice.as_deref(), service))
             .unwrap_or(0);
         self.step = SetupStep::Service;
     }

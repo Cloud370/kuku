@@ -21,6 +21,7 @@ use super::state::{edit_field, SetupIntent, SetupState, SetupStep};
 use super::{ConnectionChoice, CredentialSource};
 
 mod capabilities;
+pub(super) use capabilities::same_service_tier;
 mod pricing;
 
 pub(super) const PROTOCOLS: [ProviderFormat; 3] = [
@@ -92,6 +93,26 @@ impl Models {
 }
 
 impl SetupState {
+    pub(super) fn test_model(&mut self, settings: &Settings) {
+        let primary = self.primary_model();
+        let check = self.planned_trials(settings).into_iter().find(|probe| {
+            probe.model() == primary.as_deref()
+                && matches!(
+                    probe,
+                    Probe::Trial {
+                        check: ModelTrial::Text { .. },
+                        ..
+                    }
+                )
+        });
+        let Some(check) = check else {
+            self.problem = Some("Choose a model to test.".into());
+            return;
+        };
+        self.trials = ProbeBatch::start(vec![check]);
+        self.show_trial_requests();
+    }
+
     pub(super) fn test_tools(&mut self, settings: &Settings) {
         if self.text_only_route(settings) {
             self.problem = Some("For tools, choose API type → Responses.".into());
@@ -117,6 +138,10 @@ impl SetupState {
             })
             .collect();
         self.trials.append(checks);
+        self.show_trial_requests();
+    }
+
+    fn show_trial_requests(&mut self) {
         self.probe_repaint_at = Some(std::time::Instant::now());
         self.step = SetupStep::TrialResults;
         self.models.cursor = 0;
@@ -367,7 +392,7 @@ impl SetupState {
             }
             return;
         }
-        let plan = if self.authorized && self.credential_ready() {
+        let plan = if self.subscription.is_none() && self.authorized && self.credential_ready() {
             self.planned_trials(settings)
         } else {
             Vec::new()

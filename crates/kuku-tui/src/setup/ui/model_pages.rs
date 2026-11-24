@@ -2,7 +2,7 @@ use ratatui::{layout::Rect, Frame};
 
 use crate::theme::{ACCENT, MUTED, WARNING};
 
-use super::super::models::{protocol_label, PROTOCOLS};
+use super::super::models::{protocol_label, same_service_tier, PROTOCOLS};
 use super::super::recovery::text_problem;
 use super::super::state::{SetupState, SetupStep};
 use super::{field, line, option, trial_usage, Settings};
@@ -281,13 +281,27 @@ pub(super) fn render_model_settings(
                 );
                 line(frame, area, row, &account, MUTED);
             }
+            let primary = state.primary_model();
+            let listed_tiers = state
+                .models
+                .found
+                .iter()
+                .find(|model| Some(model.id.as_str()) == primary.as_deref())
+                .and_then(|model| model.capabilities.service_tiers.as_deref())
+                .unwrap_or_default();
             for (index, tier) in state.service_choices(settings).iter().enumerate() {
                 let tier = tier.as_deref();
                 let mut label = tier.map_or_else(
                     || "Provider default".to_owned(),
                     |tier| crate::text::service_tier_label(Some(tier)),
                 );
-                if subscription && matches!(tier, Some("fast" | "priority" | "ultrafast")) {
+                let advertised = listed_tiers
+                    .iter()
+                    .any(|listed| same_service_tier(Some(listed), tier));
+                if subscription
+                    && !advertised
+                    && matches!(tier, Some("fast" | "priority" | "ultrafast"))
+                {
                     label.push_str(" · Availability unconfirmed");
                 }
                 option(frame, area, row, &label, index == state.models.cursor);

@@ -75,6 +75,7 @@ pub(super) enum ReviewAction {
     Service,
     Output,
     Advanced,
+    TestModel,
     TestTools,
     RepairCredential,
     TrialResults,
@@ -98,6 +99,7 @@ impl ReviewAction {
             Self::Service => "Service tier",
             Self::Output => "Output",
             Self::Advanced => "Model capabilities",
+            Self::TestModel => "Test model",
             Self::TestTools => "Test tools",
             Self::RepairCredential => "Paste API key",
             Self::TrialResults => "Model tests",
@@ -883,6 +885,9 @@ impl SetupState {
             }
             choices.push(ReviewAction::Advanced);
             if self.authorized && self.credential_ready() && !self.trials.pending() {
+                if self.subscription.is_some() {
+                    choices.push(ReviewAction::TestModel);
+                }
                 choices.push(ReviewAction::TestTools);
             }
             if mode == SetupMode::FirstRun && self.credential_ready() && !self.trials.pending() {
@@ -930,6 +935,7 @@ impl SetupState {
             return;
         };
         match action {
+            ReviewAction::TestModel => self.test_model(settings),
             ReviewAction::TestTools => self.test_tools(settings),
             ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit | ReviewAction::Save => {
                 self.save(action);

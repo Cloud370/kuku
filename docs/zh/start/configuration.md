@@ -17,7 +17,7 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 你可以选预设、复用已有连接，或填写自定义 URL、代理方式（跟随环境代理、直连、HTTP、SOCKS5、SOCKS5H）和 API Key。对于自定义 Base URL，选好模型后向导会自动探测协议（优先 `Responses`，其次 `Chat Completions`、`Messages`），结果不明确时再让你手动挑；如果目录不可读，也可以直接手填模型 ID。
 
-选择一次 **Find and test models**，即可允许本次设置查询模型目录并发送简短的文本或图片试跑。API Key 试跑可能消耗 API 余额，请求输出上限为 4096 token。ChatGPT 试跑使用你的订阅方案。每次试跑的超时为 30 秒。选择 **Edit config file** 会显示配置路径，供应商请求数为零。
+选择一次 **Find and test models**，即可允许本次设置查询模型目录并发送简短的文本或图片试跑。API Key 试跑可能消耗 API 余额，请求输出上限为 4096 token。ChatGPT 订阅设置会读取账号目录，由你手动发起生成测试。每次试跑的超时为 30 秒。选择 **Edit config file** 会显示配置路径，供应商请求数为零。
 
 在模型列表里可以直接打字搜索、按 `Space` 多选、`Enter` 确认。试跑结果可以在 **Model tests** 里逐项查看，也可以进 **Settings** 调整思考档位、输出上限、能力标记与费率。想确认工具调用是否正常，点 **Settings → Test tools** 测一次合成工具调用——能正常回文本不代表支持工具调用；如果某条 Chat 线路需要走 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测再保存。
 
@@ -46,7 +46,7 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 添加或编辑 ChatGPT 模型时，用所选账号的访问令牌刷新模型目录。设置界面会显示账号别名，并在可用时显示脱敏邮箱。同一个邮箱有多个工作区时，可以用不同别名区分。OpenAI 的公开登录 API 没有定义 Plus、Pro 等套餐名称字段。
 
-在模型编辑器中，通过 **Settings → Service tier** 请求 Fast 或 Ultrafast。档位是否可用取决于账号和模型，因此选择页会将两档标为待验证。**Model tests** 会显示 OpenAI 为试跑回报的实际档位，或者显示请求失败时返回的错误。
+在模型编辑器中，**Settings → Service tier** 沿用 OpenAI 为该账号和模型列出的档位。目录未声明的档位标为待验证。选择 **Settings → Test model**，可以用当前模型、档位和思考设置发起文本试跑，使用你的 ChatGPT 订阅额度。**Model tests** 会显示 OpenAI 为试跑回报的实际档位，或者显示请求失败时返回的错误。
 
 ChatGPT 的方案和应用额度可在[管理用量](https://chatgpt.com/settings/usage)查看。kuku 可以显示 ChatGPT 返回的额度错误，以及已完成请求回报的 token 数。其他订阅渠道提供剩余额度接口时，可以显示该渠道实际回报的数值。
 

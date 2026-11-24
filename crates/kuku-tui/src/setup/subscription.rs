@@ -193,9 +193,12 @@ mod tests {
     use std::time::Duration;
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use kuku::adapter::{SubscriptionAccountInfo, SubscriptionStatus};
+    use kuku::adapter::{
+        DiscoveredModel, ModelTrial, Probe, SubscriptionAccountInfo, SubscriptionStatus,
+    };
     use kuku::config::{
-        generate_default, load_config, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
+        generate_default, load_config, ModelCapabilityDeclaration, ProviderProxy,
+        SubscriptionAccount, SubscriptionChannel,
     };
     use kuku_client::ConnectionOptions;
     use ratatui::{
@@ -206,7 +209,7 @@ mod tests {
 
     use super::SubscriptionSettings;
     use crate::setup::config::{save, Settings};
-    use crate::setup::state::{SetupIntent, SetupState, SetupStep};
+    use crate::setup::state::{ReviewAction, SetupIntent, SetupState, SetupStep};
     use crate::setup::{ui, ConnectionChoice, SetupMode};
 
     #[tokio::test]
@@ -406,6 +409,7 @@ mod tests {
             .position(|choice| *choice == connection)
             .unwrap();
         add.load_selection(&settings);
+        add.authorized = true;
         add.models.add_manual("account-model".into());
         add.open_service(&settings);
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
@@ -417,10 +421,57 @@ mod tests {
         assert!(screen.contains("Fast · Availability unconfirmed"));
         assert!(screen.contains("Ultra Fast · Availability unconfirmed"));
         select_service(&mut add, &settings, "fast");
+        assert!(add.trials.rows().is_empty());
+        terminal
+            .draw(|frame| ui::render(frame, &settings, &mut add, SetupMode::Session))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("account-model"));
+        assert!(!screen.contains("Thinking"));
         let saved = save(&settings, &add).unwrap();
         let route = &saved.tiers["account-model"];
         assert_eq!(Some("fast"), route.service_tier.as_deref());
         assert_eq!("chatgpt-work", route.provider);
+
+        add.models.discovered_from = Some(add.connection(&settings).unwrap());
+        add.models.found = vec![DiscoveredModel {
+            id: "account-model".into(),
+            name: None,
+            capabilities: ModelCapabilityDeclaration {
+                service_tiers: Some(vec!["priority".into()]),
+                ..ModelCapabilityDeclaration::default()
+            },
+        }];
+        select_service(&mut add, &settings, "priority");
+        assert!(add.trials.rows().is_empty());
+        add.open_service(&settings);
+        terminal
+            .draw(|frame| ui::render(frame, &settings, &mut add, SetupMode::Session))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Fast"));
+        assert!(!screen.contains("Availability unconfirmed"));
+        assert!(!screen.contains("Ultra Fast"));
+
+        add.step = SetupStep::ReviewSettings;
+        add.review_selection = add
+            .review_choices(SetupMode::Session)
+            .iter()
+            .position(|item| *item == ReviewAction::TestModel)
+            .unwrap();
+        add.handle(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &settings,
+            SetupMode::Session,
+        );
+        assert_eq!(SetupStep::TrialResults, add.step);
+        let [trial] = add.trials.rows() else {
+            panic!("expected one explicit trial")
+        };
+        assert!(
+            matches!(&trial.probe, Probe::Trial { model, check: ModelTrial::Text { service_tier: Some(tier), .. }, .. } if model == "account-model" && tier == "priority")
+        );
+        add.trials.stop();
 
         let settings = Settings::load(options).await.unwrap();
         let mut edit = SetupState::for_intent(&settings, SetupIntent::Edit("account-model".into()));
