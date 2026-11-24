@@ -92,6 +92,19 @@ pub(crate) fn prepare_command_args(
     Ok(request.cwd)
 }
 
+pub(crate) fn changed_command_directory(args: &Value) -> Option<ToolResultEnvelope> {
+    let cwd = Path::new(args["cwd"].as_str()?);
+    (!cwd
+        .canonicalize()
+        .is_ok_and(|current| current == cwd && current.is_dir()))
+    .then(|| {
+        ToolResultEnvelope::blocked(
+            "command directory changed after preparation",
+            "choose the working directory again before requesting another command",
+        )
+    })
+}
+
 fn apply_command_defaults(
     args: &mut Value,
     definition: &ToolDefinition,
@@ -289,4 +302,8 @@ fn is_batch_file(program: &str) -> bool {
 fn invalid(message: impl Into<String>) -> ToolResultEnvelope {
     let message = message.into();
     ToolResultEnvelope::error(format!("failed: {message}"), message)
+}
+
+pub(crate) fn prepared_command_guard(args: &Value) -> Option<&'static str> {
+    super::guard::blocked_command_reason(&invocation(args).ok()?)
 }

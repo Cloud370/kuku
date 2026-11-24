@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use kuku_client::{
-    Action, AgentConfig, AgentStatus, Error, HistoryKind, HistoryPage, ModelSelection,
+    Action, AgentConfig, AgentStatus, Error, HistoryKind, HistoryPage, ModelSelection, Observation,
     OutputReference, Snapshot, Target, UsageTotals, new_id,
 };
 use ratatui::layout::Rect;
@@ -34,6 +34,7 @@ mod model_editor;
 mod navigation;
 mod notice;
 mod pending;
+pub(crate) mod permissions;
 mod reading;
 mod rewind;
 pub(crate) mod send_route;
@@ -310,6 +311,8 @@ pub(crate) enum Modal {
     Output(Box<OutputViewer>),
     StatusLineEditor(StatusLineEditor),
     Notifications(crate::notifications::NotificationEditor),
+    Permissions(permissions::PermissionEditor),
+    Approvals(permissions::ApprovalEditor),
     ExitConfirmation,
     SendRouteConfirmation(Box<send_route::SendRouteConfirmation>),
 }
@@ -324,6 +327,7 @@ impl Modal {
             | Self::Output(_)
             | Self::StatusLineEditor(_)
             | Self::Notifications(_) => false,
+            Self::Permissions(_) | Self::Approvals(_) => false,
         }
     }
 }
@@ -349,6 +353,15 @@ pub(crate) struct App {
     pub(crate) statusline_settings: StatusLineSettings,
     pub(crate) notification_settings: crate::config::NotificationSettings,
     pub(crate) terminal_bell: crate::notifications::TerminalBell,
+    pub(crate) permission_mode: Option<kuku_client::PermissionMode>,
+    permission_mode_loading: bool,
+    permission_mode_saving: bool,
+    permission_mode_ticket: u64,
+    approvals: Vec<kuku_client::PendingApproval>,
+    approvals_session: Option<String>,
+    approval_refresh: Option<Selection>,
+    approval_refresh_dirty: bool,
+    approval_after_mode_save: Option<(Address, String)>,
     pub(crate) text_selection: TextSelection,
     pub(crate) modal_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
@@ -426,6 +439,15 @@ impl App {
             statusline_settings: StatusLineSettings::default(),
             notification_settings: crate::config::NotificationSettings::default(),
             terminal_bell: crate::notifications::TerminalBell::default(),
+            permission_mode: Some(kuku_client::PermissionMode::Full),
+            permission_mode_loading: false,
+            permission_mode_saving: false,
+            permission_mode_ticket: 0,
+            approvals: Vec::new(),
+            approvals_session: None,
+            approval_refresh: None,
+            approval_refresh_dirty: false,
+            approval_after_mode_save: None,
             text_selection: TextSelection::default(),
             modal_selection: TextSelection::default(),
             pending: HashMap::new(),
@@ -643,8 +665,21 @@ impl App {
                 self.connect_failed(error);
                 self.credential_repair_connect_failed();
             }
+            Update::WorkspacePermission {
+                ticket,
+                saving,
+                result,
+            } => {
+                if self.permission_mode_ticket == ticket {
+                    self.workspace_permission_loaded(saving, result);
+                }
+            }
             Update::Loaded(selection, snapshot, page) if selection == self.selection() => {
-                self.loaded(snapshot, page)
+                self.loaded(snapshot, page);
+                self.refresh_approvals();
+            }
+            Update::PendingApprovals(selection, result) => {
+                self.approvals_loaded(selection, result);
             }
             Update::WatchConnected(selection) if selection == self.selection() => {
                 self.pane_mut().watch = Watch::Connected;
@@ -661,6 +696,28 @@ impl App {
                 let last_event = self.pane().last_event;
                 self.terminal_bell
                     .observe(&event, last_event, self.notification_settings.active());
+                if let Observation::Committed {
+                    id,
+                    kind,
+                    operation,
+                    ..
+                } = &event
+                {
+                    if *id > last_event
+                        && (matches!(
+                            operation.as_deref(),
+                            Some(
+                                "permission_waiting"
+                                    | "permission_replied"
+                                    | "script_permission_waiting"
+                                    | "script_permission_replied"
+                                    | "script_permission_ended"
+                            )
+                        ) || kind == "tool.result" && !self.approvals().is_empty())
+                    {
+                        self.refresh_approvals();
+                    }
+                }
                 self.observe(event)
             }
             Update::Refreshed(selection, result) if selection == self.selection() => {
@@ -818,6 +875,16 @@ impl App {
         self.resolved_workspace = true;
         self.connection_problem = None;
         self.begin_observing();
+        self.permission_mode = None;
+        self.approval_after_mode_save = None;
+        self.permission_mode_ticket = self.permission_mode_ticket.wrapping_add(1);
+        self.permission_mode_loading = true;
+        self.permission_mode_saving = false;
+        self.effects.push(Job::WorkspacePermission {
+            ticket: self.permission_mode_ticket,
+            workspace: self.workspace.clone(),
+            mode: None,
+        });
         self.effects.push(Job::Pending);
     }
 

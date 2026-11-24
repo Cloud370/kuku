@@ -349,6 +349,7 @@ fn ignores_permission_metadata_tool_call_duplicate() {
                 summary: "run pwd".to_string(),
                 candidate: "run_command(command=pwd)".to_string(),
                 source: "default_ask".to_string(),
+                workspace: None,
             },
         ),
         event(

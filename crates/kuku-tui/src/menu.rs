@@ -660,13 +660,14 @@ mod tests {
             "/fast",
             "/ultrafast",
             "/notifications",
+            "/permissions",
             "/server",
             "/restart",
             "/quit",
         ] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(20, choices.len());
+        assert_eq!(21, choices.len());
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub(crate) enum CommandMenu {
     Ultrafast,
     StatusLine,
     Notifications,
+    Permissions,
     Save,
     Values,
     Server,
@@ -39,6 +40,7 @@ impl CommandMenu {
         Self::Ultrafast,
         Self::StatusLine,
         Self::Notifications,
+        Self::Permissions,
         Self::Save,
         Self::Values,
         Self::Server,
@@ -144,6 +146,12 @@ impl CommandMenu {
                 &["notify", "sound"],
                 "Edit terminal sounds",
                 None,
+            ),
+            Self::Permissions => (
+                "permissions",
+                &["perm", "permission"],
+                "Choose workspace tool permissions",
+                Some(Shortcut::PERMISSIONS),
             ),
             Self::Save => (
                 "save",

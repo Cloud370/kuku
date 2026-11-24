@@ -13,7 +13,6 @@ use tokio::sync::{Notify, mpsc};
 use tokio::time::{Duration, Instant as TokioInstant, sleep_until, timeout};
 
 use crate::execution::CommandTermination;
-use crate::permission::gate::blocked_command_reason;
 use crate::tool::ToolResultEnvelope;
 
 use output::{OutputLimits, OutputRead, OutputStream, OutputWriter, read_output};
@@ -21,10 +20,14 @@ use process::ProcessTree;
 use render::render_command_result;
 use request::{CommandRequest, run_command_request};
 
-pub(crate) use request::{command_permission_candidate, prepare_command_args};
+pub(crate) use request::{
+    changed_command_directory, command_permission_candidate, prepare_command_args,
+    prepared_command_guard,
+};
 pub(crate) use shell::available_shells;
 
 pub(crate) mod encoding;
+mod guard;
 #[cfg(unix)]
 mod native;
 pub(crate) mod output;
@@ -32,6 +35,8 @@ mod process;
 mod render;
 mod reports;
 mod request;
+
+use guard::blocked_command_reason;
 mod shell;
 mod summary;
 

@@ -1,17 +1,5 @@
 use crate::error::Result;
-
-use super::find_tool_definition;
-use super::helpers::{has_permission_decision, persist_blocked_tool_result};
-use crate::query::helpers::{
-    append_permission_decision, append_permission_request, display_summary, is_inline_skill_tool,
-    permission_candidate, permission_rule, resolved_tool_available,
-};
-use crate::query::slots::query_workspace_access;
-use crate::query::tool_exec::run_tool_pre_hooks;
-use crate::query::types::{
-    PendingPermission, PermissionChoice, PermissionRequest, QueuedToolCall, Run, RunState, UiEvent,
-    WorkspaceAccess,
-};
+use crate::query::types::{Run, RunState, UiEvent, WorkspaceAccess};
 
 fn ready_after(barrier: &mut WorkspaceAccess, access: WorkspaceAccess) -> bool {
     if barrier.conflicts_with(access) {
@@ -23,257 +11,32 @@ fn ready_after(barrier: &mut WorkspaceAccess, access: WorkspaceAccess) -> bool {
 
 impl Run {
     pub(super) async fn try_process_queued_call(&mut self) -> Result<Option<UiEvent>> {
-        let active = self.active_workspace_access();
-        if let RunState::Pending(pending) = &self.state {
-            if pending.query.runtime.is_some() {
-                let mut barrier = active;
-                let index = pending.queued_tool_calls.iter().position(|queued| {
-                    let access = crate::query::runtime_tools::workspace_access(
-                        pending,
-                        &queued.tool_call.name,
-                    );
-                    ready_after(&mut barrier, access)
-                });
-                let Some(index) = index else { return Ok(None) };
-                if self.slots.len() >= pending.query.runtime_limits.max_tools_per_agent {
-                    return Ok(None);
-                }
-                let RunState::Pending(mut pending) =
-                    std::mem::replace(&mut self.state, RunState::Done(None))
-                else {
-                    unreachable!()
-                };
-                let queued = pending
-                    .queued_tool_calls
-                    .remove(index)
-                    .expect("queued index was selected");
-                pending.queued_tool_calls.push_front(queued);
-                return self.advance_from_pending(pending).await;
-            }
-        }
-        let (queue_index, tool_call_id, tool_name) = match &self.state {
-            RunState::Pending(pending) => {
-                let queue_index = if active != WorkspaceAccess::Independent
-                    && pending.resumed_permission_requests.is_empty()
-                {
-                    let mut barrier = active;
-                    pending.queued_tool_calls.iter().position(|queued| {
-                        let name = queued.tool_call.name.as_str();
-                        ready_after(&mut barrier, query_workspace_access(name))
-                            && name != "agent"
-                            && !(is_inline_skill_tool(name)
-                                && resolved_tool_available(pending, name))
-                    })
-                } else if active == WorkspaceAccess::Independent {
-                    (!pending.queued_tool_calls.is_empty()).then_some(0)
-                } else {
-                    None
-                };
-                let Some(queue_index) = queue_index else {
-                    return Ok(None);
-                };
-                let queued = &pending.queued_tool_calls[queue_index];
-                (
-                    queue_index,
-                    queued.tool_call.id.clone(),
-                    queued.tool_call.name.clone(),
-                )
-            }
-            _ => return Ok(None),
-        };
-        let resumed_request = match &mut self.state {
-            RunState::Pending(pending) => pending.take_resumed_permission_request(&tool_call_id),
-            _ => return Ok(None),
-        };
-        if let Some(request) = resumed_request {
-            let state = std::mem::replace(&mut self.state, RunState::Done(None));
-            if let RunState::Pending(pending) = state {
-                self.state = RunState::WaitingForPermission(Box::new(PendingPermission {
-                    pending: *pending,
-                    request: request.clone(),
-                }));
-                return Ok(Some(UiEvent::PermissionRequested { request }));
-            }
-        }
-
-        let pending = match &mut self.state {
-            RunState::Pending(p) => p.as_mut(),
-            _ => return Ok(None),
-        };
-        if query_workspace_access(&tool_name).conflicts_with(active) {
+        let mut barrier = self.active_workspace_access();
+        let RunState::Pending(pending) = &self.state else {
             return Ok(None);
-        }
-        if tool_name == "agent"
-            || (is_inline_skill_tool(&tool_name) && resolved_tool_available(pending, &tool_name))
+        };
+        if self.slots.len() >= pending.query.runtime_limits.max_tools_per_agent
+            || !self.slots.is_empty() && !pending.resumed_permission_requests.is_empty()
         {
             return Ok(None);
         }
-        crate::query::provider::ensure_resolved(pending)?;
-        let queued = match pending.queued_tool_calls.get(queue_index) {
-            Some(q) => q,
-            None => return Ok(None),
+        let index = pending.queued_tool_calls.iter().position(|queued| {
+            let access =
+                crate::query::runtime_tools::workspace_access(pending, &queued.tool_call.name);
+            ready_after(&mut barrier, access)
+        });
+        let Some(index) = index else { return Ok(None) };
+        let RunState::Pending(mut pending) =
+            std::mem::replace(&mut self.state, RunState::Done(None))
+        else {
+            unreachable!()
         };
-
-        let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-        let prior_events = crate::event::EventStore::replay(&pending.events_path)?;
-        let session_grants = crate::permission::recover_session_grants(&prior_events);
-
-        let definition = match find_tool_definition(pending, &queued.tool_call.name) {
-            Some(d) => d,
-            None => {
-                let QueuedToolCall { tool_call, .. } =
-                    pending.queued_tool_calls.remove(queue_index).unwrap();
-                return Ok(Some(UiEvent::Error {
-                    code: "unknown_tool".to_string(),
-                    message: format!("unknown tool: {}", tool_call.name),
-                }));
-            }
-        };
-        let candidate = permission_candidate(
-            &pending.kuku_home,
-            &pending.workspace,
-            &queued.tool_call.name,
-            &queued.tool_call.args,
-        );
-        let decision = crate::permission::decide_tool_call(
-            &queued.tool_call.name,
-            &definition.risk,
-            &candidate,
-            &policy,
-            &session_grants,
-        );
-
-        match decision.kind {
-            crate::permission::GateDecisionKind::Ask => Ok(None),
-            crate::permission::GateDecisionKind::Allow => {
-                if !matches!(decision.source, crate::permission::GateSource::TrustPosture) {
-                    let choice = crate::query::helpers::gate_choice(&decision.source);
-                    if !has_permission_decision(&prior_events, &queued.tool_call.id) {
-                        append_permission_decision(
-                            &pending.events_path,
-                            pending.turn,
-                            &queued.tool_call.id,
-                            choice,
-                            crate::query::helpers::gate_source_name(decision.source),
-                            &permission_rule(
-                                &pending.kuku_home,
-                                &pending.workspace,
-                                &queued.tool_call.name,
-                                &queued.tool_call.args,
-                            ),
-                        )?;
-                    }
-                }
-                let QueuedToolCall {
-                    tool_call,
-                    display_summary,
-                    ..
-                } = pending.queued_tool_calls.remove(queue_index).unwrap();
-                let hook_result = run_tool_pre_hooks(
-                    &mut *pending,
-                    &tool_call.name,
-                    &tool_call.args,
-                    &tool_call.id,
-                )
-                .await?;
-                if let Some(block) = hook_result.block {
-                    let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
-                    pending.record_tool_call(&tool_call.name);
-                    persist_blocked_tool_result(
-                        &pending.events_path,
-                        pending.turn,
-                        &tool_call.id,
-                        &block.reason,
-                    )?;
-                    return Ok(Some(UiEvent::ToolEnd {
-                        id: tool_call.id,
-                        status: "blocked".to_string(),
-                        summary: block.reason,
-                        model_content: None,
-                        result: Some(blocked),
-                    }));
-                }
-                pending.record_tool_call(&tool_call.name);
-                let (slot, tool_kind) = crate::query::slots::dispatch_tool_slot(
-                    crate::query::slots::SlotDispatchArgs {
-                        capacity: crate::WorkspaceExecutionHost::default(),
-                        workspace_access: query_workspace_access(&tool_call.name),
-                        limits: pending.query.runtime_limits.clone(),
-                        output: None,
-                        tool_name: tool_call.name.clone(),
-                        tool_id: tool_call.id.clone(),
-                        conversation: (!pending.conversation.is_main())
-                            .then(|| pending.conversation.clone()),
-                        args: hook_result.args,
-                        summary: display_summary.clone(),
-                        workspace: pending.workspace.clone(),
-                        kuku_home: pending.kuku_home.clone(),
-                        prior_events: prior_events.clone(),
-                        event_tx: self.slot_event_tx.clone(),
-                        config: pending.config.clone(),
-                        catalog: pending.catalog.clone(),
-                        events_path: pending.events_path.clone(),
-                    },
-                );
-                self.slots.insert(slot.tool_call_id.clone(), slot);
-                Ok(Some(UiEvent::ToolStart {
-                    id: tool_call.id,
-                    tool: tool_call.name,
-                    summary: display_summary,
-                    kind: tool_kind,
-                }))
-            }
-            crate::permission::GateDecisionKind::Deny => {
-                let risk = definition.risk.clone();
-                let QueuedToolCall { tool_call, .. } =
-                    pending.queued_tool_calls.remove(queue_index).unwrap();
-                append_permission_request(
-                    &pending.events_path,
-                    &pending.conversation,
-                    pending.turn,
-                    &PermissionRequest {
-                        id: tool_call.id.clone(),
-                        conversation: pending.conversation.clone(),
-                        turn: pending.turn,
-                        tool_call_id: tool_call.id.clone(),
-                        tool: tool_call.name.clone(),
-                        risk,
-                        summary: display_summary(&tool_call.name, &tool_call.args, None),
-                        candidate,
-                        source: crate::query::helpers::gate_source_name(decision.source)
-                            .to_string(),
-                    },
-                )?;
-                append_permission_decision(
-                    &pending.events_path,
-                    pending.turn,
-                    &tool_call.id,
-                    PermissionChoice::Deny,
-                    crate::query::helpers::gate_source_name(decision.source),
-                    &permission_rule(
-                        &pending.kuku_home,
-                        &pending.workspace,
-                        &tool_call.name,
-                        &tool_call.args,
-                    ),
-                )?;
-                pending.record_tool_denied(&tool_call.name);
-                let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
-                persist_blocked_tool_result(
-                    &pending.events_path,
-                    pending.turn,
-                    &tool_call.id,
-                    "permission denied",
-                )?;
-                Ok(Some(UiEvent::ToolEnd {
-                    id: tool_call.id,
-                    status: "blocked".to_string(),
-                    summary: "permission denied".to_string(),
-                    model_content: None,
-                    result: Some(blocked),
-                }))
-            }
-        }
+        let queued = pending
+            .queued_tool_calls
+            .remove(index)
+            .expect("selected queue index");
+        pending.queued_tool_calls.push_front(queued);
+        self.advance_from_pending(pending).await
     }
 }
 
@@ -282,7 +45,7 @@ mod tests {
     use super::*;
     use crate::provider::types::ProviderToolCall;
     use crate::query::run::tests::make_test_pending;
-    use crate::query::types::{ExecSlot, ToolKind};
+    use crate::query::types::{ExecSlot, PermissionRequest, QueuedToolCall, ToolKind};
 
     #[tokio::test]
     async fn active_ordered_slot_does_not_bypass_to_later_resumed_permission() {
@@ -325,6 +88,7 @@ mod tests {
                 summary: "find files".to_string(),
                 candidate: "find_files".to_string(),
                 source: "resume".to_string(),
+                workspace: None,
             });
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);

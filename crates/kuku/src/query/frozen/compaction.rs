@@ -148,6 +148,7 @@ impl ContextCommit {
         closed_turn: bool,
     ) -> bool {
         Some(index) == self.runtime_date_index
+            || Some(index) == self.permission_mode_index
             || (!closed_turn
                 && (index == self.current_input
                     || (entry.turn == turn && entry.origin == MessageOrigin::Input)))

@@ -38,12 +38,16 @@ Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback.
 | `PUT` | `/sessions/{id}/values/{name}` | Bind a named value or explicitly replace its source |
 | `GET` | `/models` | Configured model catalog |
 | `GET` | `/models/resolve` | Resolve effective settings for a proposed Agent configuration |
+| `GET` | `/sessions/{id}/permissions` | List approvals for the Session's Agents |
+| `GET` / `PUT` | `/workspaces/permissions` | Read or set the workspace permission mode |
 | `GET` | `/workspaces` | List workspaces |
 | `GET` | `/workspaces/resolve`, `/workspaces/files`, `/workspaces/skills` | Resolve a server path or discover workspace files and Skills |
 
 The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes active work such as running Jobs in `busy`. The managed client starts the replacement after the previous process releases its service lease.
 
 `GET /service/model-default-plan` is available only on a managed service with an active config file. It requires the usual bearer authentication and loopback/origin checks, returns `Cache-Control: no-store`, and accepts only the query fields `connection`, `model`, and `config_sha256`. The service reads its active config file and validates the requested route in the service process environment. `config_sha256` must match the exact bytes held by the client. The response contains only `tier`, `overwrite_user_default`, and `config_sha256`; it neither writes the file nor resolves credentials or sends a model request. The client remains responsible for the local, guarded config edit. A changed config, unusable route, unmanaged service, or unavailable config is rejected with a generic error.
+
+Pass `workspace` as a query parameter for both permission endpoints. Workspace mode is a JSON string (`"full"`, `"ask"`, or `"read-only"`), or `null` on GET before a preference is saved. PUT accepts a mode string and applies it to the workspace’s open Sessions. The Session endpoint returns `approvals` containing `request` and optional `job_id`. Reply with a `reply_permission` command for the request’s Agent and ID.
 
 ## Commands and receipts
 

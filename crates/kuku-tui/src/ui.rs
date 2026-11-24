@@ -584,6 +584,19 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
 }
 
 fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
+    if !app.approvals().is_empty() && app.available() {
+        let count = app.approvals().len();
+        return vec![Line::styled(
+            shorten(
+                &format!(
+                    "Tool approvals ({count}) · {} Review",
+                    Shortcut::REPLY.label
+                ),
+                width,
+            ),
+            emphasis(WARNING),
+        )];
+    }
     let Some(snapshot) = &app.pane().snapshot else {
         return Vec::new();
     };
@@ -621,6 +634,12 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
 }
 
 fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect> {
+    if let Some(Modal::Approvals(editor)) = &app.modal {
+        let area = popup(area, PICKER_WIDTH, 17);
+        let inner = render_popup(frame, area, "Tool approval");
+        editor.render(frame, inner, app.approvals(), app.permission_mode);
+        return Some(inner);
+    }
     Some(match app.modal.as_mut()? {
         Modal::Help => composer_panel::render_help(frame, area),
         Modal::Picker(picker) => {
@@ -691,6 +710,13 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             editor.render(frame, inner);
             inner
         }
+        Modal::Permissions(editor) => {
+            let area = popup(area, PICKER_WIDTH, 8);
+            let inner = render_popup(frame, area, "Workspace permissions");
+            editor.render(frame, inner, app.permission_mode);
+            inner
+        }
+        Modal::Approvals(_) => unreachable!("approval is rendered before the editable modals"),
         Modal::ExitConfirmation | Modal::SendRouteConfirmation(_) => {
             unreachable!("confirmation is anchored to the composer")
         }

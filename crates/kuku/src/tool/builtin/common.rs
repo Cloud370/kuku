@@ -116,7 +116,7 @@ pub(super) fn resolve_stat_path(
                 .parent()
                 .and_then(|parent| parent.canonicalize().ok())
             {
-                if !parent.starts_with(&workspace) {
+                if !Path::new(path).is_absolute() && !parent.starts_with(&workspace) {
                     return Err(outside_workspace(path));
                 }
             }
@@ -186,12 +186,22 @@ fn resolve_missing_path(path: &Path, requested: &str) -> Result<PathBuf, ToolRes
 }
 
 fn checked_resolved_path(
-    workspace: PathBuf,
+    mut workspace: PathBuf,
     resolved: PathBuf,
     requested: &str,
 ) -> Result<ResolvedPath, ToolResultEnvelope> {
     if !resolved.starts_with(&workspace) {
-        return Err(outside_workspace(requested));
+        if !Path::new(requested).is_absolute() {
+            return Err(outside_workspace(requested));
+        }
+        // Anchor operations at an existing directory so relative opens stay pinned.
+        workspace = resolved
+            .ancestors()
+            .skip(1)
+            .find(|path| path.is_dir())
+            .or_else(|| resolved.is_dir().then_some(resolved.as_path()))
+            .ok_or_else(|| outside_workspace(requested))?
+            .to_owned();
     }
     let relative = relative_path(&resolved, &workspace);
     guard_relative(&relative)?;

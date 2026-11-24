@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
+use kuku::permission::PermissionMode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -13,6 +14,35 @@ use crate::AppState;
 use crate::error_mapping::{ApiError, Result};
 
 const COMPLETION_LIMIT: usize = 40;
+
+pub(super) async fn permission(
+    State(state): State<Arc<AppState>>,
+    Params(query): Params<WorkspaceQuery>,
+) -> Result<Json<Option<PermissionMode>>> {
+    let workspace = resolve_workspace(&query.workspace)?;
+    let manager = super::manager(&state).await;
+    super::journal_task(move || {
+        manager
+            .workspace_permission(&state.kuku_home, &workspace)
+            .map(Json)
+    })
+    .await
+}
+
+pub(super) async fn set_permission(
+    State(state): State<Arc<AppState>>,
+    Params(query): Params<WorkspaceQuery>,
+    body: std::result::Result<Json<PermissionMode>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<PermissionMode>> {
+    let Json(mode) = body.map_err(|error| ApiError::invalid(error.body_text()))?;
+    let workspace = resolve_workspace(&query.workspace)?;
+    let manager = super::manager(&state).await;
+    super::journal_task(move || {
+        manager.set_workspace_permission(&state.kuku_home, &workspace, mode)?;
+        Ok(Json(mode))
+    })
+    .await
+}
 
 #[derive(Deserialize)]
 pub(super) struct CompletionQuery {

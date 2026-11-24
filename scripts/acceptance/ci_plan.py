@@ -14,6 +14,10 @@ PLATFORMS = {
 }
 
 CASE_RULES = (
+    (("crates/kuku/src/permission/*", "crates/kuku/src/query/run_js*",
+      "crates/kuku-tui/src/*permission*", "crates/kuku-tui/src/notifications.rs",
+      "scripts/acceptance/interactive_permissions.py"),
+     ("permissions",)),
     (("crates/kuku-tui/*", "crates/kuku-client/*", "crates/kuku-cli/*", "apps/kuku/*",
       "scripts/acceptance/interactive_composer.py", "scripts/acceptance/interactive_rendering.py"),
      ("startup-info", "composer-actions", "paste", "statusline", "interrupt", "keyboard-queue")),

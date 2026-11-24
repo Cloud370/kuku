@@ -189,6 +189,24 @@ pub(super) enum Record {
         request_id: String,
         allow: bool,
     },
+    ScriptPermissionWaiting {
+        address: String,
+        request: crate::query::PermissionRequest,
+        args: serde_json::Value,
+    },
+    ScriptPermissionReplied {
+        address: String,
+        command_id: String,
+        fingerprint: String,
+        request_id: String,
+        allow: bool,
+    },
+    ScriptPermissionEnded {
+        address: String,
+        turn: u64,
+        request_id: String,
+        reason: String,
+    },
     CleanupFailed {
         address: String,
         message: String,
@@ -350,6 +368,8 @@ pub(super) struct State {
     pub(super) model_images: HashMap<String, RetainedModelImage>,
     pub(super) model_image_ids: HashMap<String, String>,
     pub(super) jobs: JobIndex,
+    #[serde(default)]
+    pub(super) script_permissions: BTreeMap<String, crate::query::PermissionRequest>,
 }
 
 impl State {
@@ -773,6 +793,22 @@ impl State {
                 agent.permission_reply = Some((request_id, allow));
                 agent.snapshot.status = AgentStatus::Idle;
             }
+            Record::ScriptPermissionWaiting { request, .. } => {
+                self.script_permissions.insert(request.id.clone(), request);
+            }
+            Record::ScriptPermissionReplied {
+                address,
+                command_id,
+                fingerprint,
+                request_id,
+                ..
+            } => {
+                self.remember(command_id, fingerprint, event_id, address);
+                self.script_permissions.remove(&request_id);
+            }
+            Record::ScriptPermissionEnded { request_id, .. } => {
+                self.script_permissions.remove(&request_id);
+            }
             Record::SessionClosed => {}
             Record::JobFinished {
                 job_id,
@@ -896,7 +932,7 @@ impl State {
     }
 
     pub(super) fn mark_interrupted(&mut self) {
-        for agent in self.agents.values_mut() {
+        for (address, agent) in &mut self.agents {
             if agent.snapshot.status == AgentStatus::Running
                 || agent.snapshot.status == AgentStatus::Stopped
                     && agent.snapshot.execution_id.is_some()
@@ -907,7 +943,15 @@ impl State {
                 let snapshot = &mut agent.snapshot;
                 snapshot.status = AgentStatus::Interrupted;
                 snapshot.execution_id = None;
-                snapshot.last_error = Some("execution interrupted before a durable settlement; explicitly advance after reconciling side effects".into());
+                let pending_script = self
+                    .script_permissions
+                    .values()
+                    .any(|request| request.conversation.as_str() == address);
+                snapshot.last_error = Some(if pending_script {
+                    super::script_permissions::RESTARTED_SCRIPT.into()
+                } else {
+                    "execution interrupted before a durable settlement; explicitly advance after reconciling side effects".into()
+                });
             }
         }
     }

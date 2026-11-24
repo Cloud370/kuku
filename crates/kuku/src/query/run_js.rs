@@ -1,13 +1,10 @@
-mod deferred;
-
-pub(crate) use deferred::AwaitingAction;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, OwnedSemaphorePermit, oneshot};
 
 use crate::event::{EventPayload, EventStore};
 use crate::permission::{ActionAuthorization, ToolAuthorization, ToolAuthorizer, authorize_action};
@@ -18,16 +15,17 @@ use crate::tool::run_js::{
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, Session};
 
-use super::helpers::{now_timestamp, permission_candidate};
+use super::helpers::{display_summary, now_timestamp, permission_candidate};
 use super::job_slots::ForegroundJob;
-use super::types::{ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind, WorkspaceAccess};
+use super::types::{
+    ExecSlot, PendingRun, PermissionRequest, QueuedToolCall, SlotEvent, ToolKind, WorkspaceAccess,
+};
 
 pub(super) fn spawn(
     pending: &PendingRun,
     queued: &QueuedToolCall,
     (job, completion): (Box<ForegroundJob>, oneshot::Sender<SlotEvent>),
 ) -> Result<ExecSlot> {
-    let continuation = deferred::load(pending, &queued.tool_call.id)?;
     let session = Session {
         inner: pending
             .query
@@ -41,7 +39,6 @@ pub(super) fn spawn(
     let limits = pending.query.runtime_limits.workspace_script.clone();
     let host_capacity = session.workspace_execution_host();
     let host = Arc::new(WorkspaceHost {
-        deferred: Mutex::new(None),
         detached: job.detached_flag(),
         host_result_limit: limits.host_bytes / 2,
         actions: WorkspaceActions {
@@ -57,7 +54,6 @@ pub(super) fn spawn(
         },
         call_id: queued.tool_call.id.clone(),
         turn: pending.turn,
-        policy_path: pending.policy_path.clone(),
         home: pending.kuku_home.clone(),
         plugins: pending.plugin_registry.clone(),
         source: pending.query.input_source.clone(),
@@ -71,40 +67,15 @@ pub(super) fn spawn(
     let code = queued.tool_call.args["code"].as_str().map(str::to_owned);
     let cancel = Arc::new(Notify::new());
     let stop = cancel.clone();
-    let original = queued.clone();
     tokio::spawn(async move {
-        let outcome = match (continuation, code) {
-            (Some(continuation), _) => {
-                let execution = Arc::new(ScriptExecution::new(limits, host_capacity.operations()));
-                continuation.resume(&host, execution, stop).await
-            }
-            (None, Some(code)) => {
-                run_js::execute(code, host.clone(), limits, host_capacity, stop).await
-            }
-            (None, None) => ToolResultEnvelope::error(
+        let outcome = match code {
+            Some(code) => run_js::execute(code, host, limits, host_capacity, stop).await,
+            None => ToolResultEnvelope::error(
                 "missing script code",
                 "run_js requires a JavaScript function body in code",
             ),
         };
-        let plan = host.deferred.lock().unwrap().take();
-        let event = match plan {
-            Some(plan)
-                if !outcome.faults.cleanup_incomplete
-                    && !outcome.faults.output_persistence_failed =>
-            {
-                match plan.awaiting(&host, original, outcome) {
-                    Ok(action) => SlotEvent::WorkspacePermission(Box::new(action)),
-                    Err(err) => SlotEvent::Done(ToolResultEnvelope::output_failure(
-                        "could not persist workspace approval",
-                        err.to_string(),
-                        "workspace_approval_failed",
-                        false,
-                    )),
-                }
-            }
-            _ => SlotEvent::Done(outcome),
-        };
-        let _ = completion.send(event);
+        let _ = completion.send(SlotEvent::Done(outcome));
     });
     Ok(ExecSlot {
         tool_call_id: queued.tool_call.id.clone(),
@@ -137,14 +108,12 @@ fn selected_methods(pending: &PendingRun) -> Vec<ToolDefinition> {
 }
 
 struct WorkspaceHost {
-    deferred: Mutex<Option<deferred::PreparedAction>>,
     detached: Arc<AtomicBool>,
     actions: WorkspaceActions,
     host_result_limit: usize,
     methods: Vec<ToolDefinition>,
     call_id: String,
     turn: u64,
-    policy_path: PathBuf,
     home: PathBuf,
     plugins: Option<Arc<crate::plugin::PluginRegistry>>,
     source: crate::InputSource,
@@ -167,15 +136,17 @@ impl ScriptHost for WorkspaceHost {
         &self,
         call: ScriptCall,
         execution: Arc<ScriptExecution>,
+        permit: OwnedSemaphorePermit,
     ) -> ScriptFuture<'_, ToolResultEnvelope> {
         Box::pin(async move {
-            self.perform(call, execution).await.unwrap_or_else(|error| {
-                ToolResultEnvelope::error("workspace action failed", error.to_string())
-            })
+            self.perform(call, execution, permit)
+                .await
+                .unwrap_or_else(|error| {
+                    ToolResultEnvelope::error("workspace action failed", error.to_string())
+                })
         })
     }
 }
-
 impl WorkspaceHost {
     fn has_step_input(&self) -> Result<bool> {
         if self.detached.load(Ordering::Acquire) {
@@ -188,6 +159,7 @@ impl WorkspaceHost {
         &self,
         call: ScriptCall,
         execution: Arc<ScriptExecution>,
+        mut permit: OwnedSemaphorePermit,
     ) -> Result<ToolResultEnvelope> {
         if self.has_step_input()? {
             execution.stop_for_new_input();
@@ -275,11 +247,9 @@ impl WorkspaceHost {
             args: args.clone(),
             workspace,
         };
-        let policy = crate::permission::load_project_policy(&self.policy_path)?;
         let decision = authorize_action(
-            &policy,
-            &definition.risk,
-            &candidate,
+            self.actions.session.permission_mode(),
+            definition.read_only,
             self.authority.as_ref(),
             &action,
         )?;
@@ -292,14 +262,14 @@ impl WorkspaceHost {
             ));
         }
         let mutating = !definition.read_only;
+        let target = args
+            .get("path")
+            .or(args.get("id"))
+            .or(args.get("name"))
+            .unwrap_or(&Value::Null);
         match decision {
             ActionAuthorization::Allow => {}
             ActionAuthorization::Deny { source, reason } => {
-                let target = args
-                    .get("path")
-                    .or(args.get("id"))
-                    .or(args.get("name"))
-                    .unwrap_or(&Value::Null);
                 self.record(
                     &id,
                     name,
@@ -312,50 +282,61 @@ impl WorkspaceHost {
                     format!("{name} was not dispatched because {reason}."),
                 ));
             }
-            ActionAuthorization::Defer
-                if matches!(
-                    call.op,
-                    ScriptOperation::CreateOutput
-                        | ScriptOperation::AppendOutput
-                        | ScriptOperation::FinishOutput
-                ) =>
-            {
-                let reason = "Output drafts expire with their script invocation. Use an immediate authorization decision for draft actions.";
-                self.record(
-                    &id,
-                    name,
-                    args.get("id").unwrap_or(&Value::Null),
-                    "blocked",
-                    json!({"reason":reason}),
-                )?;
-                return Ok(ToolResultEnvelope::blocked(
-                    "output draft action needs immediate authorization",
-                    reason,
-                ));
-            }
-            ActionAuthorization::Defer => {
-                let mut waiting = self.deferred.lock().unwrap();
-                if waiting.is_some() {
+            ActionAuthorization::Defer { source } => {
+                drop(permit);
+                let allowed = self
+                    .approve(&action, source, &definition.risk, &candidate, &execution)
+                    .await?;
+                if execution.is_cancelled() {
                     return Ok(ToolResultEnvelope::cancelled(
-                        "another script operation is awaiting approval",
+                        "run_js stopped before dispatch",
                     ));
                 }
-                let action = deferred::PreparedAction::new(
-                    &call,
-                    args,
-                    definition,
-                    candidate,
-                    &self.actions.workspace,
-                    &execution,
-                )?;
-                *waiting = Some(action);
-                execution.stop();
-                return Ok(ToolResultEnvelope::blocked(
-                    "workspace action awaiting approval",
-                    "the script stopped before dispatch",
-                ));
+                if !allowed {
+                    self.record(
+                        &id,
+                        name,
+                        target,
+                        "blocked",
+                        json!({"source":source, "reason":"approval denied"}),
+                    )?;
+                    return Ok(ToolResultEnvelope::blocked(
+                        "workspace action denied",
+                        "the prepared operation was not dispatched",
+                    ));
+                }
+                if self.has_step_input()? {
+                    execution.stop_for_new_input();
+                }
+                let Some(resumed_permit) = execution.operation_permit().await else {
+                    return Ok(ToolResultEnvelope::cancelled(
+                        "run_js stopped before dispatch",
+                    ));
+                };
+                permit = resumed_permit;
+                if let Some(reason) = authorize_action(
+                    self.actions.session.permission_mode(),
+                    definition.read_only,
+                    self.authority.as_ref(),
+                    &action,
+                )?
+                .rejection_after_approval(source)
+                {
+                    self.record(
+                        &id,
+                        name,
+                        target,
+                        "blocked",
+                        json!({"source":"active_policy", "reason":reason}),
+                    )?;
+                    return Ok(ToolResultEnvelope::blocked(
+                        reason,
+                        "the approved operation no longer satisfies the active policy",
+                    ));
+                }
             }
         }
+        let _permit = permit;
         let supplied_full_write = call.op == ScriptOperation::WriteFile
             && call.args["content"]
                 .as_str()
@@ -373,6 +354,45 @@ impl WorkspaceHost {
             result.model_content.push_str(&context.join("\n"));
         }
         Ok(result)
+    }
+
+    async fn approve(
+        &self,
+        action: &ToolAuthorization,
+        source: &str,
+        risk: &str,
+        candidate: &str,
+        execution: &ScriptExecution,
+    ) -> Result<bool> {
+        let request = PermissionRequest {
+            id: format!(
+                "script:{}:{}:{}",
+                self.actions.agent, self.turn, action.tool_call_id
+            ),
+            tool_call_id: self.call_id.clone(),
+            turn: self.turn,
+            conversation: crate::conversation::address::ConversationAddress::parse(
+                &self.actions.agent,
+            )
+            .map_err(Error::InvalidArgument)?,
+            tool: action.tool.name.clone(),
+            risk: risk.into(),
+            summary: display_summary(&action.tool.name, &action.args, Some(256)),
+            candidate: candidate.into(),
+            source: source.into(),
+            workspace: Some(action.workspace.clone()),
+        };
+        let id = request.id.clone();
+        let session = &self.actions.session;
+        let approval = session.request_script_permission(request, action.args.clone())?;
+        tokio::select! {
+            biased;
+            _ = execution.cancelled() => {
+                session.end_script_permission(&id, "the script stopped before the operation was approved")?;
+                Ok(false)
+            }
+            reply = approval => Ok(reply.unwrap_or(false)),
+        }
     }
 
     async fn execute_authorized(
@@ -398,6 +418,13 @@ impl WorkspaceHost {
         }
         if let Some(blocked) = changed_file_target(name, &args, &self.actions.workspace) {
             return Ok(blocked);
+        }
+        if operation == ScriptOperation::RunCommand {
+            if let Some(blocked) =
+                crate::tool::builtin::run_command::changed_command_directory(&args)
+            {
+                return Ok(blocked);
+            }
         }
         if mutating {
             let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&args)?));
@@ -512,32 +539,4 @@ impl WorkspaceHost {
         })))?;
         Ok(())
     }
-}
-
-pub(super) fn declined(pending: &PendingRun, id: &str) -> Result<Option<ToolResultEnvelope>> {
-    let can_read_output =
-        super::run::find_tool_definition(pending, ScriptOperation::ReadOutput.name()).is_some();
-    Ok(deferred::load(pending, id)?.map(|action| action.decline(can_read_output)))
-}
-
-pub(crate) fn cancelled_deferred_script(continuation: Value) -> Result<ToolResultEnvelope> {
-    Ok(serde_json::from_value::<deferred::Continuation>(continuation)?.cancel(false))
-}
-
-pub(super) fn cancelled_permission(
-    waiting: &super::types::PendingPermission,
-) -> Result<ToolResultEnvelope> {
-    if waiting.request.source == "run_js" {
-        if let Some(action) = deferred::load(&waiting.pending, &waiting.request.tool_call_id)? {
-            let can_read_output = super::run::find_tool_definition(
-                &waiting.pending,
-                ScriptOperation::ReadOutput.name(),
-            )
-            .is_some();
-            return Ok(action.cancel(can_read_output));
-        }
-    }
-    Ok(ToolResultEnvelope::cancelled(
-        "permission request cancelled",
-    ))
 }

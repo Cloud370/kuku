@@ -137,6 +137,46 @@ pub(super) async fn snapshot(
     journal_task(move || session_snapshot(&state, &manager, &target, &id, query)).await
 }
 
+pub(super) async fn permissions(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Params(query): Params<WorkspaceQuery>,
+) -> Result<Json<Value>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let manager = manager(&state).await;
+    journal_task(move || {
+        let session = manager.open_session(&target.path);
+        let requests = match &session {
+            Some(session) => session.pending_permissions(),
+            None => Session::read_agents(&target.path)?
+                .into_iter()
+                .filter_map(|agent| agent.permission)
+                .collect(),
+        };
+        let mut approvals = Vec::with_capacity(requests.len());
+        for request in requests {
+            let address = request.conversation.as_str();
+            let job = if let Some(session) = session
+                .as_ref()
+                .filter(|_| request.id.starts_with("script:"))
+            {
+                session.jobs(address)?.into_iter().find(|job| {
+                    job.turn == request.turn && job.tool_call_id == request.tool_call_id
+                })
+            } else {
+                None
+            };
+            approvals.push(json!({
+                "request": request,
+                "job_id": job.map(|job| job.id),
+            }));
+        }
+        Ok(Json(json!({"ok":true,"approvals":approvals})))
+    })
+    .await
+}
+
 fn session_snapshot(
     state: &AppState,
     manager: &RunManager,

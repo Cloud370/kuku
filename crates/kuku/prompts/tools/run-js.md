@@ -1,0 +1,1 @@
+Combine tools or process their results in JavaScript. Call await tools.<name>(args) and return a small JSON value. tools.methods shows the available tools and their inputs. Use JavaScript built-ins. Slow scripts can return a Job. A host operation may wait for approval at its await. Check the returned status before using the result or running a dependent step.

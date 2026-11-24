@@ -28,7 +28,7 @@ kuku keys Sessions, project Memory, and policy by the canonical path of the work
 ```text
 $KUKU_HOME/p/code/my-app/
 ├── memory.md
-├── policy.md
+├── permission-mode.json
 └── sessions/
 ```
 

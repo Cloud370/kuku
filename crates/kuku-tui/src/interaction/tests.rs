@@ -25,6 +25,7 @@ pub(super) fn connected_app() -> App {
         endpoint: "http://127.0.0.1:6789".into(),
         workspace,
     });
+    app.complete_test_permissions();
     app.effects.clear();
     app
 }

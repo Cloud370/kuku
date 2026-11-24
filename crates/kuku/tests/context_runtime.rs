@@ -671,7 +671,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
         "runtime.step_prepared",
         "main",
     );
-    assert_eq!(2, prepared[0]["context_head"]);
+    let head = prepared[0]["context_head"].as_u64().unwrap();
     let segment = prepared[0]["segment"].as_u64().unwrap();
     let initial_turn = prepared[0]["turn"].as_u64().unwrap();
     session.close().await.unwrap();
@@ -705,14 +705,19 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
             .id;
         for (ordinal, origin, turn, message) in [
             (
-                2,
+                head,
                 "response",
                 initial_turn,
                 CanonicalMessage::assistant(vec![MessageBlock::Text("done".into())]),
             ),
-            (3, "input", turn, CanonicalMessage::user_text("retry-input")),
             (
-                4,
+                head + 1,
+                "input",
+                turn,
+                CanonicalMessage::user_text("retry-input"),
+            ),
+            (
+                head + 2,
                 "runtime",
                 turn,
                 CanonicalMessage::user_text("UNCONFIRMED_DYNAMIC_NOTICE"),
@@ -736,12 +741,12 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     assert_eq!(2, preparations.len());
     let retried = &preparations[1];
     assert_eq!(segment, retried["segment"]);
-    assert_eq!(2, retried["prefix_context_head"]);
-    assert_eq!(4, retried["context_head"]);
-    assert_eq!(3, retried["current_input"]);
+    assert_eq!(head, retried["prefix_context_head"]);
+    assert_eq!(head + 2, retried["context_head"]);
+    assert_eq!(head + 1, retried["current_input"]);
     let retried_source_head = retried["source_head"].as_u64().unwrap();
     assert!(retried_source_head > unconfirmed_source_head);
-    for ordinal in [2, 3] {
+    for ordinal in [head, head + 1] {
         let versions = admissions
             .iter()
             .filter(|value| value["segment"] == segment && value["ordinal"] == ordinal)
@@ -753,7 +758,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     }
     let abandoned_sources: Vec<_> = admissions
         .iter()
-        .filter(|value| value["segment"] == segment && value["ordinal"] == 4)
+        .filter(|value| value["segment"] == segment && value["ordinal"] == head + 2)
         .map(|value| value["source_head"].as_u64().unwrap())
         .collect();
     assert_eq!(vec![unconfirmed_source_head], abandoned_sources);
@@ -768,14 +773,14 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     assert_eq!(3, reopened_preparations.len());
     let reopened = &reopened_preparations[2];
     assert_eq!(segment, reopened["segment"]);
-    assert_eq!(4, reopened["prefix_context_head"]);
-    assert_eq!(6, reopened["context_head"]);
+    assert_eq!(head + 2, reopened["prefix_context_head"]);
+    assert_eq!(head + 4, reopened["context_head"]);
     let reopened_admissions = facts(&reopened_events, "runtime.context_admitted", "main");
     let replacement = reopened_admissions
         .iter()
         .find(|value| {
             value["segment"] == segment
-                && value["ordinal"] == 4
+                && value["ordinal"] == head + 2
                 && value["source_head"] == reopened["source_head"]
         })
         .unwrap();

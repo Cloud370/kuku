@@ -376,6 +376,7 @@ mod tests {
             endpoint: "http://127.0.0.1:6789".into(),
             workspace,
         });
+        app.complete_test_permissions();
         app.select(Address::main("session-1".into()), true, String::new());
         load(&mut app, 6, "idle", None, None);
         app

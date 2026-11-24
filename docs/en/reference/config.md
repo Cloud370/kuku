@@ -222,7 +222,7 @@ Starter template: `crates/kuku/assets/default-config.toml`.
 
 The TUI reads `tui.toml` from the local client data directory (`--data-dir`, then `KUKU_HOME`, then `~/.kuku`) for both local and remote connections. Execution settings stay in `config.toml`.
 
-If `tui.toml` or `statusline.fields` is absent, the built-in order is `model,agent,workspace,context,cache,tps,tokens_in,tokens_out,cost`. An explicit `model` can show its route when space permits. The optional `connection` field includes healthy connections as local or remote. `execution` is optional.
+If `tui.toml` or `statusline.fields` is absent, the built-in order is `model,agent,workspace,context,cache,tps,tokens_in,tokens_out,cost`. An explicit `model` can show its route when space permits. The optional `connection` field includes healthy connections as local or remote. `execution` and `permission_mode` are optional. `permission_mode` reports the workspace permission mode.
 
 Run `/statusline` in the TUI to toggle (`Space`), reorder (`←`/`→`), preview defaults (`R`), and save (`Enter`) directly to `tui.toml` (saving defaults removes `statusline.fields`).
 
@@ -232,7 +232,7 @@ Example with all supported fields:
 [statusline]
 fields = [
   "model", "connection", "execution", "input", "agent", "workspace",
-  "context", "tokens_in", "tokens_out", "cache", "cost", "tps",
+  "context", "tokens_in", "tokens_out", "cache", "cost", "tps", "permission_mode",
 ]
 ```
 

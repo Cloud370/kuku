@@ -420,6 +420,7 @@ fn thinking_cycle_keeps_the_draft_route_and_other_cells_stable_until_it_resolves
             endpoint: "http://127.0.0.1:6789".into(),
             workspace,
         });
+        app.complete_test_permissions();
         let version = app
             .effects
             .iter()

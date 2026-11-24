@@ -11,7 +11,6 @@ mod unpersisted_resume;
 mod wait_support;
 
 #[cfg(unix)]
-use std::sync::Arc;
 #[cfg(unix)]
 use std::time::Duration;
 
@@ -21,7 +20,6 @@ use serde_json::{Value, json};
 
 use kuku::event::EventPayload;
 #[cfg(unix)]
-use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{Activation, AgentConfig, AgentStatus, Input, OutputRead, Session, SessionOptions};
 #[cfg(unix)]
 use wait_support::wait_for_agent_during;
@@ -638,20 +636,6 @@ async fn retry_interrupted_input(
 }
 
 #[cfg(unix)]
-#[derive(Debug)]
-struct PolicyFault(std::path::PathBuf);
-
-#[cfg(unix)]
-impl ToolAuthorizer for PolicyFault {
-    fn authorize(&self, action: &ToolAuthorization) -> kuku::Result<AuthorizationDecision> {
-        if action.tool.name == "run_command" {
-            std::fs::write(&self.0, "- invalid rule outside section\n")?;
-        }
-        Ok(AuthorizationDecision::Allow)
-    }
-}
-
-#[cfg(unix)]
 #[tokio::test]
 async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
     for (operation, rename) in [
@@ -729,36 +713,6 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
 }
 
 #[cfg(unix)]
-#[tokio::test]
-async fn execution_error_drains_dispatched_command_and_preserves_reported_usage() {
-    let server = MockServer::start_async().await;
-    let workspace = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let _model = fixture(&server, |_| true, json!({"tool_calls":[tool("command", "run_command", common::shell_args("sleep 0.3; echo escaped > after-close.txt")),tool("agents", "list_agents", json!({}))]}), "tool_calls").await;
-    let mut opts = options(&server, workspace.path(), data.path());
-    let policy = kuku::session::project_policy_path(data.path(), workspace.path()).unwrap();
-    std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
-    opts.authorizer = Arc::new(PolicyFault(policy));
-    let session = Session::open(opts).await.unwrap();
-    session
-        .create_agent("create", "main", AgentConfig::default())
-        .unwrap();
-    session
-        .send(Input::new("input", "main", "run command and list agents"))
-        .unwrap();
-    let failed = settled(&session, "main").await;
-    assert_eq!(AgentStatus::Interrupted, failed.status);
-    assert_eq!(1, failed.usage.model_requests);
-    assert_eq!(Some(100), failed.usage.input_tokens);
-    session.close().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(
-        !workspace.path().join("after-close.txt").exists(),
-        "owned command escaped after a runtime error"
-    );
-    assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload, EventPayload::ToolResult { tool_call_id, status, .. } if tool_call_id == "command" && status == "cancelled")));
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn dropping_a_polled_close_keeps_cleanup_owned_and_allows_reconnecting() {

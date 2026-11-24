@@ -1,51 +1,39 @@
 use super::{
-    PendingPermission, PermissionChoice, PermissionRequest, RunState, UiEvent,
-    assert_blocked_tool_result, make_queued_run, make_skill_queued_run, write_blocking_pre_hook,
+    RunState, UiEvent, assert_blocked_tool_result, make_queued_run, make_skill_queued_run,
+    write_blocking_pre_hook,
 };
-use crate::tool::builtin::run_command::command_permission_candidate;
-
-fn queued_command_candidate() -> String {
-    command_permission_candidate(&serde_json::json!({"program":"printf","args":["hi"],"cwd":"."}))
-}
+use crate::permission::PermissionMode;
 
 #[tokio::test]
 async fn queued_deny_persists_blocked_tool_result() {
     let dir = tempfile::tempdir().unwrap();
     let events_path = dir.path().join("events.jsonl");
-    std::fs::write(
-        dir.path().join("policy.md"),
-        format!(
-            "# policy\n\n## allow\n\n## deny\n- run_command({})\n",
-            queued_command_candidate()
-        ),
-    )
-    .unwrap();
     let mut run = make_queued_run(events_path.clone(), dir.path());
+    if let RunState::Pending(pending) = &mut run.state {
+        pending.query.permission_mode = PermissionMode::ReadOnly;
+    }
 
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::ToolStart { .. })
+    ));
     let event = run.next().await.unwrap();
 
     assert!(
         matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result == Some(crate::tool::ToolResultEnvelope::blocked_marker()))
     );
-    assert_blocked_tool_result(&events_path, "permission denied");
+    assert_blocked_tool_result(&events_path, "read-only mode permits reads only");
 }
 
 #[tokio::test]
 async fn queued_pre_hook_block_persists_blocked_tool_result() {
     let dir = tempfile::tempdir().unwrap();
     let events_path = dir.path().join("events.jsonl");
-    std::fs::write(
-        dir.path().join("policy.md"),
-        format!(
-            "# policy\n\n## allow\n- run_command({})\n\n## deny\n",
-            queued_command_candidate()
-        ),
-    )
-    .unwrap();
     let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
     write_blocking_pre_hook(&pkg_dir, "blocked by hook");
     let mut run = make_queued_run(events_path.clone(), dir.path());
     if let RunState::Pending(pending) = &mut run.state {
+        pending.query.permission_mode = PermissionMode::Ask;
         pending.plugin_registry = Some(std::sync::Arc::new(
             crate::plugin::PluginRegistry::builder()
                 .load_packages(dir.path(), dir.path())
@@ -55,6 +43,10 @@ async fn queued_pre_hook_block_persists_blocked_tool_result() {
         ));
     }
 
+    assert!(matches!(
+        run.next().await.unwrap(),
+        Some(UiEvent::ToolStart { .. })
+    ));
     let event = run.next().await.unwrap();
 
     assert!(
@@ -80,57 +72,14 @@ async fn inline_skill_tools_do_not_bypass_resolved_registry_membership() {
         std::fs::write(&events_path, "").unwrap();
         let mut run = make_skill_queued_run(events_path, dir.path(), registry.clone(), tool_name);
 
+        assert!(matches!(
+            run.next().await.unwrap(),
+            Some(UiEvent::ToolStart { .. })
+        ));
         let event = run.next().await.unwrap();
 
         assert!(
-            matches!(event, Some(UiEvent::Error { code, message }) if code == "unknown_tool" && message == format!("unknown tool: {tool_name}"))
+            matches!(event, Some(UiEvent::ToolEnd { status, summary, .. }) if status == "error" && summary == "unknown tool")
         );
     }
-}
-
-#[tokio::test]
-async fn decide_pre_hook_block_persists_blocked_tool_result() {
-    let dir = tempfile::tempdir().unwrap();
-    let events_path = dir.path().join("events.jsonl");
-    std::fs::write(dir.path().join("policy.md"), "# policy\n").unwrap();
-    let pkg_dir = dir.path().join(".kuku").join("packages").join("test-hook");
-    write_blocking_pre_hook(&pkg_dir, "blocked after allow");
-    let mut run = make_queued_run(events_path.clone(), dir.path());
-    let waiting = match std::mem::replace(&mut run.state, RunState::Done(None)) {
-        RunState::Pending(mut pending) => {
-            pending.plugin_registry = Some(std::sync::Arc::new(
-                crate::plugin::PluginRegistry::builder()
-                    .load_packages(dir.path(), dir.path())
-                    .unwrap()
-                    .build()
-                    .unwrap(),
-            ));
-            PendingPermission {
-                request: PermissionRequest {
-                    id: "tool_queued".to_string(),
-                    conversation: crate::conversation::address::ConversationAddress::MAIN,
-                    turn: 1,
-                    tool_call_id: "tool_queued".to_string(),
-                    tool: "run_command".to_string(),
-                    risk: "command".to_string(),
-                    summary: "print hi".to_string(),
-                    candidate: queued_command_candidate(),
-                    source: "default_ask".to_string(),
-                },
-                pending: *pending,
-            }
-        }
-        other => panic!("expected pending run, got {other:?}"),
-    };
-    run.state = RunState::WaitingForPermission(Box::new(waiting));
-
-    let event = run
-        .decide("tool_queued", PermissionChoice::Once)
-        .await
-        .unwrap();
-
-    assert!(
-        matches!(event, Some(UiEvent::ToolEnd { id, status, result, .. }) if id == "tool_queued" && status == "blocked" && result == Some(crate::tool::ToolResultEnvelope::blocked_marker()))
-    );
-    assert_blocked_tool_result(&events_path, "blocked after allow");
 }

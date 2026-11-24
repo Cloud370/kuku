@@ -524,6 +524,7 @@ fn permission_requested_roundtrips_as_fact_event() {
             summary: "run tests".to_string(),
             candidate: "cargo test".to_string(),
             source: "default_ask".to_string(),
+            workspace: None,
         },
     };
 

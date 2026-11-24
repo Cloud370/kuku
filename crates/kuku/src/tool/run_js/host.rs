@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
@@ -42,6 +42,7 @@ pub(crate) trait ScriptHost: Send + Sync {
         &self,
         call: ScriptCall,
         execution: Arc<ScriptExecution>,
+        permit: OwnedSemaphorePermit,
     ) -> ScriptFuture<'_, ToolResultEnvelope>;
 }
 
@@ -130,18 +131,21 @@ impl ScriptExecution {
         op: ScriptOperation,
         args: Value,
     ) -> ToolResultEnvelope {
-        let permit = tokio::select! {
-            biased;
-            _ = self.cancelled() => return not_dispatched(),
-            permit = self.host_operations.acquire() => permit,
-        };
-        let Ok(_permit) = permit else {
+        let Some(permit) = self.operation_permit().await else {
             return not_dispatched();
         };
         if self.is_cancelled() {
             return not_dispatched();
         }
-        self.dispatch(host, ordinal, op, args).await
+        self.dispatch(host, ordinal, op, args, permit).await
+    }
+
+    pub(crate) async fn operation_permit(&self) -> Option<OwnedSemaphorePermit> {
+        tokio::select! {
+            biased;
+            _ = self.cancelled() => None,
+            permit = self.host_operations.clone().acquire_owned() => permit.ok(),
+        }
     }
 
     pub(crate) fn remember_observation(&self, observation: ExecutorObservation) {
@@ -207,6 +211,7 @@ impl ScriptExecution {
         ordinal: usize,
         op: ScriptOperation,
         args: Value,
+        permit: OwnedSemaphorePermit,
     ) -> ToolResultEnvelope {
         use WorkspaceScriptActionStatus::{Blocked, Cancelled, Error, Ok, Unknown};
 
@@ -233,7 +238,7 @@ impl ScriptExecution {
             result: Value::Null,
         };
         self.facts.lock().unwrap().insert(ordinal, fact.clone());
-        let result = host.dispatch(call, self.clone()).await;
+        let result = host.dispatch(call, self.clone(), permit).await;
         fact.status = match result.status.as_str() {
             "ok" => Ok,
             "error" => Error,

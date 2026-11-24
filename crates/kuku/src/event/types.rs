@@ -104,6 +104,7 @@ pub enum EventPayload {
         summary: String,
         candidate: String,
         source: String,
+        workspace: Option<std::path::PathBuf>,
     },
     PermissionDeny {
         turn: u64,
@@ -331,6 +332,7 @@ impl EventPayload {
                 summary: string_field(object, "summary")?,
                 candidate: string_field(object, "candidate")?,
                 source: string_field(object, "source")?,
+                workspace: optional_string_field(object, "workspace").map(std::path::PathBuf::from),
             }),
             "permission.deny" => Some(Self::PermissionDeny {
                 turn: u64_field(object, "turn")?,
@@ -688,6 +690,7 @@ impl EventPayload {
                 summary,
                 candidate,
                 source,
+                workspace,
             } => Ok(serde_json::json!({
                 "id": id,
                 "ts": ts,
@@ -699,6 +702,7 @@ impl EventPayload {
                 "summary": summary,
                 "candidate": candidate,
                 "source": source,
+                "workspace": workspace,
             })),
             Self::PermissionDeny {
                 turn,

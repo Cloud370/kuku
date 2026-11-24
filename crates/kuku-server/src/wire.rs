@@ -637,7 +637,7 @@ fn interaction_entry(record: &Value) -> Option<Value> {
             "text":request["text"],
             "request":request,
         })),
-        "permission_waiting" => Some(json!({
+        "permission_waiting" | "script_permission_waiting" => Some(json!({
             "type":"permission",
             "turn":request["turn"],
             "text":request["summary"],
@@ -648,10 +648,16 @@ fn interaction_entry(record: &Value) -> Option<Value> {
             "request_id":record["request_id"],
             "text":record["input"]["text"],
         })),
-        "permission_replied" => Some(json!({
+        "permission_replied" | "script_permission_replied" => Some(json!({
             "type":"permission_reply",
             "request_id":record["request_id"],
             "allow":record["allow"],
+        })),
+        "script_permission_ended" => Some(json!({
+            "type":"status",
+            "status":"interrupted",
+            "turn":record["turn"],
+            "text":record["reason"],
         })),
         "agent_stopped" if record["interruption"].is_object() => {
             let stopped = &record["interruption"];

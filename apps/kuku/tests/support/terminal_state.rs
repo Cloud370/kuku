@@ -26,6 +26,7 @@ impl TerminalInput {
 pub(crate) struct TerminalState {
     input: TerminalInput,
     previous_frame: Option<vt100::Screen>,
+    pub(crate) audible_bells: usize,
 }
 
 impl TerminalState {
@@ -33,6 +34,7 @@ impl TerminalState {
         Self {
             input,
             previous_frame: None,
+            audible_bells: 0,
         }
     }
 
@@ -42,6 +44,10 @@ impl TerminalState {
 }
 
 impl vt100::Callbacks for TerminalState {
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        self.audible_bells += 1;
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,

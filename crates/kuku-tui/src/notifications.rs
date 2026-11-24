@@ -2,14 +2,14 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use kuku_client::Observation;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use serde::Deserialize;
 
 use crate::app::{App, Modal};
-use crate::theme::{emphasis, ACCENT, MUTED};
+use crate::theme::{ACCENT, MUTED, emphasis};
 
 const BELL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -54,7 +54,9 @@ impl Sound {
         }
         match (kind.as_str(), operation.as_deref()) {
             ("runtime.operation", Some("question_requested")) => Some(Self::Question),
-            ("runtime.operation", Some("permission_waiting")) => Some(Self::Permission),
+            ("runtime.operation", Some("permission_waiting" | "script_permission_waiting")) => {
+                Some(Self::Permission)
+            }
             ("turn.interrupted", _) => Some(Self::Interrupted),
             ("turn.completed", _) => Some(Self::Completed),
             _ => None,

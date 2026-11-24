@@ -27,6 +27,7 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
     let session_id = "s_resume_permission_request";
     let mut run = query("run tests")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -41,6 +42,7 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -141,6 +143,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
 
     let error = query("resume should fail before provider")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -192,6 +195,7 @@ async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
     let session_id = "s_resume_no_new_turn";
     let mut run = query("run tests")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -206,6 +210,7 @@ async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -266,6 +271,7 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
     let session_id = "s_resume_no_resolve";
     let mut run = query("run tests")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -281,6 +287,7 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -316,7 +323,7 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
     server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
-            .body_contains("permission gate denied this tool call");
+            .body_contains("host denied tool action");
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_resume_final",
@@ -347,6 +354,7 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
     let session_id = "s_resume_decide_continues";
     let mut run = query("run tests")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -361,6 +369,7 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -450,6 +459,7 @@ async fn pending_permission_resume_allow_executes_original_tool() {
     let session_id = "s_resume_allow_executes";
     let mut run = query("run resumed command")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -464,6 +474,7 @@ async fn pending_permission_resume_allow_executes_original_tool() {
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -521,7 +532,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
             .body_contains(r#""tool_result""#)
-            .body_contains("permission gate denied this tool call");
+            .body_contains("host denied tool action");
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_resume_deny_final",
@@ -554,6 +565,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
     let session_id = "s_resume_deny_records";
     let mut run = query("deny resumed command")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -568,6 +580,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -602,7 +615,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ToolResult { ref tool_call_id, ref status, ref model_content, .. }
-            if tool_call_id == "toolu_resume_deny" && status == "blocked" && model_content.contains("permission gate denied")
+            if tool_call_id == "toolu_resume_deny" && status == "blocked" && model_content.contains("host denied tool action")
     )));
 }
 
@@ -636,6 +649,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     let session_id = "s_resume_sibling_permission";
     let mut run = query("run tests then check")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -659,6 +673,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
             summary: "persisted second summary".to_string(),
             candidate: "persisted cargo check".to_string(),
             source: "persisted_source".to_string(),
+            workspace: None,
         })
         .unwrap();
     let before_events = EventStore::replay(_env.events_path(session_id)).unwrap();

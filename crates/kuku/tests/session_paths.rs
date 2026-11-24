@@ -1,5 +1,5 @@
 use kuku::Error;
-use kuku::session::{project_home, project_policy_path, session_events_path};
+use kuku::session::{project_home, session_events_path};
 
 #[test]
 fn maps_unix_workspace_path_under_kuku_home() {
@@ -13,7 +13,7 @@ fn maps_unix_workspace_path_under_kuku_home() {
 
 #[cfg(unix)]
 #[test]
-fn existing_workspace_alias_resolves_to_the_same_session_and_policy() {
+fn existing_workspace_alias_resolves_to_the_same_project_and_session() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("project");
     let alias = root.path().join("alias");
@@ -25,8 +25,8 @@ fn existing_workspace_alias_resolves_to_the_same_session_and_policy() {
         session_events_path(&home, &alias, "s_001").unwrap()
     );
     assert_eq!(
-        project_policy_path(&home, &workspace).unwrap(),
-        project_policy_path(&home, &alias).unwrap()
+        project_home(&home, &workspace).unwrap(),
+        project_home(&home, &alias).unwrap()
     );
 }
 
@@ -137,19 +137,6 @@ fn builds_session_events_path() {
         kuku_home
             .join("p")
             .join("code/kuku/example/sessions/s_001/events.jsonl")
-    );
-}
-
-#[test]
-fn builds_project_policy_path() {
-    let kuku_home = std::env::temp_dir().join("kuku-home");
-    let workspace = std::path::PathBuf::from("/code/kuku/example");
-
-    let path = project_policy_path(&kuku_home, &workspace).unwrap();
-
-    assert_eq!(
-        path,
-        kuku_home.join("p").join("code/kuku/example/policy.md")
     );
 }
 

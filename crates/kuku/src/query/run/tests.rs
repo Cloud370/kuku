@@ -4,8 +4,8 @@ mod lifecycle;
 mod streaming;
 
 use super::{
-    PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run, RunState,
-    StreamingChunkState, UiEvent,
+    PendingPermission, PendingRun, PendingStep, QueuedToolCall, Run, RunState, StreamingChunkState,
+    UiEvent,
 };
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::{ProviderKind, ProviderToolCall, ResolvedProvider, SecretString};
@@ -59,7 +59,6 @@ pub(super) fn make_test_pending(
         events_path,
         kuku_home: dir.to_path_buf(),
         workspace: dir.to_path_buf(),
-        policy_path: dir.join("policy.md"),
         turn: 1,
         request_num: 1,
         cumulative: CumulativeUsage::default(),
@@ -229,6 +228,7 @@ fn make_waiting_run(
                     &serde_json::json!({"program":"printf","args":["hi"],"cwd":"."}),
                 ),
                 source: "default_ask".to_string(),
+                workspace: None,
             },
         })),
         slots: std::collections::HashMap::new(),
@@ -253,14 +253,7 @@ fn test_resolved_runtime() -> ResolvedRuntime {
             thinking: crate::config::ResolvedThinking::default(),
             ..Default::default()
         },
-        registry: vec![crate::tool::ToolDefinition {
-            name: "run_command".to_string(),
-            description: "test command".to_string(),
-            input_schema: serde_json::json!({"type": "object"}),
-            read_only: false,
-            max_result_chars: 8000,
-            risk: "command".to_string(),
-        }],
+        registry: vec![crate::tool::registry::run_command_definition(&[], false)],
     }
 }
 
@@ -519,13 +512,11 @@ fn assert_blocked_tool_result(events_path: &std::path::Path, summary: &str) {
             tool_call_id,
             status,
             summary: stored_summary,
-            model_content,
             structured,
             ..
         } if tool_call_id == "tool_queued"
             && status == "blocked"
             && stored_summary == summary
-            && model_content.is_empty()
             && structured.as_ref() == Some(&blocked)
     )));
 }

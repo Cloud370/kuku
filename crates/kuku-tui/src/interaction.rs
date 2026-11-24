@@ -103,7 +103,12 @@ impl App {
             return;
         }
         match &mut self.modal {
-            Some(Modal::Help | Modal::ExitConfirmation | Modal::SendRouteConfirmation(_)) => {}
+            Some(
+                Modal::Help
+                | Modal::Approvals(_)
+                | Modal::ExitConfirmation
+                | Modal::SendRouteConfirmation(_),
+            ) => {}
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {
                     self.read_output(offset);
@@ -125,6 +130,7 @@ impl App {
             }
             Some(Modal::StatusLineEditor(editor)) => editor.move_selection(amount),
             Some(Modal::Notifications(editor)) => editor.move_selection(amount),
+            Some(Modal::Permissions(editor)) => editor.move_selection(amount),
             None => self.scroll(amount),
         }
     }

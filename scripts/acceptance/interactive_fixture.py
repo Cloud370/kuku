@@ -231,7 +231,7 @@ class ProviderCall:
         )
         return self
 
-    def tool_result(self, call_id):
+    def tool_result(self, call_id, *, error=False):
         results = [
             block for message in self.request["messages"]
             if isinstance(message.get("content"), list) for block in message["content"]
@@ -239,7 +239,10 @@ class ProviderCall:
         ]
         assert len(results) == 1, f"Expected one tool result for {call_id}, got {len(results)}"
         result = results[0]
-        assert not result.get("is_error", False), f"Tool {call_id} failed: {result}"
+        if error:
+            assert result.get("is_error", False), f"Tool {call_id} should have failed: {result}"
+        else:
+            assert not result.get("is_error", False), f"Tool {call_id} failed: {result}"
         return result
 
     def expect_tool_output(self, call_id, output):
@@ -582,9 +585,10 @@ class Provider:
 
 
 class Terminal:
-    def __init__(self, bridge, binary, workspace, env, args=()):
+    def __init__(self, bridge, binary, workspace, env, args=(), *, confirm_permissions=True):
         self.rows = TERMINAL_ROWS
         self.cols = TERMINAL_COLS
+        self.confirm_permissions = confirm_permissions
         self.process = subprocess.Popen(
             [bridge, binary, *args], cwd=workspace, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, text=True, encoding="utf-8",
@@ -664,6 +668,10 @@ class Terminal:
         def contains_text():
             viewport.update(self.request("screen"))
             screen = viewport["screen"]
+            if (self.confirm_permissions and "Workspace permissions" in screen
+                    and "› Full access" in screen and "· current" not in screen):
+                self.press("\r")
+                return None
             if rows is not None and screen.count("\n") + 1 != rows:
                 return None
             return viewport if (all(item in screen for item in required)
@@ -758,12 +766,13 @@ class InstalledClient:
         workspace.mkdir()
         return workspace
 
-    def terminal(self, workspace, *args, color=False):
+    def terminal(self, workspace, *args, color=False, confirm_permissions=True):
         env = self.env
         if color:
             env = {key: value for key, value in self.env.items() if key not in ("NO_COLOR", "CLICOLOR")}
             env["COLORTERM"] = "truecolor"
-        return Terminal(self.bridge, self.binary, workspace, env, args)
+        return Terminal(self.bridge, self.binary, workspace, env, args,
+                        confirm_permissions=confirm_permissions)
 
     @contextlib.contextmanager
     def command(self, workspace, *args, token=None):

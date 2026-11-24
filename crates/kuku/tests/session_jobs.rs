@@ -944,7 +944,7 @@ impl ToolAuthorizer for DeferredWrite {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn detached_script_stops_at_a_deferred_action_and_keeps_completed_writes() {
+async fn detached_script_waits_for_approval_and_continues_its_remaining_writes() {
     let server = MockServer::start_async().await;
     let route = "/job-deferred-write";
     let mut fixture = Fixture::new(&server, route, 20_000);
@@ -955,7 +955,7 @@ async fn detached_script_stops_at_a_deferred_action_and_keeps_completed_writes()
 await tools.write_file({{path:"prior.txt",content:"completed"}});
 await tools.run_command({command});
 await tools.write_file({{path:"guarded.txt",content:"needs approval"}});
-await tools.write_file({{path:"later.txt",content:"do not dispatch"}});
+await tools.write_file({{path:"later.txt",content:"resumed"}});
 "#
     );
     let (start, _finish) = model_fixture(
@@ -971,27 +971,44 @@ await tools.write_file({{path:"later.txt",content:"do not dispatch"}});
     let (_, receipt) = first_result(&mut observer).await;
     let id = job_id(&receipt);
     fixture.release();
-    let job = session.wait_job(AGENT, id).await.unwrap();
-    assert_eq!(JobStatus::Failed, job.status);
-    let result = job.result.unwrap();
-    assert_eq!("blocked", result.status);
-    let facts = WorkspaceScriptFacts::from_structured(&result.structured.unwrap()).unwrap();
-    assert_eq!(WorkspaceScriptOperation::WriteFile, facts.actions[0].tool);
+    let request = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(request) = session.pending_permissions().pop() {
+                break request;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background script reached the guarded action");
+    assert_eq!("write_file", request.tool);
+    assert_eq!("run_js", session.job(AGENT, id).unwrap().tool);
     assert_eq!(
         "completed",
         fs::read_to_string(fixture.workspace.join("prior.txt")).unwrap()
     );
     assert!(!fixture.workspace.join("guarded.txt").exists());
     assert!(!fixture.workspace.join("later.txt").exists());
-    assert!(session.agent(AGENT).unwrap().permission.is_none());
-    let delivery = assert_one_completion(&session, id);
-    assert!(delivery.contains("\"path\":\"prior.txt\""), "{delivery}");
-    assert!(delivery.contains("\"exit_code\":7"), "{delivery}");
-    assert!(
-        delivery.contains("read_output({id, offset, limit})"),
-        "{delivery}"
+    session
+        .reply_permission("allow", AGENT, &request.id, true)
+        .unwrap();
+    let job = session.wait_job(AGENT, id).await.unwrap();
+    assert_eq!(JobStatus::Completed, job.status);
+    let result = job.result.unwrap();
+    assert_eq!("ok", result.status);
+    let facts = WorkspaceScriptFacts::from_structured(&result.structured.unwrap()).unwrap();
+    assert_eq!(WorkspaceScriptOperation::WriteFile, facts.actions[0].tool);
+    assert_eq!(
+        "needs approval",
+        fs::read_to_string(fixture.workspace.join("guarded.txt")).unwrap()
     );
-    assert!(!delivery.contains("\"path\":\"guarded.txt\""), "{delivery}");
+    assert_eq!(
+        "resumed",
+        fs::read_to_string(fixture.workspace.join("later.txt")).unwrap()
+    );
+    assert!(session.pending_permissions().is_empty());
+    let delivery = assert_one_completion(&session, id);
+    assert!(delivery.contains("Completed"), "{delivery}");
     session.close().await.unwrap();
     start.assert_hits_async(1).await;
     wire_requests(route);

@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn find_files_filters_pattern_globs_and_blocks_outside_workspace() {
+    fn find_files_filters_globs_and_distinguishes_absolute_paths_from_relative_escapes() {
         let dir = workspace();
         let md = find_files(
             &serde_json::json!({"path": ".", "pattern": "*.md"}),
@@ -351,12 +351,12 @@ mod tests {
         );
         assert_eq!(recursive_docs.model_content, "docs/tools.md");
 
-        let outside_path = if cfg!(target_os = "windows") {
-            "C:\\Windows"
-        } else {
-            "/etc"
-        };
-        let blocked = find_files(&serde_json::json!({"path": outside_path}), dir.path());
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("notes.txt"), "outside").unwrap();
+        let absolute = find_files(&serde_json::json!({"path": outside.path()}), dir.path());
+        assert_eq!(absolute.status, "ok");
+        assert!(absolute.model_content.contains("notes.txt"));
+        let blocked = find_files(&serde_json::json!({"path": ".."}), dir.path());
         assert_eq!(blocked.status, "blocked");
     }
 

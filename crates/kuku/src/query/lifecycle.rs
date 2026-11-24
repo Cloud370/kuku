@@ -97,6 +97,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                 summary,
                 candidate,
                 source,
+                workspace,
                 ..
             } => {
                 if let Some(lifecycle) = matching_tool_mut(&mut tools, tool_call_id, Some(*turn)) {
@@ -107,11 +108,6 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                             ConversationAddress::parse(value).unwrap_or(ConversationAddress::MAIN)
                         })
                         .unwrap_or(ConversationAddress::MAIN);
-                    if source == "run_js" {
-                        lifecycle.was_dispatched = false;
-                        lifecycle.permission_allowed = false;
-                        lifecycle.permission_denied = false;
-                    }
                     lifecycle.permission_request = Some(PermissionRequest {
                         id: tool_call_id.clone(),
                         conversation,
@@ -122,6 +118,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                         summary: summary.clone(),
                         candidate: candidate.clone(),
                         source: source.clone(),
+                        workspace: workspace.clone(),
                     });
                     lifecycle.turn = *turn;
                 }
@@ -344,6 +341,7 @@ mod tests {
                 summary: format!("request {tool_call_id}"),
                 candidate: format!("candidate {tool_call_id}"),
                 source: "tool_policy".to_string(),
+                workspace: None,
             },
         )
     }

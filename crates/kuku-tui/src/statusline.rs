@@ -38,7 +38,12 @@ const DEFAULT_FIELDS: [Field; 9] = [
     Field::OutputTokens,
     Field::Cost,
 ];
-const OPTIONAL_FIELDS: [Field; 3] = [Field::Connection, Field::Execution, Field::Input];
+const OPTIONAL_FIELDS: [Field; 4] = [
+    Field::Connection,
+    Field::Execution,
+    Field::Input,
+    Field::PermissionMode,
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct StatusLine {
@@ -222,6 +227,7 @@ fn custom_row_break(segments: &[(Field, Segment)], width: usize) -> Option<usize
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
     Connection,
+    PermissionMode,
     Execution,
     Input,
     Agent,
@@ -243,6 +249,7 @@ impl Field {
     fn name(self) -> &'static str {
         match self {
             Self::Connection => "connection",
+            Self::PermissionMode => "permission_mode",
             Self::Execution => "execution",
             Self::Input => "input",
             Self::Agent => "agent",
@@ -279,6 +286,12 @@ impl Field {
     ) -> Option<Segment> {
         let segment = match self {
             Self::Connection => return connection(app, custom),
+            Self::PermissionMode => Segment::details(
+                app.permission_mode
+                    .map_or("Permissions unset", crate::app::permissions::mode_name)
+                    .into(),
+                Priority::Agent,
+            ),
             Self::Execution => return execution(app, activity),
             Self::Input => return input(app, true),
             Self::Agent => Segment::details(

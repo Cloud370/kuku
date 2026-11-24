@@ -118,6 +118,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
             summary: "write foo.txt".to_string(),
             candidate: "foo.txt".to_string(),
             source: "tool_policy".to_string(),
+            workspace: None,
         })
         .unwrap();
 
@@ -240,6 +241,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
             summary: "write foo.txt".to_string(),
             candidate: "foo.txt".to_string(),
             source: "tool_policy".to_string(),
+            workspace: None,
         })
         .unwrap();
 
@@ -347,6 +349,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
             summary: "write foo.txt".to_string(),
             candidate: "foo.txt".to_string(),
             source: "tool_policy".to_string(),
+            workspace: None,
         })
         .unwrap();
 

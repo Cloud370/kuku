@@ -25,6 +25,7 @@ async fn run_emits_permission_requested_for_gated_tool() {
     });
 
     let mut run = query("run tests")
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -78,10 +79,10 @@ async fn run_emits_permission_requested_for_gated_tool() {
             assert_eq!(risk, "command");
             assert_eq!(summary, "run tests");
             assert_eq!(
-                serde_json::json!({"cwd":".","invocation":{"mode":"program","program":"cargo","args":["test"]}}),
+                serde_json::json!({"cwd":env.workspace.as_path().canonicalize().unwrap(),"invocation":{"mode":"program","program":"cargo","args":["test"]}}),
                 serde_json::from_str::<serde_json::Value>(candidate).unwrap()
             );
-            assert_eq!(source, "default_ask");
+            assert_eq!(source, "permission_mode");
         }
         other => panic!("expected permission.requested, got {other:?}"),
     }
@@ -93,150 +94,6 @@ async fn run_emits_permission_requested_for_gated_tool() {
         let payload = serde_json::to_value(&event.payload).unwrap();
         payload.get("log").is_some() || payload.get("debug").is_some()
     }));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
-    let Some(env) = TestEnv::enter(
-        module_path!(),
-        stringify!(session_scope_allow_is_reused_on_later_turn_in_same_session),
-    ) else {
-        return;
-    };
-    let server = MockServer::start();
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200)
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "First command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 8, "output_tokens": 5}
-            })));
-    });
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_global_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("run tests");
-        then.status(200)
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_tool",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            })));
-    });
-
-    let session_id = "s_session_grant";
-    let mut run = query("run tests")
-        .session(session_id)
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .start()
-        .await
-        .unwrap();
-
-    let mut event = run.next().await.unwrap().expect("event");
-    while !matches!(event, UiEvent::PermissionRequested { .. }) {
-        event = run.next().await.unwrap().expect("event");
-    }
-    let request = match event {
-        UiEvent::PermissionRequested { request } => request,
-        _ => unreachable!(),
-    };
-    run.decide(&request.id, kuku::query::PermissionChoice::Session)
-        .await
-        .unwrap();
-    let mut event = run.next().await.unwrap().expect("event");
-    while !matches!(event, UiEvent::Done { .. }) {
-        event = run.next().await.unwrap().expect("event");
-    }
-    match event {
-        UiEvent::Done { output, .. } => assert_eq!(output.text, "First command completed."),
-        _ => unreachable!(),
-    }
-    drop(run);
-
-    let server = MockServer::start();
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains(r#""tool_result""#);
-        then.status(200)
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final_2",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Second command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 8, "output_tokens": 5}
-            })));
-    });
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains("<kuku_execution_context>")
-            .body_contains("<kuku_project_instructions>")
-            .body_contains("<kuku_global_memory>")
-            .body_contains("<kuku_tool_guidance>")
-            .body_contains("run tests");
-        then.status(200)
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_tool_2",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Need approval again."},
-                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            })));
-    });
-
-    let mut run = query("run tests")
-        .session(session_id)
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .start()
-        .await
-        .unwrap();
-
-    let mut event = run.next().await.unwrap().expect("event");
-    while !matches!(event, UiEvent::Done { .. }) {
-        event = run.next().await.unwrap().expect("event");
-    }
-    match event {
-        UiEvent::Done { output, .. } => assert_eq!(output.text, "Second command completed."),
-        _ => unreachable!(),
-    }
-
-    let events = EventStore::replay(env.events_path(session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::PermissionAllow { ref scope, .. } if scope == "session")));
-    assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "ok")));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -270,6 +127,7 @@ async fn pending_permission_cancel_writes_cancelled_result_without_deny() {
     let session_id = "s_resume_cancel_records";
     let mut run = query("cancel resumed command")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -284,6 +142,7 @@ async fn pending_permission_cancel_writes_cancelled_result_without_deny() {
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -328,7 +187,7 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
         when.method(httpmock::Method::POST)
             .path("/v1/messages")
             .body_contains(r#""tool_result""#)
-            .body_contains("permission gate denied this tool call");
+            .body_contains("host denied tool action");
         then.status(200)
             .body(anthropic_sse_response(serde_json::json!({
                 "id": "msg_final",
@@ -363,6 +222,7 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
     });
 
     let output = query("run tests")
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -395,106 +255,19 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
         .expect("permission.requested event");
     let (tool, risk, candidate, source) = requested;
     assert_eq!(
-        ("run_command", "command", "default_ask"),
+        ("run_command", "command", "permission_mode"),
         (tool, risk, source)
     );
     assert_eq!(
-        serde_json::json!({"cwd":".","invocation":{"args":["test"],"mode":"program","program":"cargo"}}),
+        serde_json::json!({"cwd":env.workspace.as_path().canonicalize().unwrap(),"invocation":{"args":["test"],"mode":"program","program":"cargo"}}),
         serde_json::from_str::<serde_json::Value>(candidate).unwrap()
     );
-    assert!(events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::PermissionDeny { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::PermissionDeny { .. }))
+    );
     assert!(events.iter().any(|event| matches!(event.payload, EventPayload::ToolResult { ref status, .. } if status == "blocked")));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn queued_deny_path_emits_permission_requested_before_deny() {
-    let Some(env) = TestEnv::enter(
-        module_path!(),
-        stringify!(queued_deny_path_emits_permission_requested_before_deny),
-    ) else {
-        return;
-    };
-    std::fs::write(env.workspace.as_path().join("notes.md"), "hello\n").unwrap();
-    let server = MockServer::start();
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v1/messages")
-            .body_contains("read two files");
-        then.status(200)
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_tools",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Reading files."},
-                    {"type": "tool_use", "id": "toolu_read_ok", "name": "read_file", "input": {"path": "notes.md"}},
-                    {"type": "tool_use", "id": "toolu_read_denied", "name": "read_file", "input": {"path": ".env.local"}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            })));
-    });
-
-    let mut run = query("read two files")
-        .provider(Provider::Anthropic)
-        .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
-        .config(test_config())
-        .start()
-        .await
-        .unwrap();
-
-    let mut saw_first_start = false;
-    loop {
-        let event = run.next().await.unwrap().expect("event");
-        match event {
-            UiEvent::ToolStart { id, .. } if id == "toolu_read_ok" => saw_first_start = true,
-            UiEvent::ToolEnd { id, status, .. } if id == "toolu_read_denied" => {
-                assert!(
-                    saw_first_start,
-                    "first slot should be active before queued deny"
-                );
-                assert_eq!(status, "blocked");
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    let events = EventStore::replay(env.events_path(run.session_id())).unwrap();
-    let request_pos = events
-        .iter()
-        .position(|event| {
-            matches!(event.payload, EventPayload::PermissionRequested { ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
-        })
-        .expect("permission.requested event");
-    let deny_pos = events
-        .iter()
-        .position(|event| {
-            matches!(event.payload, EventPayload::PermissionDeny { ref tool_call_id, .. } if tool_call_id == "toolu_read_denied")
-        })
-        .expect("permission.deny event");
-
-    assert!(request_pos < deny_pos);
-    match &events[request_pos].payload {
-        EventPayload::PermissionRequested {
-            tool,
-            risk,
-            candidate,
-            source,
-            ..
-        } => {
-            assert_eq!(tool, "read_file");
-            assert_eq!(risk, "read");
-            assert_eq!(candidate, ".env.local");
-            assert_eq!(source, "hard_guard");
-        }
-        other => panic!("expected permission.requested, got {other:?}"),
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -533,7 +306,7 @@ async fn run_with_permission_choice_allows_gated_tool_and_continues() {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": "Need approval."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"shell":if cfg!(windows) {"cmd"} else {"sh"},"command":"echo allowed","cwd":".","timeout":60,"brief":"print marker"}}
+                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"shell":if cfg!(windows) {"cmd"} else {"sh"},"command":"echo allowed","cwd":env.workspace.as_path().canonicalize().unwrap(),"timeout":60,"brief":"print marker"}}
                 ],
                 "stop_reason": "tool_use",
                 "usage": {"input_tokens": 5, "output_tokens": 6}
@@ -541,6 +314,7 @@ async fn run_with_permission_choice_allows_gated_tool_and_continues() {
     });
 
     let output = query("run allowed command")
+        .permission_mode(kuku::permission::PermissionMode::Ask)
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())

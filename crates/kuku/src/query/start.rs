@@ -7,8 +7,7 @@ use crate::log::{
     BufferedLogWriter, LogLevel, LogRecord, LogScope, runtime_log_path, session_log_path,
 };
 use crate::session::{
-    current_workspace, kuku_home, new_session_id, project_policy_path, session_events_path,
-    validate_session_id,
+    current_workspace, kuku_home, new_session_id, session_events_path, validate_session_id,
 };
 use crate::skill::session::{
     TurnSkillSnapshot, build_registry_snapshot, previous_snapshot_before_turn,
@@ -152,7 +151,6 @@ impl Query {
             Some(path) => path.clone(),
             None => session_events_path(&kuku_home, &workspace, &session_id)?,
         };
-        let policy_path = project_policy_path(&kuku_home, &workspace)?;
         let existing_events = if let Some(runtime) = &self.runtime {
             crate::Session {
                 inner: runtime
@@ -392,7 +390,7 @@ impl Query {
                     ));
             }
         }
-        if self.runtime.is_some() {
+        {
             for queued in &mut resumed_state.queued_tool_calls {
                 if let Some(preparation) =
                     existing_events
@@ -431,7 +429,6 @@ impl Query {
             events_path,
             kuku_home,
             workspace,
-            policy_path,
             turn,
             request_num: resumed_request_num(&existing_events, turn, &conversation),
             cumulative: super::types::CumulativeUsage::default(),

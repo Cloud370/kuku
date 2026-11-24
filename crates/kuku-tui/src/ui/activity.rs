@@ -40,6 +40,9 @@ impl ObservedActivity {
         }
         let service = app.service_status();
         if service == ServiceStatus::Connected {
+            if app.permission_mode.is_none() && !app.pane().exists {
+                return Self::Agent(Activity::Configuration);
+            }
             let activity = app.pane().composer_activity();
             if matches!(activity, Activity::Ready | Activity::Finished)
                 && matches!(

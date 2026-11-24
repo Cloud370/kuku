@@ -80,6 +80,12 @@ pub(crate) enum Job {
         saved: SavedCredentialRepair,
     },
     Connect,
+    WorkspacePermission {
+        ticket: u64,
+        workspace: PathBuf,
+        mode: Option<kuku_client::PermissionMode>,
+    },
+    PendingApprovals(Selection),
     Observe(Selection),
     StopObserving,
     Refresh(Selection),
@@ -145,6 +151,12 @@ pub(crate) enum Update {
         workspace: PathBuf,
     },
     ConnectFailed(Error),
+    WorkspacePermission {
+        ticket: u64,
+        saving: bool,
+        result: Result<Option<kuku_client::PermissionMode>, Error>,
+    },
+    PendingApprovals(Selection, Result<Vec<kuku_client::PendingApproval>, Error>),
     Loaded(Selection, Box<Snapshot>, HistoryPage),
     WatchConnected(Selection),
     WatchReconnecting(Selection, String),
@@ -516,6 +528,28 @@ impl Jobs {
 async fn run_connected(job: Job, connection: Connection) -> Update {
     let client = &connection.client;
     match job {
+        Job::WorkspacePermission {
+            ticket,
+            workspace,
+            mode,
+        } => {
+            let result = match mode {
+                Some(mode) => client
+                    .set_workspace_permission(&workspace, mode)
+                    .await
+                    .map(Some),
+                None => client.workspace_permission(&workspace).await,
+            };
+            Update::WorkspacePermission {
+                ticket,
+                saving: mode.is_some(),
+                result,
+            }
+        }
+        Job::PendingApprovals(selection) => {
+            let result = client.pending_approvals(&selection.target).await;
+            Update::PendingApprovals(selection, result)
+        }
         Job::Refresh(selection) => {
             let result = client.snapshot(&selection.target).await.map(Box::new);
             Update::Refreshed(selection, result)

@@ -30,6 +30,22 @@ pub(super) async fn advance(
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
     active: usize,
 ) -> Result<PendingStep> {
+    if let Some(request) = pending.take_resumed_permission_request(&queued.tool_call.id) {
+        if active > 0 {
+            pending.resumed_permission_requests.push_front(request);
+            pending.queued_tool_calls.push_front(queued);
+            return Ok(PendingStep::Pending {
+                pending: Box::new(pending),
+                slot: None,
+                event: None,
+            });
+        }
+        pending.queued_tool_calls.push_front(queued);
+        return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
+            pending,
+            request,
+        })));
+    }
     super::provider::ensure_resolved(&mut pending)?;
     let Some(definition) = find_tool_definition(&pending, &queued.tool_call.name).cloned() else {
         let name = &queued.tool_call.name;
@@ -58,60 +74,14 @@ pub(super) async fn advance(
         }
         Ok(None) => {}
     }
-    if let Some(request) = pending.take_resumed_permission_request(&queued.tool_call.id) {
-        if active > 0 {
-            pending.resumed_permission_requests.push_front(request);
-            pending.queued_tool_calls.push_front(queued);
-            return Ok(PendingStep::Pending {
-                pending: Box::new(pending),
-                slot: None,
-                event: None,
-            });
-        }
-        pending.queued_tool_calls.push_front(queued);
-        return Ok(PendingStep::NeedPermission(Box::new(PendingPermission {
-            pending,
-            request,
-        })));
-    }
-    let mut tool = schema(&definition);
-    if tool.name == "search_output" {
-        tool.name = "read_output".into();
-    }
+    let action = prepared_authorization(&pending, &queued, &definition);
     let candidate = permission_candidate(
         &pending.kuku_home,
         &pending.workspace,
-        &tool.name,
+        &action.tool.name,
         &queued.tool_call.args,
     );
-    let workspace = if queued.tool_call.name == "run_command" {
-        queued.tool_call.args["cwd"]
-            .as_str()
-            .map_or_else(|| pending.workspace.clone(), std::path::PathBuf::from)
-    } else {
-        pending.workspace.clone()
-    };
-    let action = crate::permission::ToolAuthorization {
-        session_id: pending.session_id.clone(),
-        agent: pending.conversation.as_str().into(),
-        source: pending.query.input_source.clone(),
-        tool_call_id: queued.tool_call.id.clone(),
-        tool,
-        args: queued.tool_call.args.clone(),
-        workspace,
-    };
-    let policy = crate::permission::load_project_policy(&pending.policy_path)?;
-    let decision = match authorize_action(
-        &policy,
-        &definition.risk,
-        &candidate,
-        pending
-            .query
-            .authorizer
-            .as_deref()
-            .expect("session query has host authority"),
-        &action,
-    ) {
+    let decision = match authorize_prepared(&pending, &definition, &action) {
         Ok(decision) => decision,
         Err(error) => {
             return finish_inline(
@@ -125,7 +95,7 @@ pub(super) async fn advance(
         }
     };
     match decision {
-        ActionAuthorization::Defer => {
+        ActionAuthorization::Defer { source } => {
             if active > 0 {
                 pending.queued_tool_calls.push_front(queued);
                 return Ok(PendingStep::Pending {
@@ -143,7 +113,8 @@ pub(super) async fn advance(
                 risk: definition.risk,
                 summary: queued.display_summary.clone(),
                 candidate,
-                source: "host".into(),
+                source: source.into(),
+                workspace: Some(action.workspace),
             };
             append_permission_request(
                 &pending.events_path,
@@ -164,9 +135,14 @@ pub(super) async fn advance(
                 &queued.tool_call.id,
                 PermissionChoice::Deny,
                 source,
-                &candidate,
+                &permission_rule(
+                    &pending.kuku_home,
+                    &pending.workspace,
+                    &queued.tool_call.name,
+                    &queued.tool_call.args,
+                ),
             )?;
-            pending.record_tool_denied(&queued.tool_call.name);
+            pending.record_tool_denied();
             finish_inline(
                 pending,
                 queued,
@@ -214,6 +190,9 @@ pub(super) async fn dispatch(
             queued,
             ToolResultEnvelope::blocked("tool capacity reached", "the action was not dispatched"),
         );
+    }
+    if pending.query.runtime.is_none() {
+        return dispatch_standalone(pending, queued, event_tx).await;
     }
     if super::helpers::is_inline_skill_tool(&queued.tool_call.name)
         || is_inline(&queued.tool_call.name)
@@ -369,6 +348,37 @@ fn start_slot(
     })
 }
 
+async fn dispatch_standalone(
+    mut pending: PendingRun,
+    queued: QueuedToolCall,
+    event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
+) -> Result<PendingStep> {
+    if super::helpers::is_inline_skill_tool(&queued.tool_call.name) {
+        pending.record_tool_call(&queued.tool_call.name);
+        let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
+        return finish_inline_event(pending, queued, result);
+    }
+    let (slot, _) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
+        capacity: crate::WorkspaceExecutionHost::default(),
+        workspace_access: workspace_access(&pending, &queued.tool_call.name),
+        limits: pending.query.runtime_limits.clone(),
+        output: None,
+        tool_name: queued.tool_call.name.clone(),
+        tool_id: queued.tool_call.id.clone(),
+        conversation: (!pending.conversation.is_main()).then(|| pending.conversation.clone()),
+        args: queued.tool_call.args.clone(),
+        summary: queued.display_summary.clone(),
+        workspace: pending.workspace.clone(),
+        kuku_home: pending.kuku_home.clone(),
+        prior_events: EventStore::replay(&pending.events_path)?,
+        event_tx,
+        config: pending.config.clone(),
+        catalog: pending.catalog.clone(),
+        events_path: pending.events_path.clone(),
+    });
+    start_slot(pending, queued, slot)
+}
+
 pub(super) fn should_yield(pending: &PendingRun) -> Result<bool> {
     runtime_session(pending)?
         .question_requested_in_turn(pending.conversation.as_str(), pending.turn)
@@ -413,6 +423,9 @@ pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {
 }
 
 pub(super) fn workspace_access(pending: &PendingRun, name: &str) -> WorkspaceAccess {
+    if pending.query.runtime.is_none() {
+        return super::slots::query_workspace_access(name);
+    }
     pending.query.tool_adapters.get(name).map_or_else(
         || super::slots::workspace_access(name),
         |tool| super::adapters::workspace_access(tool.spec.access),
@@ -434,17 +447,94 @@ pub(super) fn is_inline(name: &str) -> bool {
     )
 }
 
-pub(super) fn reject(pending: PendingRun, queued: QueuedToolCall) -> Result<PendingStep> {
-    if queued.tool_call.name == "run_js" {
-        if let Some(result) = super::run_js::declined(&pending, &queued.tool_call.id)? {
-            return finish_inline(pending, queued, result);
-        }
+pub(super) fn reject(
+    mut pending: PendingRun,
+    queued: QueuedToolCall,
+    reason: &str,
+) -> Result<PendingStep> {
+    let result =
+        ToolResultEnvelope::blocked(reason, format!("The action was not dispatched. {reason}."));
+    record_inline_result(&mut pending, &queued, &result)?;
+    let event = inline_tool_end(queued.tool_call.id, result);
+    Ok(PendingStep::Pending {
+        pending: Box::new(pending),
+        slot: None,
+        event: Some(event),
+    })
+}
+
+fn prepared_authorization(
+    pending: &PendingRun,
+    queued: &QueuedToolCall,
+    definition: &ToolDefinition,
+) -> crate::permission::ToolAuthorization {
+    let mut tool = schema(definition);
+    if tool.name == "search_output" {
+        tool.name = "read_output".into();
     }
-    finish_inline(
-        pending,
-        queued,
-        ToolResultEnvelope::blocked("host denied tool action", "the action was not dispatched"),
+    let workspace = if queued.tool_call.name == "run_command" {
+        queued.tool_call.args["cwd"]
+            .as_str()
+            .map_or_else(|| pending.workspace.clone(), std::path::PathBuf::from)
+    } else {
+        pending.workspace.clone()
+    };
+    crate::permission::ToolAuthorization {
+        session_id: pending.session_id.clone(),
+        agent: pending.conversation.as_str().into(),
+        source: pending.query.input_source.clone(),
+        tool_call_id: queued.tool_call.id.clone(),
+        tool,
+        args: queued.tool_call.args.clone(),
+        workspace,
+    }
+}
+
+fn authorize_prepared(
+    pending: &PendingRun,
+    definition: &ToolDefinition,
+    action: &crate::permission::ToolAuthorization,
+) -> Result<ActionAuthorization> {
+    let mode = effective_permission_mode(pending)?;
+    let authority = pending
+        .query
+        .authorizer
+        .as_deref()
+        .unwrap_or(&crate::permission::TrustedLocal);
+    let delegates_authorization = pending.query.runtime.is_some() && definition.name == "run_js";
+    authorize_action(
+        mode,
+        definition.read_only || delegates_authorization,
+        authority,
+        action,
     )
+}
+
+pub(super) fn effective_permission_mode(
+    pending: &PendingRun,
+) -> Result<crate::permission::PermissionMode> {
+    if pending.query.runtime.is_some() {
+        Ok(runtime_session(pending)?.permission_mode())
+    } else {
+        Ok(pending.query.permission_mode)
+    }
+}
+
+pub(super) fn check_approved(
+    pending: &PendingRun,
+    queued: &QueuedToolCall,
+    source: &str,
+) -> Result<Option<&'static str>> {
+    let definition = find_tool_definition(pending, &queued.tool_call.name)
+        .expect("prepared tool definition was validated");
+    if definition.name == "run_command"
+        && crate::tool::builtin::run_command::changed_command_directory(&queued.tool_call.args)
+            .is_some()
+    {
+        return Ok(Some("command directory changed after preparation"));
+    }
+    let action = prepared_authorization(pending, queued, definition);
+    Ok(authorize_prepared(pending, definition, &action)?.rejection_after_approval(source))
 }
 
 fn output_spec(pending: &PendingRun, id: &str) -> Result<super::slots::RetainedOutputSpec> {
@@ -834,32 +924,34 @@ async fn prepare(
     }
     let agent = pending.conversation.as_str();
     let turn = pending.turn;
-    match queued.tool_call.name.as_str() {
-        "read_output" => output::prepare(
-            &runtime_session(pending)?,
-            agent,
-            turn,
-            &mut queued.tool_call.args,
-        )?,
-        "search_output" => output::prepare_search(
-            &runtime_session(pending)?,
-            agent,
-            turn,
-            &mut queued.tool_call.args,
-        )?,
-        "save_value" => values::prepare_save(
-            &runtime_session(pending)?,
-            agent,
-            turn,
-            &queued.tool_call.args,
-        )?,
-        "send_message" => values::prepare_handoff(
-            &runtime_session(pending)?,
-            agent,
-            turn,
-            &mut queued.tool_call.args,
-        )?,
-        _ => {}
+    if pending.query.runtime.is_some() {
+        match queued.tool_call.name.as_str() {
+            "read_output" => output::prepare(
+                &runtime_session(pending)?,
+                agent,
+                turn,
+                &mut queued.tool_call.args,
+            )?,
+            "search_output" => output::prepare_search(
+                &runtime_session(pending)?,
+                agent,
+                turn,
+                &mut queued.tool_call.args,
+            )?,
+            "save_value" => values::prepare_save(
+                &runtime_session(pending)?,
+                agent,
+                turn,
+                &queued.tool_call.args,
+            )?,
+            "send_message" => values::prepare_handoff(
+                &runtime_session(pending)?,
+                agent,
+                turn,
+                &mut queued.tool_call.args,
+            )?,
+            _ => {}
+        }
     }
     let preparation = ToolPreparation {
         args: queued.tool_call.args.clone(),
@@ -892,6 +984,15 @@ fn finish_inline(
     queued: QueuedToolCall,
     result: ToolResultEnvelope,
 ) -> Result<PendingStep> {
+    record_inline_result(&mut pending, &queued, &result)?;
+    finish_inline_event(pending, queued, result)
+}
+
+fn record_inline_result(
+    pending: &mut PendingRun,
+    queued: &QueuedToolCall,
+    result: &ToolResultEnvelope,
+) -> Result<()> {
     EventStore::open(&pending.events_path)?.append(EventPayload::ToolResult {
         turn: pending.turn,
         ts: now_timestamp()?,
@@ -907,8 +1008,12 @@ fn finish_inline(
         memory_changed: None,
         structured: result.structured.clone(),
     })?;
-    pending.record_tool_call(&queued.tool_call.name);
-    finish_inline_event(pending, queued, result)
+    if result.status == "error" {
+        pending.record_tool_error(&queued.tool_call.name);
+    } else {
+        pending.record_tool_call(&queued.tool_call.name);
+    }
+    Ok(())
 }
 
 fn finish_inline_event(
@@ -916,13 +1021,9 @@ fn finish_inline_event(
     queued: QueuedToolCall,
     result: ToolResultEnvelope,
 ) -> Result<PendingStep> {
-    pending.pending_events.push_back(UiEvent::ToolEnd {
-        id: queued.tool_call.id.clone(),
-        status: result.status,
-        summary: result.summary,
-        model_content: Some(result.model_content),
-        result: result.structured,
-    });
+    pending
+        .pending_events
+        .push_back(inline_tool_end(queued.tool_call.id.clone(), result));
     let event = UiEvent::ToolStart {
         id: queued.tool_call.id,
         tool: queued.tool_call.name,
@@ -934,6 +1035,16 @@ fn finish_inline_event(
         slot: None,
         event: Some(event),
     })
+}
+
+fn inline_tool_end(id: String, result: ToolResultEnvelope) -> UiEvent {
+    UiEvent::ToolEnd {
+        id,
+        status: result.status,
+        summary: result.summary,
+        model_content: Some(result.model_content),
+        result: result.structured,
+    }
 }
 
 pub(super) fn schema(definition: &ToolDefinition) -> ToolSchema {

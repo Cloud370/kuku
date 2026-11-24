@@ -46,6 +46,9 @@ impl App {
     }
 
     pub(crate) fn activate_request_id(&mut self, target: Target, request_id: String) -> bool {
+        if self.selection().target == target && self.open_approval(&request_id) {
+            return true;
+        }
         if !self.focus_request_id(target, request_id.clone()) {
             return false;
         }

@@ -6,6 +6,17 @@ use crate::menu::{ChoiceKind, PickerKind};
 impl App {
     pub(super) fn key(&mut self, key: KeyEvent) {
         self.dismiss_confirmation();
+        if Shortcut::PERMISSIONS.matches(key) && key.kind == KeyEventKind::Press {
+            self.open_permissions();
+            return;
+        }
+        if self.modal.is_none()
+            && Shortcut::REPLY.matches(key)
+            && key.kind == KeyEventKind::Press
+            && self.open_approvals()
+        {
+            return;
+        }
         if matches!(self.modal, Some(Modal::SendRouteConfirmation(_)))
             && !Shortcut::ESCAPE.matches(key)
             && !Shortcut::ENTER.matches(key)
@@ -111,6 +122,8 @@ impl App {
             Some(Modal::Output(_)) => self.output_key(key),
             Some(Modal::StatusLineEditor(_)) => self.statusline_key(key),
             Some(Modal::Notifications(_)) => self.notification_key(key),
+            Some(Modal::Permissions(_)) => self.permission_mode_key(key),
+            Some(Modal::Approvals(_)) => self.approval_key(key),
             Some(Modal::ExitConfirmation) => self.exit_confirmation_key(key),
             Some(Modal::SendRouteConfirmation(_)) => {
                 if Shortcut::ENTER.matches(key) && key.kind == KeyEventKind::Press {

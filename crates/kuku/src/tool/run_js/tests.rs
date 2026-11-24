@@ -48,8 +48,12 @@ where
         &self,
         call: ScriptCall,
         execution: Arc<ScriptExecution>,
+        permit: tokio::sync::OwnedSemaphorePermit,
     ) -> ScriptFuture<'_, ToolResultEnvelope> {
-        Box::pin((self.callback)(call, execution))
+        Box::pin(async move {
+            let _permit = permit;
+            (self.callback)(call, execution).await
+        })
     }
 }
 
