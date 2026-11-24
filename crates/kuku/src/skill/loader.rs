@@ -1,3 +1,4 @@
+use std::io;
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -6,28 +7,36 @@ use crate::util::yaml::split_yaml_frontmatter;
 use super::definition::{SkillDefinition, SkillSource};
 
 pub(crate) fn load_from_dir(dir: &Path, source: SkillSource) -> Result<Vec<SkillDefinition>> {
-    let mut defs = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let skill_dir = entry.path();
-        if !skill_dir.is_dir() {
-            continue;
-        }
-        let skill_md = skill_dir.join("SKILL.md");
-        if !skill_md.exists() {
-            continue;
-        }
-        let definition = std::fs::read_to_string(&skill_md)
-            .map_err(Error::from)
-            .and_then(|content| parse_skill(&content, &skill_dir, &source));
-        match definition {
-            Ok(def) => defs.push(def),
-            Err(e) => {
-                eprintln!("warning: skipping skill at {}: {e}", skill_dir.display());
-            }
-        }
+    Ok(skill_entries(dir, source)?.collect::<io::Result<_>>()?)
+}
+
+pub(super) fn skill_entries(
+    dir: &Path,
+    source: SkillSource,
+) -> io::Result<impl Iterator<Item = io::Result<SkillDefinition>>> {
+    let entries = std::fs::read_dir(dir)?;
+    Ok(entries.filter_map(move |entry| {
+        entry
+            .map(|entry| read_skill(&entry.path(), &source))
+            .transpose()
+    }))
+}
+
+fn read_skill(skill_dir: &Path, source: &SkillSource) -> Option<SkillDefinition> {
+    let skill_md = skill_dir.join("SKILL.md");
+    if !skill_dir.is_dir() || !skill_md.exists() {
+        return None;
     }
-    Ok(defs)
+    std::fs::read_to_string(skill_md)
+        .map_err(Error::from)
+        .and_then(|content| parse_skill(&content, skill_dir, source))
+        .inspect_err(|error| {
+            eprintln!(
+                "warning: skipping skill at {}: {error}",
+                skill_dir.display()
+            )
+        })
+        .ok()
 }
 
 pub(super) fn parse_skill(

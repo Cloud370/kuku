@@ -661,6 +661,91 @@ async fn dropping_standalone_docs_start_releases_its_session_lock() {
     lock.unlock().unwrap();
 }
 
+#[test]
+fn abandoned_standalone_docs_slot_releases_the_blocking_worker() {
+    let server = httpmock::MockServer::start();
+    server.mock(|when, then| {
+        when.method(httpmock::Method::POST).path("/chat/completions");
+        then.status(200).body(common::openai_sse_response(json!({
+            "choices": [{"finish_reason": "tool_calls", "message": {"tool_calls": [{
+                "id": "held-load", "type": "function",
+                "function": {"name": "use_skill", "arguments": json!({"skill_name": NAME}).to_string()}
+            }]}}]
+        })));
+    });
+    for drop_run_first in [true, false] {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let model = Model::new(data.path(), []);
+        let mut options = options(
+            workspace.path(),
+            data.path(),
+            model.clone(),
+            Arc::new(Gate::default()),
+        );
+        options.config.providers.get_mut("openai").unwrap().base_url = server.base_url();
+        let (archive, mut lock) = docs_archive_lock(&options, &model);
+        assert!(lock.try_lock().unwrap());
+        let (release_lock, waiting) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            let released = waiting.recv_timeout(Duration::from_secs(10)).is_ok();
+            drop(lock);
+            released
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let run = runtime.block_on(async {
+            let mut run = kuku::query("Explain this version of kuku.")
+                .config(options.config)
+                .kuku_home(data.path())
+                .workspace(workspace.path())
+                .start()
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let kuku::UiEvent::ToolStart { tool, .. } =
+                        run.next().await.unwrap().expect("Skill tool start")
+                    {
+                        assert_eq!(tool, "use_skill");
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("standalone Skill call should dispatch");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), run.next())
+                    .await
+                    .is_err()
+            );
+            run
+        });
+        if drop_run_first {
+            drop(run);
+            // A standalone caller can leave its current-thread scheduler idle after dropping a Run.
+            let (progress, observed) = std::sync::mpsc::channel();
+            runtime.spawn_blocking(move || progress.send(()).unwrap());
+            observed
+                .recv_timeout(Duration::from_secs(5))
+                .expect("blocking worker should be available");
+            drop(runtime);
+        } else {
+            drop(runtime);
+            drop(run);
+        }
+        let _ = release_lock.send(());
+        assert!(
+            watchdog.join().unwrap(),
+            "abandoned worker kept waiting on the cache lock"
+        );
+        assert!(!archive.exists());
+    }
+}
+
 #[tokio::test]
 async fn same_batch_skill_tools_see_the_load_across_a_permission_wait() {
     let workspace = tempfile::tempdir().unwrap();

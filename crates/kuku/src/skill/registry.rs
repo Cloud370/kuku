@@ -93,6 +93,7 @@ impl SkillRegistryBuilder {
     }
 
     /// Load all skills from a directory of SKILL.md files.
+    /// Returns an error if the requested directory cannot be opened or enumerated.
     pub fn load_from_dir(mut self, dir: &Path, source: SkillSource) -> Result<Self> {
         let defs = super::loader::load_from_dir(dir, source)?;
         for def in defs {
@@ -103,15 +104,32 @@ impl SkillRegistryBuilder {
 
     /// Build the registry by scanning workspace and discovery config.
     pub fn build_with_discovery(
-        mut self,
+        self,
         workspace: &Path,
         config: &crate::config::DiscoveryConfig,
     ) -> Result<Self> {
         let discovered = crate::discovery::discover(workspace, config);
-        for entry in &discovered.skills {
-            self = self.load_from_dir(&entry.path, entry.scope.into())?;
+        Ok(self.with_discovered(discovered.skills))
+    }
+
+    fn with_discovered(mut self, directories: Vec<crate::discovery::DiscoveredEntry>) -> Self {
+        for directory in directories {
+            let warn = |error: &std::io::Error| {
+                eprintln!(
+                    "warning: skill discovery in {}: {error}",
+                    directory.path.display()
+                );
+            };
+            let Ok(entries) = super::loader::skill_entries(&directory.path, directory.scope.into())
+                .inspect_err(warn)
+            else {
+                continue;
+            };
+            for definition in entries.filter_map(|entry| entry.inspect_err(warn).ok()) {
+                self.add(definition);
+            }
         }
-        Ok(self)
+        self
     }
 
     fn add(&mut self, def: SkillDefinition) {
@@ -211,6 +229,35 @@ mod tests {
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
         assert!(registry.get("anything").is_none());
+    }
+
+    #[test]
+    fn disappearing_discovery_directory_preserves_other_skills_and_builtin_help() {
+        use crate::discovery::{DiscoveredEntry, Scope};
+
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good");
+        std::fs::create_dir_all(good.join("review")).unwrap();
+        std::fs::write(
+            good.join("review/SKILL.md"),
+            "---\nname: review\ndescription: Review\n---\n\nReview a change.",
+        )
+        .unwrap();
+        let missing = dir.path().join("disappeared");
+        let directories = [good, missing.clone()].map(|path| DiscoveredEntry {
+            path,
+            scope: Scope::Project,
+        });
+        let registry = SkillRegistry::builder()
+            .with_discovered(directories.into())
+            .with_docs()
+            .build();
+        assert_eq!(registry.names(), &["kuku-docs", "review"]);
+        assert!(
+            SkillRegistry::builder()
+                .load_from_dir(&missing, SkillSource::Project)
+                .is_err()
+        );
     }
 
     #[test]

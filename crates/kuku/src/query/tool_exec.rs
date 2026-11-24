@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -9,7 +8,7 @@ use crate::skill::bundle::{self, resources};
 use crate::skill::definition::{SkillDefinition, SkillSource};
 use crate::tool::ToolResultEnvelope;
 use serde_json::json;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::helpers::{is_skill_tool, now_timestamp, resolved_tool_available};
 use super::types::{ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind, WorkspaceAccess};
@@ -328,31 +327,39 @@ pub(super) fn spawn_skill_bundle_slot(
     let id = queued.tool_call.id.clone();
     let home = pending.kuku_home.clone();
     let max_result_chars = inline_skill_tool_max_result_chars(pending, &queued.tool_call.name);
-    tokio::spawn(async move {
-        let stopped = Arc::new(AtomicBool::new(false));
-        let check = stopped.clone();
-        let mut work = tokio::task::spawn_blocking(move || {
-            let SkillBundleOperation { version, action } = operation;
-            let cancelled = || check.load(Ordering::Acquire);
-            match action {
-                SkillBundleAction::Load(result) => {
-                    bundle::retain_cancellable(&home, &version, &cancelled).map(|()| result)
-                }
-                SkillBundleAction::Access(request) => request.execute(&home, &version, &cancelled),
+    // The worker also sees its owner disappear if the Tokio runtime shuts down.
+    let (owner, keep_running) = oneshot::channel::<()>();
+    let run_events = event_tx.clone();
+    let mut work = tokio::task::spawn_blocking(move || {
+        let SkillBundleOperation { version, action } = operation;
+        let cancelled = || owner.is_closed() || run_events.is_closed();
+        match action {
+            SkillBundleAction::Load(result) => {
+                bundle::retain_cancellable(&home, &version, &cancelled).map(|()| result)
             }
-        });
-        let result = tokio::select! {
+            SkillBundleAction::Access(request) => request.execute(&home, &version, &cancelled),
+        }
+    });
+    tokio::spawn(async move {
+        let finished = tokio::select! {
             biased;
-            _ = stop.notified() => {
-                stopped.store(true, Ordering::Release);
+            _ = stop.notified() => None,
+            _ = event_tx.closed() => None,
+            result = &mut work => Some(result),
+        };
+        let result = match finished {
+            Some(result) => result
+                .map_err(std::io::Error::other)
+                .and_then(|result| result)
+                .unwrap_or_else(|error| {
+                    ToolResultEnvelope::error("Skill resource unavailable", error.to_string())
+                }),
+            None => {
+                drop(keep_running);
                 work.abort();
                 let _ = work.await;
                 ToolResultEnvelope::cancelled("Skill resource access cancelled")
             }
-            result = &mut work => result
-                .map_err(std::io::Error::other)
-                .and_then(|result| result)
-                .unwrap_or_else(|error| ToolResultEnvelope::error("Skill resource unavailable", error.to_string())),
         };
         let result = clamp_skill_tool_result(max_result_chars, result);
         let _ = event_tx.send((id, SlotEvent::Done(result))).await;
