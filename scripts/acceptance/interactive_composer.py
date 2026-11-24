@@ -71,11 +71,15 @@ def choose_agent_entry(terminal, screen, label):
         terminal.press("\x1b[B" if target > row else "\x1b[A")
 
         def moved():
-            current = terminal.request("screen")["screen"]
-            current_selection = selected(current)
-            return current if current_selection is not None and current_selection != selection else None
+            nonlocal screen
+            screen = terminal.request("screen")["screen"]
+            current_selection = selected(screen)
+            return screen if current_selection is not None and current_selection[0] != row else None
 
-        screen = eventually(f"move the Agent picker selection toward {label}", moved)
+        try:
+            screen = eventually(f"move the Agent picker selection toward {label}", moved)
+        except AssertionError as error:
+            raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
     raise AssertionError(f"Could not select {label} in the Agent picker")
 
 
@@ -93,7 +97,7 @@ def agent_setup(client):
         terminal.expect("New session", state="Ready", rows=28)
         terminal.submit("Start the Agent setup check")
         client.provider.next("Start the Agent setup check").text("Ready to create a reviewer.")
-        terminal.expect("Ready to create a reviewer.")
+        terminal.expect("Ready to create a reviewer.", state="Finished")
         terminal.press("/agents\r")
         roster = terminal.expect("Create Agent", state="Switch Agent")["screen"]
         choose_agent_entry(terminal, roster, "Create Agent")
