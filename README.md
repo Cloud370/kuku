@@ -20,7 +20,9 @@ Copy the block for your platform to install [`v0.1.0-alpha.4`](https://github.co
 Linux x86-64, Linux ARM64, and Apple Silicon Macs.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.4/scripts/install.sh | sh -s --   --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.4/latest.json   --version 0.1.0-alpha.4
+curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.4/scripts/install.sh | sh -s -- \
+  --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.4/latest.json \
+  --version 0.1.0-alpha.4
 ```
 
 ### Windows
