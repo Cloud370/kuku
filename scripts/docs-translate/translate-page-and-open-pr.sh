@@ -73,6 +73,19 @@ authenticated_git() {
     git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "$@"
 }
 
+# Use the same repository for Git refs and pull requests, including in fork clones.
+fetch_url="$(git remote get-url origin)"
+push_url="$(git remote get-url --push --all origin)"
+[[ "$push_url" != *$'\n'* ]] || die "origin must have a single GitHub push URL"
+repository="$(gh repo view "$fetch_url" --json id,url)"
+if [[ "$fetch_url" != "$push_url" ]]; then
+    push_repository="$(gh repo view "$push_url" --json id)"
+    [[ "$(jq -er '.id' <<< "$repository")" == "$(jq -er '.id' <<< "$push_repository")" ]] ||
+        die "origin must fetch and push to the same GitHub repository"
+fi
+repository_url="$(jq -er '.url' <<< "$repository")"
+export GH_REPO="${repository_url#https://}"
+
 pr_url=""
 if [[ -n "$pr" ]]; then
     pr_record="$(gh pr view "$pr" --json state,isCrossRepository,baseRefName,headRefName,url)"
@@ -101,15 +114,12 @@ remote_head="$(authenticated_git ls-remote --exit-code --heads origin "refs/head
 [[ -z "$pr" || -n "$remote_head" ]] || die "PR $pr head branch is unavailable"
 expected_head="${remote_head%%$'\t'*}"
 
-source_branch="$base"
-if [[ -n "$remote_head" ]]; then
-    source_branch="$branch"
+revision="$expected_head"
+if [[ -z "$revision" ]]; then
+    remote_base="$(authenticated_git ls-remote --exit-code --heads origin "refs/heads/$base")"
+    revision="${remote_base%%$'\t'*}"
 fi
-authenticated_git fetch --no-tags origin "refs/heads/$source_branch"
-revision="$(git rev-parse FETCH_HEAD)"
-if [[ -n "$expected_head" && "$revision" != "$expected_head" ]]; then
-    die "head branch $branch changed during preparation"
-fi
+authenticated_git fetch --no-tags --no-write-fetch-head origin "$revision"
 retry=false
 if [[ -n "$remote_head" ]]; then
     previous_run="$(git show -s --format='%(trailers:key=Docs-Translate-Run,valueonly)' "$revision")"
@@ -134,6 +144,17 @@ cleanup() {
     rm -rf -- "$scratch"
 }
 trap cleanup EXIT
+scratch="$(cd -- "$scratch" && pwd -P)"
+
+path_has_no_symlinks() {
+    local path="$1" component
+    local -a components
+    IFS=/ read -r -a components <<< "$2"
+    for component in "${components[@]}"; do
+        path="$path/$component"
+        [[ ! -L "$path" ]] || return 1
+    done
+}
 
 summarize() {
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -151,7 +172,7 @@ if [[ "$retry" == false ]]; then
     mkdir "$scratch/translation"
     git archive "$revision" docs | tar -x -C "$scratch/translation"
     source_file="$scratch/translation/$source_path"
-    [[ -f "$source_file" && "$(realpath -- "$source_file")" == "$source_file" ]] ||
+    [[ -f "$source_file" ]] && path_has_no_symlinks "$scratch/translation" "$source_path" ||
         die "source page is missing or is not a regular file at $revision: $source_path"
     [[ -n "${CI_LLM_API_KEY:-}" && -n "${CI_LLM_BASE_URL:-}" ]] ||
         die "CI_LLM_API_KEY and CI_LLM_BASE_URL are required"
@@ -159,10 +180,11 @@ if [[ "$retry" == false ]]; then
     mkdir -p "$scratch/translation/.kuku/skills" "$scratch/translation/.kuku/agents"
     cp -R -- "$WORKSPACE_ROOT/.kuku/skills/docs-translate" "$scratch/translation/.kuku/skills/"
     cp -- "$SCRIPT_DIR/agent.md" "$scratch/translation/.kuku/agents/docs-translation.md"
-    prompt="$(<"$SCRIPT_DIR/prompts/translate-page-and-open-pr.txt")"
-    prompt="${prompt//\{\{SOURCE_PATH\}\}/$source_path}"
-    prompt="${prompt//\{\{TARGET_PATH\}\}/$target_path}"
-    prompt="${prompt//\{\{TARGET_LOCALE\}\}/$locale}"
+    prompt="$(jq -nr --rawfile template "$SCRIPT_DIR/prompts/translate-page-and-open-pr.txt" \
+        --arg SOURCE_PATH "$source_path" --arg TARGET_PATH "$target_path" --arg TARGET_LOCALE "$locale" '
+            $ARGS.named as $values
+            | $template | gsub("\\{\\{(?<key>SOURCE_PATH|TARGET_PATH|TARGET_LOCALE)\\}\\}"; $values[.key])
+        ')"
     run_status=0
     KUKU_ENV_FILE=/dev/null KUKU_RUN_ID="$run_id" KUKU_CHECK_RUN=1 KUKU_CHECK_SESSION_ID= \
     KUKU_CHECK_OUTPUT_MODE=response KUKU_CHECK_PROMPT="$prompt" KUKU_CHECK_WORKSPACE="$scratch/translation" \
@@ -174,11 +196,12 @@ if [[ "$retry" == false ]]; then
     fi
 
     translated="$scratch/translation/$target_path"
-    [[ -s "$translated" && -f "$translated" && "$(realpath -- "$translated")" == "$translated" ]] ||
+    [[ -s "$translated" && -f "$translated" ]] &&
+        path_has_no_symlinks "$scratch/translation" "$target_path" ||
         die "model did not produce a regular non-empty page at $target_path"
     git worktree add --detach "$scratch/checkout" "$revision"
     destination="$scratch/checkout/$target_path"
-    [[ "$(realpath -m -- "$destination")" == "$destination" ]] ||
+    path_has_no_symlinks "$scratch/checkout" "$target_path" ||
         die "target page must resolve inside the checkout: $target_path"
     mkdir -p -- "$(dirname -- "$destination")"
     cp -- "$translated" "$destination"

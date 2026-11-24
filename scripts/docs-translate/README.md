@@ -57,7 +57,7 @@ KUKU_RUN_ID="$run_id" KUKU_CHECK_RUN=0 KUKU_CHECK_SESSION_ID="$session_id" bash 
 bash scripts/docs-translate/translate-page-and-open-pr.sh --locale zh --base main docs/en/start/install.md
 ```
 
-For a new PR, set `--base` to the source branch or use the current branch. In Actions, a new PR aimed at the workflow ref uses the dispatch revision. For an update, pass the number of an open PR in this repository. The runner uses the selected revision's docs in a scratch workspace and only publishes the requested target page. An unchanged page leaves the branch as it is.
+The helper uses the GitHub repository configured as `origin`. For a new PR, set `--base` to the source branch or use the current branch. In Actions, a new PR aimed at the workflow ref uses the dispatch revision. For an update, pass the number of an open PR whose head is in `origin`. The runner uses the selected revision's docs in a scratch workspace and only publishes the requested target page. An unchanged page leaves the branch as it is.
 
 The translation preset offers file and Skill tools. The model container uses a temporary credential file and gets a read-only binary. Git and GitHub steps run on the host. Actions caches the build directories.
 

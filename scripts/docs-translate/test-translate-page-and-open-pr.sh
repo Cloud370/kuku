@@ -17,20 +17,23 @@ for arg; do
         cargo) exit 0 ;;
         *:/translation) workspace="${arg%:/translation}" ;;
         *:/run/kuku-docs-translate.key:ro) key_file="${arg%:/run/kuku-docs-translate.key:ro}" ;;
+        KUKU_CHECK_PROMPT=*) prompt="${arg#*=}" ;;
         GH_TOKEN*|GITHUB_TOKEN*|CI_LLM_API_KEY*) exit 99 ;;
     esac
 done
-[[ -f "$workspace/docs/en/start/new.md" && ! -e "$workspace/.git" ]]
+page="${MODEL_PAGE:-start/new.md}"
+[[ -f "$workspace/docs/en/$page" && ! -e "$workspace/.git" ]]
+[[ "$prompt" == *"\`docs/en/$page\`"* && "$prompt" == *"\`docs/zh/$page\`"* ]]
 [[ -f "$workspace/.kuku/agents/docs-translation.md" && -s "$key_file" ]]
 printf 'model\n' >> "$RUN_LOG"
 if [[ "${MODEL_RESULT:-}" == "waiting" ]]; then
     exit 3
 fi
 if [[ "${MODEL_RESULT:-}" != "unchanged" ]]; then
-    mkdir -p "$workspace/docs/zh/start"
-    printf '%s\n' "${MODEL_TEXT:-Translated}" > "$workspace/docs/zh/start/new.md"
+    mkdir -p "$(dirname -- "$workspace/docs/zh/$page")"
+    printf '%s\n' "${MODEL_TEXT:-Translated}" > "$workspace/docs/zh/$page"
 fi
-printf 'Unrelated\n' > "$workspace/docs/en/start/new.md"
+printf 'Unrelated\n' > "$workspace/docs/en/$page"
 if [[ -n "${RACE_REF:-}" ]]; then
     if [[ -n "${RACE_COMMIT:-}" ]]; then
         git --git-dir "$TEST_ORIGIN" update-ref "$RACE_REF" "$RACE_COMMIT"
@@ -43,7 +46,17 @@ EOF
 cat > "$TMP_DIR/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$1" == pr ]]; then
+    [[ "$GH_REPO" == github.example.invalid/fixture/docs ]]
+fi
 case "$1 $2" in
+    "repo view")
+        if [[ "$3" == "$TEST_ORIGIN" ]]; then
+            printf '{"id":"docs","url":"https://github.example.invalid/fixture/docs"}\n'
+        else
+            printf '{"id":"other"}\n'
+        fi
+        ;;
     "pr list")
         if [[ -f "$PR_CREATED" ]]; then
             printf 'https://example.invalid/pull/7\n'
@@ -63,7 +76,8 @@ EOF
 chmod +x "$TMP_DIR/bin/docker" "$TMP_DIR/bin/gh"
 export PATH="$TMP_DIR/bin:$PATH" RUN_LOG="$TMP_DIR/run.log" PR_CREATED="$TMP_DIR/created"
 export KUKU_ENV_FILE=/dev/null KUKU_CACHE_ROOT="$TMP_DIR/cache" GITHUB_STEP_SUMMARY="$TMP_DIR/summary"
-export GH_TOKEN=fixture CI_LLM_API_KEY=fixture CI_LLM_BASE_URL=https://example.invalid/v1
+export GH_TOKEN=fixture GH_REPO=github.example.invalid/other/docs
+export CI_LLM_API_KEY=fixture CI_LLM_BASE_URL=https://example.invalid/v1
 export TEST_ORIGIN="$TMP_DIR/origin"
 
 git init -q --initial-branch=main "$TMP_DIR/checkout"
@@ -83,6 +97,9 @@ git push -q origin main
 git switch -qc source
 git mv docs/en/start/{old,new}.md
 git rm -q docs/en/start/removed.md
+literal_page='start/help&{{TARGET_PATH}}.md'
+printf '# Help and FAQ\n' > "docs/en/$literal_page"
+git add -- "docs/en/$literal_page"
 git commit -qm source
 source_revision="$(git rev-parse HEAD)"
 git push -q origin source
@@ -90,7 +107,12 @@ git switch -q main
 
 runner=scripts/docs-translate/translate-page-and-open-pr.sh
 branch=docs-translate/zh/start-new-test
-KUKU_RUN_ID=test bash "$runner" --locale zh --base source docs/en/start/new.md
+mkdir "$TMP_DIR/scratch"
+ln -s "$TMP_DIR/scratch" "$TMP_DIR/scratch-link"
+git fetch -q origin main
+TMPDIR="$TMP_DIR/scratch-link" KUKU_RUN_ID=test \
+    bash "$runner" --locale zh --base source docs/en/start/new.md
+[[ "$(git rev-parse FETCH_HEAD)" == "$initial" ]]
 git fetch -q origin "$branch"
 [[ "$(git diff-tree --no-commit-id --name-only -r FETCH_HEAD)" == docs/zh/start/new.md ]]
 [[ "$(git show FETCH_HEAD:docs/zh/start/new.md)" == Translated ]]
@@ -107,6 +129,18 @@ MODEL_TEXT=revised KUKU_RUN_ID=update bash "$runner" --locale zh --pr 7 docs/en/
 git fetch -q origin "$branch"
 [[ "$(git show FETCH_HEAD:docs/zh/start/new.md)" == revised ]]
 [[ "$(grep -c '^created$' "$RUN_LOG")" == 1 ]]
+
+MODEL_PAGE="$literal_page" KUKU_RUN_ID=literal-prompt \
+    bash "$runner" --locale zh --base source --branch docs-translate/literal-prompt "docs/en/$literal_page"
+git fetch -q origin docs-translate/literal-prompt
+[[ "$(git show "FETCH_HEAD:docs/zh/$literal_page")" == Translated ]]
+
+git config remote.origin.pushurl "$TMP_DIR/other"
+if KUKU_RUN_ID=wrong-remote bash "$runner" --locale zh --base source docs/en/start/new.md; then
+    printf 'expected mismatched GitHub repositories to block publish\n' >&2
+    exit 1
+fi
+git config --unset remote.origin.pushurl
 
 status=0
 MODEL_RESULT=waiting KUKU_RUN_ID=waiting bash "$runner" --locale zh --base source docs/en/start/new.md || status=$?
