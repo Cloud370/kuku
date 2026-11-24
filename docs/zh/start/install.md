@@ -13,6 +13,8 @@ kuku --help
 
 ## 安装已发布版本
 
+当前 alpha 的一键安装命令可直接从 [README](../../../README.md#install) 复制。
+
 在 [GitHub Releases](https://github.com/Cloud370/kuku/releases) 里找到对应版本的 `latest.json` 链接，在仓库根目录运行安装脚本：
 
 - Linux（x86-64 / ARM64）和 macOS（Apple Silicon）：

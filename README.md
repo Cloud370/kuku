@@ -11,12 +11,35 @@ kuku stays light enough that a 371 MiB RAM ARM64 board can open and continue a 1
 > [!WARNING]
 > kuku is still pre-1.0. Until the first stable release, compatibility covers only the current SDK, CLI, server API, and Session format. Updates may break existing integrations or make older Sessions unreadable.
 
+## Install
+
+Copy the block for your platform to install [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4).
+
+### Linux and macOS
+
+Linux x86-64, Linux ARM64, and Apple Silicon Macs.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.4/scripts/install.sh | sh -s --   --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.4/latest.json   --version 0.1.0-alpha.4
+```
+
+### Windows
+
+Run in PowerShell on Windows x86-64.
+
+```powershell
+$kukuTag = 'v0.1.0-alpha.4'
+$kukuInstaller = Invoke-RestMethod "https://raw.githubusercontent.com/Cloud370/kuku/$kukuTag/scripts/install.ps1"
+& ([scriptblock]::Create($kukuInstaller)) -Source "https://github.com/Cloud370/kuku/releases/download/$kukuTag/latest.json" -Version ($kukuTag.Substring(1))
+```
+
+Open a new terminal after installation. [Build from source](docs/en/start/install.md#build-from-source)
+
 ## Quick Start
 
-For a fresh install with the default Anthropic route, export `ANTHROPIC_API_KEY` and run from your project directory:
+For the default Anthropic route, export `ANTHROPIC_API_KEY` and run these commands from your project directory.
 
 ```bash
-cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
 kuku init
 kuku
 ```
