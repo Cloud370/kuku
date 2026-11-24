@@ -11,9 +11,13 @@ on:
       preview-version:
         description: "Optional rehearsal version, for example 0.1.0-alpha.4."
         required: false
+      notes-only:
+        description: "Generate the announcement without building packages."
+        type: boolean
+        default: false
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag || github.ref_name }}${{ inputs.notes-only && '-notes' || '' }}
   cancel-in-progress: false
 
 env:
@@ -40,10 +44,15 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag || (github.event_name == 'push' && github.ref_name) || '' }}
           PREVIEW_VERSION: ${{ inputs.preview-version }}
+          NOTES_ONLY: ${{ inputs.notes-only && 'true' || 'false' }}
         run: |
           revision=$(git rev-parse HEAD)
           version="$PREVIEW_VERSION"
           if [[ -n "$RELEASE_TAG" ]]; then
+            if [[ "$NOTES_ONLY" == true ]]; then
+              echo 'Leave tag empty for an announcement preview.' >&2
+              exit 1
+            fi
             test -z "$PREVIEW_VERSION"
             test "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" = "$revision"
             [[ "$RELEASE_TAG" == v* ]]
@@ -73,12 +82,14 @@ jobs:
 
   validate:
     name: Release contracts
+    if: ${{ !inputs.notes-only }}
     needs: candidate
     uses: ./.github/workflows/ci.yml
     with:
       release-revision: ${{ needs.candidate.outputs.revision }}
 
   build:
+    if: ${{ !inputs.notes-only }}
     needs: candidate
     strategy:
       fail-fast: false
@@ -292,14 +303,11 @@ jobs:
           if [[ -n "$previous" ]]; then
             range="refs/tags/$previous..HEAD"
           fi
+          git log --format='%aN%n%(trailers:key=Co-authored-by,valueonly,separator=%x0a)' "$range" | \
+            sed -E 's/[[:space:]]+<[^<>]*>$//; /^[[:space:]]*$/d' | sort -u > commit-authors.txt
           {
             printf '\n'
-            sed -e "s/^## What's Changed$/## PR 变更清单/" \
-                -e 's/^## New Contributors$/## 首次贡献者/' \
-                -e '/^\*\*Full Changelog\*\*:/d' generated-notes.md
-            printf '\n## 贡献者\n\n'
-            git log --format='%aN%n%(trailers:key=Co-authored-by,valueonly,separator=%x0a)' "$range" | \
-              sed -E 's/[[:space:]]+<[^<>]*>$//; /^[[:space:]]*$/d' | sort -u | sed 's/^/- /'
+            python3 scripts/release_notes.py generated-notes.md commit-authors.txt
             if [[ -n "$previous" ]]; then
               printf '\n[查看 `%s` 以来的完整差异](%s/%s/compare/%s...%s)\n' \
                 "$previous" "$GITHUB_SERVER_URL" "$GH_REPO" "$previous" "$revision"
