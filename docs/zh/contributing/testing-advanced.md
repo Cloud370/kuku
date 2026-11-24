@@ -202,11 +202,9 @@ python3 scripts/acceptance/run.py metrics --profile release --long-session-mib 5
 
 ## 真实协议验收
 
-重写的真实协议验收覆盖直连 DeepSeek `deepseek-flash` 的 Chat Completions、Responses 和 Messages，以及固定到 `openai` 端点并关闭回退的 OpenRouter `openai/gpt-6-luna` Responses 路由。验证跨 Provider 委派时，加入一项在两条连接上使用独立 Agent 的委派任务。针对具体改动时，只选相关且已授权的组合。[交付阶段](../architecture/evolution.md) · [连接配置](../reference/config.md)
+选择能回答验证问题且已授权的连接、模型和协议。每条路由用能确认行为的最小负载。例如，检查真实工具续接时，可以只做一次流式工具调用并回传结果。验证跨 Provider 委派时，再在相关连接上使用独立 Agent。[连接配置](../reference/config.md)
 
-验证流式输出、一次真实的工具调用及结果续接、多轮上下文，以及可用的设置和用量报告。仅验证协议行为时，使用受支持的最低启用思考等级。网关覆盖按实际确认的路由计算。分别记录请求设置与 Provider 回报的设置。
-
-先用可控的 `protocol` 套件测试流式参数组装、回放和错误行为。在协议适配器核对调用与结果标识、顺序及协议原生续接帧。真实路由能确认上游时记录实际值，缺少回报的设置或费用保持未知。比较路由时固定模型、思考等级、负载和预算，分开冷请求与持续 Session，记录 Provider 回报的输入、缓存、输出、费用和延迟。
+用可控的 `protocol` 套件验证流式参数组装、错误处理、回放和协议原生工具续接。真实调用记录已确认的上游、请求设置，以及 Provider 回报的设置和用量。缺少回报的值保持未知。比较路由时固定模型、思考等级、负载和预算，分别测量冷请求与持续 Session。
 
 使用 `live` 时传入 `--config`、`--sdk-result`、`--session-data`，在 `--` 后运行 SDK 或 CLI 调用方。用 `--secrets` 传入凭据文件，用 `--ledger` 传入授权账本。验收脚本核对调用方记录的持久化证据。遵循[付费运行前提](#凭据与运行产物)。
 

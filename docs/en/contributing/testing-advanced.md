@@ -202,11 +202,9 @@ This synthetic workload makes no paid requests. It builds a large journal and re
 
 ## Live protocol acceptance
 
-The rewrite's live protocol selection covers direct DeepSeek `deepseek-flash` on Chat Completions, Responses, and Messages, and OpenRouter `openai/gpt-6-luna` on Responses pinned to the `openai` endpoint with fallback disabled. Include a delegated task with independent Agents on the two connections when checking cross-provider delegation. For focused work, select the combinations relevant to the change and authorized for the run. [Delivery stages](../architecture/evolution.md) · [Connection configuration](../reference/config.md)
+Choose the authorized connection, model, and protocol that can answer the test question. Use the smallest workload that can confirm the behavior on that route. For example, a live continuation check can use one streamed tool call and its result. Add independent Agents on the relevant connections when the task is to verify cross-provider delegation. [Connection configuration](../reference/config.md)
 
-Cover streaming, a real tool-call/result continuation, multi-turn context, and available settings and usage. Use the lowest supported enabled reasoning effort for protocol-only checks. Gateway coverage applies to the confirmed route. Record provider-reported settings separately from those requested.
-
-Start with the controlled `protocol` suite for streamed argument assembly, replay, and error behavior. Verify call/result identity, ordering and provider-native continuation frames in the protocol adapter. For a chosen live route, verify the actual upstream where available and keep unreported settings or cost unknown. Keep the model, effort, workload, and budget fixed for routing comparisons. Separate cold requests from continued Sessions and measure provider-reported input, cache usage, output, cost, and latency.
+Use the controlled `protocol` suite to verify streamed argument assembly, error handling, replay, and provider-native tool-call continuation. In a live run, record the confirmed upstream, requested settings, and settings and usage reported by the provider. Keep unreported values unknown. When comparing routes, keep the model, reasoning effort, workload, and budget fixed. Measure cold requests and continued Sessions separately.
 
 For `live`, supply `--config`, `--sdk-result`, `--session-data`, and an SDK/CLI caller after `--`. Pass the credential file with `--secrets` and the authorized ledger with `--ledger`. The selector verifies recorded durable evidence from the caller. Use the [paid-run requirements](#credentials-and-run-artifacts).
 
