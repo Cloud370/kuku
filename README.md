@@ -6,6 +6,8 @@ kuku stays light enough that a 371 MiB RAM ARM64 board can open and continue a 1
 
 [English Docs](docs/en/index.md) | [中文文档](docs/zh/index.md) | [Docs Portal](docs/index.md)
 
+[Contributing](CONTRIBUTING.md) | [中文贡献指南](CONTRIBUTING.zh.md)
+
 > [!WARNING]
 > kuku is still pre-1.0. Until the first stable release, compatibility covers only the current SDK, CLI, server API, and Session format. Updates may break existing integrations or make older Sessions unreadable.
 

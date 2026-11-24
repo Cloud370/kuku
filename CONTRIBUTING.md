@@ -1,5 +1,7 @@
 # Contributing to kuku
 
+[中文版](CONTRIBUTING.zh.md)
+
 Contributions that are likely to be accepted:
 
 - Bug fixes
