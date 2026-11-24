@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -75,10 +75,7 @@ pub(super) fn authorization_link(state: &SetupState, outer: Rect) -> Option<Auth
     if state.step != SetupStep::SubscriptionSignIn || !usable(outer.width, outer.height) {
         return None;
     }
-    let mut area = outer.inner(Margin::new(1, 1));
-    area.height = area.height.saturating_sub(1);
-    area.width = area.width.min(MAX_CONTENT_WIDTH);
-    state.enrollment.as_ref()?.link(area)
+    state.enrollment.as_ref()?.link(outer)
 }
 
 pub(super) fn usable(width: u16, height: u16) -> bool {
@@ -120,6 +117,14 @@ pub(super) fn render(
     mode: SetupMode,
 ) {
     let area = frame.area();
+    if usable(area.width, area.height)
+        && state
+            .enrollment
+            .as_mut()
+            .is_some_and(|flow| flow.render_authorization(frame, state.problem.as_deref()))
+    {
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" kuku · model setup ")

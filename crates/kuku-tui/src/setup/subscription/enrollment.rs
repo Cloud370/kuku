@@ -4,12 +4,15 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::FutureExt;
 use kuku::adapter::{SubscriptionLogin, SubscriptionLoginResult, SubscriptionStatus};
 use kuku::config::{ProviderProxy, SubscriptionChannel};
-use ratatui::{layout::Rect, Frame};
+use ratatui::{
+    layout::{Position, Rect},
+    Frame,
+};
 use tokio::task::JoinHandle;
 
 use crate::editor::Editor;
-use crate::terminal::AuthorizationLink;
-use crate::theme::{ACCENT, MUTED};
+use crate::terminal::{send_to_terminal_clipboard, AuthorizationLink};
+use crate::theme::{ACCENT, MUTED, WARNING};
 
 use super::super::config::Settings;
 use super::super::state::{edit_field, SetupState, SetupStep};
@@ -18,12 +21,14 @@ use super::super::{ConnectionChoice, Finish};
 
 const MAX_CALLBACK_BYTES: usize = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(35);
-const LINK_ROW: u16 = 2;
+const RAW_URL_ROW: u16 = 3;
 
 pub(in crate::setup) struct Enrollment {
     channel: SubscriptionChannel,
     name: Editor,
     callback: Editor,
+    url_first_row: usize,
+    url_copy_sent: bool,
     stage: Stage,
     next_poll: Option<Instant>,
 }
@@ -53,6 +58,8 @@ impl Enrollment {
             channel,
             name: Editor::default(),
             callback: Editor::default(),
+            url_first_row: 0,
+            url_copy_sent: false,
             stage: Stage::Settings,
             next_poll: None,
         }
@@ -95,6 +102,8 @@ impl Enrollment {
             SubscriptionLogin::start(&data_dir, channel, name.as_deref(), login_proxy).await
         });
         self.stage = Stage::Preparing(proxy, task);
+        self.url_first_row = 0;
+        self.url_copy_sent = false;
         self.next_poll = Some(Instant::now());
         Ok(())
     }
@@ -150,6 +159,22 @@ impl Enrollment {
                 self.submit();
             }
             Event::Key(key)
+                if key.code == KeyCode::Char('y')
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if let Stage::Authorizing(_, attempt) = &self.stage {
+                    send_to_terminal_clipboard(attempt.authorization_url())
+                        .map_err(|error| error.to_string())?;
+                    self.url_copy_sent = true;
+                }
+            }
+            Event::Key(key) if key.code == KeyCode::PageUp => {
+                self.url_first_row = self.url_first_row.saturating_sub(8);
+            }
+            Event::Key(key) if key.code == KeyCode::PageDown => {
+                self.url_first_row = self.url_first_row.saturating_add(8);
+            }
+            Event::Key(key)
                 if key.code == KeyCode::Char('a')
                     && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
@@ -169,17 +194,84 @@ impl Enrollment {
         };
         Some(AuthorizationLink::new(
             attempt.authorization_url(),
+            Position::new(area.x, area.y),
             Rect::new(
                 area.x,
-                area.y + LINK_ROW,
+                area.y + RAW_URL_ROW,
                 area.width,
-                area.height.saturating_sub(LINK_ROW + 3),
+                area.height.saturating_sub(RAW_URL_ROW + 3),
             ),
+            self.url_first_row,
         ))
     }
 
     pub(in crate::setup) fn verifying(&self) -> bool {
         matches!(self.stage, Stage::Verifying(..))
+    }
+
+    pub(in crate::setup) fn render_authorization(
+        &mut self,
+        frame: &mut Frame<'_>,
+        problem: Option<&str>,
+    ) -> bool {
+        let area = frame.area();
+        let Some(link) = self.link(area) else {
+            return false;
+        };
+        self.url_first_row = link.first_row();
+        let mut row = 0;
+        let clipboard = if self.url_copy_sent { " · Sent" } else { "" };
+        let actions = format!("{}  [Ctrl+Y Copy URL]{clipboard}", AuthorizationLink::LABEL);
+        line(frame, area, &mut row, &actions, ACCENT);
+        line(frame, area, &mut row, "──── Authorization URL ────", MUTED);
+        row += 1;
+        for (_, text) in link.rows() {
+            line(frame, area, &mut row, text, ACCENT);
+        }
+        row += 1;
+        let end = if link.last_page_start() == 0 {
+            "──── End authorization URL ────"
+        } else {
+            "──── Page Up/Down to view the URL ────"
+        };
+        line(frame, area, &mut row, end, MUTED);
+        if self.callback.text().is_empty() {
+            line(
+                frame,
+                area,
+                &mut row,
+                "Paste the callback URL from your browser's address bar.",
+                MUTED,
+            );
+            if problem.is_none() {
+                line(
+                    frame,
+                    area,
+                    &mut row,
+                    "If the page fails to load, still copy its address.",
+                    MUTED,
+                );
+            }
+        } else {
+            line(
+                frame,
+                area,
+                &mut row,
+                "Callback received · Enter to verify",
+                MUTED,
+            );
+        }
+        if let Some(problem) = problem {
+            line(frame, area, &mut row, problem, WARNING);
+        }
+        line(
+            frame,
+            area,
+            &mut row,
+            "Esc previous step · Ctrl+C exit",
+            MUTED,
+        );
+        true
     }
 
     pub(in crate::setup) fn render(&mut self, frame: &mut Frame<'_>, area: Rect, row: &mut u16) {
@@ -191,44 +283,7 @@ impl Enrollment {
                 line(frame, area, row, "Enter to continue", MUTED);
             }
             Stage::Preparing(..) => line(frame, area, row, "Preparing authorization…", MUTED),
-            Stage::Authorizing(..) => {
-                line(
-                    frame,
-                    area,
-                    row,
-                    "Open the full authorization link in your browser.",
-                    MUTED,
-                );
-                if let Some(link) = self.link(area) {
-                    for (_, text) in link.rows() {
-                        line(frame, area, row, text, ACCENT);
-                    }
-                }
-                if self.callback.text().is_empty() {
-                    line(
-                        frame,
-                        area,
-                        row,
-                        "Paste the URL from your browser's address bar.",
-                        MUTED,
-                    );
-                    line(
-                        frame,
-                        area,
-                        row,
-                        "If the page fails to load, still copy its address.",
-                        MUTED,
-                    );
-                } else {
-                    line(
-                        frame,
-                        area,
-                        row,
-                        "Callback received · Enter to verify",
-                        MUTED,
-                    );
-                }
-            }
+            Stage::Authorizing(..) => unreachable!("authorization uses the full terminal width"),
             Stage::Verifying(..) => line(frame, area, row, "Verifying authorization…", MUTED),
             Stage::Registered(..) => line(
                 frame,

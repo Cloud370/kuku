@@ -390,21 +390,41 @@ impl WideCells {
 
 pub(crate) struct AuthorizationLink {
     url: String,
+    label_position: Position,
     area: Rect,
+    first_row: usize,
 }
 
 impl AuthorizationLink {
-    pub(crate) fn new(url: &str, area: Rect) -> Self {
-        Self {
+    pub(crate) const LABEL: &str = "[Open authorization link]";
+
+    pub(crate) fn new(url: &str, label_position: Position, area: Rect, first_row: usize) -> Self {
+        let mut link = Self {
             url: url.to_owned(),
+            label_position,
             area,
-        }
+            first_row,
+        };
+        link.first_row = first_row.min(link.last_page_start());
+        link
+    }
+
+    pub(crate) fn first_row(&self) -> usize {
+        self.first_row
+    }
+
+    pub(crate) fn last_page_start(&self) -> usize {
+        self.url
+            .len()
+            .div_ceil(usize::from(self.area.width.max(1)))
+            .saturating_sub(self.area.height.into())
     }
 
     pub(crate) fn rows(&self) -> impl Iterator<Item = (u16, &str)> {
         self.url
             .as_bytes()
             .chunks(usize::from(self.area.width.max(1)))
+            .skip(self.first_row)
             .take(usize::from(self.area.height))
             .enumerate()
             .map(|(row, text)| {
@@ -416,12 +436,21 @@ impl AuthorizationLink {
     }
 
     fn draw(&self, commands: &mut Vec<u8>) -> io::Result<()> {
-        write!(commands, "\x1b]8;;{}\x1b\\", self.url)?;
-        for (y, text) in self.rows() {
-            queue!(commands, MoveTo(self.area.x, y))?;
-            commands.write_all(text.as_bytes())?;
+        queue!(
+            commands,
+            MoveTo(self.label_position.x, self.label_position.y)
+        )?;
+        write!(
+            commands,
+            "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
+            self.url,
+            Self::LABEL
+        )?;
+        if self.last_page_start() == 0 {
+            queue!(commands, MoveTo(self.area.x, self.area.y))?;
+            commands.write_all(self.url.as_bytes())?;
         }
-        commands.write_all(b"\x1b]8;;\x1b\\")
+        Ok(())
     }
 }
 
@@ -621,18 +650,22 @@ impl Clipboard {
                 return Ok("Copied to clipboard");
             }
         }
-        let mut terminal = io::stdout().lock();
-        write!(terminal, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
-        terminal.flush()?;
+        send_to_terminal_clipboard(&text)?;
         Ok("Sent text to terminal clipboard")
     }
+}
+
+pub(crate) fn send_to_terminal_clipboard(text: &str) -> io::Result<()> {
+    let mut terminal = io::stdout().lock();
+    write!(terminal, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
+    terminal.flush()
 }
 
 #[cfg(test)]
 mod tests {
     use ratatui::backend::{Backend, ClearType};
     use ratatui::buffer::Cell;
-    use ratatui::layout::Rect;
+    use ratatui::layout::{Position, Rect};
 
     use super::{
         strip_cell_colors, AuthorizationLink, Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL,
@@ -704,22 +737,31 @@ mod tests {
     }
 
     #[test]
-    fn a_wrapped_authorization_link_uses_the_complete_target() {
+    fn an_authorization_badge_links_to_the_complete_raw_url() {
         let url = "https://example.test/authorize?state=example";
         let mut backend = FrameBackend::new(Vec::new());
-        backend.set_authorization_link(Some(AuthorizationLink::new(url, Rect::new(1, 3, 20, 3))));
+        let link = AuthorizationLink::new(url, Position::new(1, 1), Rect::new(1, 3, 20, 3), 0);
+        assert_eq!(url, link.rows().map(|(_, text)| text).collect::<String>());
+        assert_eq!(0, link.last_page_start());
+        backend.set_authorization_link(Some(link));
         let mut cell = Cell::EMPTY;
         cell.set_symbol("X");
         backend.draw([(1, 1, &cell)].into_iter()).unwrap();
         backend.flush().unwrap();
         let output = String::from_utf8(backend.output).unwrap();
-        let wrapped = format!(
-            "\x1b]8;;{url}\x1b\\\x1b[4;2H{}\x1b[5;2H{}\x1b[6;2H{}\x1b]8;;\x1b\\",
-            &url[..20],
-            &url[20..40],
-            &url[40..]
+        let hyperlink = format!(
+            "\x1b[2;2H\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\",
+            AuthorizationLink::LABEL
         );
-        assert!(output.contains(&wrapped));
+        assert!(output.contains(&hyperlink));
+        assert!(output.contains(&format!("\x1b[4;2H{url}")));
+        let scrolled =
+            AuthorizationLink::new(url, Position::new(1, 1), Rect::new(1, 3, 20, 2), usize::MAX);
+        assert_eq!(1, scrolled.first_row());
+        assert_eq!(
+            &url[20..],
+            scrolled.rows().map(|(_, text)| text).collect::<String>()
+        );
     }
 
     #[test]

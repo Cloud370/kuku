@@ -38,7 +38,7 @@ Environment variables are resolved by the server process, not the terminal clien
 
 ### Sign in to a subscription on a headless host
 
-In `kuku init` or **Add model** in `/model`, choose **Preset · ChatGPT subscription**. Choose the network mode and optionally name the account. Open the full authorization link in your own browser, then paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The pasted URL stays hidden. After sign-in, the account is saved and setup starts finding models for that account.
+In `kuku init` or **Add model** in `/model`, choose **Preset · ChatGPT subscription**. Choose the network mode and optionally name the account. Choose **Open authorization link** in a terminal with hyperlinks, or use **Ctrl+Y** to copy the complete address between the URL separators. After authorizing, paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The pasted URL stays hidden. After sign-in, the account is saved and setup starts finding models for that account.
 
 From a shell you can also run `kuku auth login chatgpt [name]` on the host running kuku. To reauthorize a saved account, use its saved name. Omit the name to derive one from the authorized identity.
 

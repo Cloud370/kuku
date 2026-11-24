@@ -102,12 +102,11 @@ async fn login(
         SubscriptionLogin::start(settings.private_data_dir()?, channel, name, proxy.clone())
             .await?;
     let url = attempt.authorization_url();
-    println!("Open this authorization link in your browser:");
+    println!("Open the authorization page in your browser.");
     if io::stdout().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb") {
-        println!("\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\");
-    } else {
-        println!("{url}");
+        println!("\x1b]8;;{url}\x1b\\[Open authorization link]\x1b]8;;\x1b\\");
     }
+    println!("\n---- Authorization URL ----\n\n{url}\n\n---- End authorization URL ----\n");
     println!("After authorization, copy the full address even if the page cannot connect.");
     io::stdout().flush()?;
     let callback = tokio::task::spawn_blocking(|| {

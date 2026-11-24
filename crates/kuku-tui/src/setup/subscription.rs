@@ -287,6 +287,14 @@ mod tests {
             .unwrap();
         let screen = terminal.backend().to_string();
         assert!(screen.contains("Callback received"));
+        assert!(screen.contains("[Open authorization link]  [Ctrl+Y Copy URL]"));
+        assert!(screen.contains("──── Authorization URL ────"));
+        assert!(screen.contains("──── End authorization URL ────"));
+        let buffer = terminal.backend().buffer();
+        let url_rows = u16::try_from(url.as_str().len().div_ceil(60)).unwrap();
+        for row in [2, 3 + url_rows] {
+            assert!((0..60).all(|column| buffer[(column, row)].symbol() == " "));
+        }
         assert!(!screen.contains("fixture-callback-secret"));
         state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
         poll_registration(&mut state, &mut settings).await;
