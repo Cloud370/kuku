@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use kuku::adapter::{ModelSelection, discover_models, inspect_model, validate_model_config};
 use kuku::config::{
-    Config, ModelRef, config_sha256, config_text_with_value, parse_config_text_with_env,
-    patch_config_text_with_env, publish_config,
+    Config, ModelRef, config_sha256, config_text_with_value_in_env, parse_config_text_with_env,
+    patch_config_text_with_loaded_default, publish_config,
 };
 use kuku::session::AgentConfig;
 use kuku_client::local::LocalService;
@@ -111,6 +111,20 @@ impl ConfigTarget {
                 .map_err(std::env::VarError::NotUnicode);
         }
         std::env::var(name)
+    }
+
+    async fn loaded_default(&self, sha256: Option<&str>) -> Option<ModelRef> {
+        let sha256 = sha256?;
+        let local = self.local_service.as_ref().ok()?;
+        let connection = local.status().await.ok()??;
+        let status = connection.status();
+        if connection.identity().config_path == self.path
+            && status.config_sha256.as_deref() == Some(sha256)
+        {
+            status.config_default_model.clone()
+        } else {
+            None
+        }
     }
 
     async fn service_state(&self, sha256: Option<&str>) -> Value {
@@ -269,8 +283,18 @@ async fn execute(
         }
         ConfigSubcommand::Set { key, value, patch } => {
             let updated = match (key, value, patch) {
-                (_, _, Some(patch)) => patch_config_text_with_env(text, &patch, environment)?,
-                (Some(key), Some(value), None) => config_text_with_value(text, &key, &value)?,
+                (_, _, Some(patch)) => {
+                    let loaded = target.loaded_default(sha256.as_deref()).await;
+                    patch_config_text_with_loaded_default(
+                        text,
+                        &patch,
+                        loaded.as_ref(),
+                        environment,
+                    )?
+                }
+                (Some(key), Some(value), None) => {
+                    config_text_with_value_in_env(text, &key, &value, environment)?
+                }
                 _ => {
                     return Err(ConfigError::new(
                         "invalid",

@@ -124,6 +124,7 @@ struct ServiceStatus {
     data_dir: String,
     config_path: Option<String>,
     config_sha256: Option<String>,
+    config_default_model: Option<kuku::config::ModelRef>,
     busy: Vec<String>,
     draining: bool,
 }
@@ -248,6 +249,10 @@ async fn admit(State(service): State<Arc<ServiceState>>, request: Request, next:
 }
 
 async fn status(State(service): State<Arc<ServiceState>>) -> Response {
+    let loaded = service
+        .config_source
+        .as_ref()
+        .map(|source| source.loaded.load_full());
     let status = ServiceStatus {
         version: BUILD_VERSION,
         protocol_version: SESSION_PROTOCOL_VERSION,
@@ -262,10 +267,8 @@ async fn status(State(service): State<Arc<ServiceState>>) -> Response {
             .config_source
             .as_ref()
             .map(|source| source.path.to_string_lossy().into_owned()),
-        config_sha256: service
-            .config_source
-            .as_ref()
-            .map(|source| (**source.loaded_sha256.load()).clone()),
+        config_sha256: loaded.as_ref().map(|config| config.sha256.clone()),
+        config_default_model: loaded.map(|config| config.default_model.clone()),
         busy: service.run_manager().await.active_run_ids(),
         draining: service.draining.load(Ordering::Acquire),
     };

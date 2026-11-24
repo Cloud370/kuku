@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use toml_edit::{DocumentMut, Item, Key, Table, TableLike};
 
-use super::resolve::{parse_config_text, parse_config_text_with_env};
+use super::resolve::parse_config_text;
 use super::types::ModelRef;
 use crate::config::types::{ConfigFile, HandoffConfig, ThinkLevel, UpdateConfig};
 use crate::error::{Error, Result};
@@ -249,11 +249,38 @@ pub fn patch_config_text_with_env(
     patch: &str,
     environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
 ) -> Result<String> {
+    patch_config_text_with_loaded_default(raw, patch, None, environment)
+}
+
+/// Apply a patch with the effective default from a service that loaded these exact bytes.
+/// The host must match the source file and its hash before supplying the pair.
+pub fn patch_config_text_with_loaded_default(
+    raw: &str,
+    patch: &str,
+    loaded_default: Option<&ModelRef>,
+    environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
     let mut doc = parse_document(raw)?;
     let mut patch: DocumentMut = patch
         .parse::<DocumentMut>()
         .map_err(|error| config_field("patch", error.message()))?;
-    let previous = read_default(&doc, &environment);
+    let original = read_default(&doc);
+    // The service and the editing process can resolve the same reference differently.
+    // Only the original default's two components are known from the loaded snapshot.
+    let previous_environment = |name: &str| {
+        if let (Some(raw), Some(loaded)) = (&original, loaded_default) {
+            if raw.connection.strip_prefix('$') == Some(name) {
+                return Ok(loaded.connection.clone());
+            }
+            if raw.model.strip_prefix('$') == Some(name) {
+                return Ok(loaded.model.clone());
+            }
+        }
+        environment(name)
+    };
+    let previous = original
+        .as_ref()
+        .and_then(|raw| resolve_pair(raw, &previous_environment));
     let delete = patch.remove("delete");
     let delete = delete
         .as_ref()
@@ -270,10 +297,15 @@ pub fn patch_config_text_with_env(
                 config_field(format!("delete[{index}]"), "expected a TOML dotted path")
             })?;
             let keys = Key::parse(path).map_err(|error| config_field(path, error.message()))?;
-            let covers_previous = previous.as_ref().is_some_and(|(pair, raw_model)| {
-                removes_model(&keys, pair, raw_model, &environment)
+            let covers_previous = original.as_ref().is_some_and(|raw| {
+                removes_model(
+                    &keys,
+                    previous.as_ref().unwrap_or(raw),
+                    &raw.model,
+                    &previous_environment,
+                )
             });
-            let keys = resolve_delete_path(&doc, keys, &environment);
+            let keys = resolve_model_path(&doc, keys, &previous_environment);
             if !remove_path(doc.as_table_mut(), &keys) && !covers_previous {
                 return Err(config_field(path, "configuration path does not exist"));
             }
@@ -281,13 +313,18 @@ pub fn patch_config_text_with_env(
         }
     }
 
-    resolve_patch_model_keys(&mut doc, &mut patch, &environment)?;
+    resolve_patch_model_keys(&mut doc, &mut patch, &previous_environment)?;
     merge_tables(doc.as_table_mut(), patch.as_table(), true);
-    if let Some((previous, raw_model)) = previous {
-        let is_still_default =
-            read_default(&doc, &environment).is_some_and(|(pair, _)| pair == previous);
+    if let (Some(previous), Some(raw)) = (&previous, &original) {
+        let new_default = read_default(&doc);
+        let is_still_default = new_default
+            .as_ref()
+            .and_then(|pair| resolve_pair(pair, &previous_environment))
+            .as_ref()
+            == Some(previous);
         let registered = model_table(&doc, &previous.connection).is_some_and(|models| {
-            registered_model_key(models, &previous.model, &environment).is_some()
+            models.contains_key(&raw.model)
+                || registered_model_key(models, &previous.model, &previous_environment).is_some()
         });
         if removed_previous && is_still_default && !registered {
             return Err(config_field(
@@ -296,30 +333,43 @@ pub fn patch_config_text_with_env(
             ));
         }
         if !removed_previous
-            && !is_still_default
             && !registered
+            && new_default.as_ref() != Some(raw)
             && has_connection(&doc, &previous.connection)
         {
+            let old_key = if loaded_default.is_some()
+                && raw.model.starts_with('$')
+                && resolve_model_key(&raw.model, &environment).as_ref() != Some(&previous.model)
+            {
+                &previous.model
+            } else {
+                &raw.model
+            };
             let model = ensure_table(doc.as_table_mut(), "model")?;
             let connection = ensure_table(model, &previous.connection)?;
-            connection.insert(&raw_model, Item::Table(Table::new()));
+            connection.insert(old_key, Item::Table(Table::new()));
         }
     }
     Ok(doc.to_string())
 }
 
-fn read_default(
-    doc: &DocumentMut,
-    environment: &impl Fn(&str) -> EnvValue,
-) -> Option<(ModelRef, String)> {
-    let item = doc.get("default_model")?;
-    let raw_model = item.as_table_like()?.get("model")?.as_str()?;
-    let mut pair = DocumentMut::new();
-    pair["default_model"] = item.clone();
-    let resolved = parse_config_text_with_env(&pair.to_string(), environment)
-        .ok()?
-        .default_model?;
-    Some((resolved, raw_model.to_owned()))
+fn read_default(doc: &DocumentMut) -> Option<ModelRef> {
+    let pair = doc.get("default_model")?.as_table_like()?;
+    Some(ModelRef::new(
+        pair.get("connection")?.as_str()?,
+        pair.get("model")?.as_str()?,
+    ))
+}
+
+fn resolve_pair(raw: &ModelRef, environment: &impl Fn(&str) -> EnvValue) -> Option<ModelRef> {
+    let resolve = |value: &str| match value.strip_prefix('$') {
+        Some(name) => environment(name).ok(),
+        None => Some(value.to_owned()),
+    };
+    Some(ModelRef::new(
+        resolve(&raw.connection)?,
+        resolve(&raw.model)?,
+    ))
 }
 
 fn has_connection(doc: &DocumentMut, name: &str) -> bool {
@@ -378,7 +428,7 @@ fn removes_model(
     }
 }
 
-fn resolve_delete_path(
+fn resolve_model_path(
     doc: &DocumentMut,
     mut keys: Vec<Key>,
     environment: &impl Fn(&str) -> EnvValue,
@@ -510,8 +560,19 @@ fn config_field(field: impl Into<String>, message: impl Into<String>) -> Error {
 
 /// Edit one scalar value using a TOML dotted path, preserving comments and formatting.
 pub fn config_text_with_value(raw: &str, dot_key: &str, value: &str) -> Result<String> {
+    config_text_with_value_in_env(raw, dot_key, value, |name| std::env::var(name))
+}
+
+/// Edit one scalar using the caller's environment to locate a registered model by exact ID.
+pub fn config_text_with_value_in_env(
+    raw: &str,
+    dot_key: &str,
+    value: &str,
+    environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
     let mut doc = parse_document(raw)?;
     let keys = Key::parse(dot_key).map_err(|error| config_field(dot_key, error.message()))?;
+    let keys = resolve_model_path(&doc, keys, &environment);
     let (leaf, parents) = keys
         .split_last()
         .ok_or_else(|| config_field(dot_key, "empty config key"))?;

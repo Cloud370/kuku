@@ -52,6 +52,9 @@ pub struct ServiceStatus {
     pub config_path: Option<String>,
     /// SHA-256 of the configuration bytes most recently loaded by the service.
     pub config_sha256: Option<String>,
+    /// Exact default pair resolved by the service from that same configuration.
+    #[serde(default)]
+    pub config_default_model: Option<kuku::config::ModelRef>,
     /// Active Agent work and cleanup holding the server open.
     pub busy: Vec<String>,
     /// Whether the server has paused admission to close Sessions.

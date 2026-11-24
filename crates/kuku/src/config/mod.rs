@@ -15,8 +15,9 @@ pub(crate) mod subscription;
 pub(crate) mod types;
 
 pub use mutate::{
-    config_patch_defaults, config_sha256, config_text_with_value, generate_default,
-    load_and_patch_config, patch_config_text_with_env, publish_config, set_value,
+    config_patch_defaults, config_sha256, config_text_with_value, config_text_with_value_in_env,
+    generate_default, load_and_patch_config, patch_config_text_with_env,
+    patch_config_text_with_loaded_default, publish_config, set_value,
 };
 pub use pricing::{ConfiguredRouteRates, ModelPricing, PriceCatalog, RouteQuote, TokenRates};
 pub use provider::{

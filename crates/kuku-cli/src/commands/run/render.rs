@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
 
 use kuku::ModelRecoveryInfo;
-use kuku_client::{Acknowledgement, AgentSnapshot, HistoryEntry, HistoryKind, Target};
+use kuku_client::{Acknowledgement, HistoryEntry, HistoryKind, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -10,7 +10,7 @@ use crate::cli_args::RunArgs;
 use crate::commands::CliResult;
 use crate::display::{Display, OutputLine};
 
-use super::{RunOutcome, RunProgress, permission_ask_line};
+use super::{RunOutcome, RunProgress, RunResult, permission_ask_line};
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -76,6 +76,10 @@ impl RunRenderer {
             in_thinking: false,
             thinking_start: None,
         }
+    }
+
+    pub(super) fn streaming(&self) -> bool {
+        self.stream_json
     }
 
     pub(super) fn needs_preview(&self) -> bool {
@@ -195,42 +199,37 @@ impl RunRenderer {
     pub(super) fn finish(
         &mut self,
         progress: &RunProgress,
-        agent: &AgentSnapshot,
+        agent: &str,
+        report: &RunResult,
         outcome: RunOutcome,
         elapsed: std::time::Duration,
     ) -> CliResult {
         self.close_thinking();
-        let response = (outcome == RunOutcome::Completed)
-            .then_some(agent.last_output.as_deref())
-            .flatten();
+        let response = report.response.as_deref();
         if self.json || self.stream_json {
-            if let Some(request) = &agent.permission {
+            if let Some(request) = &report.permission {
                 if self.stream_json {
                     write_json(&permission_ask_line(request))?;
                 }
             }
-            let mut result = terminal_record(progress, &agent.address, outcome, elapsed);
-            result["agent_status"] = json!(agent.status);
-            result["turns"] = json!(agent.turn);
-            result["response"] = json!(response);
-            result["config"] = json!(agent.config);
-            result["usage"] = json!(agent.usage);
-            result["permission"] = json!(agent.permission);
-            result["question"] = json!(agent.question);
-            result["last_model_route"] = json!(agent.last_model_route);
-            if let Some(route) = &agent.last_model_route {
-                result["connection"] = json!(route.connection);
-                result["model"] = json!(route.model);
+            #[derive(Serialize)]
+            struct FinalRecord<'a> {
+                #[serde(flatten)]
+                session: Value,
+                #[serde(flatten)]
+                result: &'a RunResult,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                connection: Option<&'a str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                model: Option<&'a str>,
             }
-            if outcome == RunOutcome::Failed {
-                result["error"] = json!(
-                    agent
-                        .last_error
-                        .as_deref()
-                        .map_or_else(|| outcome.to_string(), str::to_owned,)
-                );
-            }
-            write_json(&result)?;
+            let route = report.last_model_route.as_ref();
+            write_json(&FinalRecord {
+                session: terminal_record(progress, agent, outcome, elapsed),
+                result: report,
+                connection: route.map(|route| route.connection.as_str()),
+                model: route.map(|route| route.model.as_str()),
+            })?;
         } else {
             if let Some(output) = response {
                 if let Some(suffix) = output.strip_prefix(&self.rendered_text) {
@@ -241,21 +240,17 @@ impl RunRenderer {
             }
             println!();
             let session_id = progress.session_id.as_deref().unwrap_or_default();
-            eprintln!(
-                "session {session_id} agent {}: {}",
-                agent.address,
-                outcome.as_str()
-            );
-            if let Some(request) = &agent.permission {
+            eprintln!("session {session_id} agent {agent}: {}", outcome.as_str());
+            if let Some(request) = &report.permission {
                 eprintln!("pending authorization {}: {}", request.id, request.summary);
             }
-            if let Some(request) = &agent.question {
+            if let Some(request) = &report.question {
                 eprintln!("pending question {}: {}", request.id, request.text);
             }
             if self.verbose {
                 eprintln!(
                     "{}",
-                    serde_json::to_string_pretty(agent).unwrap_or_default()
+                    serde_json::to_string_pretty(report).unwrap_or_default()
                 );
             }
         }

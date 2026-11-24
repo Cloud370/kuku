@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::sync::{Arc, Barrier};
 
-use kuku::config::{ApiKey, ModelRef, load_config};
+use kuku::config::{ApiKey, ModelRef, ProviderProxy, load_config};
 use kuku::util::private_directory;
 use kuku_client::ConnectionOptions;
 use toml_edit::{DocumentMut, value};
@@ -57,6 +57,59 @@ fn options(root: &std::path::Path, config: Option<std::path::PathBuf>) -> Connec
 
 fn select_environment(state: &mut SetupState) {
     state.credential_source = CredentialSource::Environment;
+}
+
+#[tokio::test]
+async fn changing_a_connection_preserves_request_scoped_limits_on_other_models() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("existing.toml");
+    let mut document: DocumentMut = STANDARD_CONFIG.parse().unwrap();
+    document["model"]["anthropic"]["fallback"]
+        .as_table_mut()
+        .unwrap()
+        .remove("max_output_tokens");
+    fs::write(&config, document.to_string()).unwrap();
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
+    state.proxy = ProviderProxy::Direct;
+
+    save(&settings, &state).unwrap();
+
+    let saved = load_config(&config).unwrap().resolve().unwrap();
+    assert_eq!(
+        ProviderProxy::Direct,
+        saved.providers["anthropic"].options.proxy
+    );
+    assert_eq!(
+        Some(8192),
+        saved.models[&saved.default_model].max_output_tokens
+    );
+    let fallback = ModelRef::new("anthropic", "fallback");
+    assert_eq!(None, saved.models[&fallback].max_output_tokens);
+}
+
+#[tokio::test]
+async fn changing_a_connection_rejects_invalid_settings_on_other_models() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("existing.toml");
+    let mut document: DocumentMut = STANDARD_CONFIG.parse().unwrap();
+    document["model"]["anthropic"]["fallback"]["service_tier"] = value("invalid-tier");
+    let original = document.to_string();
+    fs::write(&config, &original).unwrap();
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
+    state.proxy = ProviderProxy::Direct;
+
+    let error = save(&settings, &state).unwrap_err().to_string();
+    assert!(error.contains("model.anthropic.fallback"), "{error}");
+    assert!(error.contains("invalid-tier"), "{error}");
+    assert_eq!(original, fs::read_to_string(config).unwrap());
 }
 
 #[tokio::test]

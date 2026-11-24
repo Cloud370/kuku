@@ -3,11 +3,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use kuku::config::{Config, config_sha256, parse_config_text};
+use kuku::config::{Config, ModelRef, config_sha256, parse_config_text};
+
+pub(crate) struct LoadedConfig {
+    pub(crate) sha256: String,
+    pub(crate) default_model: ModelRef,
+}
 
 pub(crate) struct ConfigSource {
     pub(crate) path: PathBuf,
-    pub(crate) loaded_sha256: ArcSwap<String>,
+    pub(crate) loaded: ArcSwap<LoadedConfig>,
 }
 
 impl ConfigSource {
@@ -21,7 +26,10 @@ impl ConfigSource {
         let config = resolve(&bytes)?;
         let source = Arc::new(Self {
             path,
-            loaded_sha256: ArcSwap::from_pointee(config_sha256(&bytes)),
+            loaded: ArcSwap::from_pointee(LoadedConfig {
+                sha256: config_sha256(&bytes),
+                default_model: config.default_model.clone(),
+            }),
         });
         Ok((source, config))
     }
@@ -37,7 +45,7 @@ impl ConfigWatcher {
         let cancel_clone = cancel.clone();
 
         tokio::spawn(async move {
-            let mut previous_hash = (**source.loaded_sha256.load()).clone();
+            let mut previous_hash = source.loaded.load().sha256.clone();
             let mut interval = tokio::time::interval(Duration::from_secs(3));
             interval.tick().await;
             loop {
@@ -54,8 +62,12 @@ impl ConfigWatcher {
                 }
                 match resolve(&bytes) {
                     Ok(config) => {
+                        let loaded = LoadedConfig {
+                            sha256: hash.clone(),
+                            default_model: config.default_model.clone(),
+                        };
                         config_store.store(Arc::new(config));
-                        source.loaded_sha256.store(Arc::new(hash.clone()));
+                        source.loaded.store(Arc::new(loaded));
                         tracing::info!("config reloaded");
                     }
                     Err(error) => tracing::warn!("config reload failed: {error}"),

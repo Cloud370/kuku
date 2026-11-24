@@ -41,7 +41,7 @@
 | `GET` | `/workspaces` | 列出工作区 |
 | `GET` | `/workspaces/resolve`、`/workspaces/files`、`/workspaces/skills` | 解析服务端路径，或查找工作区文件与 Skill |
 
-状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的工作，包括运行中的 Job。受管客户端会等旧进程释放服务租约后启动替代进程。
+状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。使用配置文件时，`config_sha256` 标识服务已加载的文件版本，`config_default_model` 给出服务从该版本解析的默认连接与模型。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的工作，包括运行中的 Job。受管客户端会等旧进程释放服务租约后启动替代进程。
 
 `GET /service/model-default-plan` 适用于已加载配置文件的受管服务。它要求 Bearer 认证，接受 `connection`、`model` 和 `config_sha256` 查询字段。服务在自身环境中核对活动配置里的连接和精确模型 ID。响应含 `config_sha256`，需要显式保留原默认模型时也含 `register_previous_default`。客户端可依据响应执行带并发保护的本地配置编辑。这个接口只检查文件，返回 `Cache-Control: no-store`。
 
@@ -121,7 +121,7 @@
 
 `GET /sessions/{id}/history/destinations/{event_id}/files` 接受 `workspace` 和 `agent`，返回 `changes`、`skipped` 和方案 `fingerprint`。每项改动包含 `path`、`remove` 和 `lines`（增加、删除的行数，或 null）。将确认过的指纹传给 `history_jump.file_restore` 即可应用预览，省略该字段则保留文件。
 
-已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。`message_rewind` 和 `history_jump` 帧带有 `rewind_command_id`，发起回退的客户端可在提交时恢复未发送的草稿。
+已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，帧的 `turn` 指明接纳它们的轮次，包括运行中接纳的 steering 输入。`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。`message_rewind` 和 `history_jump` 帧带有 `rewind_command_id`，发起回退的客户端可在提交时恢复未发送的草稿。
 
 带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀。Responses 可通过流或最终输出中带类型的思考和摘要文本提供这些内容。不透明思考状态仅用于报告活动，并留在 provider 重放记录中。实时 `reasoning_preview` 事件追加文本，已提交的助手条目也可包含此字段。
 

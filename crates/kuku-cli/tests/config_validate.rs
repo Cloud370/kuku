@@ -324,24 +324,32 @@ fn removing_a_model_with_an_environment_alias_removes_its_registration() {
     let raw = FIXTURE_CONFIG.replace("vendor/fixture.v1", "$KUKU_CLI_DEFAULT_ID");
     let raw = format!("{raw}\n[model.work.\"$KUKU_CLI_REGISTERED_ID\"]\ncontext_window = 8192\n");
     fs::write(&path, &raw).unwrap();
-    let patch_config = |patch: &str| {
+    let set = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
             .env("KUKU_HOME", home.path())
             .env("KUKU_CLI_DEFAULT_ID", "vendor/fixture.v1")
             .env("KUKU_CLI_REGISTERED_ID", "vendor/fixture.v1")
-            .args(["config", "set", "--patch", patch])
+            .args(["config", "set"])
+            .args(args)
             .output()
             .unwrap()
     };
-    let edited = patch_config(
+    let edited = set(&[
+        "--patch",
         r#"
 [model.work."vendor/fixture.v1"]
 context_window = 16384
 "#,
-    );
+    ]);
     assert_eq!("updated", report(&edited, 0, &path)["status"]);
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("context_window = 16384"));
+    assert!(text.contains("[model.work.\"$KUKU_CLI_REGISTERED_ID\"]"));
+    assert!(!text.contains("[model.work.\"vendor/fixture.v1\"]"));
+    let scalar = set(&[r#"model.work."vendor/fixture.v1".context_window"#, "32768"]);
+    report(&scalar, 0, &path);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("context_window = 32768"));
     assert!(text.contains("[model.work.\"$KUKU_CLI_REGISTERED_ID\"]"));
     assert!(!text.contains("[model.work.\"vendor/fixture.v1\"]"));
     for current in ["$KUKU_CLI_REGISTERED_ID", "vendor/fixture.v1"] {
@@ -351,11 +359,48 @@ context_window = 16384
 default_model = {{ connection = "work", model = "next.model.v2" }}
 "#
         );
-        let output = patch_config(&patch);
+        let output = set(&["--patch", &patch]);
         assert_eq!("updated", report(&output, 0, &path)["status"]);
         let result = report(&config(home.path(), &["models"]), 0, &path);
         assert_eq!(1, result["models"].as_array().unwrap().len());
         assert_eq!("next.model.v2", result["models"][0]["model"]);
+    }
+}
+
+#[test]
+fn offline_default_change_retains_resolvable_references_and_repairs_missing_ones() {
+    const VARIABLE: &str = "KUKU_FIXTURE_OFFLINE_ID";
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().canonicalize().unwrap().join("config.toml");
+    let patch = r#"default_model = { connection = "work", model = "next" }"#;
+    let run = |model: Option<&str>, args: &[&str]| {
+        let mut cli = Command::new(env!("CARGO_BIN_EXE_kuku-cli"));
+        cli.env("KUKU_HOME", home.path()).env_remove(VARIABLE);
+        if let Some(id) = model {
+            cli.env(VARIABLE, id);
+        }
+        cli.arg("config").args(args).output().unwrap()
+    };
+    let raw = FIXTURE_CONFIG.replace("vendor/fixture.v1", &format!("${VARIABLE}"));
+    fs::write(&path, &raw).unwrap();
+    report(&run(Some("next"), &["set", "--patch", patch]), 0, &path);
+    let models = report(&run(Some("old"), &["models"]), 0, &path);
+    assert_eq!(2, models["models"].as_array().unwrap().len());
+    assert_eq!("old", models["models"][1]["model"]);
+
+    for invalid in [
+        raw,
+        FIXTURE_CONFIG.replace(
+            "connection = \"work\"",
+            &format!("connection = \"${VARIABLE}\""),
+        ),
+    ] {
+        fs::write(&path, invalid).unwrap();
+        report(&run(None, &["set", "--patch", patch]), 0, &path);
+        assert!(!fs::read_to_string(&path).unwrap().contains(VARIABLE));
+        let models = report(&run(None, &["models"]), 0, &path);
+        assert_eq!(1, models["models"].as_array().unwrap().len());
+        assert_eq!("next", models["default_model"]["model"]);
     }
 }
 

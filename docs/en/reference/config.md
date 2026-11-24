@@ -21,6 +21,8 @@ Replace the URL and model ID with the ones your connection offers. Set `MY_GATEW
 
 When you change the default through the TUI or a CLI patch, kuku keeps the previous model registered if its connection remains and you have not explicitly deleted that model. For a manual edit, add a table such as `[model.old_connection."old-model"]` before changing `default_model` to keep the previous pair available to existing Sessions. Removing a model requires affected Agents to select another configured pair.
 
+When a CLI patch edits the file revision loaded by the local service, kuku uses the service's resolved previous default. If the editing process resolves the old model variable differently or lacks that variable, kuku registers the previously implicit model by its exact ID.
+
 ## Top-level keys
 
 | Key | Type | Meaning |

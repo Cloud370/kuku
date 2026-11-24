@@ -260,6 +260,8 @@ pub struct AgentSettlement {
     pub output: Option<String>,
     /// Failure text or a bounded excerpt, according to observation scope.
     pub error: Option<String>,
+    /// Measurements recorded for this Turn, when the observation includes its full settlement.
+    pub usage: Option<crate::UsageTotals>,
 }
 
 /// Latest identifiable phase from an Agent's durable execution or live provider activity.

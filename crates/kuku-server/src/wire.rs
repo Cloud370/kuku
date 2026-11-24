@@ -512,7 +512,9 @@ pub(crate) fn committed_frame(
                 value["turn"] = json!(turn);
                 value["request_id"] = json!(request_id);
             }
-            EventPayload::Unknown(record) if kind == "runtime.step_prepared" => {
+            EventPayload::Unknown(record)
+                if matches!(kind, "runtime.step_prepared" | "runtime.model_dispatched") =>
+            {
                 value["turn"] = record["turn"].clone();
                 value["request_id"] = record["request_id"].clone();
             }
@@ -546,8 +548,9 @@ pub(crate) fn committed_frame(
                     Some("inputs_accepted") => {
                         value["delivery"] =
                             json!({"status":"accepted","input_ids":record["input_ids"]});
-                        if record["turn"].is_null() {
-                            value["turn"] = json!(event.id);
+                        let turn = record["turn"].as_u64().unwrap_or(event.id);
+                        value["turn"] = json!(turn);
+                        if turn == event.id {
                             if let Some(start) =
                                 turns.started_at_ms(agent.unwrap_or("main"), event.id)
                             {

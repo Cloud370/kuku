@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::state::{SetupState, valid_env_name, valid_stored_key};
 use super::{ConnectionChoice, CredentialSource, ProviderPreset};
-use kuku::adapter::{SubscriptionAccountInfo, inspect_model};
+use kuku::adapter::{SubscriptionAccountInfo, inspect_model, validate_model_config};
 use kuku::config::{
     ApiKey, Config, ConfigFile, ModelConfig, ModelRef, ProviderConfig, ProviderFormat,
     ProviderProfile, ProviderProxy, RequestedOutput, SubscriptionChannel, ThinkLevel,
@@ -667,7 +667,10 @@ fn save_with_lookup(
         let old = settings.model(&id);
         let path = model_config_key(&document, &id, environment);
         let fields = model_entry(&mut document, &path)?;
-        if save_model(fields, old, &model, state, is_primary, &connection) || old.is_none() {
+        if save_model(fields, old, &model, state, is_primary, &connection)
+            || old.is_none()
+            || connection_changed
+        {
             validate_routes.push(id);
         }
     }
@@ -678,10 +681,14 @@ fn save_with_lookup(
         .resolve()
         .map_err(|error| invalid_config(&error.to_string()))?;
     for id in validated.models.keys() {
-        if validate_routes.contains(id) || (connection_changed && id.connection == provider_name) {
-            inspect_model(&validated, &model_agent_config(id))
-                .map_err(|error| invalid_config(&format!("{}: {error}", id.config_path())))?;
-        }
+        let result = if validate_routes.contains(id) {
+            inspect_model(&validated, &model_agent_config(id)).map(|_| ())
+        } else if connection_changed && id.connection == provider_name {
+            validate_model_config(&validated, id)
+        } else {
+            continue;
+        };
+        result.map_err(|error| invalid_config(&format!("{}: {error}", id.config_path())))?;
     }
 
     write_config(settings, output.as_bytes(), before_compare)?;

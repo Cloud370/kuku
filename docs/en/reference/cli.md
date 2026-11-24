@@ -190,6 +190,8 @@ File and stdin prompts are passed as text, including newlines. Use a positional 
 
 The final object has `type: "session"`, a `status` and `event` describing the outcome, and the `session_id` and `agent` when available. A completed run includes its final `response`, a failed run includes its `error`, and available route and usage information appears in `connection`, `model`, and `usage`. A waiting result identifies its `question` or `permission` by `id`. Diagnostics go to stderr. Argument errors can exit before there is a Session result.
 
+The receipt identifies the submitted input. Once the Agent admits it, streamed output and the final result belong to that Turn, even if another client starts a later Turn. The result reports that Turn's usage when available. Withdrawing or replacing the input while it is queued ends the run with `status: "cancelled"` and `input_status: "withdrawn"`.
+
 Retrying a committed `--command-id` returns its original `receipt`, `replayed: true`, and the current `input_status` when known. Use `kuku show <SESSION_ID> --json` to read the Agent's current state.
 
 | Exit code | Result status | Meaning |
@@ -211,7 +213,7 @@ kuku reply <SESSION_ID> <REQUEST_ID> --deny
 kuku reply <SESSION_ID> <REQUEST_ID> --answer "<text>"
 ```
 
-Answers a durable permission request or question and observes the continuation. Pass `--agent <address>` for a request from an Agent other than `main`. Use `--command-id <id>` to retry the same reply.
+Answers a durable permission request or question and observes the continuation. Pass `--agent <address>` for a request from an Agent other than `main`. Use `--command-id <id>` to retry the same reply. A new reply reports the Turn that admitted the answer or resumed the permission request. A reply to a detached script permission reports its Job. Ctrl-C targets that continuation. An exact retry returns the original acknowledgement and the current Agent snapshot in `state`.
 
 ## `kuku show`
 

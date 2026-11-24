@@ -189,6 +189,8 @@ kuku run [OPTIONS] --prompt-file <PATH|->
 
 最终结果包含 `type: "session"`、表示结果的 `status` 和 `event`，以及可用的 `session_id` 和 `agent`。运行完成后返回最终 `response`，运行失败时返回 `error`。已知的实际连接、模型和用量分别见 `connection`、`model` 和 `usage`。等待时，`question` 或 `permission` 中的 `id` 标识待答复的请求。诊断写往 stderr。参数无效时可能在生成 Session 结果前退出。
 
+回执标识本次提交的输入。Agent 接纳输入后，即使另一客户端开启了后续 Turn，流式输出和最终结果也只来自接纳该输入的 Turn。结果会在用量信息可用时返回该 Turn 的用量。排队中的输入被撤回或替换后，本次运行结束，返回 `status: "cancelled"` 和 `input_status: "withdrawn"`。
+
 用已提交的 `--command-id` 重试时，返回原始 `receipt`、`replayed: true` 和已知的当前 `input_status`。用 `kuku show <SESSION_ID> --json` 查看 Agent 的当前状态。
 
 | 退出码 | 结果状态 | 含义 |
@@ -210,7 +212,7 @@ kuku reply <SESSION_ID> <REQUEST_ID> --deny
 kuku reply <SESSION_ID> <REQUEST_ID> --answer "<text>"
 ```
 
-答复持久授权请求或问题，并观察后续运行。要回复 `main` 之外的 Agent，请传 `--agent <address>`。可用 `--command-id <id>` 原样重试回复。
+答复持久授权请求或问题，并观察后续运行。要回复 `main` 之外的 Agent，请传 `--agent <address>`。可用 `--command-id <id>` 原样重试回复。首次答复返回接纳答案或恢复授权操作的 Turn 结果。答复后台脚本的授权请求会返回对应 Job 的结果。Ctrl-C 针对本次答复的后续执行。原样重试时，返回原回执及 `state` 中的当前 Agent 快照。
 
 ## `kuku show`
 

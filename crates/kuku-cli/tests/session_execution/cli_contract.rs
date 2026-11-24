@@ -343,6 +343,84 @@ async fn all_config_commands_follow_the_active_file_unless_explicitly_overridden
     stop_managed(home.path()).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn patch_preserves_the_running_services_default_when_the_editors_environment_differs() {
+    const VARIABLE: &str = "KUKU_FIXTURE_PREVIOUS_MODEL";
+    let mock = MockServer::start_async().await;
+    let reply = |model: &str| {
+        mock.mock(|when, then| {
+            when.method(Method::POST)
+                .path("/v1/chat/completions")
+                .json_body_partial(json!({"model":model}).to_string());
+            then.status(200).header("content-type", "text/event-stream").body(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            );
+        })
+    };
+    let old_requests = reply("model-A");
+    let new_requests = reply("model-B");
+    for editor_model in [Some("model-B"), None] {
+        let workspace = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!(
+                r#"default_model = {{ connection = "work", model = "${VARIABLE}" }}
+[provider.work]
+format = "openai-chat"
+base_url = "{}"
+api_key = "fixture"
+"#,
+                mock.url("/v1"),
+            ),
+        )
+        .unwrap();
+        let first = run_cli(workspace.path(), home.path(), &config)
+            .env(VARIABLE, "model-A")
+            .args(["--json", "first fixture request"])
+            .output()
+            .unwrap();
+        let first = result(&first);
+        assert_eq!("completed", first["status"]);
+        let service = LocalService::resolve(home.path(), None).unwrap();
+        let client = kuku_client::Client::local(&service).await.unwrap();
+        let mut edit = Command::new(env!("CARGO_BIN_EXE_kuku-cli"));
+        edit.env("KUKU_HOME", home.path()).env_remove(VARIABLE);
+        if let Some(value) = editor_model {
+            edit.env(VARIABLE, value);
+        }
+        let patch = "default_model = { connection = \"work\", model = \"model-B\" }\n[model.work.model-B]\nmax_output_tokens = 512";
+        let edited = edit
+            .args(["config", "set", "--patch", patch])
+            .output()
+            .unwrap();
+        assert_eq!("updated", result(&edited)["status"]);
+        tokio::time::timeout(Duration::from_secs(7), async {
+            while client.models().await.unwrap().default_model.model != "model-B" {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("service should load the edited file");
+        for args in [
+            vec![
+                "--json",
+                "--session",
+                first["session_id"].as_str().unwrap(),
+                "continue fixture",
+            ],
+            vec!["--json", "new fixture"],
+        ] {
+            let output = invoke(workspace.path(), home.path(), &config, &args);
+            assert_eq!("completed", result(&output)["status"]);
+        }
+        stop_managed(home.path()).await;
+    }
+    old_requests.assert_hits(4);
+    new_requests.assert_hits(2);
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sigint_during_snapshot_respects_the_submission_boundary() {
