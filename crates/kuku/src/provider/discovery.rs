@@ -249,10 +249,27 @@ fn parse_chatgpt_models(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
         slug: String,
         display_name: Option<String>,
         visibility: Option<String>,
-        service_tiers: Option<Vec<String>>,
+        service_tiers: Option<Vec<ServiceTier>>,
     }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ServiceTier {
+        Id(String),
+        Described { id: String },
+        Unknown(serde::de::IgnoredAny),
+    }
+
+    impl ServiceTier {
+        fn id(self) -> Option<String> {
+            match self {
+                Self::Id(id) | Self::Described { id } => Some(id),
+                Self::Unknown(_) => None,
+            }
+        }
+    }
+
     let catalog: Catalog = serde_json::from_slice(bytes)
-        .map_err(|_| discovery_error("OpenAI did not return a ChatGPT account model list"))?;
+        .map_err(|_| discovery_error("unexpected ChatGPT model catalog format"))?;
     let mut seen = HashSet::new();
     Ok(catalog
         .models
@@ -266,7 +283,11 @@ fn parse_chatgpt_models(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
             id: model.slug,
             name: model.display_name,
             capabilities: ModelCapabilityDeclaration {
-                service_tiers: model.service_tiers,
+                service_tiers: model.service_tiers.and_then(|declared| {
+                    let empty = declared.is_empty();
+                    let ids: Vec<_> = declared.into_iter().filter_map(ServiceTier::id).collect();
+                    (empty || !ids.is_empty()).then_some(ids)
+                }),
                 ..ModelCapabilityDeclaration::default()
             },
         })
@@ -380,7 +401,11 @@ mod tests {
     fn chatgpt_models_follow_the_accounts_order_and_visibility() {
         let models = parse_chatgpt_models(
             br#"{"models":[
-            {"slug":"second","display_name":"Second","visibility":"list"},
+            {"slug":"second","display_name":"Second","visibility":"list","service_tiers":[
+                {"id":"priority","name":"Fast","description":"Faster processing"},
+                {"id":"ultrafast","name":"Ultrafast","description":"Lowest latency"},
+                {"name":"Unrecognized"}, "default"
+            ]},
             {"slug":"hidden","visibility":"private"},
             {"slug":"first","display_name":"First","visibility":"list"},
             {"slug":"first","display_name":"Ignore duplicate","visibility":"list"}
@@ -394,6 +419,15 @@ mod tests {
                 .map(|model| (model.id.as_str(), model.name.as_deref()))
                 .collect::<Vec<_>>()
         );
+        assert_eq!(
+            Some(vec![
+                "priority".into(),
+                "ultrafast".into(),
+                "default".into()
+            ]),
+            models[0].capabilities.service_tiers
+        );
+        assert_eq!(None, models[1].capabilities.service_tiers);
     }
 
     #[test]
