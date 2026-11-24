@@ -43,6 +43,8 @@ Release runs the workspace contracts on Linux, macOS and Windows in parallel wit
 
 Prepare a Chinese user-facing announcement under `## [VERSION]` or `## [VERSION] - YYYY-MM-DD` in `CHANGELOG.md`. Release follows it with the generated PR list and contributor credits. It prefers the previous published ancestor from the same update channel and links to the complete source comparison.
 
+Place the copyable installation commands in the final section of the published GitHub Release, immediately above the download list.
+
 Ask a contributor or an agent to review the complete range from the previous published version to the candidate using the merged PRs, code and acceptance evidence. Use separate sections for new features, improvements, bug fixes and upgrade notes where relevant. Write about what users can do and include measured results only when the release candidate has evidence for them. The generated PR details appear in an expandable section.
 
 To preview the announcement on its own, run Release with `tag` empty, set `preview-version`, and enable `notes-only`. Download the `release-notes` artifact.
