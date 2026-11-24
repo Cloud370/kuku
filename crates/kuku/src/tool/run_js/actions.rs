@@ -89,7 +89,7 @@ impl WorkspaceActions {
                     .join("outputs");
                 let result = run_command_to(
                     &args,
-                    CommandCwd::Prepared(&self.workspace),
+                    CommandCwd::prepared(&self.workspace),
                     None,
                     Some(execution.cancellation()),
                     CommandCapture::script(

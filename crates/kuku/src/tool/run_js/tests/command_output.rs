@@ -36,7 +36,7 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
                     };
                     run_command_to(
                         &json!({"shell":shell, "command":command, "cwd":".", "timeout":5}),
-                        CommandCwd::Unprepared(workspace.path()),
+                        CommandCwd::unprepared(workspace.path()),
                         None,
                         Some(execution.cancellation()),
                         CommandCapture::script(

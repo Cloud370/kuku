@@ -201,7 +201,7 @@ pub(super) fn spawn_command_slot(
 
                     let result = run_command_to(
                         &args,
-                        CommandCwd::Prepared(&workspace),
+                        CommandCwd::prepared(&workspace),
                         Some(tool_tx),
                         Some(cancel_cmd),
                         CommandCapture::model(

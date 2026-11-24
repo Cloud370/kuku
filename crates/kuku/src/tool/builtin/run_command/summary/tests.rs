@@ -409,7 +409,7 @@ async fn cargo_rule_retains_assertions_and_the_original_output() {
             "args": ["test", "--offline", "--color", "always", "--target-dir", "build"],
             "cwd": ".",
         }),
-        CommandCwd::Unprepared(dir.path()),
+        CommandCwd::unprepared(dir.path()),
         None,
         None,
         CommandCapture::model(

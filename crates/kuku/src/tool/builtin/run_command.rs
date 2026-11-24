@@ -160,7 +160,7 @@ pub(crate) async fn run_prepared_command(
     let output_id = format!("command-{}-{timestamp}-{sequence}", std::process::id());
     run_command_to(
         args,
-        CommandCwd::Prepared(workspace),
+        CommandCwd::prepared(workspace),
         event_tx,
         cancel,
         CommandCapture::model(
@@ -185,7 +185,7 @@ pub(crate) async fn run_command_with_output(
 ) -> ToolResultEnvelope {
     run_command_to(
         args,
-        CommandCwd::Unprepared(workspace),
+        CommandCwd::unprepared(workspace),
         event_tx,
         cancel,
         CommandCapture::model(
@@ -198,10 +198,26 @@ pub(crate) async fn run_command_with_output(
     .await
 }
 
-pub(crate) enum CommandCwd<'a> {
+pub(crate) struct CommandCwd<'a> {
+    workspace: &'a Path,
+    prepared: bool,
+}
+
+impl<'a> CommandCwd<'a> {
+    pub(crate) fn prepared(workspace: &'a Path) -> Self {
+        Self {
+            workspace,
+            prepared: true,
+        }
+    }
+
     #[cfg(test)]
-    Unprepared(&'a Path),
-    Prepared(&'a Path),
+    pub(crate) fn unprepared(workspace: &'a Path) -> Self {
+        Self {
+            workspace,
+            prepared: false,
+        }
+    }
 }
 
 pub(crate) async fn run_command_to(
@@ -215,18 +231,11 @@ pub(crate) async fn run_command_to(
     let cancelled = cancel.notified();
     tokio::pin!(cancelled);
     cancelled.as_mut().enable();
-    let workspace = match cwd {
-        #[cfg(test)]
-        CommandCwd::Unprepared(workspace) => workspace,
-        CommandCwd::Prepared(workspace) => workspace,
-    };
-    let mut request = match run_command_request(args, workspace) {
+    let mut request = match run_command_request(args, cwd.workspace) {
         Ok(request) => request,
         Err(result) => return result,
     };
-    if matches!(cwd, CommandCwd::Prepared(_))
-        && args["cwd"].as_str().map(Path::new) != Some(request.cwd.as_path())
-    {
+    if cwd.prepared && args["cwd"].as_str().map(Path::new) != Some(request.cwd.as_path()) {
         return command_directory_changed();
     }
     if let Some(seconds) = output.max_seconds.map(NonZeroU32::get) {
