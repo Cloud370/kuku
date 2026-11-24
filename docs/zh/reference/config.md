@@ -133,6 +133,7 @@ cache_control = { type = "ephemeral", ttl = "1h" }
 - `"{{request_id}}"` 仅用于请求头，每次 HTTP 请求尝试生成新值。占位符替换整段字符串，也可用于请求体对象内的字符串。
 - 请求头可以引用 `"$NAME"`。服务在准备请求时读取变量，Provider 请求 trace 会对配置的请求头值和自定义请求体字段脱敏。请求体字符串按字面值处理，支持上述占位符。
 - 凭据和 HTTP 帧相关请求头、模型和消息内容、工具定义、流式与有状态续接字段，以及已解析的思考、服务档位和输出上限由适配器管理。配置这些保留字段时会报错。
+- ChatGPT 登录会在发送前拒绝显式配置的预览版不支持字段，例如 `metadata`、`temperature` 和 `prompt_cache_retention`。 [订阅请求限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
 
 ### Prompt 缓存与凭据
 
@@ -148,6 +149,8 @@ cache_control = { type = "ephemeral", ttl = "1h" }
 Responses 从 `usage.input_tokens_details.cached_tokens` 读取缓存用量，Chat Completions 使用 `usage.prompt_tokens_details.cached_tokens`，Anthropic Messages 使用 `usage.cache_read_input_tokens`。Messages 通过 `usage.cache_creation_input_tokens` 单独报告新写入的 token 数。上游省略用量字段时，读取量记为未知。
 
 Anthropic 默认缓存 5 分钟。Haiku 5.5 的 5 分钟缓存写入价为普通输入的 1.25 倍，1 小时为 2 倍。两档缓存读取价均为普通输入的 0.1 倍。 [Anthropic Prompt 缓存价格](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
+模型试探和网页摘要等一次性请求只在用户显式配置时发送 `cache_control`。输出截断后的恢复请求沿用原会话标识。无状态的 OpenAI Responses 由上游默认返回加密推理内容。 [OpenAI 无状态推理](https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses)
 
 - **`prompt_cache_scope`**（仅 Responses）控制 `{{prompt_cache_key}}` 占位符。`workspace`（默认）对规范化的工作区路径、连接、端点和模型做哈希。`session` 对 Session、Agent、连接、端点和模型做哈希。`off` 时省略引用该占位符的字段。
 - **`api_key`**：`$NAME` 仅读环境变量；`file:/绝对路径` 在请求时校验并读取文件（不接受相对路径、非 URL 语法、两类来源不互退）。交互式配置将明文密钥写入 `<data-dir>/credentials/`，`kuku config show` 只展示引用。[文件布局](file-layout.md)

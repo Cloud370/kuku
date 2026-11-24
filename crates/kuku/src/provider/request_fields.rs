@@ -3,21 +3,44 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use wreq::header::{HeaderName, HeaderValue};
 
 use crate::config::{ModelPricing, ProviderProfile, RequestFields, SubscriptionChannel};
 
 use super::prepare::{invalid_request, is_official_openrouter};
-use super::types::{PreparedRequestFields, ProviderFailure, ProviderKind, ResolvedProvider};
+use super::types::{
+    PreparedRequestFields, ProviderCorrelation, ProviderFailure, ProviderKind, ResolvedProvider,
+};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RequestPurpose {
+    Inference,
+    SingleRequest,
+}
+
+pub(super) fn correlation_id(correlation: &ProviderCorrelation) -> String {
+    let mut hash = Sha256::new();
+    for value in [
+        &correlation.session_id,
+        &correlation.agent_address,
+        &correlation.connection_name,
+    ] {
+        hash.update((value.len() as u64).to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    format!("kuku-{:x}", hash.finalize())
+}
 
 pub(super) fn prepare(
     config: &ResolvedProvider,
     url: &str,
     body: &mut Value,
+    purpose: RequestPurpose,
     session_id: Option<&str>,
     make_cache_key: impl Fn() -> Option<String>,
 ) -> Result<PreparedRequestFields, ProviderFailure> {
-    let mut fields = defaults(config, url)?;
+    let mut fields = defaults(config, url, purpose)?;
     let mut private_body_keys = Vec::new();
     for custom in [&config.options.request, &config.route_request]
         .into_iter()
@@ -35,6 +58,31 @@ pub(super) fn prepare(
             }
         }
         overlay(&mut fields, custom);
+    }
+    if chatgpt_subscription(config) {
+        if let Some(field) = fields.body.keys().find(|field| {
+            matches!(
+                field.as_str(),
+                "background"
+                    | "conversation"
+                    | "max_tool_calls"
+                    | "metadata"
+                    | "moderation"
+                    | "multi_agent"
+                    | "prompt"
+                    | "prompt_cache_retention"
+                    | "safety_identifier"
+                    | "temperature"
+                    | "top_logprobs"
+                    | "top_p"
+                    | "truncation"
+                    | "user"
+            )
+        }) {
+            return Err(invalid_request(&format!(
+                "request body field '{field}' is unavailable on ChatGPT sign-in"
+            )));
+        }
     }
     let key = OnceCell::new();
     let lookup = |value: &str| match value {
@@ -80,7 +128,19 @@ pub(super) fn prepare(
     Ok(prepared)
 }
 
-fn defaults(config: &ResolvedProvider, url: &str) -> Result<RequestFields, ProviderFailure> {
+fn chatgpt_subscription(config: &ResolvedProvider) -> bool {
+    config
+        .options
+        .subscription
+        .as_ref()
+        .is_some_and(|account| account.channel() == SubscriptionChannel::ChatGpt)
+}
+
+fn defaults(
+    config: &ResolvedProvider,
+    url: &str,
+    purpose: RequestPurpose,
+) -> Result<RequestFields, ProviderFailure> {
     static PRESETS: OnceLock<BTreeMap<String, RequestFields>> = OnceLock::new();
     let presets = PRESETS.get_or_init(|| {
         toml::from_str(include_str!("../../assets/request-presets.toml"))
@@ -88,13 +148,7 @@ fn defaults(config: &ResolvedProvider, url: &str) -> Result<RequestFields, Provi
     });
     let mut fields = RequestFields::default();
     let profile = config.capabilities.profile;
-    if config
-        .options
-        .subscription
-        .as_ref()
-        .map(|account| account.channel())
-        == Some(SubscriptionChannel::ChatGpt)
-    {
+    if chatgpt_subscription(config) {
         overlay(&mut fields, &presets["chatgpt"]);
         return Ok(fields);
     }
@@ -114,8 +168,11 @@ fn defaults(config: &ResolvedProvider, url: &str) -> Result<RequestFields, Provi
             overlay(&mut fields, &presets["openrouter_reports"]);
         }
     }
-    if (profile == ProviderProfile::Anthropic && config.kind == ProviderKind::Anthropic)
-        || config.capabilities.prompt_cache_control
+    if purpose == RequestPurpose::SingleRequest {
+        return Ok(fields);
+    }
+    if config.capabilities.prompt_cache_control
+        || (profile == ProviderProfile::Anthropic && config.kind == ProviderKind::Anthropic)
     {
         overlay(&mut fields, &presets["anthropic"]);
     }

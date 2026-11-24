@@ -10,7 +10,7 @@ use super::replay::{validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
 use super::transport::{send_prepared, TransportResponse};
-use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
+use super::types::{PreparedProviderRequest, ProviderFailure, ResolvedProvider};
 
 #[path = "openai_responses/media.rs"]
 mod media;
@@ -26,15 +26,6 @@ pub(crate) use render::render_body;
 pub(crate) use render::render_body_with_images;
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before response.completed";
-
-pub(crate) async fn stream(
-    config: &ResolvedProvider,
-    request: &ProviderRequest<'_>,
-    trace_metadata: Option<super::trace::ProviderTraceMetadata>,
-) -> Result<super::ProviderChunkStream, ProviderFailure> {
-    let prepared = super::prepare_provider_request(config, request, None)?;
-    super::stream_prepared_provider(config, &prepared, trace_metadata).await
-}
 
 pub(crate) async fn stream_prepared(
     config: &ResolvedProvider,

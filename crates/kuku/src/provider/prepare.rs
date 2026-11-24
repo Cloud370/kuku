@@ -5,6 +5,7 @@ use crate::config::{PromptCacheScope, ProviderAuth, ProviderFormat, ProviderProf
 use crate::context::MessageBlock;
 use crate::execution::ModelImage;
 
+use super::request_fields::RequestPurpose;
 use super::types::{
     PreparedBody, PreparedProviderRequest, ProviderCorrelation, ProviderFailure,
     ProviderFailureKind, ProviderKind, ProviderRequest, ResolvedProvider,
@@ -15,7 +16,20 @@ pub(crate) fn prepare_provider_request(
     request: &ProviderRequest<'_>,
     correlation: Option<&ProviderCorrelation>,
 ) -> Result<PreparedProviderRequest, ProviderFailure> {
-    prepare(config, request, correlation, None)
+    prepare(
+        config,
+        request,
+        correlation,
+        None,
+        RequestPurpose::Inference,
+    )
+}
+
+pub(super) fn prepare_single_request(
+    config: &ResolvedProvider,
+    request: &ProviderRequest<'_>,
+) -> Result<PreparedProviderRequest, ProviderFailure> {
+    prepare(config, request, None, None, RequestPurpose::SingleRequest)
 }
 
 pub(crate) fn prepare_provider_request_with_media(
@@ -34,6 +48,7 @@ pub(crate) fn prepare_provider_request_with_media(
             limit,
             load: &mut load,
         }),
+        RequestPurpose::Inference,
     )
 }
 
@@ -47,6 +62,7 @@ fn prepare(
     request: &ProviderRequest<'_>,
     correlation: Option<&ProviderCorrelation>,
     media: Option<Media<'_>>,
+    purpose: RequestPurpose,
 ) -> Result<PreparedProviderRequest, ProviderFailure> {
     if request.model != config.model {
         return Err(invalid_request(
@@ -83,16 +99,19 @@ fn prepare(
             media.as_ref().map(|_| &mut images),
         ),
     };
-    body["stream"] = json!(true);
-    apply_settings(config, &mut body);
-    let correlation_id = correlation.map(correlation_id);
+    apply_settings(config, &mut body, true);
+    let correlation_id = correlation.map(super::request_fields::correlation_id);
     if let Some(media) = media {
         super::openai_responses::attach_tool_images(&mut body, images, media.limit, media.load);
     }
-    let fields =
-        super::request_fields::prepare(config, &url, &mut body, correlation_id.as_deref(), || {
-            prompt_cache_key(config, correlation, &url)
-        })?;
+    let fields = super::request_fields::prepare(
+        config,
+        &url,
+        &mut body,
+        purpose,
+        correlation_id.as_deref(),
+        || prompt_cache_key(config, correlation, &url),
+    )?;
     if let Some(account) = &config.options.subscription {
         super::subscription::apply_request_shape(account.channel(), &mut body);
     }
@@ -177,7 +196,7 @@ pub(crate) fn invalid_response(message: &str) -> ProviderFailure {
     }
 }
 
-pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
+pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value, streaming: bool) {
     let object = body
         .as_object_mut()
         .expect("protocol renderer returns an object");
@@ -189,6 +208,9 @@ pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
         "service_tier",
     ] {
         object.remove(key);
+    }
+    if streaming {
+        body["stream"] = json!(true);
     }
     if let Some(effort) = config.settings.reasoning_effort.as_deref() {
         match config.kind {
@@ -236,7 +258,9 @@ pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
         body["service_tier"] = json!(service);
     }
     if config.kind == ProviderKind::OpenAiCompatible {
-        body["stream_options"] = json!({"include_usage": true});
+        if streaming {
+            body["stream_options"] = json!({"include_usage": true});
+        }
         if config.capabilities.profile == ProviderProfile::OpenAi {
             if let Some(max_tokens) = body
                 .as_object_mut()
@@ -248,9 +272,6 @@ pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
     }
     if config.kind == ProviderKind::OpenAiResponses {
         body["store"] = json!(false);
-        if config.capabilities.profile == ProviderProfile::OpenAi {
-            body["include"] = json!(["reasoning.encrypted_content"]);
-        }
         if matches!(
             config.capabilities.profile,
             ProviderProfile::OpenAi | ProviderProfile::OpenRouter
@@ -263,19 +284,6 @@ pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
             }
         }
     }
-}
-
-fn correlation_id(correlation: &ProviderCorrelation) -> String {
-    let mut hash = Sha256::new();
-    for value in [
-        &correlation.session_id,
-        &correlation.agent_address,
-        &correlation.connection_name,
-    ] {
-        hash.update((value.len() as u64).to_be_bytes());
-        hash.update(value.as_bytes());
-    }
-    format!("kuku-{:x}", hash.finalize())
 }
 
 fn prompt_cache_key(
@@ -538,6 +546,7 @@ mod tests {
             let config = provider_config(ProviderKind::OpenAiResponses, profile, model);
             let request = prepared_request(&config, None);
             assert!(request.body.as_json().get("instructions").is_none());
+            assert!(request.body.as_json().get("include").is_none());
             let input = request.body.as_json()["input"].as_array().unwrap();
             assert_eq!(input.len(), 2);
             assert_eq!(input[0]["role"], "developer");
@@ -611,27 +620,21 @@ metadata = { scope = "{{session_id}}", number = 7 }
 
     #[test]
     fn modern_openai_responses_only_sends_cache_key_when_configured() {
+        let workspace = tempfile::tempdir().unwrap();
         let mut config = provider_config(
             ProviderKind::OpenAiResponses,
             ProviderProfile::OpenAi,
             "gpt-6.2-sol",
         );
-        let correlation = ProviderCorrelation {
-            session_id: "session".into(),
-            agent_address: "main".into(),
-            connection_name: "router".into(),
-            workspace: std::path::PathBuf::from("."),
-        };
-        let request = prepared_request(&config, Some(&correlation));
-        assert!(request.body.as_json().get("prompt_cache_key").is_none());
-        assert!(request.fields.headers.is_empty());
+        config.connection_name = "openai".into();
+        let correlation = response_correlation(workspace.path(), "session", "main");
+        assert_eq!(None, response_cache_key(&config, Some(&correlation)));
+
         config.options.request =
             Some(toml::from_str("[body]\nprompt_cache_key = \"{{prompt_cache_key}}\"").unwrap());
-        let request = prepared_request(&config, Some(&correlation));
         assert_eq!(
             64,
-            request.body.as_json()["prompt_cache_key"]
-                .as_str()
+            response_cache_key(&config, Some(&correlation))
                 .unwrap()
                 .len()
         );

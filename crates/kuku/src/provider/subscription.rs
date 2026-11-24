@@ -170,16 +170,9 @@ pub(super) fn apply_request_shape(channel: SubscriptionChannel, body: &mut Value
     match channel {
         SubscriptionChannel::ChatGpt => {
             let object = body.as_object_mut().expect("request is an object");
-            for field in [
-                "max_output_tokens",
-                "temperature",
-                "previous_response_id",
-                "prompt_cache_retention",
-            ] {
+            for field in ["max_output_tokens", "temperature"] {
                 object.remove(field);
             }
-            body["stream"] = json!(true);
-            body["store"] = json!(false);
             if let Some(Value::Array(tools)) = body.get_mut("tools").map(Value::take) {
                 body["tools"] = json!([{
                     "type": "namespace",
@@ -284,7 +277,7 @@ mod tests {
     use super::{apply_request_shape, SubscriptionChannel};
 
     #[test]
-    fn responses_use_stateless_streaming_and_match_namespaced_tool_calls() {
+    fn request_shape_removes_unsupported_generated_fields_and_namespaces_tools() {
         let mut body = json!({
             "model": "fixture",
             "input": [
@@ -294,13 +287,11 @@ mod tests {
             ],
             "tools": [{"type":"function","name":"read","parameters":{"type":"object"}}],
             "max_output_tokens": 64,
-            "previous_response_id": "old"
+            "temperature": 1
         });
         apply_request_shape(SubscriptionChannel::ChatGpt, &mut body);
-        assert_eq!(true, body["stream"]);
-        assert_eq!(false, body["store"]);
         assert!(body.get("max_output_tokens").is_none());
-        assert!(body.get("previous_response_id").is_none());
+        assert!(body.get("temperature").is_none());
         assert_eq!("namespace", body["tools"][0]["type"]);
         assert_eq!("kuku", body["tools"][0]["name"]);
         assert_eq!("read", body["tools"][0]["tools"][0]["name"]);

@@ -241,6 +241,7 @@ mod tests {
             config,
             &request.url,
             &mut json!({}),
+            super::super::request_fields::RequestPurpose::Inference,
             request.correlation_id.as_deref(),
             || None,
         )

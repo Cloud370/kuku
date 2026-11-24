@@ -133,6 +133,7 @@ Add these tables to an existing OpenRouter connection and model route. The `requ
 - `"{{request_id}}"` is a header-only placeholder for a fresh HTTP attempt identifier. Placeholders replace complete string values, including strings nested inside body objects.
 - Header values can be `"$NAME"` references. The service reads them when preparing a request. Provider request traces redact configured header values and custom body fields. Strings in `request.body` are literal apart from the placeholders above.
 - The adapter owns credential and HTTP framing headers, model and message content, tool definitions, streaming, stateful replay fields, and resolved reasoning, service tier, and output-limit settings. Configuring one of these reserved fields produces a configuration error.
+- ChatGPT sign-in rejects explicitly configured body fields the preview excludes, such as `metadata`, `temperature`, and `prompt_cache_retention`, before sending the request. [Subscription request limits](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
 
 ### Prompt caching and credentials
 
@@ -148,6 +149,8 @@ Reuse requires a matching prefix and a reachable cache entry. Keep the model, to
 Read `usage.input_tokens_details.cached_tokens` for Responses, `usage.prompt_tokens_details.cached_tokens` for Chat Completions, and `usage.cache_read_input_tokens` for Anthropic Messages. Messages reports newly written tokens separately as `usage.cache_creation_input_tokens`. An omitted usage field leaves the read count unknown.
 
 Anthropic's default cache lifetime is five minutes. Haiku 5.5 cache writes cost 1.25 times the base input price at five minutes and 2 times at one hour. Cache reads cost 0.1 times the base input price for either lifetime. [Anthropic prompt caching prices](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
+Model trials and one-shot requests such as web-page summarization send `cache_control` only if explicitly configured. Requests that recover from output truncation retain their session identity. Stateless OpenAI Responses receive encrypted reasoning from the provider by default. [OpenAI stateless reasoning](https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses)
 
 - **`prompt_cache_scope`** (Responses only) controls the `{{prompt_cache_key}}` placeholder. `workspace` (default) hashes the normalized workspace path, connection, endpoint and model. `session` hashes Session, Agent, connection, endpoint and model. `off` leaves the placeholder unresolved.
 - **`api_key`**: `$NAME` reads only that env var; `file:/absolute/path` validates and reads only that file at request time (no relative paths, no URL syntax, no fallback between sources). Setup writes unencrypted keys under `<data-dir>/credentials/`; `kuku config show` prints only the reference. [File layout](file-layout.md)

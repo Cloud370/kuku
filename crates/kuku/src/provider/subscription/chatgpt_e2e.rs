@@ -236,6 +236,7 @@ impl FixtureProxy {
                 assert_eq!("kuku", body["tools"][0]["name"]);
                 assert!(body.get("max_output_tokens").is_none());
                 assert!(body.get("prompt_cache_key").is_none());
+                assert!(body.get("include").is_none());
                 reply_sse(
                     &mut stream,
                     json!({"output":[{

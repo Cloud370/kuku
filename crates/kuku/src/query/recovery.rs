@@ -181,7 +181,10 @@ async fn dispatch_recovery(
             )
         },
     );
-    match crate::provider::stream_provider(&resolved, &provider_request, trace).await {
+    let correlation = super::provider::request_correlation(&pending, &resolved);
+    match crate::provider::stream_provider(&resolved, &provider_request, Some(&correlation), trace)
+        .await
+    {
         Ok(stream) => Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
             model_permit: None,
             conversation: pending.conversation.clone(),

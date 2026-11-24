@@ -191,13 +191,17 @@ async fn trial_request(
     if tool_trial {
         tools::set_challenge(config.kind, &mut body);
     }
-    apply_settings(&config, &mut body);
-    body.as_object_mut()
-        .expect("trial body")
-        .remove("stream_options");
+    apply_settings(&config, &mut body, config.options.subscription.is_some());
     let url = request_url(&config).map_err(trial_error)?;
-    let fields = super::request_fields::prepare(&config, &url, &mut body, None, || None)
-        .map_err(trial_error)?;
+    let fields = super::request_fields::prepare(
+        &config,
+        &url,
+        &mut body,
+        super::request_fields::RequestPurpose::SingleRequest,
+        None,
+        || None,
+    )
+    .map_err(trial_error)?;
     if let Some(account) = &config.options.subscription {
         super::subscription::apply_request_shape(account.channel(), &mut body);
     }

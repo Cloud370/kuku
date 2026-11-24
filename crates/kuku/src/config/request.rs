@@ -91,7 +91,6 @@ impl RequestFields {
                     | "stream_options"
                     | "store"
                     | "previous_response_id"
-                    | "include"
                     | "max_output_tokens"
                     | "max_completion_tokens"
                     | "max_tokens"

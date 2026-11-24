@@ -325,9 +325,11 @@ async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
         .unwrap()
         .runtime["recovery"]
         .clone();
+    let path = "/recovery-affinity/v1/messages";
     let first = server.mock(|when, then| {
         when.method(POST)
-            .path("/v1/messages")
+            .path(path)
+            .matches(common::capture_http_request)
             .matches(is_original_frozen_notice_request)
             .body_contains(r#""max_tokens":37"#);
         then.status(200)
@@ -342,7 +344,8 @@ async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
     });
     let second = server.mock(|when, then| {
         when.method(POST)
-            .path("/v1/messages")
+            .path(path)
+            .matches(common::capture_http_request)
             .body_contains("finish the task")
             .body_contains(frozen_notice)
             .body_contains(r#""max_tokens":37"#);
@@ -357,7 +360,16 @@ async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
             })));
     });
 
+    let mut config = test_config();
+    config
+        .providers
+        .get_mut("anthropic")
+        .unwrap()
+        .options
+        .request = Some(toml::from_str("[body.metadata]\nuser_id = \"{{session_id}}\"").unwrap());
     let mut run = anthro("finish the task", &server)
+        .base_url(server.url("/recovery-affinity"))
+        .config(config)
         .max_output_tokens(37)
         .prompts_dir(prompts_dir.path())
         .start()
@@ -383,6 +395,10 @@ async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
     assert_eq!(vec!["request_1", "recovery", "request_2"], live_order);
     first.assert();
     second.assert();
+    let bodies = common::take_http_requests(path);
+    assert_eq!(2, bodies.len());
+    assert!(bodies[0]["metadata"]["user_id"].is_string());
+    assert_eq!(bodies[0]["metadata"], bodies[1]["metadata"]);
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
     let response_ids = events
         .iter()
