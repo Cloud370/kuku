@@ -106,7 +106,7 @@
 
 向较新的历史翻页时，传入排他游标 `after`，用返回的 `next_after` 继续。扫描触及上限时，响应可能没有条目但仍包含续页游标。轮次的首次接纳时间可用时，历史条目包含 `turn_started_at_ms`，客户端可在任意页显示本轮累计用时。
 
-活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。用 `GET /sessions/{id}/events/{event_id}/draft?workspace=...&agent=...` 读取原始用户文本及附件。响应包含 `text` 和 `images`。
+活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。用 `GET /sessions/{id}/events/{event_id}/draft?workspace=...&agent=...` 读取原始用户文本及附件。响应包含 `text` 和 `images`。对于仍在队列中的输入，`GET /sessions/{id}/queued/{input_command_id}/draft?workspace=...&agent=...` 返回同样的结构。带附件的历史条目会携带 `has_images: true`，客户端可按需读取图片。
 4. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
 观察流接入时记录日志头。之后提交的事件会标记 `live_commit`，客户端可用它区分新事件和追赶回放，再决定是否提醒。

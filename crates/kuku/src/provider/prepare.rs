@@ -133,8 +133,7 @@ fn prepare(
             images.current_input_offset,
             media.limit,
             media.load_user,
-        )
-        .map_err(|error| invalid_request(&error.to_string()))?;
+        )?;
         super::openai_responses::attach_tool_images(
             &mut body,
             images.tools,

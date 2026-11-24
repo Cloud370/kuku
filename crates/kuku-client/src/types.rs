@@ -134,6 +134,9 @@ pub enum Action {
     Withdraw {
         /// The input's original command identity.
         input_command_id: String,
+        /// The user's saved draft for local recovery after a successful withdrawal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft: Option<MessageDraft>,
     },
     /// Replace the text of one input before it is admitted, preserving its queue position.
     ReplaceQueued {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use kuku_client::{ImageAttachment, ImageMarker, MAX_INPUT_IMAGES, Timing};
 
 use crate::clipboard::{ClipboardImage, PasteSource, Pasted};
@@ -79,6 +80,14 @@ impl PrepareImages {
             .map(|(offset, entry)| match entry {
                 DraftImage::Recovered(mut image) => {
                     image.marker.offset = offset;
+                    if !self.original {
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(image.data)
+                            .map_err(|error| error.to_string())?;
+                        let source = crate::clipboard::decode_image(bytes)?;
+                        image.data = source.encode(false)?;
+                        image.transparent = source.transparent;
+                    }
                     Ok(image)
                 }
                 DraftImage::Clipboard {
@@ -107,6 +116,35 @@ pub(super) struct ImageSend {
 }
 
 impl App {
+    pub(super) fn recalled_image_draft(
+        &mut self,
+        selection: Selection,
+        event_id: u64,
+        result: Result<kuku_client::MessageDraft, kuku_client::Error>,
+    ) {
+        if selection != self.selection()
+            || self.pane().draft.recalled_image_event() != Some(event_id)
+        {
+            return;
+        }
+        let pane = self.pane_mut();
+        match result {
+            Ok(draft) => {
+                pane.draft.load_recalled_images(event_id, &draft);
+                pane.draft_images = draft
+                    .images
+                    .into_iter()
+                    .map(DraftImage::Recovered)
+                    .collect();
+                pane.draft_changed();
+            }
+            Err(error) => {
+                pane.cancel_image_recall();
+                self.problem(format!("Could not load recalled images · {error}"));
+            }
+        }
+    }
+
     pub(crate) fn paste_transfer(&mut self, text: String) {
         if self.modal.is_some() {
             self.paste(&text);
@@ -291,7 +329,10 @@ impl App {
         route: Option<&RouteChange>,
     ) -> bool {
         let pane = self.pane();
-        if pane.clipboard_ticket.is_some() || pane.image_send.is_some() {
+        if pane.clipboard_ticket.is_some()
+            || pane.image_send.is_some()
+            || pane.draft.recalled_image_event().is_some()
+        {
             return true;
         }
         if !pane.encoded_images.is_empty() || pane.attached_images().next().is_none() {
@@ -353,6 +394,29 @@ impl App {
 }
 
 impl Pane {
+    pub(super) fn remember_history_entry(&mut self, entry: &kuku_client::HistoryEntry) {
+        let Some(text) = &entry.text else { return };
+        self.cancel_image_recall();
+        if entry
+            .details
+            .get("has_images")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            self.draft.remember_image_event(text, entry.id);
+        } else {
+            self.draft.remember(text);
+        }
+    }
+
+    pub(super) fn cancel_image_recall(&mut self) {
+        if self.draft.recalled_image_event().is_some() {
+            self.draft.cancel_recall();
+            self.draft_images = self.recall_images.take().unwrap_or_default();
+            self.draft_changed();
+        }
+    }
+
     pub(crate) fn recall_draft(&mut self, direction: isize) {
         self.draft.recall(direction);
         if let Some(images) = self.draft.recalled_images() {
@@ -420,7 +484,9 @@ impl Pane {
     }
 
     pub(crate) fn image_activity(&self) -> Option<&'static str> {
-        if self.clipboard_ticket.is_some() {
+        if self.draft.recalled_image_event().is_some() {
+            Some("Loading prompt images…")
+        } else if self.clipboard_ticket.is_some() {
             Some("Reading clipboard…")
         } else if self.image_send.is_some() {
             Some("Preparing images…")

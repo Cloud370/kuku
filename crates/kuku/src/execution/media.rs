@@ -1,3 +1,6 @@
+use std::io::Cursor;
+
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -16,6 +19,8 @@ pub struct InputImage {
     pub(crate) bytes: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) marker: Option<ImageMarker>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) transparency: Option<bool>,
 }
 
 /// Exact byte position and text of an image marker in its input.
@@ -46,11 +51,13 @@ impl InputImage {
             .ok_or_else(|| {
                 crate::Error::InvalidArgument("image must be PNG or JPEG and at most 1 MiB".into())
             })?;
+        let transparency = validate_image(bytes, mime)?;
         Ok(Self {
             mime,
-            digest: format!("{:x}", Sha256::digest(bytes)),
+            digest: Self::digest(bytes),
             bytes: bytes.len(),
             marker: None,
+            transparency: Some(transparency),
         })
     }
 
@@ -75,9 +82,47 @@ impl InputImage {
         self.marker.as_ref()
     }
 
+    /// Whether the validated image contains visibly transparent pixels.
+    pub fn is_transparent(&self) -> bool {
+        self.transparency.unwrap_or(false)
+    }
+
+    pub(crate) fn digest(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
     pub(crate) fn key(&self, agent: &str) -> String {
         format!("input:{agent}:{}", self.digest)
     }
+}
+
+pub(crate) fn validate_image(bytes: &[u8], mime: ImageMime) -> crate::Result<bool> {
+    let invalid = |error: image::ImageError| {
+        crate::Error::InvalidArgument(format!("cannot decode image: {error}"))
+    };
+    let format = match mime {
+        ImageMime::Png => ImageFormat::Png,
+        ImageMime::Jpeg => ImageFormat::Jpeg,
+    };
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(invalid)?;
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) > 32 * 1024 * 1024 {
+        return Err(crate::Error::InvalidArgument(
+            "image exceeds the pixel limit".into(),
+        ));
+    }
+    let decoded = DynamicImage::from_decoder(decoder).map_err(invalid)?;
+    Ok(match decoded {
+        DynamicImage::ImageLumaA8(image) => image.pixels().any(|pixel| pixel[1] != u8::MAX),
+        DynamicImage::ImageLumaA16(image) => image.pixels().any(|pixel| pixel[1] != u16::MAX),
+        DynamicImage::ImageRgba8(image) => image.pixels().any(|pixel| pixel[3] != u8::MAX),
+        DynamicImage::ImageRgba16(image) => image.pixels().any(|pixel| pixel[3] != u16::MAX),
+        _ => false,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -591,16 +591,15 @@ impl App {
                 && !matches!(item.command.action, Action::ReplaceQueued { .. })
         }) {
             if let Some(item) = self.pending.remove(id) {
-                if let Action::Withdraw { input_command_id } = &item.command.action {
-                    self.withdrawal_drafts
-                        .remove(&(item.command.target.clone(), input_command_id.clone()));
-                }
                 if let Some(pane) = self
                     .panes
                     .get_mut(&Address::from_target(&item.command.target))
                 {
                     pane.deliveries.remove(id);
-                    if let Action::Withdraw { input_command_id } = &item.command.action {
+                    if let Action::Withdraw {
+                        input_command_id, ..
+                    } = &item.command.action
+                    {
                         pane.deliveries.withdrawal(input_command_id, None);
                     }
                 }
@@ -700,16 +699,15 @@ impl App {
         match result {
             Ok(()) => {
                 if let Some(item) = self.pending.remove(id) {
-                    if let Action::Withdraw { input_command_id } = &item.command.action {
-                        self.withdrawal_drafts
-                            .remove(&(item.command.target.clone(), input_command_id.clone()));
-                    }
                     if let Some(pane) = self
                         .panes
                         .get_mut(&Address::from_target(&item.command.target))
                     {
                         pane.deliveries.remove(id);
-                        if let Action::Withdraw { input_command_id } = &item.command.action {
+                        if let Action::Withdraw {
+                            input_command_id, ..
+                        } = &item.command.action
+                        {
                             pane.deliveries.withdrawal(input_command_id, None);
                         }
                         if matches!(item.command.action, Action::Send { .. }) {
@@ -870,7 +868,12 @@ impl App {
         let address = Address::from_target(&target);
         let active = address == self.active;
         match item.command.action {
-            Action::Send { text, timing, .. } => {
+            Action::Send {
+                text,
+                timing,
+                images,
+                ..
+            } => {
                 let pane = self.panes.entry(address).or_default();
                 let initial = !pane.exists;
                 pane.exists = true;
@@ -880,7 +883,15 @@ impl App {
                     SubmissionStatus::from_receipt(ack.status),
                 );
                 pane.deliveries.receipt(&ack, &text, timing, false);
-                pane.draft.remember(&text);
+                pane.cancel_image_recall();
+                if images.is_empty() {
+                    pane.draft.remember(&text);
+                } else {
+                    pane.draft.remember_draft(kuku_client::MessageDraft {
+                        text: text.clone(),
+                        images,
+                    });
+                }
                 if pane.title.is_empty() {
                     pane.title = crate::text::shorten(&crate::text::single_line(&text), 68);
                 }
@@ -919,17 +930,18 @@ impl App {
             Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
                 self.confirmation("Reply received")
             }
-            Action::Withdraw { input_command_id } => {
-                let restore_text = self
-                    .withdrawal_drafts
-                    .remove(&(target, input_command_id.clone()));
-                if ack.status == Some(InputStatus::Withdrawn) {
-                    if let Some(text) = restore_text {
-                        if let Some(pane) = self.panes.get_mut(&address) {
-                            if pane.draft.text().is_empty() {
-                                pane.draft.set_text(text);
-                            }
-                        }
+            Action::Withdraw {
+                input_command_id,
+                draft,
+            } => {
+                if ack.status == Some(InputStatus::Withdrawn)
+                    && let Some(draft) = draft
+                    && let Some(pane) = self.panes.get_mut(&address)
+                {
+                    if pane.draft.text().is_empty() && pane.value_attachments.is_empty() {
+                        pane.restore_draft_images(&draft.text, draft.images);
+                    } else {
+                        pane.draft.remember_draft(draft);
                     }
                 }
                 if ack.status.is_some() {

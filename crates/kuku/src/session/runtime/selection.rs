@@ -75,14 +75,21 @@ pub(crate) fn resolve_agent_model(
     })
 }
 
-pub(super) fn validate_initial_model(options: &SessionOptions, config: &AgentConfig) -> Result<()> {
+pub(super) fn validate_initial_model(
+    options: &SessionOptions,
+    config: &AgentConfig,
+    has_images: bool,
+) -> Result<()> {
     let config = resolve_defaults(options, config.clone(), || Ok(None))?;
-    resolve_agent_model(
-        &options.config,
+    let resolved = resolve_agent_model(
+        &options.model_config(),
         &config,
         options.limits.max_output_tokens_per_request,
-    )
-    .map(|_| ())
+    )?;
+    if has_images {
+        super::media::require_image_input(&resolved, options.model_adapter.is_none())?;
+    }
+    Ok(())
 }
 
 impl Session {

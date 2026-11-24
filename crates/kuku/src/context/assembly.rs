@@ -139,7 +139,43 @@ pub fn assemble_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
 ) -> Result<ContextAssembly> {
-    assemble_context_inner(input, catalog, false).map(|(assembly, _)| assembly)
+    assemble_context_for_model(input, catalog, agent_prompt_facts(None, false))
+}
+
+pub(crate) fn assemble_context_for_model(
+    input: ContextInput,
+    catalog: &crate::prompt::PromptCatalog,
+    agent: minijinja::Value,
+) -> Result<ContextAssembly> {
+    assemble_context_inner(input, catalog, false, agent).map(|(assembly, _)| assembly)
+}
+
+pub(crate) fn agent_prompt_facts(
+    resolved: Option<&crate::provider::types::ResolvedProvider>,
+    builtin_adapter: bool,
+) -> minijinja::Value {
+    use crate::config::ImageInputSupport;
+    let image_input = resolved.map_or(ImageInputSupport::Unconfirmed, |route| {
+        route.capabilities.image_input_support(builtin_adapter)
+    });
+    let declared_input = resolved
+        .and_then(|route| route.capabilities.input_modalities.as_ref())
+        .map(|entry| entry.value.as_slice());
+    let declared_output = resolved
+        .and_then(|route| route.capabilities.output_modalities.as_ref())
+        .map(|entry| entry.value.as_slice());
+    minijinja::context! {
+        model => minijinja::context! {
+            input_modalities => minijinja::value::Serde(declared_input),
+            output_modalities => minijinja::value::Serde(declared_output),
+        },
+        image_input => minijinja::context! {
+            supported => image_input == ImageInputSupport::Supported,
+            status => minijinja::value::Serde(image_input),
+        },
+        effective_input_modalities => minijinja::value::Serde(image_input.modalities()),
+        output => minijinja::value::Serde(resolved.map(|route| route.output).unwrap_or_default()),
+    }
 }
 
 pub(crate) fn render_modalities(modalities: Option<&[String]>) -> String {
@@ -164,6 +200,7 @@ fn segment_facts(
     input: &ContextInput,
     catalog: &crate::prompt::PromptCatalog,
     renderer: &crate::prompt::PromptRenderer,
+    agent: minijinja::Value,
 ) -> Result<minijinja::Value> {
     let tools: Vec<_> = input.tools.iter().map(|tool| tool.name.as_str()).collect();
     let models = (tools.contains(&"create_agent") || tools.contains(&"fetch_web")).then(|| {
@@ -194,7 +231,7 @@ fn segment_facts(
         renderer
             .render(
                 "blocks/model-tiers.md",
-                minijinja::context! { models => minijinja::value::Serde(&models) },
+                minijinja::context! { models => minijinja::value::Serde(&models), agent => agent.clone(), tools => minijinja::value::Serde(&tools) },
             )?
             .trim_end()
             .to_owned()
@@ -207,6 +244,7 @@ fn segment_facts(
         project_instructions.join("\n\n")
     };
     Ok(minijinja::context! {
+        agent => agent,
         tools => minijinja::value::Serde(&tools),
         models => minijinja::value::Serde(&models),
         workspace_root => &input.environment.workspace_path,
@@ -222,17 +260,19 @@ fn segment_facts(
 pub(crate) fn assemble_segment_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
+    agent: minijinja::Value,
 ) -> Result<(ContextAssembly, usize)> {
-    assemble_context_inner(input, catalog, true)
+    assemble_context_inner(input, catalog, true, agent)
 }
 
 fn assemble_context_inner(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
     common_first: bool,
+    agent: minijinja::Value,
 ) -> Result<(ContextAssembly, usize)> {
     let renderer = catalog.renderer();
-    let facts = segment_facts(&input, catalog, &renderer)?;
+    let facts = segment_facts(&input, catalog, &renderer, agent)?;
     let project_policy_text = renderer.render("blocks/project-policy.md", facts.clone())?;
 
     // ---- Layer 3: agent identity ----

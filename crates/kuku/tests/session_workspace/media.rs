@@ -700,3 +700,107 @@ async fn an_expired_queued_image_is_protected_until_withdrawn() {
     session.save_input_image("main", &next).await.unwrap();
     session.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn image_staging_validates_content_and_protects_each_attachment_until_enqueue() {
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut options =
+        SessionOptions::new(work.path(), data.path(), media_config(&server, "/staging"));
+    options.limits.output_retention_secs = 0;
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    assert!(
+        session
+            .save_input_image("main", b"\x89PNG\r\n\x1a\n")
+            .await
+            .is_err()
+    );
+    let mut input = Input::new("queued", "main", "Two images");
+    input.activation = kuku::Activation::Enqueue;
+    for byte in *b"XY" {
+        input.images.push(
+            session
+                .save_input_image("main", &png_with_comment(500, byte))
+                .await
+                .unwrap(),
+        );
+    }
+    session.send(input).unwrap();
+    assert_eq!(
+        session.pending_inputs("main").unwrap()[0]
+            .input
+            .images
+            .len(),
+        2
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn current_images_can_trigger_compaction_before_inference() {
+    const PATH: &str = "/image-compaction/responses";
+    const REPLY: &str = concat!(
+        "event: response.output_text.delta\ndata: {\"delta\":\"image check complete\"}\n\n",
+        "event: response.completed\ndata: {\"response\":{\"id\":\"fixture\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":13000,\"output_tokens\":10}}}\n\n"
+    );
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mock = server
+        .mock_async(|when, then| {
+            when.method(POST).path(PATH);
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(REPLY);
+        })
+        .await;
+    let mut config = media_config(&server, "/image-compaction");
+    let tier = config.tiers.get_mut("balanced").unwrap();
+    tier.think = kuku::config::ThinkLevel::Off;
+    tier.context_window = 24_000;
+    tier.max_output_tokens = None;
+    config.handoff.enabled = true;
+    config.handoff.threshold = 0.45;
+    let mut options = SessionOptions::new(work.path(), data.path(), config);
+    options.limits.max_request_bytes = Some(99_000);
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new(
+            "prior",
+            "main",
+            "A preceding fact. ".repeat(1_500),
+        ))
+        .unwrap();
+    assert_eq!(
+        session.wait_for_agent("main").await.unwrap().last_error,
+        None
+    );
+    let mut input = Input::new("image", "main", "[Image #1]");
+    input.images.push(
+        session
+            .save_input_image("main", &png_with_comment(45_000, b'V'))
+            .await
+            .unwrap(),
+    );
+    session.send(input).unwrap();
+    let snapshot = session.wait_for_agent("main").await.unwrap();
+    assert_eq!(snapshot.last_error, None);
+    assert!(
+        session
+            .events(0, 512)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(&event.payload,
+        EventPayload::Unknown(value) if value["kind"] == "runtime.compaction_started"
+            && value["trigger"] == "request_byte_budget"))
+    );
+    mock.assert_hits_async(3).await;
+    session.close().await.unwrap();
+}

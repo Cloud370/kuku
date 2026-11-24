@@ -519,9 +519,7 @@ impl App {
                 }
                 if let Some(entry) = entry.filter(|entry| entry.agent == active_agent) {
                     if entry.kind == HistoryKind::User {
-                        if let Some(text) = &entry.text {
-                            pane.draft.remember(text);
-                        }
+                        pane.remember_history_entry(&entry);
                     }
                     pane.transcript.apply(*entry, pane.execution);
                 }

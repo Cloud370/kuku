@@ -14,8 +14,7 @@ pub(super) use retry::{
 use crate::context::{
     CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock, PluginRegistryProvenance,
     PromptCapabilityMetadata, PromptRendererIdentity, Role, SkillRegistryProvenance,
-    ToolRegistryProvenance, assemble_context, rebuild_history_for_provider,
-    restore_prompt_snapshot,
+    ToolRegistryProvenance, rebuild_history_for_provider, restore_prompt_snapshot,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -112,7 +111,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         runtime_blocks
     };
 
-    let mut assembly = match assemble_context(
+    let mut assembly = match crate::context::assembly::assemble_context_for_model(
         ContextInput {
             environment: EnvironmentSource {
                 workspace_path: pending.workspace.display().to_string(),
@@ -131,6 +130,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             response_contract: pending.query.response_contract.clone(),
         },
         &catalog,
+        crate::context::assembly::agent_prompt_facts(Some(&resolved_config), false),
     ) {
         Ok(assembly) => assembly,
         Err(error) => {
@@ -457,7 +457,15 @@ pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) 
     };
     let mut context = super::frozen::prepare(&mut pending, true)?;
     let correlation = request_correlation(&pending, &resolved);
-    let before = dispatch::prepare_request(&pending, &resolved, &correlation, &context.request)?;
+    let before_bytes =
+        match dispatch::prepare_request(&pending, &resolved, &correlation, &context.request) {
+            Ok(request) => Some(request.body.as_bytes().len()),
+            Err(crate::Error::Provider {
+                kind: crate::provider::types::ProviderFailureKind::ContextTooLarge,
+                ..
+            }) => None,
+            Err(error) => return Err(error),
+        };
     pending.request_base = Some(context.request);
     if matches!(
         Box::pin(compaction::compact(
@@ -465,7 +473,7 @@ pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) 
             &mut context.commit,
             &resolved,
             &correlation,
-            before.body.as_bytes().len(),
+            before_bytes,
             compaction::Trigger::Manual { closed_turn }
         ))
         .await?,
@@ -758,18 +766,7 @@ pub(super) fn set_model_modalities(
         .map(|entry| entry.value.as_slice());
     let tools: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
     let text = catalog.renderer().render("runtime/model-modalities.md", minijinja::context! {
-        agent => minijinja::context! {
-            model => minijinja::context! {
-                input_modalities => minijinja::value::Serde(declared_input),
-                output_modalities => minijinja::value::Serde(declared_output),
-            },
-            image_input => minijinja::context! {
-                supported => supported,
-                status => minijinja::value::Serde(image_input),
-            },
-            effective_input_modalities => minijinja::value::Serde(image_input.modalities()),
-            output => minijinja::value::Serde(resolved.output),
-        },
+        agent => crate::context::assembly::agent_prompt_facts(Some(resolved), builtin_adapter),
         tools => minijinja::value::Serde(&tools),
         // These values also support previously recorded catalog assets.
         input_modalities => render_modalities(declared_input),

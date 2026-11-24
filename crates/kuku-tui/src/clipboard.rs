@@ -252,7 +252,7 @@ fn read_file(path: &Path) -> Result<ClipboardImage, String> {
     decode_image(bytes)
 }
 
-fn decode_image(bytes: Vec<u8>) -> Result<ClipboardImage, String> {
+pub(crate) fn decode_image(bytes: Vec<u8>) -> Result<ClipboardImage, String> {
     let reader = ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|error| error.to_string())?;

@@ -137,14 +137,14 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
     let mut messages = cursor.history(&pending.conversation);
     let mut segment = match previous.as_ref() {
         Some(segment) => segment.clone(),
-        None => initial_segment(pending, &catalog, &tools, &behavior)?,
+        None => initial_segment(pending, &catalog, &tools, &behavior, &resolved)?,
     };
     let missing_modalities = new_segment
         && previous.as_ref().is_some_and(|segment| {
             super::provider::model_modalities_slot(&segment.prelude).is_none()
         });
-    if workspace_changed || tool_names_changed || missing_modalities {
-        segment = initial_segment(pending, &catalog, &tools, &behavior)?;
+    if route_changed || workspace_changed || tool_names_changed || missing_modalities {
+        segment = initial_segment(pending, &catalog, &tools, &behavior, &resolved)?;
         if let Some(summary) = previous.as_ref().and_then(|segment| {
             segment
                 .handoff_prelude
@@ -460,6 +460,7 @@ fn initial_segment(
     catalog: &PromptCatalog,
     tools: &[crate::context::ToolSchema],
     behavior: &str,
+    resolved: &crate::provider::types::ResolvedProvider,
 ) -> Result<FrozenSegment> {
     let max_bytes = pending.query.runtime_limits.workspace_io.context_file_bytes;
     let project_instructions = load_project_instruction_sources(&pending.workspace, max_bytes)?;
@@ -485,7 +486,11 @@ fn initial_segment(
         agent_instructions: behavior.into(),
         response_contract: pending.query.response_contract.clone(),
     };
-    let (mut assembly, slot) = assemble_segment_context(input, catalog)?;
+    let agent = crate::context::assembly::agent_prompt_facts(
+        Some(resolved),
+        pending.query.model_adapter.is_none(),
+    );
+    let (mut assembly, slot) = assemble_segment_context(input, catalog, agent)?;
     if !pending.conversation.is_main() {
         assembly
             .prelude_messages

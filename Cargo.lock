@@ -2086,6 +2086,7 @@ dependencies = [
  "htmd",
  "httpdate",
  "httpmock",
+ "image",
  "jsonwebtoken",
  "libc",
  "lru",

@@ -470,6 +470,27 @@ impl Client {
         .await
     }
 
+    /// Read the original text and images of an input still in the Agent's queue.
+    pub async fn queued_draft(
+        &self,
+        target: &Target,
+        input_id: &str,
+    ) -> Result<MessageDraft, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+        }
+        self.get(
+            ["sessions", &target.session_id, "queued", input_id, "draft"],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
+            },
+        )
+        .await
+    }
+
     /// Read a raw ledger page up to an exclusive event cursor.
     pub async fn events_before(
         &self,
@@ -879,11 +900,20 @@ impl Client {
         if replay_only {
             request = request.query(&[("replay_only", true)]);
         }
+        let action = match &command.action {
+            crate::Action::Withdraw {
+                input_command_id, ..
+            } => std::borrow::Cow::Owned(crate::Action::Withdraw {
+                input_command_id: input_command_id.clone(),
+                draft: None,
+            }),
+            action => std::borrow::Cow::Borrowed(action),
+        };
         let acknowledgement: Acknowledgement = self
             .json(request.json(&Envelope {
                 target: TargetQuery::new(&command.target),
                 command_id: &command.command_id,
-                action: &command.action,
+                action: &action,
             }))
             .await?;
         if acknowledgement.receipt.command_id != command.command_id

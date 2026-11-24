@@ -257,9 +257,14 @@ pub(crate) fn history_entry_for_agent(
             text,
             from,
             job_delivery: false,
+            images,
             ..
         } => {
-            json!({"ts":ts,"type":"user","turn":turn,"text":text,"from":from})
+            let mut entry = json!({"ts":ts,"type":"user","turn":turn,"text":text,"from":from});
+            if !images.is_empty() {
+                entry["has_images"] = json!(true);
+            }
+            entry
         }
         EventPayload::ModelResponse {
             turn,

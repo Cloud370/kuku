@@ -154,9 +154,6 @@ pub(crate) fn render_runtime_date(catalog: &PromptCatalog, current_date: &str) -
 }
 
 pub(crate) fn project_policy_has_date(text: &str, template: &str, current_date: &str) -> bool {
-    if !template.contains("{{current_date}}") {
-        return false;
-    }
     if matches_project_policy_date(text, template, current_date) {
         return true;
     }
@@ -181,13 +178,17 @@ fn without_model_tiers(template: &str) -> Cow<'_, str> {
 fn matches_project_policy_date(text: &str, template: &str, current_date: &str) -> bool {
     let mut pattern = String::from(r"\A");
     let mut rest = template;
+    let mut date = false;
     while let Some((literal, placeholder)) = rest.split_once("{{") {
         pattern.push_str(&regex::escape(literal));
         let Some((name, tail)) = placeholder.split_once("}}") else {
             return false;
         };
-        match name {
-            "current_date" => pattern.push_str(&regex::escape(current_date)),
+        match name.trim() {
+            "current_date" => {
+                date = true;
+                pattern.push_str(&regex::escape(current_date));
+            }
             "workspace_root"
             | "platform"
             | "project_instructions_rendered"
@@ -200,7 +201,7 @@ fn matches_project_policy_date(text: &str, template: &str, current_date: &str) -
     }
     pattern.push_str(&regex::escape(rest));
     pattern.push_str(r"\z");
-    Regex::new(&pattern).is_ok_and(|pattern| pattern.is_match(text))
+    date && Regex::new(&pattern).is_ok_and(|pattern| pattern.is_match(text))
 }
 
 #[cfg(test)]

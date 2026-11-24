@@ -400,7 +400,7 @@ fn deferred_queued_withdrawal_uses_the_refreshed_input_identity() {
     app.effects.clear();
     app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
     assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
-        if matches!(&command.action, Action::Withdraw { input_command_id } if input_command_id == &id))));
+        if matches!(&command.action, Action::Withdraw { input_command_id, .. } if input_command_id == &id))));
 }
 
 #[test]

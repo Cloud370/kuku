@@ -5,6 +5,8 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use crate::execution::{InputImage, MAX_MODEL_IMAGE_BYTES, ModelImage};
+use crate::provider::prepare::invalid_request;
+use crate::provider::types::{ProviderFailure, ProviderFailureKind};
 
 const MAX_IMAGES_PER_REQUEST: usize = 4;
 
@@ -59,7 +61,7 @@ pub(crate) fn attach_user_images(
     current_offset: Option<usize>,
     limit: usize,
     load: &mut dyn FnMut(&InputImage) -> crate::error::Result<Vec<u8>>,
-) -> crate::error::Result<()> {
+) -> Result<(), ProviderFailure> {
     if images.is_empty() {
         return Ok(());
     }
@@ -82,9 +84,10 @@ pub(crate) fn attach_user_images(
             .sum();
         if additional > available {
             if required == Some(index) {
-                return Err(crate::Error::InvalidArgument(
-                    "image attachments exceed the remaining request byte limit".into(),
-                ));
+                return Err(ProviderFailure {
+                    kind: ProviderFailureKind::ContextTooLarge,
+                    ..invalid_request("image attachments exceed the remaining request byte limit")
+                });
             }
             continue;
         }
@@ -96,7 +99,14 @@ pub(crate) fn attach_user_images(
                 STANDARD.encode_string(bytes, &mut url);
                 Ok(json!({"type": "input_image", "image_url": url}))
             })
-            .collect::<crate::Result<Vec<_>>>()?;
+            .collect::<crate::Result<Vec<_>>>();
+        let parts = match parts {
+            Ok(parts) => parts,
+            Err(error) if required == Some(index) => {
+                return Err(invalid_request(&error.to_string()));
+            }
+            Err(_) => continue,
+        };
         body["input"][index]["content"]
             .as_array_mut()
             .expect("user content array")

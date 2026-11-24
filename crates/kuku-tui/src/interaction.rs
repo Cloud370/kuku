@@ -198,7 +198,9 @@ impl App {
             }
             key if Shortcut::CLEAR.matches(key) => {
                 let pane = self.pane_mut();
+                let recalling_images = pane.draft.recalled_image_event().is_some();
                 let empty = pane.draft.take_text().is_empty()
+                    && !recalling_images
                     && pane.value_attachments.is_empty()
                     && pane.clipboard_ticket.is_none();
                 pane.value_attachments.clear();
@@ -223,6 +225,10 @@ impl App {
                 self.focus_composer();
                 self.pane_mut()
                     .recall_draft(if key.code == KeyCode::Up { -1 } else { 1 });
+                if let Some(event_id) = self.pane().draft.recalled_image_event() {
+                    self.effects
+                        .push(Job::RecallImageDraft(self.selection(), event_id));
+                }
             }
             key if Shortcut::UP.matches(key) || Shortcut::DOWN.matches(key) => {
                 let direction = if key.code == KeyCode::Up { -1 } else { 1 };

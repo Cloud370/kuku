@@ -1,8 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use kuku_client::{Action, Target};
+use kuku_client::{Action, Error, MessageDraft, Target};
 use ratatui::style::Style;
 
 use crate::app::{App, KeyboardFocus, PendingStage, QueueAction};
+use crate::jobs::{Job, Selection};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap_bounded};
 use crate::text::single_line;
@@ -229,24 +230,26 @@ impl App {
 
     pub(crate) fn queue_mutation_pending(&self, input_id: &str) -> bool {
         let target = self.selection().target;
-        self.pending.values().any(|item| {
-            item.command.target == target
-                && !matches!(item.stage, PendingStage::Rejected(_))
-                && matches!(
-                    &item.command.action,
-                    Action::ReplaceQueued { input_command_id, .. }
-                        | Action::Withdraw { input_command_id }
-                        if input_command_id == input_id
-                )
-        })
+        self.queued_draft_reads
+            .contains(&(target.clone(), input_id.to_owned()))
+            || self.pending.values().any(|item| {
+                item.command.target == target
+                    && !matches!(item.stage, PendingStage::Rejected(_))
+                    && matches!(
+                        &item.command.action,
+                        Action::ReplaceQueued { input_command_id, .. }
+                            | Action::Withdraw { input_command_id, .. }
+                            if input_command_id == input_id
+                    )
+            })
     }
 
     pub(crate) fn withdraw_queued(&mut self, input_id: String) {
-        let text = self
+        let Some(input) = self
             .queued_for_edit()
             .find(|entry| entry.receipt.command_id == input_id)
-            .map(|entry| entry.input.text.clone());
-        let Some(text) = text else {
+            .map(|entry| entry.input.clone())
+        else {
             self.problem("Selected input is no longer queued");
             return;
         };
@@ -254,22 +257,54 @@ impl App {
             self.problem("A change to this queued input is already pending");
             return;
         }
-        let restore_text = self.pane().draft.text().is_empty().then_some(text);
-        let target = self.selection().target;
-        let pending_before = self.pending.len();
+        if !self.require_service() {
+            return;
+        }
+        if self.pane().draft.text().is_empty() && !input.images.is_empty() {
+            let selection = self.selection();
+            self.queued_draft_reads
+                .insert((selection.target.clone(), input_id.clone()));
+            self.effects.push(Job::QueuedDraft(selection, input_id));
+            self.confirmation("Reading queued attachments…");
+            return;
+        }
+        let draft = self.pane().draft.text().is_empty().then(|| MessageDraft {
+            text: input.text.clone(),
+            images: Vec::new(),
+        });
+        self.issue_withdrawal(input_id, draft);
+    }
+
+    pub(crate) fn queued_draft_loaded(
+        &mut self,
+        selection: Selection,
+        input_id: String,
+        result: Result<MessageDraft, Error>,
+    ) {
+        if !self
+            .queued_draft_reads
+            .remove(&(selection.target.clone(), input_id.clone()))
+            || selection != self.selection()
+        {
+            return;
+        }
+        match result {
+            Ok(draft) if !self.queue_mutation_pending(&input_id) => {
+                self.issue_withdrawal(input_id, Some(draft));
+            }
+            Ok(_) => {}
+            Err(error) => self.problem(format!("Could not read queued attachments · {error}")),
+        }
+    }
+
+    fn issue_withdrawal(&mut self, input_id: String, draft: Option<MessageDraft>) {
         self.issue(
             self.active.clone(),
             Action::Withdraw {
-                input_command_id: input_id.clone(),
+                input_command_id: input_id,
+                draft,
             },
         );
-        if self.pending.len() > pending_before {
-            let key = (target, input_id);
-            self.withdrawal_drafts.remove(&key);
-            if let Some(text) = restore_text {
-                self.withdrawal_drafts.insert(key, text);
-            }
-        }
         let pane = self.pane_mut();
         pane.keyboard_focus = KeyboardFocus::Composer;
         pane.selected_queue_input = None;

@@ -159,7 +159,7 @@ fn empty_composer_up_selects_and_delete_withdraws_the_exact_queue_entry() {
     assert_eq!(Some("queue-1"), app.pane().selected_queue_input.as_deref());
     key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
     assert!(matches!(&saved_input(&app).action,
-        Action::Withdraw { input_command_id } if input_command_id == "queue-1"));
+        Action::Withdraw { input_command_id, .. } if input_command_id == "queue-1"));
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
 }
 
@@ -619,7 +619,10 @@ fn a_deleted_queue_image_atom_is_absent_from_the_replacement() {
     let queued = &mut state.pending[0].input;
     queued.text = "literal [Image #1] actual [Image #1]".into();
     queued.images.push(
-        kuku_client::InputImage::from_bytes(b"\x89PNG\r\n\x1a\n")
+        kuku_client::InputImage::from_bytes(
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD,
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==").unwrap()
+        )
             .unwrap()
             .with_marker(kuku_client::ImageMarker {
                 offset: "literal [Image #1] actual ".len(),

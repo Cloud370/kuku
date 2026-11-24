@@ -27,6 +27,7 @@ wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
 httpdate = "1"
 sha2 = "0.10"
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 getrandom = "0.4"
 hmac = "0.12"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }

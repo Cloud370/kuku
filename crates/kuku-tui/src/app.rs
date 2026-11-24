@@ -373,7 +373,7 @@ pub(crate) struct App {
     pub(crate) text_selection: TextSelection,
     pub(crate) modal_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
-    pub(crate) withdrawal_drafts: HashMap<(Target, String), String>,
+    pub(crate) queued_draft_reads: HashSet<(Target, String)>,
     pub(crate) rewind_drafts: HashMap<String, RewindDraft>,
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
@@ -460,7 +460,7 @@ impl App {
             text_selection: TextSelection::default(),
             modal_selection: TextSelection::default(),
             pending: HashMap::new(),
-            withdrawal_drafts: HashMap::new(),
+            queued_draft_reads: HashSet::new(),
             rewind_drafts: HashMap::new(),
             editor_width: 80,
             transcript_area: (80, 16),
@@ -750,6 +750,12 @@ impl App {
             Update::RewindHistory(selection, ticket, before, result) => {
                 self.apply_rewind_history_update(selection, ticket, before, result);
             }
+            Update::RecallImageDraft(selection, event_id, result) => {
+                self.recalled_image_draft(selection, event_id, result);
+            }
+            Update::QueuedDraft(selection, input_id, result) => {
+                self.queued_draft_loaded(selection, input_id, result);
+            }
             Update::RewindSource(selection, ticket, event_id, result) => {
                 self.apply_rewind_source_update(selection, ticket, event_id, result);
             }
@@ -971,9 +977,7 @@ impl App {
         if pane.snapshot.is_none() {
             for entry in &page.entries {
                 if entry.kind == HistoryKind::User {
-                    if let Some(text) = &entry.text {
-                        pane.draft.remember(text);
-                    }
+                    pane.remember_history_entry(entry);
                 }
             }
         }

@@ -38,7 +38,7 @@
 
 `AgentSnapshot.config` 是请求的配置，`active_config` 记录正在执行或等待中的配置。模型和思考设置可在下一次尚未准备的模型请求生效。工作区、行为和工具设置在下一轮生效。
 
-调用 `Session::save_input_image(agent, bytes).await` 为接收 Agent 保存 PNG 或 JPEG，再把返回的引用加入 `Input.images`。内置 Session 传输在选中的路由通过 `AgentSelection.image_input` 报告支持时接收图片。SDK 限制每张图片最多 1 MiB，每条输入最多四张。接近请求字节上限时，运行时优先保留本次发送的附件，再按剩余空间带上历史图片。
+调用 `Session::save_input_image(agent, bytes).await` 为接收 Agent 保存 PNG 或 JPEG，再把返回的引用加入 `Input.images`。内置 Session 传输在选中的路由通过 `AgentSelection.image_input` 报告支持时接收图片。SDK 会校验图片内容。每张最多 1 MiB 和 32 Mi 像素，每条输入最多四张。可依次保存多张图片再提交。新暂存的附件保留一分钟，之后适用普通输出的保留策略。接近请求字节上限时，运行时优先保留本次发送的附件，再按剩余空间带上历史图片。Agent 可在队列中的附件被接纳或撤回后切换到纯文本路线。
 
 通过传输接口提供可重试的创建时，`open_for_creation` 会按持久认领核对初始输入、配置和可选 Prompt 目录。宿主仍须使用稳定的命令标识创建 Agent 和提交输入。该 Session 已打开时，使用 `verify_creation(&input, &config, prompts_dir)`。
 

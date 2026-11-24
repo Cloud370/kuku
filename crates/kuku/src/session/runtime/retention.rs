@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Weak;
 use std::time::SystemTime;
 
+const INPUT_IMAGE_STAGING_SECS: u64 = 60;
+
 use crate::tool::builtin::run_command::output::{
     OUTPUT_DRAFT_SUFFIX, framed_bytes, output_path, validate_output_id,
 };
@@ -169,7 +171,12 @@ impl State {
         );
         pinned.extend(self.model_images.iter().filter_map(|(id, retained)| {
             let Some(turn) = retained.turn else {
-                return retained.referenced.then(|| id.clone());
+                let newly_staged = retained.staged
+                    && self.outputs.entries.get(id).is_some_and(|entry| {
+                        entry.retained_since.elapsed().unwrap_or_default().as_secs()
+                            < INPUT_IMAGE_STAGING_SECS
+                    });
+                return (retained.referenced || newly_staged).then(|| id.clone());
             };
             let current = self.agents.get(&retained.agent)?.snapshot.turn?;
             (current == turn || self.turns.previous(&retained.agent, current) == Some(turn))
@@ -210,6 +217,14 @@ impl OutputStore {
     }
 
     pub(super) fn recover(dir: &Path) -> Result<Self> {
+        Self::scan(dir, true)
+    }
+
+    pub(super) fn read_index(dir: &Path) -> Result<Self> {
+        Self::scan(dir, false)
+    }
+
+    fn scan(dir: &Path, clean_drafts: bool) -> Result<Self> {
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -223,7 +238,7 @@ impl OutputStore {
                 continue;
             };
             if let Some(id) = filename.strip_suffix(OUTPUT_DRAFT_SUFFIX) {
-                if validate_output_id(id).is_ok() && entry.file_type()?.is_file() {
+                if clean_drafts && validate_output_id(id).is_ok() && entry.file_type()?.is_file() {
                     let path = entry.path();
                     match fs::remove_file(&path) {
                         Ok(()) => {}
@@ -272,6 +287,12 @@ impl OutputStore {
         self.entries
             .get(id)
             .is_some_and(|entry| entry.owner.as_deref() == Some(agent))
+    }
+
+    pub(super) fn refresh_retention(&mut self, id: &str) {
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.retained_since = SystemTime::now();
+        }
     }
 
     pub(super) fn writing(&self, id: &str) -> bool {
@@ -486,6 +507,25 @@ mod tests {
             assert!(chunk.complete);
             assert_eq!(b"capture", chunk.segments[0].as_bytes());
         }
+    }
+
+    #[tokio::test]
+    async fn read_only_index_preserves_an_unpublished_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut writer, draft) =
+            OutputWriter::create_staged(dir.path(), "capture", OutputLimits::default())
+                .await
+                .unwrap();
+        OutputStore::read_index(dir.path()).unwrap();
+        writer
+            .write(OutputStream::Stdout, b"capture")
+            .await
+            .unwrap();
+        writer.finish(false).await.unwrap();
+        draft.publish().unwrap();
+        let reader = open_retained_output(dir.path(), "capture").unwrap();
+        let chunk = read_open_output(reader, "capture", OutputRead::default()).unwrap();
+        assert_eq!(chunk.segments[0].as_bytes(), b"capture");
     }
 
     #[test]

@@ -17,13 +17,20 @@ pub(crate) struct Editor {
     cursor: usize,
     top: usize,
     preferred_column: Option<usize>,
-    history: VecDeque<kuku_client::MessageDraft>,
+    history: VecDeque<HistoryDraft>,
     recall: Option<Recall>,
+}
+
+#[derive(Debug)]
+struct HistoryDraft {
+    draft: kuku_client::MessageDraft,
+    image_event: Option<u64>,
 }
 
 #[derive(Debug)]
 struct Recall {
     index: usize,
+    pending_image_event: Option<u64>,
     text: String,
     cursor: usize,
     atoms: Vec<Range<usize>>,
@@ -252,7 +259,11 @@ impl Editor {
 
     pub(crate) fn remember(&mut self, prompt: &str) {
         if prompt.len() <= MAX_SAVED_PROMPT_BYTES
-            && self.history.front().is_none_or(|old| old.text != prompt)
+            && self.history.front().is_none_or(|old| {
+                old.draft.text != prompt
+                    || !old.draft.images.is_empty()
+                    || old.image_event.is_some()
+            })
         {
             self.remember_draft(kuku_client::MessageDraft {
                 text: prompt.into(),
@@ -261,9 +272,27 @@ impl Editor {
         }
     }
 
+    pub(crate) fn remember_image_event(&mut self, text: &str, event_id: u64) {
+        self.remember_history(HistoryDraft {
+            draft: kuku_client::MessageDraft {
+                text: text.into(),
+                images: Vec::new(),
+            },
+            image_event: Some(event_id),
+        });
+    }
+
     pub(crate) fn remember_draft(&mut self, draft: kuku_client::MessageDraft) {
-        self.history.retain(|previous| previous.text != draft.text);
-        self.history.push_front(draft);
+        self.remember_history(HistoryDraft {
+            draft,
+            image_event: None,
+        });
+    }
+
+    fn remember_history(&mut self, entry: HistoryDraft) {
+        self.history
+            .retain(|previous| previous.draft.text != entry.draft.text);
+        self.history.push_front(entry);
         let mut bytes = 0;
         let keep = self
             .history
@@ -271,6 +300,7 @@ impl Editor {
             .take(MAX_HISTORY)
             .take_while(|draft| {
                 bytes += draft
+                    .draft
                     .images
                     .iter()
                     .map(|image| image.data.len())
@@ -285,54 +315,74 @@ impl Editor {
     pub(crate) fn recalled_images(&self) -> Option<&[kuku_client::ImageAttachment]> {
         self.recall
             .as_ref()
-            .map(|recall| self.history[recall.index].images.as_slice())
+            .map(|recall| self.history[recall.index].draft.images.as_slice())
     }
 
-    fn load_history(&mut self, index: usize) {
-        let draft = &self.history[index];
-        self.text.clone_from(&draft.text);
-        self.atoms.clear();
-        for image in &draft.images {
-            let marker = &image.marker;
-            if let Some(range) = marker.range_in(&draft.text) {
-                self.atoms.push(range);
-            } else if marker.offset == draft.text.len() {
-                if !self.text.is_empty() {
-                    self.text.push(' ');
-                }
-                let start = self.text.len();
-                self.text.push_str(&marker.label);
-                self.atoms.push(start..self.text.len());
-            }
+    pub(crate) fn recalled_image_event(&self) -> Option<u64> {
+        self.recall.as_ref()?.pending_image_event
+    }
+
+    pub(crate) fn load_recalled_images(
+        &mut self,
+        event_id: u64,
+        draft: &kuku_client::MessageDraft,
+    ) {
+        let recall = self
+            .recall
+            .as_mut()
+            .expect("the recalled draft was selected");
+        debug_assert_eq!(recall.pending_image_event, Some(event_id));
+        recall.pending_image_event = None;
+        (self.text, self.atoms) = recalled_content(draft);
+        self.cursor = self.text.len();
+    }
+
+    pub(crate) fn cancel_recall(&mut self) {
+        if let Some(recall) = self.recall.take() {
+            self.text = recall.text;
+            self.cursor = recall.cursor;
+            self.atoms = recall.atoms;
+            self.preferred_column = None;
         }
-        self.atoms.sort_unstable_by_key(|range| range.start);
+    }
+
+    fn load_history(&mut self, recall: &mut Recall) {
+        let entry = &self.history[recall.index];
+        recall.pending_image_event = entry.image_event;
+        if entry.image_event.is_some() {
+            self.text.clear();
+            self.atoms.clear();
+        } else {
+            (self.text, self.atoms) = recalled_content(&entry.draft);
+        }
         self.cursor = self.text.len();
     }
 
     pub(crate) fn recall(&mut self, direction: isize) {
         match (direction.is_negative(), self.recall.take()) {
             (true, None) if !self.history.is_empty() => {
-                self.recall = Some(Recall {
+                let mut recall = Recall {
                     index: 0,
+                    pending_image_event: None,
                     text: std::mem::take(&mut self.text),
                     cursor: self.cursor,
                     atoms: std::mem::take(&mut self.atoms),
-                });
-                self.load_history(0);
+                };
+                self.load_history(&mut recall);
+                self.recall = Some(recall);
             }
             (true, Some(mut recall)) => {
                 recall.index = (recall.index + 1).min(self.history.len() - 1);
-                self.load_history(recall.index);
+                self.load_history(&mut recall);
                 self.recall = Some(recall);
             }
             (false, Some(recall)) if recall.index == 0 => {
-                self.text = recall.text;
-                self.cursor = recall.cursor;
-                self.atoms = recall.atoms;
+                self.recall = Some(recall);
+                self.cancel_recall();
             }
             (false, Some(mut recall)) => {
                 recall.index -= 1;
-                self.load_history(recall.index);
+                self.load_history(&mut recall);
                 self.recall = Some(recall);
             }
             (_, None) => {}
@@ -464,6 +514,26 @@ pub(crate) struct EditorView {
     pub(crate) lines: Vec<String>,
     pub(crate) cursor: (usize, usize),
     pub(crate) atoms: Vec<(usize, Range<usize>)>,
+}
+
+fn recalled_content(draft: &kuku_client::MessageDraft) -> (String, Vec<Range<usize>>) {
+    let mut text = draft.text.clone();
+    let mut atoms = Vec::new();
+    for image in &draft.images {
+        let marker = &image.marker;
+        if let Some(range) = marker.range_in(&draft.text) {
+            atoms.push(range);
+        } else if marker.offset == draft.text.len() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            let start = text.len();
+            text.push_str(&marker.label);
+            atoms.push(start..text.len());
+        }
+    }
+    atoms.sort_unstable_by_key(|range| range.start);
+    (text, atoms)
 }
 
 fn visual_rows(text: &str, atoms: &[Range<usize>], width: usize) -> Vec<Range<usize>> {
@@ -610,6 +680,18 @@ mod tests {
         editor.delete();
         assert_eq!("甲  word", editor.text());
         assert_eq!(0, editor.atom_count());
+    }
+
+    #[test]
+    fn a_plain_prompt_with_the_same_caption_does_not_recall_an_old_image() {
+        let mut editor = Editor::default();
+        let caption = "Literal [Image #1]";
+        editor.remember_image_event(caption, 42);
+        editor.remember(caption);
+        editor.recall(-1);
+        assert_eq!(editor.text(), caption);
+        assert_eq!(editor.recalled_image_event(), None);
+        assert_eq!(editor.atom_count(), 0);
     }
 
     #[test]

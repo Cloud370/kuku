@@ -491,6 +491,7 @@ impl State {
                         digest,
                         image,
                         referenced: false,
+                        staged: turn.is_none(),
                     },
                 );
             }
@@ -1048,6 +1049,13 @@ impl State {
                     turn: None,
                 },
             );
+        }
+        for image in &input.images {
+            if let Some(id) = self.model_image_ids.get(&image.key(&input.target))
+                && let Some(retained) = self.model_images.get_mut(id)
+            {
+                retained.staged = false;
+            }
         }
         self.values.grant(&input.target, &values);
         let agent = self.agent_mut(&input.target)?;

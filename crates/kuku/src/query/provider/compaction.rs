@@ -35,6 +35,7 @@ pub(super) enum Outcome {
 #[derive(Clone, Copy)]
 pub(super) enum Trigger<'a> {
     Pressure,
+    RequestBytes,
     ProviderOverflow { rejected_request: &'a str },
     Manual { closed_turn: bool },
 }
@@ -65,7 +66,7 @@ pub(super) async fn compact(
     context: &mut ContextCommit,
     resolved: &ResolvedProvider,
     correlation: &ProviderCorrelation,
-    before_bytes: usize,
+    before_bytes: Option<usize>,
     trigger: Trigger<'_>,
 ) -> Result<Outcome> {
     let manual = matches!(trigger, Trigger::Manual { .. });
@@ -201,6 +202,7 @@ pub(super) async fn compact(
         "connection":prepared.connection_name, "model":prepared.model, "manual":manual,
         "trigger":match trigger {
             Trigger::Pressure => "token_budget",
+            Trigger::RequestBytes => "request_byte_budget",
             Trigger::ProviderOverflow { .. } => "provider_overflow",
             Trigger::Manual { .. } => "manual",
         },
@@ -316,7 +318,7 @@ pub(super) async fn compact(
             pending.failed_compaction = Some(context.failed_compaction(material_tokens));
         }
         finish["continues_with_previous_context"] = (matches!(trigger, Trigger::Pressure)
-            && wire_limit.is_none_or(|limit| before_bytes <= limit))
+            && wire_limit.is_none_or(|limit| before_bytes.is_some_and(|bytes| bytes <= limit)))
         .into();
     }
     session.commit_compaction_accounting(&agent, execution, EventPayload::Unknown(finish))?;

@@ -22,6 +22,8 @@ pub(super) struct RetainedModelImage {
     pub(super) image: ModelImage,
     #[serde(default)]
     pub(super) referenced: bool,
+    #[serde(default)]
+    pub(super) staged: bool,
 }
 
 impl Session {
@@ -59,12 +61,26 @@ impl Session {
     }
 
     pub(super) fn validate_image_route(&self, config: &super::AgentConfig) -> Result<()> {
-        if self.inner.options.model_adapter.is_some()
-            || self.resolve_model(config)?.capabilities.media_adapter
-                != crate::config::MediaAdapterSupport::ResponsesImageToolResults
+        require_image_input(
+            &self.resolve_model(config)?,
+            self.inner.options.model_adapter.is_none(),
+        )
+    }
+
+    pub(super) fn validate_queued_image_route(
+        &self,
+        agent: &super::record::AgentState,
+        config: &super::AgentConfig,
+    ) -> Result<()> {
+        if agent
+            .inbox
+            .iter()
+            .any(|entry| entry.accepted_turn.is_none() && !entry.input.images.is_empty())
+            && self.validate_image_route(config).is_err()
         {
             return Err(Error::InvalidArgument(
-                "The selected model cannot receive images. Switch to a model with image input or remove the attachments.".into(),
+                "Withdraw queued images before switching to a model that cannot receive them."
+                    .into(),
             ));
         }
         Ok(())
@@ -73,7 +89,11 @@ impl Session {
     /// Read an image previously saved for this agent.
     pub fn read_input_image(&self, agent: &str, image: &InputImage) -> Result<Vec<u8>> {
         let output = input_image_output(&self.inner.state.lock().unwrap(), agent, image)?;
-        self.read_model_image(agent, &output)
+        let bytes = self.read_model_image(agent, &output)?;
+        if image.transparency.is_none() {
+            crate::execution::validate_image(&bytes, image.mime)?;
+        }
+        Ok(bytes)
     }
 
     /// Read stored images without opening a runtime writer.
@@ -86,7 +106,7 @@ impl Session {
         let (state, _) = replay_state(
             events_path,
             super::record::State {
-                outputs: OutputStore::recover(&dir)?,
+                outputs: OutputStore::read_index(&dir)?,
                 ..Default::default()
             },
         )?;
@@ -96,8 +116,9 @@ impl Session {
                 let output = input_image_output(&state, agent, image)?;
                 let file = open_retained_output(&dir, &output.output.id)?;
                 let bytes = read_complete_stdout_bytes(file, image.byte_len())?;
-                let actual = InputImage::from_bytes(&bytes)?;
-                if actual.digest != image.digest || actual.mime != image.mime {
+                if InputImage::digest(&bytes) != image.digest
+                    || ImageMime::detect(&bytes) != Some(image.mime)
+                {
                     return Err(Error::InvalidEventStream(
                         "input image content changed".into(),
                     ));
@@ -114,6 +135,7 @@ impl Session {
         mime: ImageMime,
         bytes: &[u8],
     ) -> Result<ModelImage> {
+        crate::execution::validate_image(bytes, mime)?;
         self.retain_image(agent, Some(turn), image_digest(agent, bytes), mime, bytes)
             .await
     }
@@ -147,6 +169,14 @@ impl Session {
                                 image: image.clone(),
                             },
                         )?;
+                    }
+                    if turn.is_none() {
+                        let id = image.output.id.clone();
+                        let retained = state.model_images.get_mut(&id).expect("registered image");
+                        if !retained.referenced {
+                            retained.staged = true;
+                            state.outputs.refresh_retention(&id);
+                        }
                     }
                     return Ok(image);
                 }
@@ -211,7 +241,7 @@ impl Session {
         let file = open_retained_output(&output_dir(self.events_path())?, &reference.id)?;
         let bytes = read_complete_stdout_bytes(file, reference.bytes as usize)?;
         let actual = if input {
-            InputImage::from_bytes(&bytes)?.key(agent)
+            format!("input:{agent}:{}", InputImage::digest(&bytes))
         } else {
             image_digest(agent, &bytes)
         };
@@ -222,6 +252,20 @@ impl Session {
         }
         Ok(bytes)
     }
+}
+
+pub(super) fn require_image_input(
+    resolved: &crate::provider::types::ResolvedProvider,
+    builtin_adapter: bool,
+) -> Result<()> {
+    if resolved.capabilities.image_input_support(builtin_adapter)
+        != crate::config::ImageInputSupport::Supported
+    {
+        return Err(Error::InvalidArgument(
+            "The selected model cannot receive images. Switch to a model with image input or remove the attachments.".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_markers<'a>(

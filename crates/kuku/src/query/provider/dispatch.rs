@@ -52,24 +52,42 @@ pub(super) async fn dispatch_provider_step(
     super::require_runtime_execution(&pending)?;
     let prepare_started = Instant::now();
     let max_request_bytes = pending.query.runtime_limits.max_request_bytes;
-    let mut prepared = prepare_body(&pending, &resolved_config, &correlation)?;
+    let mut prepared = prepare_body(&pending, &resolved_config, &correlation);
     let request_prepare_us = prepare_started
         .elapsed()
         .as_micros()
         .min(u128::from(u64::MAX)) as u64;
-    let initial_bytes = prepared.body.as_bytes().len();
+    let initial_bytes = prepared
+        .as_ref()
+        .ok()
+        .map(|request| request.body.as_bytes().len());
     let mut recover_context = frozen_context.is_some() && pending.config.handoff().enabled;
-    if let Some(context) = frozen_context
-        .as_mut()
-        .filter(|context| compaction::needed(&pending, context, &resolved_config))
-    {
+    let wire_pressure = matches!(
+        &prepared,
+        Err(crate::Error::Provider {
+            kind: ProviderFailureKind::ContextTooLarge,
+            ..
+        })
+    ) || initial_bytes
+        .zip(max_request_bytes)
+        .is_some_and(|(bytes, limit)| bytes > limit);
+    if let Some(context) = frozen_context.as_mut().filter(|context| {
+        recover_context
+            && (wire_pressure
+                || (prepared.is_ok() && compaction::needed(&pending, context, &resolved_config)))
+    }) {
+        let trigger = if wire_pressure {
+            compaction::Trigger::RequestBytes
+        } else {
+            compaction::Trigger::Pressure
+        };
         match Box::pin(compaction::compact(
             &mut pending,
             context,
             &resolved_config,
             &correlation,
             initial_bytes,
-            compaction::Trigger::Pressure,
+            trigger,
         ))
         .await?
         {
@@ -77,7 +95,7 @@ pub(super) async fn dispatch_provider_step(
             CompactionOutcome::Failed => recover_context = false,
             CompactionOutcome::Replace(body) => {
                 recover_context = false;
-                prepared = *body;
+                prepared = Ok(*body);
             }
             CompactionOutcome::Cancelled => return super::super::step::cancellation_step(pending),
             CompactionOutcome::NewInput => {
@@ -89,6 +107,7 @@ pub(super) async fn dispatch_provider_step(
             }
         }
     }
+    let mut prepared = prepared?;
     let mut lead_events = Vec::new();
     let (request_id, outcome) = loop {
         let request_id = format!("req_{}", pending.request_num);
@@ -155,7 +174,7 @@ pub(super) async fn dispatch_provider_step(
             &mut context,
             &resolved_config,
             &correlation,
-            request_bytes,
+            Some(request_bytes),
             compaction::Trigger::ProviderOverflow {
                 rejected_request: &request_id,
             },

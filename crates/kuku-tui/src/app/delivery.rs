@@ -418,7 +418,7 @@ impl App {
         let target = self.target(&address);
         if self.pending.values().any(|item| {
             item.command.target == target && matches!(&item.command.action,
-                Action::ReplaceQueued { input_command_id: pending, .. } | Action::Withdraw { input_command_id: pending }
+                Action::ReplaceQueued { input_command_id: pending, .. } | Action::Withdraw { input_command_id: pending, .. }
                     if pending == &input_command_id)
                 && !matches!(item.stage, PendingStage::Rejected(_))
         }) {
@@ -443,7 +443,10 @@ impl App {
         let Some(item) = self.pending.get(id) else {
             return;
         };
-        if let Action::Withdraw { input_command_id } = &item.command.action {
+        if let Action::Withdraw {
+            input_command_id, ..
+        } = &item.command.action
+        {
             let address = Address::from_target(&item.command.target);
             if let Some(pane) = self.panes.get_mut(&address) {
                 pane.deliveries.withdrawal(

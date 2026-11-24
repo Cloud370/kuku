@@ -166,44 +166,88 @@ pub(super) async fn message_draft(
                 "the selected message belongs to another Agent",
             ));
         }
-        let bytes = if images.is_empty() {
-            Vec::new()
-        } else if let Some(session) = session {
-            images
-                .iter()
-                .map(|image| session.read_input_image(&agent, image))
-                .collect::<kuku::Result<Vec<_>>>()?
-        } else {
-            Session::read_saved_input_images(&target.path, &agent, &images)?
-        };
-        let mut next_label = 0;
-        let images = images
-            .iter()
-            .zip(bytes)
-            .map(|(image, bytes)| {
-                let marker = image.marker().cloned().unwrap_or_else(|| {
-                    let label = loop {
-                        next_label += 1;
-                        let label = format!("[Image #{next_label}]");
-                        if !text.contains(&label) {
-                            break label;
-                        }
-                    };
-                    ImageMarker {
-                        offset: text.len(),
-                        label,
-                    }
-                });
-                ImageAttachment {
-                    marker,
-                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                    transparent: image.media_type() == "image/png",
-                }
-            })
-            .collect();
-        Ok(Json(MessageDraft { text, images }))
+        encode_draft(&target.path, &agent, session.as_ref(), text, &images).map(Json)
     })
     .await
+}
+
+pub(super) async fn queued_draft(
+    State(state): State<Arc<AppState>>,
+    Path((id, input_id)): Path<(String, String)>,
+    Params(query): Params<MessageDraftQuery>,
+) -> Result<Json<MessageDraft>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let session = manager(&state).await.open_session(&target.path);
+    let agent = query.agent;
+    journal_task(move || {
+        let pending = match &session {
+            Some(session) => session.pending_inputs(&agent)?,
+            None => Session::read_view(&target.path, &agent)?.pending_inputs,
+        };
+        let input = pending
+            .into_iter()
+            .find(|entry| {
+                entry.input.command_id == input_id
+                    && entry.input.source == crate::wire::http_input_source()
+            })
+            .ok_or(kuku::Error::InputNotQueued(input_id))?
+            .input;
+        encode_draft(
+            &target.path,
+            &agent,
+            session.as_ref(),
+            input.text,
+            &input.images,
+        )
+        .map(Json)
+    })
+    .await
+}
+
+fn encode_draft(
+    events_path: &FsPath,
+    agent: &str,
+    session: Option<&Session>,
+    text: String,
+    images: &[kuku::execution::InputImage],
+) -> Result<MessageDraft> {
+    let bytes = if images.is_empty() {
+        Vec::new()
+    } else if let Some(session) = session {
+        images
+            .iter()
+            .map(|image| session.read_input_image(agent, image))
+            .collect::<kuku::Result<Vec<_>>>()?
+    } else {
+        Session::read_saved_input_images(events_path, agent, images)?
+    };
+    let mut next_label = 0;
+    let images = images
+        .iter()
+        .zip(bytes)
+        .map(|(image, bytes)| {
+            let marker = image.marker().cloned().unwrap_or_else(|| {
+                let label = loop {
+                    next_label += 1;
+                    let label = format!("[Image #{next_label}]");
+                    if !text.contains(&label) {
+                        break label;
+                    }
+                };
+                ImageMarker {
+                    offset: text.len(),
+                    label,
+                }
+            });
+            ImageAttachment {
+                marker,
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                transparent: image.is_transparent(),
+            }
+        })
+        .collect();
+    Ok(MessageDraft { text, images })
 }
 
 pub(super) async fn history(
