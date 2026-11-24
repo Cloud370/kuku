@@ -592,11 +592,14 @@ def lost_first_receipt(client):
         partitioned = False
         stdout, _ = client.cli(workspace, *args, token=connection["token"])
         replayed = json.loads(stdout)
-        assert replayed["status"] == "completed" and replayed["replayed"] is True
+        assert replayed["status"] == replayed["event"] == "acknowledged"
+        assert replayed["replayed"] is True and replayed["input_status"] == "accepted"
         assert replayed["receipt"] == committed[0]["receipt"]
+        assert "response" not in replayed
         assert client.session(workspace) == session
-        assert replayed["response"] == "first receipt executed once"
-        assert replayed["usage"]["model_requests"] == 2, (
+        snapshot = client.snapshot(workspace, session)
+        assert snapshot["last_output"] == "first receipt executed once"
+        assert snapshot["usage"]["model_requests"] == 2, (
             "Replayed receipt must keep the original request and its tool continuation"
         )
         client.verify_tool(workspace)
