@@ -49,7 +49,8 @@ if [[ ! -f "$BODY_FILE" ]]; then
     exit 1
 fi
 
-existing_url="$(gh pr list --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --state open --json url --jq '.[0].url // empty')"
+existing_url="$(gh pr list --head "$HEAD_BRANCH" --base "$BASE_BRANCH" --state open \
+    --json url,isCrossRepository --jq 'map(select(.isCrossRepository == false)) | .[0].url // empty')"
 if [[ -n "$existing_url" ]]; then
     printf '%s\n' "$existing_url"
     exit 0

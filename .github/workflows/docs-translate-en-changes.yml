@@ -9,10 +9,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: docs-en-changes-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   report:
     runs-on: ubuntu-latest

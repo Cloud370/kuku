@@ -20,17 +20,27 @@ BEFORE_SHA="$1"
 AFTER_SHA="$2"
 
 if [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-    BEFORE_SHA="$(git rev-list --max-parents=0 "$AFTER_SHA")"
+    BEFORE_SHA="$(git hash-object -t tree --stdin </dev/null)"
 fi
 
-mapfile -d '' CHANGED_PATHS < <(git diff --name-only -z "$BEFORE_SHA" "$AFTER_SHA" -- docs/en)
+CHANGES="$(mktemp)"
+trap 'rm -f -- "$CHANGES"' EXIT
+git diff --find-renames --name-status -z "$BEFORE_SHA" "$AFTER_SHA" -- docs/en > "$CHANGES"
 
 SOURCES=()
-for PATHNAME in "${CHANGED_PATHS[@]}"; do
+REMOVED=()
+while IFS= read -r -d '' STATUS && IFS= read -r -d '' PATHNAME; do
+    if [[ "$STATUS" == D || "$STATUS" == R* ]] && [[ "$PATHNAME" == docs/en/*.md ]]; then
+        REMOVED+=("$PATHNAME")
+    fi
+    case "$STATUS" in
+        D) continue ;;
+        R*|C*) IFS= read -r -d '' PATHNAME ;;
+    esac
     if [[ "$PATHNAME" == docs/en/*.md ]]; then
         SOURCES+=("$PATHNAME")
     fi
-done
+done < "$CHANGES"
 
 shopt -s nullglob
 LOCALES=()
@@ -52,12 +62,11 @@ shopt -u nullglob
     printf 'Range: `%s..%s`\n\n' "$BEFORE_SHA" "$AFTER_SHA"
 
     if [[ "${#SOURCES[@]}" -eq 0 ]]; then
-        printf 'No changed Markdown pages under `docs/en/**`.\n'
-        exit 0
+        printf 'No new or updated Markdown pages under `docs/en/**`.\n'
+    else
+        printf '| Source | Mirrored target path(s) |\n'
+        printf '|---|---|\n'
     fi
-
-    printf '| Source | Mirrored target path(s) |\n'
-    printf '|---|---|\n'
 
     for SOURCE in "${SOURCES[@]}"; do
         RELATIVE_PATH="${SOURCE#docs/en/}"
@@ -79,5 +88,8 @@ shopt -u nullglob
         printf '| `%s` | %s |\n' "$SOURCE" "$TARGETS"
     done
 
-    printf '\nThis report is deterministic and does not run a translation.\n'
+    if [[ "${#REMOVED[@]}" -gt 0 ]]; then
+        printf '\n### Removed source paths\n\n'
+        printf -- '- `%s`\n' "${REMOVED[@]}"
+    fi
 } >> "$SUMMARY_FILE"

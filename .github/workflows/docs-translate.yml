@@ -42,15 +42,20 @@ jobs:
           bash -n scripts/docs-translate/render-run-stats.sh
           bash -n scripts/docs-translate/test-render-run-stats.sh
           bash -n scripts/docs-translate/report-docs-en-changes.sh
+          bash -n scripts/docs-translate/test-translate-page-and-open-pr.sh
           bash scripts/docs-translate/test-open-pr-from-body.sh
           bash scripts/docs-translate/test-render-run-stats.sh
+          bash scripts/docs-translate/test-translate-page-and-open-pr.sh
 
       - uses: docker/setup-buildx-action@v3
 
       - name: Cache container runtime build state
         uses: actions/cache@v4
         with:
-          path: /tmp/kuku/docs-translate-ci
+          path: |
+            /tmp/kuku/docs-translate-ci/target
+            /tmp/kuku/docs-translate-ci/cargo-home
+            /tmp/kuku/docs-translate-ci/rustup
           key: docs-translate-runtime-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'apps/**/Cargo.toml', 'crates/**/Cargo.toml', 'scripts/docs-translate/Dockerfile') }}
           restore-keys: |
             docs-translate-runtime-${{ runner.os }}-

@@ -40,7 +40,14 @@ case "$1 $2" in
     "pr list")
         require_arg --head "$EXPECT_HEAD" "$@"
         require_arg --base "$EXPECT_BASE" "$@"
-        printf 'https://github.com/Cloud370/kuku/pull/99\n'
+        require_arg --json url,isCrossRepository "$@"
+        while [[ "$1" != "--jq" ]]; do shift; done
+        jq -r "$2" <<'JSON'
+[
+  {"isCrossRepository":true,"url":"https://example.invalid/fork"},
+  {"isCrossRepository":false,"url":"https://github.com/Cloud370/kuku/pull/99"}
+]
+JSON
         ;;
     *)
         printf 'unexpected gh call: %s\n' "$*" >&2
