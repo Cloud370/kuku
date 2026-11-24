@@ -15,7 +15,7 @@ use tokio::time::{Duration, Instant as TokioInstant, sleep_until, timeout};
 use crate::execution::CommandTermination;
 use crate::tool::ToolResultEnvelope;
 
-use directory::CommandDirectory;
+use crate::util::bound_directory::BoundDirectory;
 use output::{OutputLimits, OutputRead, OutputStream, OutputWriter, read_output};
 use process::ProcessTree;
 use render::render_command_result;
@@ -27,6 +27,7 @@ pub(crate) use request::{
 };
 pub(crate) use shell::available_shells;
 
+#[cfg(unix)]
 mod directory;
 pub(crate) mod encoding;
 mod guard;
@@ -327,7 +328,7 @@ async fn execute_command(
     cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
     memory_bytes: Option<NonZeroU64>,
 ) -> Result<CommandOutcome, ToolResultEnvelope> {
-    let directory = CommandDirectory::open(&request.cwd).map_err(|error| {
+    let directory = BoundDirectory::open(&request.cwd).map_err(|error| {
         ToolResultEnvelope::blocked(
             format!("failed to bind prepared command directory: {error}"),
             "choose the working directory again before requesting another command",

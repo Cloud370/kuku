@@ -9,8 +9,8 @@ use tokio::process::Command;
 use crate::execution::{CommandInvocation, CommandShell};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
-use super::directory::CommandDirectory;
 use super::shell::shell_command;
+use crate::util::bound_directory::BoundDirectory;
 
 pub(super) struct PreparedCommand {
     pub(super) command: Command,
@@ -34,7 +34,7 @@ pub(super) struct CommandRequest {
 impl CommandRequest {
     pub(super) fn command(
         &self,
-        directory: &CommandDirectory,
+        directory: &BoundDirectory,
         memory_bytes: Option<NonZeroU64>,
     ) -> io::Result<PreparedCommand> {
         #[cfg(not(unix))]
@@ -50,7 +50,7 @@ impl CommandRequest {
                 let mut command = Command::new(program);
                 command.args(args);
                 #[cfg(unix)]
-                directory.configure(&mut command)?;
+                super::directory::configure(directory, &mut command)?;
                 #[cfg(unix)]
                 super::native::configure_memory(&mut command, memory_bytes)?;
                 #[cfg(unix)]
@@ -72,7 +72,7 @@ impl CommandRequest {
                 #[cfg(unix)]
                 let command = {
                     let mut command = command;
-                    directory.configure(&mut command)?;
+                    super::directory::configure(directory, &mut command)?;
                     super::native::configure_memory(&mut command, memory_bytes)?;
                     command
                 };

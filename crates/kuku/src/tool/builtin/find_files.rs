@@ -25,6 +25,7 @@ enum EntryKind {
 struct Listing {
     count: usize,
     entries_left: usize,
+    absolute_paths: bool,
     deadline: ScanDeadline,
     first_bytes: usize,
     first: BinaryHeap<(EntryKind, usize, String)>,
@@ -77,6 +78,7 @@ pub(crate) fn find_files(
 
     let mut listing = Listing {
         entries_left: limits.scan_entries,
+        absolute_paths: root.external,
         deadline: ScanDeadline::new(limits.scan_timeout_ms),
         ..Listing::default()
     };
@@ -202,7 +204,12 @@ fn collect_entries(
                 }
             };
             if add_dir {
-                listing.push(format!("{relative}/"), EntryKind::Directory);
+                let directory = if listing.absolute_paths {
+                    format!("{}{}", path.display(), std::path::MAIN_SEPARATOR_STR)
+                } else {
+                    format!("{relative}/")
+                };
+                listing.push(directory, EntryKind::Directory);
             }
             if recurse && depth < max_depth {
                 collect_entries(
@@ -248,7 +255,12 @@ fn push_entry(path: &Path, workspace: &Path, pattern: Option<&str>, listing: &mu
         return;
     }
 
-    listing.push(relative, EntryKind::File);
+    let display = if listing.absolute_paths {
+        path.to_string_lossy().into_owned()
+    } else {
+        relative
+    };
+    listing.push(display, EntryKind::File);
 }
 
 #[cfg(test)]
@@ -360,7 +372,8 @@ mod tests {
         std::fs::write(outside.path().join("notes.txt"), "outside").unwrap();
         let absolute = find_files(&serde_json::json!({"path": outside.path()}), dir.path());
         assert_eq!(absolute.status, "ok");
-        assert!(absolute.model_content.contains("notes.txt"));
+        let expected = outside.path().join("notes.txt").canonicalize().unwrap();
+        assert_eq!(absolute.model_content, expected.to_str().unwrap());
         let protected = outside.path().join(".ssh").join("nested");
         std::fs::create_dir_all(&protected).unwrap();
         let protected = find_files(&serde_json::json!({"path": protected}), dir.path());

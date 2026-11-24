@@ -218,6 +218,7 @@ pub(crate) fn search_text(
 
     let mut candidates = SearchFiles {
         workspace: &resolved.workspace,
+        absolute_paths: resolved.external,
         include,
         view: view_kind,
         files: Vec::new(),
@@ -403,6 +404,7 @@ fn incomplete_notice(
 
 struct SearchFiles<'a> {
     workspace: &'a Path,
+    absolute_paths: bool,
     include: Option<&'a str>,
     view: SearchView,
     files: Vec<CollectedFile>,
@@ -476,6 +478,11 @@ impl SearchFiles<'_> {
         {
             return Ok(());
         }
+        let relative = if self.absolute_paths {
+            path.to_string_lossy().into_owned()
+        } else {
+            relative
+        };
         let original = path.strip_prefix(self.workspace).unwrap_or(path);
         let original = (original != Path::new(&relative)).then(|| Box::<Path>::from(original));
         let bytes = std::mem::size_of::<CollectedFile>()
@@ -580,6 +587,24 @@ mod tests {
             WorkspaceIoLimits::default(),
             &|| false,
         )
+    }
+
+    #[test]
+    fn external_search_returns_a_path_that_can_be_opened_directly() {
+        let workspace = workspace();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("notes.txt");
+        std::fs::write(&path, "marker").unwrap();
+        let result = search_text(
+            &serde_json::json!({"path": outside.path(), "pattern": "marker"}),
+            workspace.path(),
+        );
+        assert_eq!("ok", result.status);
+        let matches = result.structured.unwrap()["matches"].clone();
+        assert_eq!(
+            matches[0]["path"],
+            path.canonicalize().unwrap().to_str().unwrap()
+        );
     }
 
     #[test]

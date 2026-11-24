@@ -32,6 +32,7 @@ pub(super) struct ResolvedPath {
     pub(super) workspace: PathBuf,
     pub(super) path: PathBuf,
     pub(super) relative: String,
+    pub(super) external: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -219,7 +220,8 @@ fn checked_resolved_path(
     resolved: PathBuf,
     requested: &str,
 ) -> Result<ResolvedPath, ToolResultEnvelope> {
-    if !resolved.starts_with(&workspace) {
+    let external = !resolved.starts_with(&workspace);
+    if external {
         if !Path::new(requested).is_absolute() {
             return Err(outside_workspace(requested));
         }
@@ -239,6 +241,7 @@ fn checked_resolved_path(
         workspace,
         path: resolved,
         relative,
+        external,
     })
 }
 
