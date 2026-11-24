@@ -4,6 +4,8 @@ Use the [acceptance selector](../../../scripts/acceptance/run.py) from the check
 
 ## Verification selection
 
+Use controlled provider fixtures for routine development and CI. Use [live provider checks](testing-advanced.md#live-protocol-acceptance) when the behavior under test depends on a real upstream, such as authentication, routing, usage reporting, or model behavior on a task.
+
 | Change | Check |
 | --- | --- |
 | Documentation only | [Documentation checks](#documentation-checks) |
@@ -42,7 +44,7 @@ Look in `benchmarks/acceptance/<run-id>/result.json` for the source revision, fe
 
 Report what actually ran and whether it passed, failed, or was skipped. Separate deterministic coverage, native platform results, and hands-on experience. Verify tool effects and cleanup through durable records and fixture assertions. Share bounded evidence and keep credentials, private requests, and Session contents out of public logs.
 
-Benchmarks, resource measurements, and [live provider checks](testing-advanced.md#live-protocol-acceptance) are explicit selections. See [Advanced acceptance](testing-advanced.md) for the recipes and paid-run requirements.
+[Advanced acceptance](testing-advanced.md) explains how to select benchmarks and resource measurements and how to run authorized live checks.
 
 ## Documentation checks
 

@@ -1,6 +1,7 @@
 """Check composer actions with the installed client and its native terminal."""
 
 import json
+import os
 from urllib.parse import urlencode
 
 from interactive_fixture import eventually
@@ -50,6 +51,34 @@ def startup_info(client):
         terminal.exit_cleanly()
 
 
+def choose_agent_entry(terminal, screen, label):
+    if os.name != "nt":
+        terminal.click_text(screen, label)
+        return
+
+    def selected(view):
+        return next(((row, line) for row, line in enumerate(view.splitlines())
+                     if line.lstrip(" │").startswith("›")), None)
+
+    for _ in range(12):
+        selection = selected(screen)
+        assert selection is not None, screen
+        row, line = selection
+        if label in line:
+            terminal.press("\r")
+            return
+        target = next(i for i, line in enumerate(screen.splitlines()) if label in line)
+        terminal.press("\x1b[B" if target > row else "\x1b[A")
+
+        def moved():
+            current = terminal.request("screen")["screen"]
+            current_selection = selected(current)
+            return current if current_selection is not None and current_selection != selection else None
+
+        screen = eventually(f"move the Agent picker selection toward {label}", moved)
+    raise AssertionError(f"Could not select {label} in the Agent picker")
+
+
 def agent_setup(client):
     workspace = client.workspace("work-agent-setup")
     config = client.home / "config.toml"
@@ -68,22 +97,22 @@ def agent_setup(client):
         terminal.expect("Ready to create a reviewer.")
         terminal.press("/agents\r")
         roster = terminal.expect("Create Agent", state="Switch Agent")["screen"]
-        terminal.click_text(roster, "Create Agent")
+        choose_agent_entry(terminal, roster, "Create Agent")
         terminal.expect("New agent")
         terminal.type("reviewer")
         terminal.press("\r")
         review = terminal.expect("› Create Agent", also=("Agent reviewer", "Thinking · None", "Service tier · Default"))["screen"]
-        terminal.click_text(review, "Model · claude-sonnet-4-6")
+        choose_agent_entry(terminal, review, "Model · claude-sonnet-4-6")
         models = terminal.expect("strong · review-model", state="Agent model")["screen"]
-        terminal.click_text(models, "strong · review-model")
+        choose_agent_entry(terminal, models, "strong · review-model")
         review = terminal.expect("Model · review-model", also=("Thinking · None", "Esc Back"))["screen"]
-        terminal.click_text(review, "Thinking · None")
+        choose_agent_entry(terminal, review, "Thinking · None")
         thinking = terminal.expect("High", state="Agent thinking")["screen"]
-        terminal.click_text(thinking, "High")
+        choose_agent_entry(terminal, thinking, "High")
         review = terminal.expect("Thinking · High", also=("Service tier · Default",))["screen"]
-        terminal.click_text(review, "Service tier · Default")
+        choose_agent_entry(terminal, review, "Service tier · Default")
         service = terminal.expect("Fast", state="Agent service tier", also=("Flex",))["screen"]
-        terminal.click_text(service, "Fast")
+        choose_agent_entry(terminal, service, "Fast")
         terminal.expect("Service tier · Fast", also=("Model · review-model", "Thinking · High", "› Create Agent"))
         terminal.press("\r")
         terminal.expect("Agent reviewer", also=("review-model high priority",), absent=("› Create Agent",))

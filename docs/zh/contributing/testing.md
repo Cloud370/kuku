@@ -4,6 +4,8 @@
 
 ## 选择验证范围
 
+日常开发和 CI 使用可控的 Provider 夹具。需要验证真实上游的行为时，再做[真实 Provider 验收](testing-advanced.md#真实协议验收)，例如验证认证、路由、用量回报或模型在任务中的表现。
+
 | 改动 | 检查 |
 | --- | --- |
 | 仅文档 | [文档检查](#文档检查) |
@@ -42,7 +44,7 @@ python3 scripts/acceptance/run.py interactive --binary PATH_TO_BINARY --cases st
 
 报告实际运行、通过、失败或跳过的内容。分别说明可控场景覆盖、原生平台结果和人工体验。通过持久化记录和夹具断言核对工具效果与清理。对外分享有界证据，保护凭据、私有请求和 Session 内容。
 
-Benchmark、资源测量和[真实 Provider 验收](testing-advanced.md#真实协议验收)需要显式选择。操作和付费前提见[专项验收](testing-advanced.md)。
+[专项验收](testing-advanced.md)说明如何选择 Benchmark 和资源测量场景，以及如何运行已授权的真实 Provider 验收。
 
 ## 文档检查
 
