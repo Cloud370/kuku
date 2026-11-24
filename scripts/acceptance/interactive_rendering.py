@@ -193,9 +193,11 @@ def rendering_cases(binary, bridge, directory):
         with InstalledClient(binary, bridge, directory / name) as client:
             if reasoning:
                 config = client.home / "config.toml"
-                config.write_text(config.read_text().replace('profile = "compatible"', 'profile = "anthropic"')
+                config.write_text(config.read_text(encoding="utf-8")
+                                  .replace('profile = "compatible"', 'profile = "anthropic"')
                                   .replace('think = "off"', 'think = "low"')
-                                  .replace('reasoning_efforts = ["none"]', 'reasoning_efforts = ["none", "low"]'))
+                                  .replace('reasoning_efforts = ["none"]', 'reasoning_efforts = ["none", "low"]'),
+                                  encoding="utf-8")
             operation(client)
 
     operations = [("delegation", targeted_delegation), ("file-cards", file_change_cards),

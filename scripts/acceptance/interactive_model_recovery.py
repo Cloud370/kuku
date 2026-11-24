@@ -19,8 +19,8 @@ def recovery_cases(binary, bridge, directory):
 
 def setup_address(client):
     config = client.home / "config.toml"
-    endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
-    config.write_text("")
+    endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text(encoding="utf-8"))[1]
+    config.write_text("", encoding="utf-8")
     return endpoint
 
 
@@ -48,7 +48,7 @@ def assert_testing_navigation(terminal, config):
     terminal.expect("Go back before tests finish?", also=("› Keep testing", "Stop tests and go back"))
     terminal.press("\x1b")
     terminal.expect("› View requests", also=("6 running",))
-    assert config.read_text() == ""
+    assert config.read_text(encoding="utf-8") == ""
 
 
 def assert_wide_setup(terminal):
@@ -160,11 +160,12 @@ def save_early(binary, bridge, directory):
                 choose(terminal, 2, "Save early")
                 terminal.expect("Save before tests finish?", also=("› Keep testing",))
                 config = client.home / "config.toml"
-                assert config.read_text() == ""
+                assert config.read_text(encoding="utf-8") == ""
                 terminal.press("\x1b[B")
                 terminal.expect("› Stop tests and save")
                 terminal.exit_cleanly("\r")
-                assert f'provider = "{endpoint.removeprefix("http://")}"' in config.read_text()
+                config_text = config.read_text(encoding="utf-8")
+                assert f'provider = "{endpoint.removeprefix("http://")}"' in config_text
     finally:
         release.set()
 
