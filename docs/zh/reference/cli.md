@@ -187,11 +187,14 @@ kuku run [OPTIONS] --prompt-file <PATH|->
 
 从文件或标准输入读取的内容会按文本传入，包括其中的换行。若要[显式调用 Skill](../guides/use-skills.md#运行时使用-skill)，请使用位置参数传入提示词。
 
-最终结果包含 `type: "session"`、表示结果的 `status` 和 `event`，以及可用的 `session_id` 和 `agent`。结果会带上 `response`、`error`，以及已知的实际 `connection`、`model` 和 `usage`。等待时，`question` 或 `permission` 中的 `id` 标识待答复的请求。诊断写往 stderr。参数无效时可能在生成 Session 结果前退出。
+最终结果包含 `type: "session"`、表示结果的 `status` 和 `event`，以及可用的 `session_id` 和 `agent`。运行完成后返回最终 `response`，运行失败时返回 `error`。已知的实际连接、模型和用量分别见 `connection`、`model` 和 `usage`。等待时，`question` 或 `permission` 中的 `id` 标识待答复的请求。诊断写往 stderr。参数无效时可能在生成 Session 结果前退出。
+
+用已提交的 `--command-id` 重试时，返回原始 `receipt`、`replayed: true` 和已知的当前 `input_status`。用 `kuku show <SESSION_ID> --json` 查看 Agent 的当前状态。
 
 | 退出码 | 结果状态 | 含义 |
 |---|---|---|
 | `0` | `completed` | 运行完成 |
+| `0` | `acknowledged` | 已有持久提交回执 |
 | `3` | `waiting` | Agent 等待答复或授权 |
 | `1` | `failed` | 运行失败 |
 | `130` | `cancelled` | 运行已取消 |
@@ -251,7 +254,7 @@ kuku pending discard <COMMAND_ID> [--session <id>]
 kuku delete <SESSION_ID>
 ```
 
-删除已关闭的 Session。
+删除 Session，必要时先关闭。执行、清理或 Job 尚未结束时无法删除。
 
 ## `kuku config`
 

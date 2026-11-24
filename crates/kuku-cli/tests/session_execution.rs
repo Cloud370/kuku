@@ -248,11 +248,15 @@ async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_m
         &config,
         &["--stream-json", "read fixture"],
     );
+    let records = json_lines(&success);
+    let session = records[0]["session_id"].as_str().unwrap();
     let failure = invoke(
         workspace.path(),
         home.path(),
         &config,
         &[
+            "--session",
+            session,
             "--connection",
             "secondary",
             "--model",
@@ -268,7 +272,6 @@ async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_m
         "{}",
         String::from_utf8_lossy(&success.stderr)
     );
-    let records = json_lines(&success);
     assert_eq!("started", records[0]["event"]);
     let tools: Vec<_> = records
         .iter()
@@ -290,6 +293,7 @@ async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_m
     let final_result = failed_records.last().unwrap();
     assert_eq!("session", final_result["type"]);
     assert_eq!("failed", final_result["status"]);
+    assert!(final_result["response"].is_null());
     assert!(
         final_result["error"]
             .as_str()
@@ -420,8 +424,10 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
             "verify model selection",
         ],
     ));
-    assert_eq!("completed", replayed["event"]);
+    assert_eq!("acknowledged", replayed["event"]);
     assert_eq!(true, replayed["replayed"]);
+    assert_eq!(overridden["receipt"], replayed["receipt"]);
+    assert!(replayed["response"].is_null());
     explicit_model.assert_hits(1);
     let show = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
         .current_dir(workspace.path())
@@ -533,26 +539,24 @@ async fn cli_reopens_question_and_rejects_stale_answers_without_new_work() {
     assert_eq!("waiting", waiting["event"]);
     let session_id = waiting["session_id"].as_str().unwrap();
     let request_id = waiting["question"]["id"].as_str().unwrap();
-    let duplicate = result_with_code(
-        &invoke(
-            workspace.path(),
-            home.path(),
-            &config,
-            &[
-                "--session",
-                session_id,
-                "--command-id",
-                "color-input",
-                "--json",
-                "ask for a color",
-            ],
-        ),
-        3,
-    );
-    assert_eq!("waiting", duplicate["status"]);
+    let duplicate = result(&invoke(
+        workspace.path(),
+        home.path(),
+        &config,
+        &[
+            "--session",
+            session_id,
+            "--command-id",
+            "color-input",
+            "--json",
+            "ask for a color",
+        ],
+    ));
+    assert_eq!("acknowledged", duplicate["status"]);
     assert_eq!(true, duplicate["replayed"]);
-    assert_eq!(waiting["question"]["id"], duplicate["question"]["id"]);
-    assert_eq!("waiting", duplicate["agent_status"]);
+    assert_eq!(waiting["receipt"], duplicate["receipt"]);
+    assert_eq!("accepted", duplicate["input_status"]);
+    assert!(duplicate["question"].is_null());
 
     let reply = |command_id: &str| {
         Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
@@ -702,7 +706,7 @@ async fn cli_disconnect_keeps_server_work_running_and_replay_does_not_restart_it
             "original interrupted work",
         ],
     ));
-    assert_eq!("completed", acknowledged["event"]);
+    assert_eq!("acknowledged", acknowledged["event"]);
     assert_eq!(true, acknowledged["replayed"]);
     let service = LocalService::resolve(home.path(), Some(&config_path)).unwrap();
     let client = kuku_client::Client::local(&service).await.unwrap();

@@ -188,11 +188,14 @@ kuku run [OPTIONS] --prompt-file <PATH|->
 
 File and stdin prompts are passed as text, including newlines. Use a positional prompt for explicit [Skill invocation](../guides/use-skills.md#use-skills-during-a-run).
 
-The final object has `type: "session"`, a `status` and `event` describing the outcome, and the `session_id` and `agent` when available. It includes `response`, `error`, and, when known, the actual `connection`, `model`, and `usage`. A waiting result identifies its `question` or `permission` by `id`. Diagnostics go to stderr. Argument errors can exit before there is a Session result.
+The final object has `type: "session"`, a `status` and `event` describing the outcome, and the `session_id` and `agent` when available. A completed run includes its final `response`, a failed run includes its `error`, and available route and usage information appears in `connection`, `model`, and `usage`. A waiting result identifies its `question` or `permission` by `id`. Diagnostics go to stderr. Argument errors can exit before there is a Session result.
+
+Retrying a committed `--command-id` returns its original `receipt`, `replayed: true`, and the current `input_status` when known. Use `kuku show <SESSION_ID> --json` to read the Agent's current state.
 
 | Exit code | Result status | Meaning |
 |---|---|---|
 | `0` | `completed` | The run completed. |
+| `0` | `acknowledged` | The submission already has a durable receipt. |
 | `3` | `waiting` | An Agent needs an answer or permission. |
 | `1` | `failed` | The run failed. |
 | `130` | `cancelled` | The run was cancelled. |
@@ -252,7 +255,7 @@ Inspects submissions whose HTTP receipt was lost due to a timeout or disconnect.
 kuku delete <SESSION_ID>
 ```
 
-Deletes a closed Session.
+Deletes a Session after closing it if needed. Active executions, cleanup, and Jobs prevent deletion.
 
 ## `kuku config`
 

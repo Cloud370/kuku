@@ -82,7 +82,14 @@ think = "off"
     let prompt_file = workspace.path().join("prompt.txt");
     std::fs::write(&prompt_file, FIRST).unwrap();
     let file = run_cli(workspace.path(), home.path(), &config)
-        .args(["--json", "--preset", "fixture-files", "--prompt-file"])
+        .args([
+            "--json",
+            "--command-id",
+            "first-file-input",
+            "--preset",
+            "fixture-files",
+            "--prompt-file",
+        ])
         .arg(&prompt_file)
         .output()
         .unwrap();
@@ -133,6 +140,27 @@ think = "off"
     let resumed = result(&resumed);
     assert_eq!(session_id, resumed["session_id"]);
     assert_eq!("Second reply.", resumed["response"]);
+
+    std::fs::write(&prompt_file, FIRST).unwrap();
+    let replayed = run_cli(workspace.path(), home.path(), &config)
+        .args([
+            "--stream-json",
+            "--session",
+            session_id,
+            "--command-id",
+            "first-file-input",
+            "--prompt-file",
+        ])
+        .arg(&prompt_file)
+        .output()
+        .unwrap();
+    let receipt = result(&replayed);
+    assert_eq!("acknowledged", receipt["event"]);
+    assert_eq!("acknowledged", receipt["status"]);
+    assert_eq!(file_result["receipt"], receipt["receipt"]);
+    assert_eq!(true, receipt["replayed"]);
+    assert!(receipt["response"].is_null());
+    first_request.assert_hits(2);
     continued_request.assert_hits(1);
     stop_managed(home.path()).await;
 
@@ -317,7 +345,7 @@ async fn all_config_commands_follow_the_active_file_unless_explicitly_overridden
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sigint_while_the_initial_snapshot_is_in_flight_cancels_the_accepted_run() {
+async fn sigint_during_snapshot_respects_the_submission_boundary() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -354,6 +382,7 @@ async fn sigint_while_the_initial_snapshot_is_in_flight_cancels_the_accepted_run
     let app = kuku_server::build_app(state).layer(from_fn({
         let arrived = Arc::clone(&arrived);
         let release = Arc::clone(&release);
+        let delay_once = Arc::clone(&delay_once);
         move |request: Request, next: Next| {
             let arrived = Arc::clone(&arrived);
             let release = Arc::clone(&release);
@@ -373,23 +402,25 @@ async fn sigint_while_the_initial_snapshot_is_in_flight_cancels_the_accepted_run
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
-        .env("KUKU_HOME", home.path())
-        .arg("--workspace")
-        .arg(workspace.path().canonicalize().unwrap())
-        .args(["--remote", &endpoint, "--token", token])
-        .args([
-            "run",
-            "--stream-json",
-            "--command-id",
-            "signal-input",
-            "fixture prompt",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let launch = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+            .env("KUKU_HOME", home.path())
+            .arg("--workspace")
+            .arg(workspace.path().canonicalize().unwrap())
+            .args(["--remote", &endpoint, "--token", token, "run"])
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let mut child = launch(&[
+        "--stream-json",
+        "--command-id",
+        "signal-input",
+        "fixture prompt",
+    ]);
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut started = String::new();
     stdout.read_line(&mut started).unwrap();
@@ -441,6 +472,49 @@ async fn sigint_while_the_initial_snapshot_is_in_flight_cancels_the_accepted_run
     assert_eq!("cancelled", final_record["status"]);
     assert_eq!(first["session_id"], final_record["session_id"]);
     assert_eq!(first["receipt"], final_record["receipt"]);
+
+    delay_once.store(true, Ordering::Release);
+    let mut preflight = launch(&[
+        "--stream-json",
+        "--session",
+        &target.session_id,
+        "--command-id",
+        "cancelled-before-submission",
+        "do not submit this prompt",
+    ]);
+    tokio::time::timeout(Duration::from_secs(5), arrived.notified())
+        .await
+        .expect("the preflight snapshot must be in flight");
+    assert!(
+        Command::new("kill")
+            .args(["-s", "INT", &preflight.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let finished = tokio::time::timeout(Duration::from_secs(5), async {
+        while preflight.try_wait().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    release.notify_one();
+    if finished.is_err() {
+        let _ = preflight.kill();
+    }
+    let output = preflight.wait_with_output().unwrap();
+    finished.expect("preflight cancellation must not wait for the service response");
+    let record = super::result_with_code(&output, 130);
+    assert_eq!("cancelled", record["status"]);
+    assert_eq!(target.session_id, record["session_id"]);
+    assert!(record["receipt"].is_null());
+    assert!(
+        observer
+            .receipt(&target, "cancelled-before-submission")
+            .await
+            .unwrap()
+            .is_none()
+    );
     server.abort();
 }
 

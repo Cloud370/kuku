@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
 
 use kuku::ModelRecoveryInfo;
-use kuku_client::{AgentSnapshot, HistoryEntry, HistoryKind};
+use kuku_client::{Acknowledgement, AgentSnapshot, HistoryEntry, HistoryKind, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -171,6 +171,27 @@ impl RunRenderer {
         Ok(())
     }
 
+    pub(super) fn acknowledged(
+        &self,
+        target: &Target,
+        acknowledgement: &Acknowledgement,
+    ) -> CliResult {
+        if self.json || self.stream_json {
+            write_json(&json!({
+                "type": "session", "event": "acknowledged", "status": "acknowledged",
+                "session_id": target.session_id, "agent": target.agent, "replayed": true,
+                "receipt": acknowledgement.receipt, "input_status": acknowledgement.status,
+            }))?;
+        } else {
+            let receipt = &acknowledgement.receipt;
+            eprintln!(
+                "command {} already committed at event {}. Session {} agent {}",
+                receipt.command_id, receipt.event_id, target.session_id, target.agent,
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn finish(
         &mut self,
         progress: &RunProgress,
@@ -179,6 +200,9 @@ impl RunRenderer {
         elapsed: std::time::Duration,
     ) -> CliResult {
         self.close_thinking();
+        let response = (outcome == RunOutcome::Completed)
+            .then_some(agent.last_output.as_deref())
+            .flatten();
         if self.json || self.stream_json {
             if let Some(request) = &agent.permission {
                 if self.stream_json {
@@ -188,7 +212,7 @@ impl RunRenderer {
             let mut result = terminal_record(progress, &agent.address, outcome, elapsed);
             result["agent_status"] = json!(agent.status);
             result["turns"] = json!(agent.turn);
-            result["response"] = json!(agent.last_output);
+            result["response"] = json!(response);
             result["config"] = json!(agent.config);
             result["usage"] = json!(agent.usage);
             result["permission"] = json!(agent.permission);
@@ -208,7 +232,7 @@ impl RunRenderer {
             }
             write_json(&result)?;
         } else {
-            if let Some(output) = &agent.last_output {
+            if let Some(output) = response {
                 if let Some(suffix) = output.strip_prefix(&self.rendered_text) {
                     print!("{suffix}");
                 } else if !self.rendered_text.ends_with(output) {

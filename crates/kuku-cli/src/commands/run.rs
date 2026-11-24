@@ -29,6 +29,7 @@ pub(super) enum RunOutcome {
     Waiting,
     Failed,
     Cancelled,
+    CancelledBeforeSubmission,
     InputWithdrawn,
 }
 
@@ -49,7 +50,7 @@ impl RunOutcome {
             Self::Completed => 0,
             Self::Waiting => 3,
             Self::Failed => 1,
-            Self::Cancelled | Self::InputWithdrawn => 130,
+            Self::Cancelled | Self::CancelledBeforeSubmission | Self::InputWithdrawn => 130,
         }
     }
 
@@ -58,7 +59,7 @@ impl RunOutcome {
             Self::Completed => "completed",
             Self::Waiting => "waiting",
             Self::Failed => "failed",
-            Self::Cancelled | Self::InputWithdrawn => "cancelled",
+            Self::Cancelled | Self::CancelledBeforeSubmission | Self::InputWithdrawn => "cancelled",
         }
     }
 }
@@ -70,6 +71,7 @@ impl fmt::Display for RunOutcome {
             Self::Waiting => "Agent is waiting. Use `kuku reply` with the pending request ID",
             Self::Failed => "Agent execution was interrupted before completion",
             Self::Cancelled => "Agent cancelled after cleanup",
+            Self::CancelledBeforeSubmission => "Run cancelled before submitting input",
             Self::InputWithdrawn => "Submitted input withdrawn from the Agent queue",
         })
     }
@@ -91,7 +93,8 @@ pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {
         acknowledgement: None,
     };
     let snapshot = match execute_run(&args, options, &mut renderer, &mut progress).await {
-        Ok(snapshot) => snapshot,
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return Ok(()),
         Err(error) => {
             renderer.finish_error(&progress, &args.agent, error.as_ref(), start.elapsed())?;
             return Err(error);
@@ -114,40 +117,45 @@ async fn execute_run(
     options: &ConnectionArgs,
     renderer: &mut RunRenderer,
     progress: &mut RunProgress,
-) -> Result<AgentSnapshot, Box<dyn std::error::Error>> {
+) -> Result<Option<AgentSnapshot>, Box<dyn std::error::Error>> {
     let (text, config) = run_input(args)?;
     let connection = options.connect().await?;
-    let (command, recovered) = prepare_run(args, &connection, text, config).await?;
+    let mut interrupt = std::pin::pin!(ctrl_c_listener()?);
+    let preflight = async {
+        let (command, recovered) = prepare_run(args, &connection, text, config).await?;
+        progress.session_id = Some(command.target.session_id.clone());
+        let waiting = if recovered.is_none() {
+            preflight_send(&connection, &command).await?
+        } else {
+            None
+        };
+        Ok::<_, Box<dyn std::error::Error>>((command, recovered, waiting))
+    };
+    let (command, recovered, waiting) = tokio::select! {
+        biased;
+        () = &mut interrupt => return Err(RunOutcome::CancelledBeforeSubmission.into()),
+        result = preflight => result?,
+    };
+    if let Some(waiting) = waiting {
+        return Ok(Some(waiting));
+    }
     let target = &command.target;
-    let interrupt = std::pin::pin!(ctrl_c_listener()?);
-    progress.session_id = Some(target.session_id.clone());
     let acknowledgement = if let Some(mut recovered) = recovered {
         recovered.replayed = true;
         recovered
     } else {
-        if let Action::Send {
-            create,
-            bootstrap_skill,
-            ..
-        } = &command.action
-        {
-            if create.is_none() {
-                if let Some(waiting) = waiting_agent(&connection, target).await? {
-                    return Ok(waiting);
-                }
-            }
-            if let Some(name) = bootstrap_skill {
-                let skills = connection
-                    .client
-                    .skills(&connection.workspace, Some(name))
-                    .await?;
-                if !skills.iter().any(|skill| skill.name == *name) {
-                    return Err(format!("unknown skill: {name}").into());
-                }
-            }
+        tokio::select! {
+            biased;
+            () = &mut interrupt => return Err(RunOutcome::CancelledBeforeSubmission.into()),
+            () = std::future::ready(()) => {},
         }
+        // Await an in-flight submission so cancellation can use its receipt.
         submit(&connection, &command).await?
     };
+    if acknowledgement.replayed {
+        renderer.acknowledged(target, &acknowledgement)?;
+        return Ok(None);
+    }
     progress.acknowledgement = Some(acknowledgement.clone());
     if args.stream_json {
         write_json(&json!({
@@ -168,6 +176,7 @@ async fn execute_run(
         interrupt,
     )
     .await
+    .map(Some)
 }
 
 /// Reply to one exact durable request and observe the continuation.
@@ -392,6 +401,35 @@ fn resolve_prompts_dir(
     path: Option<&Path>,
 ) -> Result<Option<std::path::PathBuf>, Error> {
     path.map(|path| connection.service_path(path)).transpose()
+}
+
+async fn preflight_send(
+    connection: &Connection,
+    command: &Command,
+) -> Result<Option<AgentSnapshot>, Box<dyn std::error::Error>> {
+    let Action::Send {
+        create,
+        bootstrap_skill,
+        ..
+    } = &command.action
+    else {
+        return Ok(None);
+    };
+    if create.is_none()
+        && let Some(waiting) = waiting_agent(connection, &command.target).await?
+    {
+        return Ok(Some(waiting));
+    }
+    if let Some(name) = bootstrap_skill {
+        let skills = connection
+            .client
+            .skills(&connection.workspace, Some(name))
+            .await?;
+        if !skills.iter().any(|skill| skill.name == *name) {
+            return Err(format!("unknown skill: {name}").into());
+        }
+    }
+    Ok(None)
 }
 
 async fn waiting_agent(

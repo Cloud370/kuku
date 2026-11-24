@@ -657,6 +657,8 @@ impl App {
         config.model = None;
         config.reasoning_effort = None;
         config.service_tier = None;
+        config.output = None;
+        config.max_output_tokens = None;
         config
     }
 

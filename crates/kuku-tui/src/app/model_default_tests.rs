@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use kuku_client::{
     Action, AgentConfig, AgentSelection, AgentSnapshot, AgentStatus, AgentSummary, ApiError,
-    Command, ModelSelection, Snapshot, UsageTotals,
+    Command, ModelSelection, ModelSummary, Snapshot, UsageTotals,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -133,6 +133,49 @@ fn confirmed_default_save_queues_file_persistence_not_agent_configuration() {
         !app.effects
             .iter()
             .any(|job| matches!(job, Job::Save(_) | Job::Send(_)))
+    );
+}
+
+#[test]
+fn changing_exact_model_resets_route_settings_and_preserves_other_agent_settings() {
+    let mut app = App::new(PathBuf::new(), None);
+    let current = model();
+    let config = AgentConfig {
+        connection: Some(current.connection.clone()),
+        model: Some(current.model.clone()),
+        max_output_tokens: Some(123),
+        output: Some(kuku::config::RequestedOutput::Image),
+        reasoning_effort: Some("high".into()),
+        service_tier: Some("priority".into()),
+        tools: Some(vec!["read_file".into()]),
+        ..AgentConfig::default()
+    };
+    app.pane_mut().initial_model = Some(current.clone());
+    app.pane_mut().initial_config = config.clone();
+    let mut choice = ModelSummary {
+        connection: current.connection.clone(),
+        model: current.model,
+        purpose: None,
+        settings: None,
+        output: None,
+        request_url: None,
+        capabilities: None,
+        error: None,
+    };
+
+    app.use_model_route(&choice);
+    assert_eq!(&config, app.pane().config());
+
+    choice.connection = "other".into();
+    app.use_model_route(&choice);
+    assert_eq!(
+        &AgentConfig {
+            connection: Some(choice.connection),
+            model: Some(choice.model),
+            tools: config.tools,
+            ..AgentConfig::default()
+        },
+        app.pane().config()
     );
 }
 
