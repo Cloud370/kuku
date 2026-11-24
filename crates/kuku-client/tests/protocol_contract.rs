@@ -249,6 +249,7 @@ fn shared_protocol_preserves_the_command_id_for_each_queue_transition() {
     let action = Action::ReplaceQueued {
         input_command_id: "send-example".into(),
         text: "Inspect the two modified files".into(),
+        image_markers: vec![],
     };
     assert_eq!(
         fixture["queued_replacement"],
@@ -292,6 +293,7 @@ fn message_rewind_protocol_preserves_exact_event_text_and_restore_opt_in() {
     let action = Action::RewindMessage {
         target_event_id: 41,
         text: "keep this as an unsent draft".into(),
+        draft_images: vec![],
         restore_files: false,
     };
     let encoded = serde_json::to_value(&action).unwrap();
@@ -379,6 +381,7 @@ async fn rejected_queued_replacement_remains_recoverable_after_reopening_the_sto
         action: Action::ReplaceQueued {
             input_command_id: "original-example".into(),
             text: "Keep this edited text\nincluding the second line".into(),
+            image_markers: vec![],
         },
     };
     let error = store.submit(&client, &command).await.unwrap_err();

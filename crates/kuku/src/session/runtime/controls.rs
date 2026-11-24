@@ -229,7 +229,7 @@ impl Session {
     }
 
     /// Replace an unadmitted message from the trusted source in its original queue position.
-    /// Repeating the same command returns its committed receipt without waking the agent.
+    /// The replacement is text-only. Use the marker-aware variant to retain selected images.
     pub fn replace_queued(
         &self,
         command_id: &str,
@@ -238,11 +238,32 @@ impl Session {
         text: &str,
         source: &super::InputSource,
     ) -> Result<Receipt> {
+        self.replace_queued_with_images(command_id, address, input_command_id, text, source, &[])
+    }
+
+    /// Replace queued text and retain exactly the original images identified by the new markers.
+    /// Repeating the same command returns its committed receipt without waking the agent.
+    pub fn replace_queued_with_images(
+        &self,
+        command_id: &str,
+        address: &str,
+        input_command_id: &str,
+        text: &str,
+        source: &super::InputSource,
+        markers: &[crate::execution::ImageMarker],
+    ) -> Result<Receipt> {
         validate_key(input_command_id)?;
         let command = command(
             command_id,
             address,
-            &("replace_queued", address, input_command_id, text, source),
+            &(
+                "replace_queued",
+                address,
+                input_command_id,
+                text,
+                source,
+                markers,
+            ),
         )?;
         let mut state = self.inner.state.lock().unwrap();
         ensure_open(&state)?;
@@ -281,6 +302,29 @@ impl Session {
                 "replacement text and references exceed the configured byte limit".into(),
             ));
         }
+        if markers.len() > old.input.images.len() {
+            return Err(Error::InvalidArgument(
+                "too many retained image markers".into(),
+            ));
+        }
+        super::media::validate_markers(text, markers)?;
+        let mut images = markers
+            .iter()
+            .map(|marker| {
+                old.input
+                    .images
+                    .iter()
+                    .find(|image| image.marker().is_some_and(|old| old.label == marker.label))
+                    .cloned()
+                    .map(|image| image.with_marker(marker.clone()))
+                    .ok_or_else(|| {
+                        Error::InvalidArgument(
+                            "image marker does not belong to the queued input".into(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        images.sort_unstable_by_key(|image| image.marker().expect("retained marker").offset);
         self.commit(
             &mut state,
             Record::InputReplacement {
@@ -288,6 +332,7 @@ impl Session {
                 address: address.into(),
                 input_command_id: input_command_id.into(),
                 text: text.into(),
+                images,
             },
         )?;
         Ok(state.commands[command_id].1.clone())

@@ -319,7 +319,7 @@ fn clicking_the_queue_focuses_its_inline_editor_and_saves_the_exact_replacement(
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let replacement = saved_input(&app);
     assert!(
-        matches!(&replacement.action, Action::ReplaceQueued { input_command_id, text }
+        matches!(&replacement.action, Action::ReplaceQueued { input_command_id, text, .. }
         if input_command_id == "original" && text == "edit\n第三行")
     );
     assert_eq!("independent draft", app.pane().draft.text());

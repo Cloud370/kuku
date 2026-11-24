@@ -373,8 +373,8 @@ impl App {
         let text = self
             .queued_for_edit()
             .find(|entry| entry.receipt.command_id == input_command_id)
-            .map(|entry| entry.input.text.clone());
-        let Some(text) = text else {
+            .map(|entry| entry.input.clone());
+        let Some(input) = text else {
             self.problem("Input has already left the queue");
             return;
         };
@@ -384,11 +384,22 @@ impl App {
             "Enter replaces the queued text · Shift+Enter adds a line · Esc keeps the queued input",
         );
         if let Some(Modal::Prompt(prompt)) = &mut self.modal {
-            prompt.editor.set_text(text);
+            prompt.editor.set_image_markers(
+                &input.text,
+                input
+                    .images
+                    .iter()
+                    .filter_map(kuku_client::InputImage::marker),
+            );
         }
     }
 
-    pub(crate) fn replace_queued(&mut self, input_command_id: String, text: String) -> bool {
+    pub(crate) fn replace_queued(
+        &mut self,
+        input_command_id: String,
+        text: String,
+        image_markers: Vec<kuku_client::ImageMarker>,
+    ) -> bool {
         if !self
             .queued_for_edit()
             .any(|entry| entry.receipt.command_id == input_command_id)
@@ -419,6 +430,7 @@ impl App {
             Action::ReplaceQueued {
                 input_command_id,
                 text,
+                image_markers,
             },
         );
         let pane = self.pane_mut();
@@ -454,6 +466,7 @@ impl App {
             Action::ReplaceQueued {
                 input_command_id,
                 text,
+                ..
             } => {
                 let timing = pane
                     .deliveries

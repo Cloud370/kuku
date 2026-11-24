@@ -222,8 +222,7 @@ impl App {
             key if Shortcut::PREVIOUS_PROMPT.matches(key) || Shortcut::NEXT_PROMPT.matches(key) => {
                 self.focus_composer();
                 self.pane_mut()
-                    .draft
-                    .recall(if key.code == KeyCode::Up { -1 } else { 1 });
+                    .recall_draft(if key.code == KeyCode::Up { -1 } else { 1 });
             }
             key if Shortcut::UP.matches(key) || Shortcut::DOWN.matches(key) => {
                 let direction = if key.code == KeyCode::Up { -1 } else { 1 };
@@ -293,14 +292,18 @@ impl App {
             if let PromptKind::RewindMessage {
                 event_id,
                 text,
+                images,
                 restore_files,
             } = &prompt.kind
             {
                 let event_id = *event_id;
-                let text = text.clone();
+                let draft = kuku_client::MessageDraft {
+                    text: text.clone(),
+                    images: images.clone(),
+                };
                 let restore_files = *restore_files;
                 self.modal = None;
-                self.rewind_message(event_id, text, restore_files);
+                self.rewind_message(event_id, draft, restore_files);
                 return;
             }
             let empty = if matches!(prompt.kind, PromptKind::SavePaste) {
@@ -322,7 +325,8 @@ impl App {
             if let PromptKind::QueuedInput { input_command_id } = &prompt.kind {
                 let id = input_command_id.clone();
                 let text = prompt.editor.text().to_owned();
-                if self.replace_queued(id, text) {
+                let image_markers = prompt.editor.image_markers();
+                if self.replace_queued(id, text, image_markers) {
                     self.modal = None;
                 }
                 return;

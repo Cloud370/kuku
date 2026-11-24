@@ -293,18 +293,21 @@ impl Session {
             .iter()
             .filter(|entry| timing.is_none_or(|timing| entry.input.timing == timing))
             .peekable();
-        let source = eligible.peek().map(|entry| &entry.input.source);
+        let first = eligible.peek().copied();
         let mut bytes = 0;
-        let mut images = 0;
         eligible
-            .take_while(|entry| {
+            .enumerate()
+            .take_while(|(index, entry)| {
                 bytes += input_model_text(&entry.input.text, &entry.values).len() + 2;
-                images += entry.input.images.len();
-                Some(&entry.input.source) == source
-                    && images <= crate::execution::MAX_INPUT_IMAGES
+                (*index == 0
+                    || first.is_some_and(|first| {
+                        first.input.images.is_empty()
+                            && entry.input.images.is_empty()
+                            && entry.input.source == first.input.source
+                    }))
                     && bytes <= self.inner.options.limits.max_input_bytes + 2
             })
-            .cloned()
+            .map(|(_, entry)| entry.clone())
             .collect()
     }
 

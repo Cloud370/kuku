@@ -136,7 +136,7 @@ pub(crate) struct Pane {
     pub(crate) opening: bool,
     pub(crate) sending: bool,
     pub(crate) draft_images: Vec<images::DraftImage>,
-    sent_images: Vec<images::SentImage>,
+    recall_images: Option<Vec<images::DraftImage>>,
     pub(crate) encoded_images: Vec<kuku_client::ImageAttachment>,
     pub(crate) clipboard_ticket: Option<u64>,
     image_send: Option<images::ImageSend>,
@@ -418,7 +418,7 @@ pub(crate) enum StartupSkills {
 #[derive(Debug, Clone)]
 pub(crate) struct RewindDraft {
     pub(crate) address: Address,
-    pub(crate) text: String,
+    pub(crate) draft: kuku_client::MessageDraft,
     pub(crate) revision: u64,
     pub(crate) restored: Option<bool>,
 }

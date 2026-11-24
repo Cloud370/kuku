@@ -14,6 +14,28 @@ pub struct InputImage {
     pub(crate) mime: ImageMime,
     pub(crate) digest: String,
     pub(crate) bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) marker: Option<ImageMarker>,
+}
+
+/// Exact byte position and text of an image marker in its input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageMarker {
+    /// Byte offset in the original UTF-8 input.
+    pub offset: usize,
+    /// Nonempty, single-line display label.
+    pub label: String,
+}
+
+impl ImageMarker {
+    /// Return the marker's range if it matches the supplied input.
+    pub fn range_in(&self, text: &str) -> Option<std::ops::Range<usize>> {
+        let range = self.offset..self.offset.checked_add(self.label.len())?;
+        (!self.label.is_empty()
+            && !self.label.contains(['\n', '\r'])
+            && text.get(range.clone()) == Some(&self.label))
+        .then_some(range)
+    }
 }
 
 impl InputImage {
@@ -28,6 +50,7 @@ impl InputImage {
             mime,
             digest: format!("{:x}", Sha256::digest(bytes)),
             bytes: bytes.len(),
+            marker: None,
         })
     }
 
@@ -39,6 +62,17 @@ impl InputImage {
     /// Number of encoded bytes before base64 wrapping.
     pub fn byte_len(&self) -> usize {
         self.bytes
+    }
+
+    /// Associate the stored image with a marker in its input.
+    pub fn with_marker(mut self, marker: ImageMarker) -> Self {
+        self.marker = Some(marker);
+        self
+    }
+
+    /// Return the optional marker carried by this input image.
+    pub fn marker(&self) -> Option<&ImageMarker> {
+        self.marker.as_ref()
     }
 
     pub(crate) fn key(&self, agent: &str) -> String {

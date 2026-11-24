@@ -368,12 +368,26 @@ async fn user_image_reopens_and_reaches_only_an_image_capable_route() {
         .mock_async(|when, then| {
             when.method(POST).path(PATH).matches(|request| {
                 body(request)["input"].as_array().is_some_and(|items| {
-                    items.iter().any(|item| {
-                        item["role"] == "user"
-                            && item["content"][0]["text"] == "Describe [Image #1]"
-                            && item["content"][1]["image_url"]
-                                == format!("data:image/png;base64,{PNG}")
-                    })
+                    let captions = items
+                        .iter()
+                        .filter(|item| item["role"] == "user")
+                        .filter_map(|item| item["content"].as_array())
+                        .flatten()
+                        .filter(|part| part["text"] == "Describe [Image #1]")
+                        .count();
+                    captions == 1
+                        && items.iter().any(|item| {
+                            item["role"] == "user"
+                                && item["content"].as_array().is_some_and(|parts| {
+                                    parts
+                                        .iter()
+                                        .any(|part| part["text"] == "Describe [Image #1]")
+                                        && parts.iter().any(|part| {
+                                            part["image_url"]
+                                                == format!("data:image/png;base64,{PNG}")
+                                        })
+                                })
+                        })
                 })
             });
             then.status(200)
@@ -416,6 +430,12 @@ async fn user_image_reopens_and_reaches_only_an_image_capable_route() {
     options.session_id = Some(session.id().into());
     session.close().await.unwrap();
 
+    let saved =
+        Session::read_saved_input_images(session.events_path(), "main", &input.images).unwrap();
+    assert_eq!(saved, vec![STANDARD.decode(PNG).unwrap()]);
+    assert!(
+        Session::read_saved_input_images(session.events_path(), "other", &input.images).is_err()
+    );
     let reopened = Session::open(options).await.unwrap();
     assert_eq!(reopened.send(input).unwrap().command_id, "pasted");
     run(&reopened, "follow-up", "Now describe the same image again").await;
@@ -448,4 +468,235 @@ async fn user_image_reopens_and_reaches_only_an_image_capable_route() {
     );
     vision.assert_hits_async(2).await;
     text_only.assert_hits_async(1).await;
+}
+
+const IMAGE_DONE: &str = concat!(
+    "event: response.output_text.delta\ndata: {\"delta\":\"image check complete\"}\n\n",
+    "event: response.completed\ndata: {\"response\":{\"id\":\"media-regression\",\"status\":\"completed\",\"output\":[]}}\n\n"
+);
+
+fn png_with_comment(size: usize, byte: u8) -> Vec<u8> {
+    let png = STANDARD.decode(PNG).unwrap();
+    let mut result = png[..png.len() - 12].to_vec();
+    let mut chunk = b"tEXtComment\0".to_vec();
+    chunk.extend(std::iter::repeat_n(byte, size));
+    result.extend(u32::try_from(chunk.len() - 4).unwrap().to_be_bytes());
+    result.extend(&chunk);
+    result.extend(crc32fast::hash(&chunk).to_be_bytes());
+    result.extend(&png[png.len() - 12..]);
+    result
+}
+
+#[tokio::test]
+async fn queued_images_follow_the_edit_and_stay_in_separate_messages() {
+    const PATH: &str = "/queued-media/responses";
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mock = server
+        .mock_async(|when, then| {
+            when.method(POST).path(PATH).matches(|request| {
+                body(request)["input"].as_array().is_some_and(|items| {
+                    items
+                        .iter()
+                        .filter(|item| item["role"] == "user")
+                        .all(|item| {
+                            item["content"].as_array().is_some_and(|parts| {
+                                let caption = parts
+                                    .iter()
+                                    .filter_map(|part| part["text"].as_str())
+                                    .collect::<String>();
+                                let images = parts
+                                    .iter()
+                                    .filter(|part| part["type"] == "input_image")
+                                    .count();
+                                caption.matches("[Image #1]").count() <= 1
+                                    && (!caption.contains("Edited plain text") || images == 0)
+                                    && (!caption.contains("Revised caption") || images == 1)
+                            })
+                        })
+                })
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(IMAGE_DONE);
+        })
+        .await;
+    let options = SessionOptions::new(
+        work.path(),
+        data.path(),
+        media_config(&server, "/queued-media"),
+    );
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let image = session
+        .save_input_image("main", &STANDARD.decode(PNG).unwrap())
+        .await
+        .unwrap();
+    for (id, caption) in [
+        ("removed", "Remove this"),
+        ("kept", "Original caption"),
+        ("separate", "Separate caption"),
+    ] {
+        let mut input = Input::new(id, "main", format!("{caption} [Image #1]"));
+        input.activation = kuku::Activation::Enqueue;
+        input.timing = kuku::InputTiming::NextTurn;
+        input
+            .images
+            .push(image.clone().with_marker(kuku::execution::ImageMarker {
+                offset: caption.len() + 1,
+                label: "[Image #1]".into(),
+            }));
+        session.send(input.clone()).unwrap();
+        if id == "removed" {
+            session
+                .replace_queued(
+                    "edit-removed",
+                    "main",
+                    id,
+                    "Edited plain text",
+                    &input.source,
+                )
+                .unwrap();
+        } else if id == "kept" {
+            session
+                .replace_queued_with_images(
+                    "edit-kept",
+                    "main",
+                    id,
+                    "Revised caption [Image #1]",
+                    &input.source,
+                    &[kuku::execution::ImageMarker {
+                        offset: "Revised caption ".len(),
+                        label: "[Image #1]".into(),
+                    }],
+                )
+                .unwrap();
+        }
+    }
+    let pending = session.pending_inputs("main").unwrap();
+    assert!(pending[0].input.images.is_empty());
+    assert_eq!(
+        pending[1].input.images[0].marker().unwrap().offset,
+        "Revised caption ".len()
+    );
+    for _ in 0..3 {
+        session.advance("main").unwrap();
+        let finished = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(finished.last_error, None);
+    }
+    assert!(session.pending_inputs("main").unwrap().is_empty());
+    mock.assert_hits_async(3).await;
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn history_images_yield_request_budget_to_the_current_input() {
+    const PATH: &str = "/media-budget/responses";
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let pngs = (*b"ABC").map(|byte| png_with_comment(24_000, byte));
+    let mock = server
+        .mock_async(|when, then| {
+            when.method(POST).path(PATH).matches(|request| {
+                let urls = (*b"ABC").map(|byte| {
+                    format!(
+                        "data:image/png;base64,{}",
+                        STANDARD.encode(png_with_comment(24_000, byte))
+                    )
+                });
+                let body = body(request);
+                let content: Vec<_> = body["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|item| item["content"].as_array())
+                    .flatten()
+                    .collect();
+                let current = content
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .rfind(|text| text.starts_with("Image turn ") || *text == "Text follow-up");
+                let images: Vec<_> = content
+                    .iter()
+                    .filter_map(|part| part["image_url"].as_str())
+                    .collect();
+                match current {
+                    Some("Image turn 0") => images == [&urls[0]],
+                    Some("Image turn 1") => images == [&urls[0], &urls[1]],
+                    Some("Image turn 2" | "Text follow-up") => images == [&urls[1], &urls[2]],
+                    _ => false,
+                }
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(IMAGE_DONE);
+        })
+        .await;
+    let mut options = SessionOptions::new(
+        work.path(),
+        data.path(),
+        media_config(&server, "/media-budget"),
+    );
+    options.limits.max_request_bytes = Some(110 * 1024);
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    for (index, png) in pngs.into_iter().enumerate() {
+        let mut input = Input::new(
+            format!("image-{index}"),
+            "main",
+            format!("Image turn {index}"),
+        );
+        input
+            .images
+            .push(session.save_input_image("main", &png).await.unwrap());
+        session.send(input).unwrap();
+        let snapshot = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(snapshot.last_error, None);
+    }
+    run(&session, "plain", "Text follow-up").await;
+    mock.assert_hits_async(4).await;
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_expired_queued_image_is_protected_until_withdrawn() {
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut options = SessionOptions::new(
+        work.path(),
+        data.path(),
+        media_config(&server, "/retention"),
+    );
+    options.limits.output_retention_secs = 0;
+    options.limits.max_retained_output_bytes = 10_000;
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let mut input = Input::new("queued", "main", "[Image #1]");
+    input.activation = kuku::Activation::Enqueue;
+    input.images.push(
+        session
+            .save_input_image("main", &png_with_comment(2500, b'A'))
+            .await
+            .unwrap(),
+    );
+    session.send(input).unwrap();
+    let next = png_with_comment(2500, b'B');
+    assert!(matches!(
+        session.save_input_image("main", &next).await,
+        Err(kuku::Error::OutputQuotaExceeded { .. })
+    ));
+    session
+        .withdraw_input("withdraw", "main", "queued")
+        .unwrap();
+    session.save_input_image("main", &next).await.unwrap();
+    session.close().await.unwrap();
 }

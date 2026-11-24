@@ -155,6 +155,18 @@ impl Session {
 impl State {
     pub(super) fn pinned_outputs(&self) -> HashSet<String> {
         let mut pinned = self.values.pinned_outputs();
+        pinned.extend(
+            self.agents
+                .values()
+                .flat_map(|agent| &agent.inbox)
+                .flat_map(|entry| {
+                    entry.input.images.iter().filter_map(|image| {
+                        self.model_image_ids
+                            .get(&image.key(&entry.input.target))
+                            .cloned()
+                    })
+                }),
+        );
         pinned.extend(self.model_images.iter().filter_map(|(id, retained)| {
             let Some(turn) = retained.turn else {
                 return retained.referenced.then(|| id.clone());

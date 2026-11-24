@@ -47,6 +47,10 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
         )
         .route("/sessions/{id}/observe", get(events::observe))
         .route("/sessions/{id}/events", get(events::events))
+        .route(
+            "/sessions/{id}/events/{event_id}/draft",
+            get(events::message_draft),
+        )
         .route("/sessions/{id}/outputs/{output_id}", get(events::output))
         .route("/sessions/{id}/jobs", get(jobs::list))
         .route(

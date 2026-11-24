@@ -868,16 +868,21 @@ fn build_current_user_message(
 fn replace_latest_user_message(
     history: &mut [CanonicalMessage],
     prompt: &str,
-    replacement: CanonicalMessage,
+    mut replacement: CanonicalMessage,
 ) -> Option<usize> {
     for (index, message) in history.iter_mut().enumerate().rev() {
-        if message.role != Role::User || message.blocks.len() != 1 {
+        if message.role != Role::User {
             continue;
         }
-        let MessageBlock::Text(text) = &message.blocks[0] else {
+        let Some((MessageBlock::Text(text), attachments)) = message.blocks.split_first() else {
             continue;
         };
-        if text == prompt {
+        if text == prompt
+            && attachments
+                .iter()
+                .all(|block| matches!(block, MessageBlock::InputImage(_)))
+        {
+            replacement.blocks.extend_from_slice(attachments);
             *message = replacement;
             return Some(index);
         }
@@ -886,7 +891,11 @@ fn replace_latest_user_message(
 }
 
 fn insert_current_turn_metadata_block(message: &mut CanonicalMessage, text: String) {
-    let insert_at = message.blocks.len().saturating_sub(1);
+    let insert_at = message
+        .blocks
+        .iter()
+        .rposition(|block| matches!(block, MessageBlock::Text(_)))
+        .unwrap_or(0);
     message
         .blocks
         .insert(insert_at, crate::context::MessageBlock::Text(text));

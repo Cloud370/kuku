@@ -56,6 +56,7 @@ pub(crate) fn attach_tool_images(
 pub(crate) fn attach_user_images(
     body: &mut Value,
     images: Vec<(usize, InputImage)>,
+    current_offset: Option<usize>,
     limit: usize,
     load: &mut dyn FnMut(&InputImage) -> crate::error::Result<Vec<u8>>,
 ) -> crate::error::Result<()> {
@@ -63,22 +64,43 @@ pub(crate) fn attach_user_images(
         return Ok(());
     }
     let mut available = limit.saturating_sub(json_bytes(body));
-    for (index, image) in images {
-        let mut url = format!("data:{};base64,", image.media_type());
-        let additional = json_bytes(&json!({"type": "input_image", "image_url": url}))
-            + image.byte_len().div_ceil(3) * 4
-            + 1;
+    let required = images.last().and_then(|(index, _)| {
+        current_offset
+            .filter(|offset| index >= offset)
+            .map(|_| *index)
+    });
+    for batch in images.chunk_by(|(left, _), (right, _)| left == right).rev() {
+        let index = batch[0].0;
+        let additional: usize = batch
+            .iter()
+            .map(|(_, image)| {
+                let url = format!("data:{};base64,", image.media_type());
+                json_bytes(&json!({"type": "input_image", "image_url": url}))
+                    + image.byte_len().div_ceil(3) * 4
+                    + 1
+            })
+            .sum();
         if additional > available {
-            return Err(crate::Error::InvalidArgument(
-                "image attachments exceed the remaining request byte limit".into(),
-            ));
+            if required == Some(index) {
+                return Err(crate::Error::InvalidArgument(
+                    "image attachments exceed the remaining request byte limit".into(),
+                ));
+            }
+            continue;
         }
-        let bytes = load(&image)?;
-        STANDARD.encode_string(bytes, &mut url);
+        let parts = batch
+            .iter()
+            .map(|(_, image)| {
+                let bytes = load(image)?;
+                let mut url = format!("data:{};base64,", image.media_type());
+                STANDARD.encode_string(bytes, &mut url);
+                Ok(json!({"type": "input_image", "image_url": url}))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
         body["input"][index]["content"]
             .as_array_mut()
             .expect("user content array")
-            .push(json!({"type": "input_image", "image_url": url}));
+            .extend(parts);
         available -= additional;
     }
     Ok(())

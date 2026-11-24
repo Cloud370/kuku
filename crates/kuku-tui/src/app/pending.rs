@@ -62,7 +62,6 @@ impl App {
         }
         let active = self.active.clone();
         let pane = self.pane_mut();
-        pane.capture_sent_images();
         let text = pane.draft.take_text();
         let bootstrap_skill = text
             .strip_prefix("/skill:")
@@ -420,6 +419,7 @@ mod tests {
             Action::ReplaceQueued {
                 input_command_id: "admitted".into(),
                 text: "edited text\nwith a newline".into(),
+                image_markers: vec![],
             },
         );
         let Some(Job::Save(command)) = app.effects.pop() else {
@@ -714,7 +714,6 @@ impl App {
                         }
                         if matches!(item.command.action, Action::Send { .. }) {
                             pane.sending = false;
-                            pane.sent_images.clear();
                         }
                         if let Action::Cancel { execution_id } = item.command.action {
                             pane.finish_interrupt(execution_id);
@@ -876,7 +875,6 @@ impl App {
                 let initial = !pane.exists;
                 pane.exists = true;
                 pane.sending = false;
-                pane.sent_images.clear();
                 pane.record_submission(
                     ack.receipt.event_id,
                     SubmissionStatus::from_receipt(ack.status),
@@ -957,6 +955,7 @@ impl App {
             Action::ReplaceQueued {
                 input_command_id,
                 text,
+                ..
             } => {
                 let pane = self.panes.entry(address).or_default();
                 let timing = pane
@@ -977,17 +976,22 @@ impl App {
                     Some(InputStatus::Queued) | None => "Queued input replaced",
                 });
             }
-            Action::RewindMessage { text, .. } => {
+            Action::RewindMessage {
+                text, draft_images, ..
+            } => {
                 let mut draft = self.rewind_drafts.remove(id).unwrap_or(RewindDraft {
                     address: address.clone(),
-                    text,
+                    draft: kuku_client::MessageDraft {
+                        text,
+                        images: draft_images,
+                    },
                     revision: 0,
                     restored: None,
                 });
                 let restored = self.restore_rewind_draft(&mut draft);
                 if ack.warnings.is_empty() {
                     self.confirmation(if restored {
-                        "Message rewound · original text restored as an unsent draft"
+                        "Message rewound · original message restored as an unsent draft"
                     } else {
                         "Message rewound · original text retained in Ctrl+Up history"
                     });

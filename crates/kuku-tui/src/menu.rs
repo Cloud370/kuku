@@ -609,6 +609,7 @@ pub(crate) enum PromptKind {
     RewindMessage {
         event_id: u64,
         text: String,
+        images: Vec<kuku_client::ImageAttachment>,
         restore_files: bool,
     },
     HistoryJump(Box<crate::app::history_jump::HistoryJumpPrompt>),

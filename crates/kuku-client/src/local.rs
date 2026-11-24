@@ -25,7 +25,7 @@ use tokio::process::Child as DetachedChild;
 use self::windows::{DetachedChild, spawn_detached};
 
 /// Revision of the Session protocol expected by the product client.
-pub const SESSION_PROTOCOL_VERSION: u32 = 3;
+pub const SESSION_PROTOCOL_VERSION: u32 = 4;
 
 const MANAGEMENT_VERSION: u32 = 1;
 const DISCOVERY_LIMIT: u64 = 64 * 1024;

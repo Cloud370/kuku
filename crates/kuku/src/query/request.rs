@@ -80,6 +80,10 @@ impl OwnedRequestBase {
         })
     }
 
+    pub(super) fn current_user_index(&self) -> usize {
+        self.current_user_index
+    }
+
     pub(super) fn request(&self) -> ProviderRequest<'_> {
         ProviderRequest {
             assembly: self.assembly.clone(),

@@ -8,6 +8,7 @@ use crate::text::{TAB, replace_tabs, terminal_text};
 
 const MAX_HISTORY: usize = 64;
 const MAX_SAVED_PROMPT_BYTES: usize = 32 * 1024;
+const MAX_HISTORY_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
@@ -16,7 +17,7 @@ pub(crate) struct Editor {
     cursor: usize,
     top: usize,
     preferred_column: Option<usize>,
-    history: VecDeque<String>,
+    history: VecDeque<kuku_client::MessageDraft>,
     recall: Option<Recall>,
 }
 
@@ -42,6 +43,37 @@ impl Editor {
         self.atoms.clear();
         self.cursor = self.text.len();
         self.reset_motion();
+    }
+
+    pub(crate) fn set_image_markers<'a>(
+        &mut self,
+        text: &str,
+        markers: impl IntoIterator<Item = &'a kuku_client::ImageMarker>,
+    ) {
+        self.set_text(text.to_owned());
+        self.atoms = markers
+            .into_iter()
+            .filter_map(|marker| {
+                let range = marker.range_in(text)?;
+                let offset = if self.text == text {
+                    range.start
+                } else {
+                    normalized(&text[..range.start]).len()
+                };
+                Some(offset..offset + marker.label.len())
+            })
+            .collect();
+        self.atoms.sort_unstable_by_key(|range| range.start);
+    }
+
+    pub(crate) fn image_markers(&self) -> Vec<kuku_client::ImageMarker> {
+        self.atoms
+            .iter()
+            .map(|range| kuku_client::ImageMarker {
+                offset: range.start,
+                label: self.text[range.clone()].into(),
+            })
+            .collect()
     }
 
     pub(crate) fn take_text(&mut self) -> String {
@@ -220,13 +252,61 @@ impl Editor {
 
     pub(crate) fn remember(&mut self, prompt: &str) {
         if prompt.len() <= MAX_SAVED_PROMPT_BYTES
-            && self.history.front().is_none_or(|old| old != prompt)
+            && self.history.front().is_none_or(|old| old.text != prompt)
         {
-            self.history.retain(|previous| previous != prompt);
-            self.history.push_front(prompt.to_owned());
-            self.history.truncate(MAX_HISTORY);
-            self.recall = None;
+            self.remember_draft(kuku_client::MessageDraft {
+                text: prompt.into(),
+                images: Vec::new(),
+            });
         }
+    }
+
+    pub(crate) fn remember_draft(&mut self, draft: kuku_client::MessageDraft) {
+        self.history.retain(|previous| previous.text != draft.text);
+        self.history.push_front(draft);
+        let mut bytes = 0;
+        let keep = self
+            .history
+            .iter()
+            .take(MAX_HISTORY)
+            .take_while(|draft| {
+                bytes += draft
+                    .images
+                    .iter()
+                    .map(|image| image.data.len())
+                    .sum::<usize>();
+                bytes <= MAX_HISTORY_IMAGE_BYTES
+            })
+            .count();
+        self.history.truncate(keep);
+        self.recall = None;
+    }
+
+    pub(crate) fn recalled_images(&self) -> Option<&[kuku_client::ImageAttachment]> {
+        self.recall
+            .as_ref()
+            .map(|recall| self.history[recall.index].images.as_slice())
+    }
+
+    fn load_history(&mut self, index: usize) {
+        let draft = &self.history[index];
+        self.text.clone_from(&draft.text);
+        self.atoms.clear();
+        for image in &draft.images {
+            let marker = &image.marker;
+            if let Some(range) = marker.range_in(&draft.text) {
+                self.atoms.push(range);
+            } else if marker.offset == draft.text.len() {
+                if !self.text.is_empty() {
+                    self.text.push(' ');
+                }
+                let start = self.text.len();
+                self.text.push_str(&marker.label);
+                self.atoms.push(start..self.text.len());
+            }
+        }
+        self.atoms.sort_unstable_by_key(|range| range.start);
+        self.cursor = self.text.len();
     }
 
     pub(crate) fn recall(&mut self, direction: isize) {
@@ -238,13 +318,11 @@ impl Editor {
                     cursor: self.cursor,
                     atoms: std::mem::take(&mut self.atoms),
                 });
-                self.text.clone_from(&self.history[0]);
-                self.cursor = self.text.len();
+                self.load_history(0);
             }
             (true, Some(mut recall)) => {
                 recall.index = (recall.index + 1).min(self.history.len() - 1);
-                self.text.clone_from(&self.history[recall.index]);
-                self.cursor = self.text.len();
+                self.load_history(recall.index);
                 self.recall = Some(recall);
             }
             (false, Some(recall)) if recall.index == 0 => {
@@ -254,8 +332,7 @@ impl Editor {
             }
             (false, Some(mut recall)) => {
                 recall.index -= 1;
-                self.text.clone_from(&self.history[recall.index]);
-                self.cursor = self.text.len();
+                self.load_history(recall.index);
                 self.recall = Some(recall);
             }
             (_, None) => {}

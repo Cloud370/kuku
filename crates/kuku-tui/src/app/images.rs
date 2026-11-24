@@ -1,8 +1,7 @@
-use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use kuku_client::{ImageAttachment, MAX_INPUT_IMAGES, Timing};
+use kuku_client::{ImageAttachment, ImageMarker, MAX_INPUT_IMAGES, Timing};
 
 use crate::clipboard::{ClipboardImage, PasteSource, Pasted};
 use crate::jobs::{Job, Selection};
@@ -48,7 +47,7 @@ impl DraftImage {
     fn label(&self) -> &str {
         match self {
             Self::Clipboard { label, .. } => label,
-            Self::Recovered(image) => &image.label,
+            Self::Recovered(image) => &image.marker.label,
         }
     }
 
@@ -62,14 +61,14 @@ impl DraftImage {
     fn rename(&mut self, label: String) {
         match self {
             Self::Clipboard { label: current, .. } => *current = label,
-            Self::Recovered(image) => image.label = label,
+            Self::Recovered(image) => image.marker.label = label,
         }
     }
 }
 
 pub(crate) struct PrepareImages {
     pub(crate) ticket: u64,
-    pub(crate) entries: Vec<DraftImage>,
+    pub(crate) entries: Vec<(usize, DraftImage)>,
     pub(crate) original: bool,
 }
 
@@ -77,8 +76,11 @@ impl PrepareImages {
     pub(crate) fn encode(self) -> Result<Vec<ImageAttachment>, String> {
         self.entries
             .into_iter()
-            .map(|entry| match entry {
-                DraftImage::Recovered(image) => Ok(image),
+            .map(|(offset, entry)| match entry {
+                DraftImage::Recovered(mut image) => {
+                    image.marker.offset = offset;
+                    Ok(image)
+                }
                 DraftImage::Clipboard {
                     label,
                     source,
@@ -86,7 +88,7 @@ impl PrepareImages {
                 } => {
                     let data = source.encode(self.original)?;
                     Ok(ImageAttachment {
-                        label,
+                        marker: ImageMarker { offset, label },
                         data,
                         transparent,
                     })
@@ -94,12 +96,6 @@ impl PrepareImages {
             })
             .collect()
     }
-}
-
-#[derive(Debug)]
-pub(super) struct SentImage {
-    range: Range<usize>,
-    image: DraftImage,
 }
 
 #[derive(Debug)]
@@ -261,7 +257,14 @@ impl App {
     ) {
         let pane = self.pane();
         let revision = pane.draft_revision;
-        let entries: Vec<_> = pane.attached_images().cloned().collect();
+        let entries: Vec<_> = pane
+            .draft_images
+            .iter()
+            .filter_map(|entry| {
+                let range = pane.draft.atom_range(entry.label())?;
+                Some((range.start, entry.clone()))
+            })
+            .collect();
         if entries.is_empty() {
             return;
         }
@@ -350,43 +353,42 @@ impl App {
 }
 
 impl Pane {
+    pub(crate) fn recall_draft(&mut self, direction: isize) {
+        self.draft.recall(direction);
+        if let Some(images) = self.draft.recalled_images() {
+            self.recall_images
+                .get_or_insert_with(|| std::mem::take(&mut self.draft_images));
+            self.draft_images = images.iter().cloned().map(DraftImage::Recovered).collect();
+            self.draft_changed();
+        } else if let Some(images) = self.recall_images.take() {
+            self.draft_images = images;
+            self.draft_changed();
+        }
+    }
+
     pub(crate) fn draft_changed(&mut self) {
+        if self.draft.recalled_images().is_none() {
+            self.recall_images = None;
+        }
         self.draft_revision = self.draft_revision.wrapping_add(1);
         self.draft_images
             .retain(|image| self.draft.retains_atom(image.label()));
     }
 
-    pub(super) fn capture_sent_images(&mut self) {
-        self.sent_images = std::mem::take(&mut self.draft_images)
-            .into_iter()
-            .filter_map(|image| {
-                let range = self.draft.atom_range(image.label())?;
-                Some(SentImage { range, image })
-            })
-            .collect();
-    }
-
     pub(super) fn restore_draft_images(&mut self, text: &str, images: Vec<ImageAttachment>) {
-        let sent = std::mem::take(&mut self.sent_images);
         let mut restored = images
             .into_iter()
             .filter_map(|image| {
-                if image.label.is_empty() || image.label.contains(['\n', '\r']) {
-                    return None;
-                }
-                if let Some(original) = sent.iter().find(|entry| entry.image.label() == image.label)
-                    && text.get(original.range.clone()) == Some(image.label.as_str())
-                {
-                    return Some((original.range.clone(), original.image.clone()));
-                }
-                let start = text.find(&image.label)?;
-                Some((
-                    start..start + image.label.len(),
-                    DraftImage::Recovered(image),
-                ))
+                let range = image.marker.range_in(text).or_else(|| {
+                    (image.marker.offset == text.len()
+                        && !image.marker.label.is_empty()
+                        && !image.marker.label.contains(['\n', '\r']))
+                    .then_some(text.len()..text.len())
+                })?;
+                Some((range, DraftImage::Recovered(image)))
             })
             .collect::<Vec<_>>();
-        restored.sort_unstable_by_key(|(range, _)| range.start);
+        restored.sort_by_key(|(range, _)| range.start);
 
         if !self.draft.text().is_empty() {
             self.draft.append("\n\n");
@@ -397,7 +399,10 @@ impl Pane {
                 continue;
             }
             self.draft.append(&text[offset..range.start]);
-            if self.draft.text().contains(entry.label()) {
+            if range.is_empty() && !self.draft.text().is_empty() {
+                self.draft.append(" ");
+            }
+            if self.draft.atom_range(entry.label()).is_some() {
                 let label = loop {
                     let label = self.next_image_label();
                     if !text.contains(&label) {
@@ -446,6 +451,7 @@ impl Pane {
 
     pub(crate) fn clear_draft_images(&mut self) {
         self.draft_images.clear();
+        self.recall_images = None;
         self.next_image = 0;
         self.encoded_images.clear();
         self.image_send = None;
@@ -455,30 +461,28 @@ impl Pane {
 
 #[cfg(test)]
 mod tests {
-    use kuku_client::ImageAttachment;
+    use kuku_client::{ImageAttachment, ImageMarker};
 
     use super::{DraftImage, Pane};
 
     #[test]
     fn restored_send_preserves_attachment_ranges_in_another_draft() {
         let mut pane = Pane::default();
-        let image = |data: &str| ImageAttachment {
-            label: "[Image #1]".to_owned(),
+        let image = |data: &str, offset| ImageAttachment {
+            marker: ImageMarker {
+                offset,
+                label: "[Image #1]".into(),
+            },
             data: data.to_owned(),
             transparent: false,
         };
-        let rejected = image("rejected image");
-        pane.draft.insert("literal [Image #1] ");
-        pane.draft.insert_atom(&rejected.label);
-        pane.draft_images
-            .push(DraftImage::Recovered(rejected.clone()));
-        pane.capture_sent_images();
-        let text = pane.draft.take_text();
+        let text = "literal [Image #1] [Image #1]";
+        let rejected = image("rejected image", "literal [Image #1] ".len());
 
-        let existing = image("current image");
-        pane.draft.insert_atom(&existing.label);
+        let existing = image("current image", 0);
+        pane.draft.insert_atom(&existing.marker.label);
         pane.draft_images.push(DraftImage::Recovered(existing));
-        pane.restore_draft_images(&text, vec![rejected]);
+        pane.restore_draft_images(text, vec![rejected]);
 
         assert_eq!(
             pane.draft.text(),

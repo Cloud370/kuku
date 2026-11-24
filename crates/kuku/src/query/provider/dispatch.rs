@@ -373,6 +373,7 @@ pub(super) fn prepare_request(
     correlation: &ProviderCorrelation,
     request: &crate::query::request::OwnedRequestBase,
 ) -> Result<PreparedProviderRequest> {
+    let current_user_index = request.current_user_index();
     let request = request.request();
     if pending.query.runtime_execution.is_some() && pending.query.model_adapter.is_none() {
         crate::provider::prepare::prepare_provider_request_with_media(
@@ -380,6 +381,7 @@ pub(super) fn prepare_request(
             &request,
             correlation,
             pending.query.runtime_limits.context_replay_bytes(),
+            current_user_index,
             |image| {
                 super::super::runtime_tools::runtime_session(pending)?
                     .read_model_image(pending.conversation.as_str(), image)

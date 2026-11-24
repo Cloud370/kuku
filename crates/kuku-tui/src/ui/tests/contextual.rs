@@ -61,7 +61,10 @@ fn history_confirmation_previews_only_verified_file_effects() {
     app.update(Update::HistoryJumpDraft(
         selection.clone(),
         ticket,
-        Ok(prompt.into()),
+        Ok(kuku_client::MessageDraft {
+            text: prompt.into(),
+            images: vec![],
+        }),
     ));
 
     for (width, height) in [(100, 32), (60, 15)] {

@@ -97,12 +97,14 @@ impl RunManager {
             Command::ReplaceQueued {
                 input_command_id,
                 text,
-            } => open.session.replace_queued(
+                image_markers,
+            } => open.session.replace_queued_with_images(
                 command_id,
                 address,
                 &input_command_id,
                 &text,
                 &http_input_source(),
+                &image_markers,
             ),
             Command::RewindMessage {
                 target_event_id,

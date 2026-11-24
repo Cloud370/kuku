@@ -53,7 +53,7 @@ Pass `workspace` as a query parameter for both permission endpoints. Workspace m
 
 Choose a unique Session ID and command ID before the initial send. The body includes the absolute path to the workspace on the server, the target Agent address and the command identity. Include `create` with initial Agent configuration when sending to a new Session.
 
-The optional `images` array on `send` pairs a label that appears in `text` with base64-encoded PNG or JPEG bytes in `data`. Send at most four images of 1 MiB each before base64 encoding. Images are stored under the recipient in the Session and admitted only by an image-capable route. The command identity covers the image contents as well as the text.
+Each entry in the optional `images` array on `send` contains `label`, `offset`, and `data`. The label must match `text` at the given UTF-8 byte offset. `data` contains base64-encoded PNG or JPEG bytes. Send at most four images of 1 MiB each before base64 encoding. Images are stored under the recipient in the Session and admitted only by an image-capable route. The command identity covers the image contents as well as the text.
 
 ```json
 {
@@ -77,7 +77,7 @@ Use `create: {}` for the configured default settings. Supply initial model setti
 | `reply_question` | `request_id`, `text` | Answer the exact pending question. |
 | `reply_permission` | `request_id`, `allow` | Decide the exact pending authorization. |
 | `withdraw` | `input_command_id` | Withdraw a queued input or return its current status. |
-| `replace_queued` | `input_command_id`, `text` | Replace text before admission while preserving the queue position and timing. |
+| `replace_queued` | `input_command_id`, `text`, optional `image_markers` | Replace queued text and attachments while preserving the queue position and timing. |
 | `history_jump` | `target_event_id`, optional `file_restore` | Continue the selected Agent's conversation from the finished Turn at this settlement cursor. |
 | `compact` | | Compact earlier context for the selected idle or interrupted Agent. Follow `compaction` history entries for progress and outcome. Use a new command ID to retry a failed attempt. |
 | `restore_context` | | Undo the selected Agent's latest active compaction while keeping its visible messages. |
@@ -89,6 +89,8 @@ A successful command returns JSON with `ok`, `receipt` and `replayed`. `receipt`
 To pair an existing Agent's new input with selection changes, send `config_patch`. To let a script create an absent Agent in an existing Session, also send `create_agent_if_missing: true`. For a new Session, use `create` for its initial Agent and optional `prompts_dir` for an absolute path to custom Prompt assets on the server.
 
 Use `bootstrap_skill` on `send` to attach a Skill to that input at its admission boundary.
+
+Each replacement marker contains the original attachment's `label` and its new UTF-8 byte `offset`. Attachments omitted from `image_markers` are removed.
 
 `replace_queued` records a new receipt and marks the original input as withdrawn in the same commit. If the original input is already admitted or otherwise absent from the queue, the command returns `409` with `input_not_queued`.
 
@@ -104,7 +106,7 @@ Client errors use `{"ok":false,"code":"...","message":"..."}`. Invalid requests 
 
 To page toward newer history, pass an exclusive `after` cursor and use the returned `next_after` to continue. A bounded scan can return an empty page with a continuation cursor. History entries include `turn_started_at_ms` when the Turn's first admission time is available, so clients can show elapsed time within the Turn on any page.
 
-Use `/history?user_only=true` for a picker of active user messages. This mode returns message previews of up to 512 characters and an empty `rewind_groups` array. If the journal scan reaches its byte budget, the page may be short and still have a `next_before` cursor. Use the regular history endpoint for the original message text.
+Use `/history?user_only=true` for a picker of active user messages. This mode returns message previews of up to 512 characters and an empty `rewind_groups` array. If the journal scan reaches its byte budget, the page may be short and still have a `next_before` cursor. Use `GET /sessions/{id}/events/{event_id}/draft?workspace=...&agent=...` to retrieve the exact recorded user text and its stored attachments. The response contains `text` and `images`.
 4. Connect to `/observe?workspace=...&agent=...&after=CURSOR` for NDJSON with commits after the snapshot. Add `include_agent_activity=true` with a selected Agent to receive sibling activity in the same subscription. Sibling text deltas and settlement previews are bounded, and sibling tool output is omitted. Agent summaries provide the last output or error preview when reconnecting. Omit `agent` to observe Session-wide. Update your resume cursor from committed records. Reconnect after the last committed cursor on disconnect or lag.
 
 Committed observations set `live_commit` for events beyond the journal head captured when the stream attached. Use it to distinguish new events from catch-up when triggering notifications.
@@ -117,7 +119,7 @@ When available, `agent.turn_started_at_ms` is the latest Turn's first admission 
 
 `committed` lines contain `id` and `kind`, plus an Agent address, conversation entry or state-change indicator when applicable. `live` lines carry `agent`, `execution_id`, `turn`, `cursor` and a transient `event`. Match those identities to the current view and replace previews when committed results arrive. A `lagged` line carries `skipped` transient observations. The stream can also emit `heartbeat` or `error` lines. Durable state remains readable after lag.
 
-`GET /sessions/{id}/history/destinations` accepts `workspace`, `agent`, and optional `before` and `limit`. It returns `points` newest first and an exclusive `next_before`. Each point gives its `event_id`, durable `turn`, display `number`, input `preview` when available, and `current_branch`. If `can_continue` is true, use `event_id` as the `history_jump` target. `prompt_event_id` identifies the original user message when available. Read that event through the raw events endpoint to retrieve the full text, including for saved Turns. A `history_jump` requires a settled Agent with no pending input.
+`GET /sessions/{id}/history/destinations` accepts `workspace`, `agent`, and optional `before` and `limit`. It returns `points` newest first and an exclusive `next_before`. Each point gives its `event_id`, durable `turn`, display `number`, input `preview` when available, and `current_branch`. If `can_continue` is true, use `event_id` as the `history_jump` target. `prompt_event_id` identifies the original user message when available. Use the message draft endpoint with that event ID to retrieve the full text and images, including for saved Turns. A `history_jump` requires a settled Agent with no pending input.
 
 `GET /sessions/{id}/history/destinations/{event_id}/files` accepts `workspace` and `agent`. It returns `changes`, `skipped` and the plan `fingerprint`. Each change includes `path`, `remove` and `lines` (added and removed, or null). Pass the approved fingerprint as `history_jump.file_restore` to apply the preview. Omitting it keeps the files.
 

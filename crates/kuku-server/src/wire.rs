@@ -6,7 +6,7 @@ use base64::Engine;
 use kuku::UiEvent;
 use kuku::event::{EventPayload, StoredEvent};
 use kuku::execution::OutputReference;
-use kuku::execution::{MAX_INPUT_IMAGES, MAX_MODEL_IMAGE_BYTES};
+use kuku::execution::{ImageMarker, MAX_INPUT_IMAGES, MAX_MODEL_IMAGE_BYTES};
 use kuku::session::{
     AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt, ReplyPreview,
 };
@@ -64,6 +64,8 @@ pub(crate) enum Command {
     ReplaceQueued {
         input_command_id: String,
         text: String,
+        #[serde(default)]
+        image_markers: Vec<ImageMarker>,
     },
     RewindMessage {
         target_event_id: u64,
@@ -85,7 +87,8 @@ pub(crate) enum Command {
 
 #[derive(Deserialize)]
 pub(crate) struct SendImage {
-    label: String,
+    #[serde(flatten)]
+    marker: ImageMarker,
     data: String,
 }
 
@@ -106,7 +109,7 @@ impl Command {
         }
     }
 
-    pub(crate) fn decode_images(&self) -> kuku::Result<Vec<Vec<u8>>> {
+    pub(crate) fn decode_images(&self) -> kuku::Result<Vec<(&ImageMarker, Vec<u8>)>> {
         let Self::Send { images, text, .. } = self else {
             return Ok(Vec::new());
         };
@@ -118,27 +121,25 @@ impl Command {
         let mut ordered = images
             .iter()
             .map(|image| {
-                text.find(&image.label)
-                    .filter(|_| !image.label.is_empty())
-                    .map(|offset| (offset, &image.data))
-                    .ok_or_else(|| {
-                        kuku::Error::InvalidArgument(
-                            "image label must appear in the input text".into(),
-                        )
-                    })
+                image.marker.range_in(text).map(|_| image).ok_or_else(|| {
+                    kuku::Error::InvalidArgument(
+                        "image marker must match the input at its byte offset".into(),
+                    )
+                })
             })
             .collect::<kuku::Result<Vec<_>>>()?;
-        ordered.sort_unstable_by_key(|(offset, _)| *offset);
+        ordered.sort_unstable_by_key(|image| image.marker.offset);
         ordered
             .into_iter()
-            .map(|(_, value)| {
-                if value.len() > MAX_MODEL_IMAGE_BYTES.div_ceil(3) * 4 {
+            .map(|image| {
+                if image.data.len() > MAX_MODEL_IMAGE_BYTES.div_ceil(3) * 4 {
                     return Err(kuku::Error::InvalidArgument(
                         "each encoded image must be at most 1 MiB before base64".into(),
                     ));
                 }
                 base64::engine::general_purpose::STANDARD
-                    .decode(value)
+                    .decode(&image.data)
+                    .map(|bytes| (&image.marker, bytes))
                     .map_err(|_| kuku::Error::InvalidArgument("invalid base64 image".into()))
             })
             .collect()

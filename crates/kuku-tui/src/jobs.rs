@@ -174,14 +174,19 @@ pub(crate) enum Update {
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<LoadedHistory, Error>),
     RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
-    RewindSource(Selection, Ticket, u64, Result<String, Error>),
+    RewindSource(
+        Selection,
+        Ticket,
+        u64,
+        Result<kuku_client::MessageDraft, Error>,
+    ),
     HistoryJump(
         Selection,
         Ticket,
         Option<u64>,
         Result<HistoryDestinations, Error>,
     ),
-    HistoryJumpDraft(Selection, u64, Result<String, Error>),
+    HistoryJumpDraft(Selection, u64, Result<kuku_client::MessageDraft, Error>),
     FileRewindPreview(
         Selection,
         u64,
@@ -609,7 +614,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             Update::RewindHistory(selection, ticket, before, result)
         }
         Job::RewindSource(selection, ticket, event_id) => {
-            let result = history_text(client, &selection.target, event_id, HistoryKind::User).await;
+            let result = client.message_draft(&selection.target, event_id).await;
             Update::RewindSource(selection, ticket, event_id, result)
         }
         Job::HistoryJump(selection, ticket, before) => {
@@ -619,7 +624,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             Update::HistoryJump(selection, ticket, before, result)
         }
         Job::HistoryJumpDraft(selection, ticket, event_id) => {
-            let result = original_user_message(client, &selection.target, event_id).await;
+            let result = client.message_draft(&selection.target, event_id).await;
             Update::HistoryJumpDraft(selection, ticket, result)
         }
         Job::FileRewindPreview(selection, ticket, event_id) => {
@@ -736,31 +741,6 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::EncodeImages(..)
         | Job::Copy(_) => unreachable!("job requires service options or terminal"),
     }
-}
-
-async fn original_user_message(client: &Client, target: &Target, id: u64) -> Result<String, Error> {
-    use kuku::event::EventPayload;
-
-    let page = client
-        .events_before(
-            &target.workspace,
-            &target.session_id,
-            Some(id.saturating_add(1)),
-            1,
-        )
-        .await?;
-    page.events
-        .into_iter()
-        .find_map(|event| match event.payload {
-            EventPayload::MessageUser {
-                conversation,
-                text,
-                job_delivery: false,
-                ..
-            } if event.id == id && conversation == target.agent => Some(text),
-            _ => None,
-        })
-        .ok_or_else(|| Error::Protocol("the selected original message is missing".into()))
 }
 
 async fn history_text(

@@ -304,9 +304,13 @@ impl RunManager {
         if let Some(input) = &mut input {
             input.images = images
                 .iter()
-                .map(|bytes| kuku::execution::InputImage::from_bytes(bytes))
+                .map(|(marker, bytes)| {
+                    kuku::execution::InputImage::from_bytes(bytes)
+                        .map(|image| image.with_marker((*marker).clone()))
+                })
                 .collect::<kuku::Result<_>>()?;
         }
+        let images = images.into_iter().map(|(_, bytes)| bytes).collect();
         let slot = self.slot(&path, &options.workspace, session_id);
         let mut open = slot.open.lock().await;
         let _operation = SessionOperation::begin(&slot.active_operation);

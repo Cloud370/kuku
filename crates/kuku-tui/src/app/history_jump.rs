@@ -151,7 +151,7 @@ impl App {
         &mut self,
         selection: Selection,
         ticket: u64,
-        result: Result<String, Error>,
+        result: Result<kuku_client::MessageDraft, Error>,
     ) {
         if selection == self.selection() {
             if let Some(prompt) = self.history_jump_prompt() {
@@ -225,11 +225,20 @@ impl App {
                     .destination
                     .prompt_event_id
                     .expect("unfinished turn has a source"),
-                text: draft.clone().expect("unfinished turn has a message"),
+                text: draft
+                    .as_ref()
+                    .expect("unfinished turn has a message")
+                    .text
+                    .clone(),
+                draft_images: draft
+                    .as_ref()
+                    .expect("unfinished turn has a message")
+                    .images
+                    .clone(),
                 restore_files: false,
             }
         };
-        self.issue_history_change(action, draft.filter(|_| !prompt.existing_draft));
+        self.issue_history_change(action, draft);
     }
 
     fn history_jump_prompt(&mut self) -> Option<&mut HistoryJumpPrompt> {
@@ -267,7 +276,7 @@ pub(crate) struct HistoryJumpPrompt {
     previous: Option<Box<Picker>>,
     pub(crate) destination: HistoryDestination,
     pub(crate) existing_draft: bool,
-    pub(crate) draft: Preview<Option<String>>,
+    pub(crate) draft: Preview<Option<kuku_client::MessageDraft>>,
     pub(crate) files: Option<Preview<FileRewindPreview>>,
 }
 

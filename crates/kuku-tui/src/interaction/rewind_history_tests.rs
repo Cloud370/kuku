@@ -130,7 +130,10 @@ fn all_turns_opens_at_the_bottom_and_loads_older_turns_above_the_selection() {
     app.update(Update::HistoryJumpDraft(
         selection.clone(),
         ticket,
-        Ok(draft.into()),
+        Ok(kuku_client::MessageDraft {
+            text: draft.into(),
+            images: vec![],
+        }),
     ));
     press(&mut app, KeyCode::Char(' '));
     let ticket = app
@@ -174,7 +177,11 @@ fn all_turns_opens_at_the_bottom_and_loads_older_turns_above_the_selection() {
         }
     ));
     assert_eq!(
-        app.rewind_drafts.get(&command.command_id).unwrap().text,
+        app.rewind_drafts
+            .get(&command.command_id)
+            .unwrap()
+            .draft
+            .text,
         draft
     );
 }
@@ -255,7 +262,13 @@ fn source_request(app: &mut App) -> (Selection, Ticket, u64) {
 
 fn source_reply(app: &mut App, request: (Selection, Ticket, u64), result: Result<String, Error>) {
     app.update(Update::RewindSource(
-        request.0, request.1, request.2, result,
+        request.0,
+        request.1,
+        request.2,
+        result.map(|text| kuku_client::MessageDraft {
+            text,
+            images: vec![],
+        }),
     ));
 }
 
@@ -719,12 +732,12 @@ fn an_older_loaded_message_enters_confirmation_and_commits_its_exact_event() {
     press(&mut app, KeyCode::Enter);
     finish_source(&mut app, "message 1");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 1, text, restore_files: false } if text == "message 1")
+        if matches!(&prompt.kind, PromptKind::RewindMessage { event_id: 1, text, restore_files: false, .. } if text == "message 1")
             && prompt.title.contains("Turn 1")));
     assert!(app.pending.is_empty());
     press(&mut app, KeyCode::Enter);
     assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
-        if matches!(&command.action, Action::RewindMessage { target_event_id: 1, text, restore_files: false } if text == "message 1"))));
+        if matches!(&command.action, Action::RewindMessage { target_event_id: 1, text, restore_files: false, .. } if text == "message 1"))));
     assert!(!app.effects.iter().any(|job| matches!(job, Job::Send(_))));
 }
 
@@ -760,7 +773,7 @@ fn a_current_display_preview_loads_the_original_before_confirming_and_saving() {
     assert!(app.pending.is_empty());
     press(&mut app, KeyCode::Enter);
     assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
-        if matches!(&command.action, Action::RewindMessage { target_event_id: 17, text, restore_files: false } if text == &full))));
+        if matches!(&command.action, Action::RewindMessage { target_event_id: 17, text, restore_files: false, .. } if text == &full))));
 }
 
 #[test]
@@ -770,7 +783,14 @@ fn rewind_confirmation_keeps_file_effects_visible_while_scrolling_the_message() 
         .map(|line| format!("original message line {line}"))
         .collect::<Vec<_>>()
         .join("\n");
-    app.confirm_rewind_message(17, 4, text);
+    app.confirm_rewind_message(
+        17,
+        4,
+        kuku_client::MessageDraft {
+            text,
+            images: vec![],
+        },
+    );
     let initial = render(&mut app);
     assert!(initial.contains("Files   Keep current files"));
     assert!(initial.contains("Enter Edit this message"));

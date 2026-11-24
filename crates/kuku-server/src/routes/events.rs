@@ -12,9 +12,13 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
+use base64::Engine;
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::{Observation, OutputRead, Session, SessionHistory};
-use kuku_client::{HistoryDestination, HistoryDestinations, RewindGroup};
+use kuku_client::{
+    HistoryDestination, HistoryDestinations, ImageAttachment, ImageMarker, MessageDraft,
+    RewindGroup,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
@@ -120,6 +124,84 @@ pub(super) async fn events(
         Ok(Json(
             json!({"ok":true,"events":filtered,"next_after":next_after,"next_before":next_before}),
         ))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub(super) struct MessageDraftQuery {
+    workspace: PathBuf,
+    agent: String,
+}
+
+pub(super) async fn message_draft(
+    State(state): State<Arc<AppState>>,
+    Path((id, event_id)): Path<(String, u64)>,
+    Params(query): Params<MessageDraftQuery>,
+) -> Result<Json<MessageDraft>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let manager = manager(&state).await;
+    let session = manager.open_session(&target.path);
+    let agent = query.agent;
+    journal_task(move || {
+        let event = EventStore::read_page(&target.path, event_id.saturating_sub(1), 1)?
+            .into_iter()
+            .find(|event| event.id == event_id)
+            .ok_or_else(|| ApiError::invalid("the selected original message is missing"))?;
+        let EventPayload::MessageUser {
+            conversation,
+            text,
+            images,
+            job_delivery: false,
+            ..
+        } = event.payload
+        else {
+            return Err(ApiError::invalid(
+                "the selected event is not a user message",
+            ));
+        };
+        if conversation != agent {
+            return Err(ApiError::invalid(
+                "the selected message belongs to another Agent",
+            ));
+        }
+        let bytes = if images.is_empty() {
+            Vec::new()
+        } else if let Some(session) = session {
+            images
+                .iter()
+                .map(|image| session.read_input_image(&agent, image))
+                .collect::<kuku::Result<Vec<_>>>()?
+        } else {
+            Session::read_saved_input_images(&target.path, &agent, &images)?
+        };
+        let mut next_label = 0;
+        let images = images
+            .iter()
+            .zip(bytes)
+            .map(|(image, bytes)| {
+                let marker = image.marker().cloned().unwrap_or_else(|| {
+                    let label = loop {
+                        next_label += 1;
+                        let label = format!("[Image #{next_label}]");
+                        if !text.contains(&label) {
+                            break label;
+                        }
+                    };
+                    ImageMarker {
+                        offset: text.len(),
+                        label,
+                    }
+                });
+                ImageAttachment {
+                    marker,
+                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    transparent: image.media_type() == "image/png",
+                }
+            })
+            .collect();
+        Ok(Json(MessageDraft { text, images }))
     })
     .await
 }

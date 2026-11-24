@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use sha2::{Digest, Sha256};
 
 use crate::execution::{
@@ -9,8 +11,8 @@ use crate::tool::builtin::run_command::output::{
 use crate::{Error, Result};
 
 use super::record::Record;
-use super::retention::{open_retained_output, output_dir};
-use super::{OutputStream, Session, ensure_open};
+use super::retention::{OutputStore, open_retained_output, output_dir};
+use super::{OutputStream, Session, ensure_open, replay_state};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct RetainedModelImage {
@@ -46,6 +48,10 @@ impl Session {
             )));
         }
         self.validate_image_route(config)?;
+        validate_markers(
+            &input.text,
+            input.images.iter().filter_map(InputImage::marker),
+        )?;
         for image in &input.images {
             input_image_output(state, &input.target, image)?;
         }
@@ -64,9 +70,41 @@ impl Session {
         Ok(())
     }
 
-    pub(crate) fn read_input_image(&self, agent: &str, image: &InputImage) -> Result<Vec<u8>> {
+    /// Read an image previously saved for this agent.
+    pub fn read_input_image(&self, agent: &str, image: &InputImage) -> Result<Vec<u8>> {
         let output = input_image_output(&self.inner.state.lock().unwrap(), agent, image)?;
         self.read_model_image(agent, &output)
+    }
+
+    /// Read stored images without opening a runtime writer.
+    pub fn read_saved_input_images(
+        events_path: &Path,
+        agent: &str,
+        images: &[InputImage],
+    ) -> Result<Vec<Vec<u8>>> {
+        let dir = output_dir(events_path)?;
+        let (state, _) = replay_state(
+            events_path,
+            super::record::State {
+                outputs: OutputStore::recover(&dir)?,
+                ..Default::default()
+            },
+        )?;
+        images
+            .iter()
+            .map(|image| {
+                let output = input_image_output(&state, agent, image)?;
+                let file = open_retained_output(&dir, &output.output.id)?;
+                let bytes = read_complete_stdout_bytes(file, image.byte_len())?;
+                let actual = InputImage::from_bytes(&bytes)?;
+                if actual.digest != image.digest || actual.mime != image.mime {
+                    return Err(Error::InvalidEventStream(
+                        "input image content changed".into(),
+                    ));
+                }
+                Ok(bytes)
+            })
+            .collect()
     }
 
     pub(crate) async fn retain_model_image(
@@ -184,6 +222,30 @@ impl Session {
         }
         Ok(bytes)
     }
+}
+
+pub(super) fn validate_markers<'a>(
+    text: &str,
+    markers: impl IntoIterator<Item = &'a crate::execution::ImageMarker>,
+) -> Result<()> {
+    let mut ranges = Vec::new();
+    let mut labels = std::collections::HashSet::new();
+    for marker in markers {
+        let range = marker.range_in(text).ok_or_else(|| {
+            Error::InvalidArgument("image marker must match the input at its byte offset".into())
+        })?;
+        if !labels.insert(&marker.label)
+            || ranges.iter().any(|other: &std::ops::Range<usize>| {
+                range.start < other.end && other.start < range.end
+            })
+        {
+            return Err(Error::InvalidArgument(
+                "image markers must be distinct".into(),
+            ));
+        }
+        ranges.push(range);
+    }
+    Ok(())
 }
 
 fn input_image_output(

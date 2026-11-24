@@ -142,7 +142,7 @@ fn inline_queue_click_scroll_and_edit_keep_the_selected_identity() {
     event(&mut app, Event::Paste("edited queue item".into()));
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&saved_input(&app).action,
-        Action::ReplaceQueued { input_command_id, text }
+        Action::ReplaceQueued { input_command_id, text, .. }
             if input_command_id == "queue-2" && text == "edited queue item"));
     assert_eq!("independent draft", app.pane().draft.text());
 }
@@ -243,6 +243,7 @@ fn pending_queue_mutations_block_duplicate_edits_and_withdrawals() {
         Action::ReplaceQueued {
             input_command_id: "queue-1".into(),
             text: "first edit".into(),
+            image_markers: vec![],
         },
     );
     assert!(app.queue_mutation_pending("queue-1"));
@@ -609,4 +610,28 @@ fn help_overlay_is_inert_on_mouse_and_fits_narrow_terminals() {
 
     let narrow = screen(&mut app, 20, 8);
     assert!(!narrow.is_empty());
+}
+
+#[test]
+fn a_deleted_queue_image_atom_is_absent_from_the_replacement() {
+    let mut app = app();
+    let mut state = queued_state(&app, 1);
+    let queued = &mut state.pending[0].input;
+    queued.text = "literal [Image #1] actual [Image #1]".into();
+    queued.images.push(
+        kuku_client::InputImage::from_bytes(b"\x89PNG\r\n\x1a\n")
+            .unwrap()
+            .with_marker(kuku_client::ImageMarker {
+                offset: "literal [Image #1] actual ".len(),
+                label: "[Image #1]".into(),
+            }),
+    );
+    load(&mut app, state);
+    app.edit_queued("queue-0".into());
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.atom_count() == 1));
+    key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(&saved_input(&app).action,
+        Action::ReplaceQueued { text, image_markers, .. }
+            if text == "literal [Image #1] actual " && image_markers.is_empty()));
 }

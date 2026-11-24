@@ -45,8 +45,9 @@ pub enum Timing {
 /// An image paired with its display label in a submitted draft.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageAttachment {
-    /// Display label in the draft.
-    pub label: String,
+    /// Marker identifying the attachment's location in the draft.
+    #[serde(flatten)]
+    pub marker: crate::ImageMarker,
     /// Base64-encoded PNG or JPEG.
     pub data: String,
     /// Whether the source includes visible transparency.
@@ -58,10 +59,19 @@ impl std::fmt::Debug for ImageAttachment {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ImageAttachment")
-            .field("label", &self.label)
+            .field("marker", &self.marker)
             .field("encoded_len", &self.data.len())
             .finish()
     }
+}
+
+/// The original contents of a committed user message, ready to restore to a composer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageDraft {
+    /// Exact recorded message text.
+    pub text: String,
+    /// Encoded images and their markers.
+    pub images: Vec<ImageAttachment>,
 }
 
 /// A durable mutation the service can associate with a caller command ID.
@@ -131,6 +141,9 @@ pub enum Action {
         input_command_id: String,
         /// The text delivered under this replacement command's identity.
         text: String,
+        /// Original attachments explicitly retained at their new positions.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        image_markers: Vec<crate::ImageMarker>,
     },
     /// Rewind one committed user message and later history for the selected Agent.
     RewindMessage {
@@ -138,6 +151,9 @@ pub enum Action {
         target_event_id: u64,
         /// Original text shown by the client, validated against the durable target.
         text: String,
+        /// Images retained in the durable client command for draft recovery.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        draft_images: Vec<ImageAttachment>,
         /// Explicit opt-in to restore supported recorded file changes.
         restore_files: bool,
     },

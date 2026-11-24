@@ -11,8 +11,8 @@ use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
     Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryDestinations,
-    HistoryPage, JobSnapshot, ModelDefaultPlan, NamedValue, NamedValueSource, OutputChunk,
-    RewindGroupPage, SessionSummary, Snapshot, Subscription, Target,
+    HistoryPage, JobSnapshot, MessageDraft, ModelDefaultPlan, NamedValue, NamedValueSource,
+    OutputChunk, RewindGroupPage, SessionSummary, Snapshot, Subscription, Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -438,6 +438,33 @@ impl Client {
                 agent,
                 after,
                 limit,
+            },
+        )
+        .await
+    }
+
+    /// Read the original text and images of an exact committed user message.
+    pub async fn message_draft(
+        &self,
+        target: &Target,
+        event_id: u64,
+    ) -> Result<MessageDraft, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+        }
+        self.get(
+            [
+                "sessions",
+                &target.session_id,
+                "events",
+                &event_id.to_string(),
+                "draft",
+            ],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
             },
         )
         .await

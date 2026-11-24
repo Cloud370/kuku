@@ -11,6 +11,8 @@ use super::super::types::ProviderRequest;
 pub(crate) struct ImageTargets {
     pub(crate) tools: Vec<(usize, ModelImage)>,
     pub(crate) user: Vec<(usize, InputImage)>,
+    pub(crate) current_user_index: Option<usize>,
+    pub(crate) current_input_offset: Option<usize>,
 }
 
 fn convert_to_input_items(
@@ -166,8 +168,13 @@ pub(crate) fn render_body_with_images(
             "content": content,
         }));
     }
-    for message in &request.assembly.history {
+    for (index, message) in request.assembly.history.iter().enumerate() {
         let offset = input_items.len();
+        if let Some(images) = images.as_deref_mut()
+            && images.current_user_index == Some(index)
+        {
+            images.current_input_offset = Some(offset);
+        }
         input_items.extend(convert_to_input_items(
             message,
             offset,
