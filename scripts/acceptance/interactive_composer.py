@@ -135,8 +135,13 @@ def composer_actions(client):
     output = "Accepted work finished after detach"
     screens = []
 
+    def action(terminal, command):
+        terminal.press("\x10")
+        terminal.expect("Keyboard shortcuts")
+        terminal.submit(command)
+
     def thinking(terminal):
-        terminal.press("\x10/thinking\r")
+        action(terminal, "/thinking")
         return terminal.expect("D Save default", also=("Use default", "Low", "Medium", "High", "Esc Close", draft))["screen"]
 
     def position(screen, text):
@@ -236,7 +241,7 @@ def composer_actions(client):
         terminal.press("\x1b")
         terminal.expect(draft, absent=("Use default",))
 
-        terminal.press("\x10/speed turbo\r")
+        action(terminal, "/speed turbo")
         custom_speed = terminal.expect("Custom service tier", also=("Probe and use", "Skip probe and use", draft))["screen"]
         assert position(custom_speed, "Skip probe and use")[0] < position(custom_speed, draft)[0], custom_speed
         terminal.press("\x1b[B\r")

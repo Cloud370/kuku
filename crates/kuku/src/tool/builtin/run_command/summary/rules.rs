@@ -210,8 +210,9 @@ mod tests {
 
     #[test]
     fn built_in_fixtures_accept_crlf() {
-        let source = BUILTIN.replace("\n", "\r\n");
-        assert_eq!(load(&source).unwrap().len(), load(BUILTIN).unwrap().len());
+        let lf = BUILTIN.replace("\r\n", "\n");
+        let crlf = lf.replace("\n", "\r\n");
+        assert_eq!(load(&crlf).unwrap().len(), load(&lf).unwrap().len());
     }
 
     #[test]
