@@ -716,14 +716,17 @@ def run_interactive(args, directory, record):
                 record["input"] = {"type": "installed_binary", **config_record(args.binary)}
                 shutil.copy2(args.binary, binary)
         else:
-            record["input"] = {"type": "source_install", "features": ["embedded-web-assets"],
+            features = ["embedded-web-assets"] if record["browser"] else []
+            record["input"] = {"type": "source_install", "features": features,
                                "profile": "release", "target_dir": str(ROOT / "target")}
-            web = ROOT / "apps" / "web"
-            npm = "npm.cmd" if os.name == "nt" else "npm"
-            checked([npm, "ci"], "web-dependencies", cwd=web)
-            checked([npm, "run", "build"], "web-assets", cwd=web)
-            checked(["cargo", "install", "--locked", "--timings", "--path", "apps/kuku", "--features",
-                     "embedded-web-assets", "--root", str(prefix)], "source-install")
+            build = ["cargo", "install", "--locked", "--timings", "--path", "apps/kuku", "--root", str(prefix)]
+            if features:
+                web = ROOT / "apps" / "web"
+                npm = "npm.cmd" if os.name == "nt" else "npm"
+                checked([npm, "ci"], "web-dependencies", cwd=web)
+                checked([npm, "run", "build"], "web-assets", cwd=web)
+                build.extend(["--features", ",".join(features)])
+            checked(build, "source-install")
         record["binary"] = config_record(binary)
 
         version = checked([str(binary), "--version"], "installed-version", timeout=30, cwd=scratch_dir)
@@ -821,7 +824,7 @@ def parser():
     scenario = interactive.add_mutually_exclusive_group()
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--desktop-only", action="store_true", help="exercise only the isolated graphical terminal")
-    scenario.add_argument("--live", action="store_true", help="run the budgeted release-archive and real-model handoff")
+    scenario.add_argument("--live", action="store_true", help="run the budgeted real-model handoff with an embedded Web archive")
     scenario.add_argument("--intent", choices=("deepseek", "openrouter"), help="run budgeted native reply, edit, and first-delegation checks")
     interactive.add_argument("--intent-case", choices=("all", "delivery", "delegation", "release-review"), default="all")
     interactive.add_argument("--intent-bridge", type=Path, help="reuse a built native PTY helper with --intent")
@@ -953,8 +956,8 @@ def main():
     try:
         if paid and not metered:
             if args.group == "benchmark":
-                if not args.sdk_binary or not args.config or not args.connection:
-                    raise ValueError("live benchmark requires --sdk-binary, --config and --connection")
+                if not args.sdk_binary or not args.config or not args.connection or not args.model:
+                    raise ValueError("legacy live benchmark requires --sdk-binary, --config, --connection and --model")
                 args.sdk_args = args.sdk_args[1:] if args.sdk_args[:1] == ["--"] else args.sdk_args
                 if "--max-requests" not in args.sdk_args:
                     args.sdk_args.extend(["--max-requests", "12"])

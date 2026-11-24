@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::sync::{Arc, Barrier};
 
-use kuku::config::{ApiKey, generate_default, load_config};
+use kuku::config::{ApiKey, ModelRef, load_config};
 use kuku::util::private_directory;
 use kuku_client::ConnectionOptions;
 use toml_edit::{DocumentMut, value};
@@ -12,10 +12,36 @@ use crate::setup::state::SetupState;
 use crate::setup::{CredentialSource, should_offer_setup};
 
 const INLINE_CONFIG: &str = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "primary-model" }
 unrelated_root = "keep"
-model = { strong = { provider = "anthropic", model = "strong-model", think = "high" }, balanced = { provider = "anthropic", model = "balanced-model", think = "medium", reasoning_effort = "low", service_tier = "flex" }, light = { provider = "anthropic", model = "light-model", think = "off" } }
-provider = { anthropic = { format = "anthropic", base_url = "https://api.anthropic.com", api_key = "$ANTHROPIC_API_KEY" }, openai = { format = "openai-responses", base_url = "https://existing-openai.invalid/v1", api_key = "$OPENAI_API_KEY" } }
+model = { anthropic = { fallback = { max_output_tokens = 8192, think = "high" }, primary-model = { max_output_tokens = 8192, reasoning_effort = "low", service_tier = "flex" }, secondary = { max_output_tokens = 8192, think = "off" } } }
+provider = { anthropic = { format = "anthropic", base_url = "https://api.anthropic.com", api_key = "$MY_MESSAGES_KEY" }, openai = { format = "openai-responses", base_url = "https://existing-openai.invalid/v1", api_key = "$MY_RESPONSES_KEY" } }
+"#;
+
+const STANDARD_CONFIG: &str = r#"
+default_model = { connection = "anthropic", model = "primary-model" }
+
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "$MY_MESSAGES_KEY"
+
+[provider.openai]
+format = "openai-responses"
+base_url = "https://api.openai.com/v1"
+api_key = "$MY_RESPONSES_KEY"
+profile = "openai"
+
+[model.anthropic.primary-model]
+max_output_tokens = 8192
+
+[model.anthropic.fallback]
+max_output_tokens = 8192
+think = "high"
+
+[model.anthropic.secondary]
+max_output_tokens = 8192
+think = "off"
 "#;
 
 fn options(root: &std::path::Path, config: Option<std::path::PathBuf>) -> ConnectionOptions {
@@ -49,7 +75,10 @@ async fn missing_default_file_credential_reopens_with_current_route_and_preserve
         .unwrap();
     let state = SetupState::new(&settings);
 
-    assert_eq!("balanced", settings.default_tier);
+    assert_eq!(
+        Some(&ModelRef::new("anthropic", "primary-model")),
+        settings.default_model()
+    );
     assert!(!settings.default_route_credential_available());
     assert!(should_offer_setup(
         Ok(false),
@@ -60,7 +89,7 @@ async fn missing_default_file_credential_reopens_with_current_route_and_preserve
         state.choice(),
         crate::setup::ConnectionChoice::Existing(name) if name == "anthropic"
     ));
-    assert_eq!("balanced-model", state.model.text());
+    assert_eq!("primary-model", state.model.text());
     assert_eq!(original, fs::read_to_string(config).unwrap());
 }
 
@@ -142,7 +171,7 @@ async fn default_route_credential_check_ignores_unrelated_provider_and_empty_val
             _ => unreachable!(),
         })
     );
-    assert_eq!(vec!["ANTHROPIC_API_KEY"], resolved);
+    assert_eq!(vec!["MY_MESSAGES_KEY"], resolved);
     assert!(!settings.default_route_credential_available_with(|_| Some(String::new())));
     assert!(!settings.default_route_credential_available_with(|_| Some("  ".into())));
     assert!(should_offer_setup(
@@ -173,6 +202,31 @@ async fn valid_plaintext_default_route_skips_repair_even_when_other_provider_key
 }
 
 #[tokio::test]
+async fn adding_a_model_keeps_a_chosen_inline_credential() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("custom.toml");
+    let mut document: DocumentMut = STANDARD_CONFIG.parse().unwrap();
+    let key = "fixture-only-not-a-real-key";
+    document["provider"]["anthropic"]["api_key"] = value(key);
+    fs::write(&config, document.to_string()).unwrap();
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::for_intent(&settings, crate::setup::SetupIntent::Add);
+    state.model.set_text("new-model".into());
+
+    save(&settings, &state).unwrap();
+    let parsed = load_config(&config).unwrap();
+    assert_eq!(parsed.provider["anthropic"].api_key, key);
+    assert_eq!(
+        parsed.default_model,
+        Some(ModelRef::new("anthropic", "primary-model"))
+    );
+    assert!(parsed.model["anthropic"].contains_key("new-model"));
+    assert!(!settings.credentials_dir.exists());
+}
+
+#[tokio::test]
 async fn valid_private_file_default_route_skips_first_run_repair() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
@@ -183,7 +237,7 @@ async fn valid_private_file_default_route_skips_first_run_repair() {
     let key_path = staged.path().to_owned();
     staged.keep = true;
 
-    let mut document: DocumentMut = generate_default().parse().unwrap();
+    let mut document: DocumentMut = STANDARD_CONFIG.parse().unwrap();
     document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", key_path.display()));
     fs::write(&config, document.to_string()).unwrap();
 
@@ -216,7 +270,7 @@ async fn credential_repair_keeps_unrelated_config_and_never_writes_key_text() {
     let output = fs::read_to_string(&config).unwrap();
     assert!(!output.contains(key));
     assert!(output.contains("unrelated_root = \"keep\""));
-    assert!(output.contains("api_key = \"$OPENAI_API_KEY\""));
+    assert!(output.contains("api_key = \"$MY_RESPONSES_KEY\""));
     assert!(output.contains("service_tier = \"flex\""));
     let parsed = load_config(&config).unwrap();
     let api_key = &parsed.provider["anthropic"].api_key;
@@ -241,54 +295,45 @@ async fn invalid_existing_config_is_not_replaced_by_first_run_setup() {
 }
 
 #[test]
-fn credential_source_defaults_are_deterministic_without_environment_mutation() {
-    let environment = ApiKey::Env("FIXTURE_API_KEY".into());
+fn credential_source_defaults_require_an_explicit_reference() {
+    let environment = ApiKey::Env("MY_GATEWAY_KEY".into());
     let file = ApiKey::File(std::path::PathBuf::from("fixture.credential"));
     let plaintext = ApiKey::Plaintext("fixture-only-not-a-real-key".into());
+    for can_store in [false, true] {
+        assert_eq!(
+            CredentialSource::Environment,
+            super::preferred_source(Some(&environment), can_store)
+        );
+        assert_eq!(
+            CredentialSource::StoredKey,
+            super::preferred_source(Some(&plaintext), can_store)
+        );
+        assert_eq!(
+            CredentialSource::StoredKey,
+            super::preferred_source(Some(&file), can_store)
+        );
+    }
     assert_eq!(
         CredentialSource::StoredKey,
-        super::preferred_source(Some(&environment), false, true)
+        super::preferred_source(None, true)
     );
     assert_eq!(
         CredentialSource::Environment,
-        super::preferred_source(Some(&environment), true, true)
-    );
-    assert_eq!(
-        CredentialSource::StoredKey,
-        super::preferred_source(None, false, true)
-    );
-    assert_eq!(
-        CredentialSource::Environment,
-        super::preferred_source(None, true, true)
-    );
-    assert_eq!(
-        CredentialSource::Environment,
-        super::preferred_source(Some(&environment), false, false)
-    );
-    assert_eq!(
-        CredentialSource::StoredKey,
-        super::preferred_source(Some(&plaintext), false, false)
-    );
-    assert_eq!(
-        CredentialSource::StoredKey,
-        super::preferred_source(Some(&file), false, false)
+        super::preferred_source(None, false)
     );
 }
 
 #[tokio::test]
-async fn existing_settings_preserve_comments_providers_tiers_and_connection_options() {
+async fn existing_settings_preserve_comments_models_and_connection_options() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
-    let contents = generate_default().replace(
+    let contents = STANDARD_CONFIG.replace(
         "[provider.anthropic]",
         "[provider.anthropic]\n# preserved provider comment",
     );
     let mut document: DocumentMut = contents.parse().unwrap();
     document["provider"]["anthropic"]["base_url"] = value("https://custom.invalid/v1");
     document["provider"]["anthropic"]["profile"] = value("anthropic");
-    document["model"]["balanced"]["model"] = value("custom-balanced");
-    document["model"]["strong"]["model"] = value("preserve-strong");
-    document["model"]["light"]["model"] = value("preserve-light");
     fs::write(&config, document.to_string()).unwrap();
 
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
@@ -299,7 +344,7 @@ async fn existing_settings_preserve_comments_providers_tiers_and_connection_opti
     assert!(
         matches!(state.choice(), crate::setup::ConnectionChoice::Existing(name) if name == "anthropic")
     );
-    state.model.set_text("updated-balanced".into());
+    state.model.set_text("updated-model".into());
     save(&settings, &state).unwrap();
 
     let output = fs::read_to_string(config).unwrap();
@@ -307,100 +352,91 @@ async fn existing_settings_preserve_comments_providers_tiers_and_connection_opti
     assert!(output.contains("base_url = \"https://custom.invalid/v1\""));
     assert!(output.contains("profile = \"anthropic\""));
     let parsed = load_config(&settings.config_path).unwrap();
-    assert_eq!("updated-balanced", parsed.model["balanced"].model);
-    assert_eq!("preserve-strong", parsed.model["strong"].model);
-    assert_eq!("preserve-light", parsed.model["light"].model);
+    assert_eq!(
+        Some(ModelRef::new("anthropic", "updated-model")),
+        parsed.default_model
+    );
+    for name in ["primary-model", "fallback", "secondary", "updated-model"] {
+        assert!(parsed.model["anthropic"].contains_key(name));
+    }
     assert!(parsed.provider.contains_key("openai"));
 }
 
 #[tokio::test]
 async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
-    const TIER: &str = "_KUKU_SETUP_TEST_TIER";
-    const PROVIDER: &str = "_KUKU_SETUP_TEST_PROVIDER";
-    const MODEL: &str = "_KUKU_SETUP_TEST_MODEL";
-    const FORMAT: &str = "_KUKU_SETUP_TEST_FORMAT";
-    if !kuku::test_support::isolate_test(
-        module_path!(),
-        "saving_uses_sdk_environment_expansion_and_preserves_references",
-        |command| {
-            command
-                .env(TIER, "balanced")
-                .env(PROVIDER, "anthropic")
-                .env(MODEL, "fixture-env-model")
-                .env(FORMAT, "anthropic");
-        },
-    ) {
-        return;
-    }
-
+    const MODEL: &str = "MY_CONFIG_MODEL";
+    const FORMAT: &str = "MY_CONFIG_FORMAT";
+    const CONNECTION: &str = "MY_CONFIG_CONNECTION";
+    const URL: &str = "MY_CONFIG_URL";
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
-    let contents = generate_default()
-        .replace(
-            "default_model = \"balanced\"",
-            &format!("default_model = \"${TIER}\""),
-        )
-        .replace(
-            "provider = \"anthropic\"",
-            &format!("provider = \"${PROVIDER}\""),
-        )
-        .replace(
-            "model = \"claude-sonnet-4-6\"",
-            &format!("model = \"${MODEL}\""),
-        )
-        .replace("format = \"anthropic\"", &format!("format = \"${FORMAT}\""));
+    let contents = format!(
+        r#"
+default_model = {{ connection = "${CONNECTION}", model = "${MODEL}" }}
+[provider.anthropic]
+format = "${FORMAT}"
+base_url = "${URL}"
+api_key = "$MY_CONFIG_KEY"
+[model.anthropic."${MODEL}"]
+max_output_tokens = 8192
+"#
+    );
+    let environment = |name: &str| match name {
+        MODEL => Ok("fixture-env-model".into()),
+        FORMAT => Ok("anthropic".into()),
+        CONNECTION => Ok("anthropic".into()),
+        URL => Ok("https://fixture-url.invalid/v1".into()),
+        _ => Err(std::env::VarError::NotPresent),
+    };
     fs::write(&config, contents).unwrap();
-
-    let settings = Settings::load(options(directory.path(), Some(config.clone())))
-        .await
-        .unwrap();
-    let mut state = SetupState::new(&settings);
-    select_environment(&mut state);
-    save(&settings, &state).unwrap();
+    let settings = Settings::load_with_lookup(
+        options(directory.path(), Some(config.clone())),
+        &environment,
+    )
+    .await
+    .unwrap();
+    let state = SetupState::new(&settings);
+    let (saved, _) = save_with_lookup(&settings, &state, &environment, || {}).unwrap();
 
     let output = fs::read_to_string(&config).unwrap();
-    assert!(output.contains(&format!("default_model = \"${TIER}\"")));
-    assert!(output.contains(&format!("provider = \"${PROVIDER}\"")));
+    assert!(output.contains(&format!("connection = \"${CONNECTION}\"")));
     assert!(output.contains(&format!("model = \"${MODEL}\"")));
+    assert!(output.contains(&format!("[model.anthropic.\"${MODEL}\"]")));
     assert!(output.contains(&format!("format = \"${FORMAT}\"")));
-    let parsed = load_config(&config).unwrap();
-    assert_eq!(Some("balanced"), parsed.default_model.as_deref());
-    assert_eq!("anthropic", parsed.model["strong"].provider);
-    assert_eq!("fixture-env-model", parsed.model["strong"].model);
-    assert_eq!("anthropic", parsed.provider["anthropic"].format.as_str());
+    assert!(output.contains(&format!("base_url = \"${URL}\"")));
+    assert!(output.contains("api_key = \"$MY_CONFIG_KEY\""));
+    assert_eq!(
+        saved.default_model,
+        ModelRef::new("anthropic", "fixture-env-model")
+    );
+    assert_eq!(saved.models.len(), 1);
 }
 
 #[tokio::test]
-async fn prefill_uses_normalized_custom_default_route_and_preserves_options() {
+async fn prefill_uses_configured_default_pair_and_preserves_options() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
-    let mut document: DocumentMut = generate_default().parse().unwrap();
-    let mut preferred = document["model"]["balanced"].clone();
-    preferred["provider"] = value(" openai ");
-    preferred["model"] = value(" route-model ");
-    preferred["reasoning_effort"] = value("high");
-    preferred["service_tier"] = value("priority");
-    document["model"]["preferred"] = preferred;
-    document["default_model"] = value("preferred");
+    let mut document: DocumentMut = STANDARD_CONFIG.parse().unwrap();
+    let pair = ModelRef::new("openai", "gateway/route-model");
+    super::set_default_model(&mut document, &pair);
+    let preferred = super::model_entry(&mut document, &pair).unwrap();
+    preferred.insert("reasoning_effort", value("high"));
+    preferred.insert("service_tier", value("priority"));
     fs::write(&config, document.to_string()).unwrap();
 
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
-    let mut state = SetupState::new(&settings);
-    select_environment(&mut state);
-    assert_eq!("preferred", settings.default_tier);
-    assert!(matches!(
-        state.choice(),
-        crate::setup::ConnectionChoice::Existing(name) if name == "openai"
-    ));
-    assert_eq!("route-model", state.model.text());
+    let state = SetupState::new(&settings);
+    assert_eq!(Some(&pair), settings.default_model());
+    assert!(
+        matches!(state.choice(), crate::setup::ConnectionChoice::Existing(name) if name == "openai")
+    );
+    assert_eq!("gateway/route-model", state.model.text());
     save(&settings, &state).unwrap();
 
     let parsed = load_config(&config).unwrap();
-    let preferred = &parsed.model["preferred"];
-    assert_eq!("openai", preferred.provider);
-    assert_eq!("route-model", preferred.model);
+    let preferred = &parsed.model["openai"]["gateway/route-model"];
     assert_eq!(Some("high"), preferred.reasoning_effort.as_deref());
     assert_eq!(Some("priority"), preferred.service_tier.as_deref());
 }
@@ -430,11 +466,15 @@ async fn settings_edit_inline_model_and_provider_tables() {
     );
     assert_eq!(
         Some("low"),
-        parsed.model["balanced"].reasoning_effort.as_deref()
+        parsed.model["anthropic"]["primary-model"]
+            .reasoning_effort
+            .as_deref()
     );
     assert_eq!(
         Some("flex"),
-        parsed.model["balanced"].service_tier.as_deref()
+        parsed.model["anthropic"]["primary-model"]
+            .service_tier
+            .as_deref()
     );
 }
 
@@ -469,74 +509,76 @@ async fn preset_save_adds_an_inline_provider_without_overwriting_existing() {
         parsed.provider["openai"].base_url
     );
     assert_eq!("$OPENAI_SETUP_KEY", parsed.provider["openai_setup"].api_key);
-    assert_eq!("openai_setup", parsed.model["balanced"].provider);
+    assert_eq!(
+        Some(ModelRef::new("openai_setup", preset.default_model())),
+        parsed.default_model
+    );
 }
 
 #[tokio::test]
-async fn adding_a_duplicate_model_saves_a_short_route_name_and_keeps_its_connection() {
+async fn adding_an_existing_model_id_on_another_connection_keeps_both_pairs() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("inline.toml");
     let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
-    let model = "gpt-6.1-terra";
-    document["model"][model] = "{ provider = \"anthropic\", model = \"gpt-6.1-terra\" }"
-        .parse::<toml_edit::Value>()
-        .map(toml_edit::Item::Value)
-        .unwrap();
+    let id = "gateway/gpt-6.1-terra";
+    let original = ModelRef::new("anthropic", id);
+    super::model_entry(&mut document, &original)
+        .unwrap()
+        .insert("max_output_tokens", value(8192));
     fs::write(&config, document.to_string()).unwrap();
 
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
     let mut state = SetupState::for_intent(&settings, crate::setup::SetupIntent::Add);
-    state.selected = state
-        .choices
-        .iter()
-        .position(|choice| {
-            matches!(choice, crate::setup::ConnectionChoice::Existing(name) if name == "openai")
-        })
-        .unwrap();
+    state.selected = state.choices.iter().position(|choice| {
+        matches!(choice, crate::setup::ConnectionChoice::Existing(name) if name == "openai")
+    }).unwrap();
     state.load_selection(&settings);
-    state.model.set_text(model.into());
-    let resolved = save(&settings, &state).unwrap();
+    state.model.set_text(id.into());
+    let (resolved, _) = save(&settings, &state).unwrap();
 
+    let added = ModelRef::new("openai", id);
     let parsed = load_config(&config).unwrap();
-    let short_route = "gpt-6.1-terra-2";
-    assert_eq!("anthropic", parsed.model[model].provider);
-    assert_eq!("openai", parsed.model[short_route].provider);
-    assert_eq!(model, parsed.model[short_route].model);
-    assert!(
-        resolved
-            .tier_infos()
-            .iter()
-            .any(|info| info.name == short_route)
+    assert!(parsed.model["anthropic"].contains_key(id));
+    assert!(parsed.model["openai"].contains_key(id));
+    assert!(resolved.models.contains_key(&original));
+    assert!(resolved.models.contains_key(&added));
+    assert_eq!(
+        Some(ModelRef::new("anthropic", "primary-model")),
+        parsed.default_model
     );
-    assert!(!parsed.model.contains_key("openai/gpt-6.1-terra"));
 }
 
 #[tokio::test]
-async fn new_configuration_saves_a_single_default_route() {
+async fn new_configuration_saves_only_the_selected_connection_and_model() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path(), None))
         .await
         .unwrap();
     let mut state = SetupState::new(&settings);
     select_environment(&mut state);
+    state.environment.set_text("MY_GATEWAY_KEY".into());
     state.address.set_text("https://provider.invalid/v1".into());
-    state.model.set_text("fixture-model".into());
+    state.model.set_text("fixture/model-1.0".into());
     save(&settings, &state).unwrap();
 
     let parsed = load_config(&settings.config_path).unwrap();
-    assert_eq!(Some("default"), parsed.default_model.as_deref());
+    assert_eq!(
+        Some(ModelRef::new("provider.invalid", "fixture/model-1.0")),
+        parsed.default_model
+    );
     assert_eq!(1, parsed.model.len());
-    assert_eq!("fixture-model", parsed.model["default"].model);
-    assert_eq!("provider.invalid", parsed.model["default"].provider);
+    assert_eq!(1, parsed.model["provider.invalid"].len());
+    assert!(parsed.model["provider.invalid"].contains_key("fixture/model-1.0"));
+    assert_eq!(1, parsed.provider.len());
     assert_eq!(
         "https://provider.invalid/v1",
         parsed.provider["provider.invalid"].base_url
     );
     assert_eq!(
-        Some("provider-default"),
-        parsed.model["default"].think.as_deref()
+        "$MY_GATEWAY_KEY",
+        parsed.provider["provider.invalid"].api_key
     );
 }
 
@@ -557,13 +599,52 @@ async fn all_provider_presets_generate_parseable_configs() {
         state.load_selection(&settings);
         select_environment(&mut state);
         state.model.set_text(preset.default_model().into());
-        state.environment.set_text(preset.default_env().into());
+        assert!(state.environment.text().is_empty());
+        state.environment.set_text("MY_PRESET_KEY".into());
         save(&settings, &state).unwrap();
 
         let parsed = load_config(&settings.config_path).unwrap();
-        assert_eq!(preset.connection(), parsed.model["default"].provider);
-        assert_eq!(preset.default_model(), parsed.model["default"].model);
+        assert_eq!(
+            Some(ModelRef::new(preset.connection(), preset.default_model())),
+            parsed.default_model
+        );
+        assert!(parsed.model[preset.connection()].contains_key(preset.default_model()));
+        assert_eq!(
+            "$MY_PRESET_KEY",
+            parsed.provider[preset.connection()].api_key
+        );
     }
+}
+
+#[tokio::test]
+async fn provider_preset_does_not_read_an_old_credential_variable() {
+    if !kuku::test_support::isolate_test(
+        module_path!(),
+        "provider_preset_does_not_read_an_old_credential_variable",
+        |command| {
+            command.env("OPENAI_API_KEY", "fixture-old-key");
+        },
+    ) {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path(), None))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    let preset = crate::setup::ConnectionChoice::Preset(crate::setup::ProviderPreset::OpenAi);
+    state.selected = state
+        .choices
+        .iter()
+        .position(|choice| *choice == preset)
+        .unwrap();
+    state.load_selection(&settings);
+
+    assert_eq!(CredentialSource::StoredKey, state.credential_source);
+    assert!(state.environment.text().is_empty());
+    assert!(!state.credential_ready());
+    assert!(save(&settings, &state).is_err());
+    assert!(!settings.config_path.exists());
 }
 
 #[tokio::test]
@@ -577,6 +658,7 @@ async fn invalid_model_and_environment_name_do_not_write_config() {
     state.model.set_text("$MODEL".into());
     assert!(save(&settings, &state).is_err());
     state.model.set_text("valid-model".into());
+    select_environment(&mut state);
     state.environment.set_text("NOT A NAME".into());
     assert!(save(&settings, &state).is_err());
     assert!(!settings.config_path.exists());
@@ -600,13 +682,13 @@ fn private_key(directory: &std::path::Path, contents: &[u8]) -> std::path::PathB
 }
 
 fn config_with_file_key(config: &std::path::Path, path: &std::path::Path) {
-    let mut document: DocumentMut = generate_default().parse().unwrap();
+    let mut document: DocumentMut = STANDARD_CONFIG.parse().unwrap();
     document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", path.display()));
     fs::write(config, document.to_string()).unwrap();
 }
 
 #[tokio::test]
-async fn existing_file_credentials_outside_policy_migrate_on_save() {
+async fn existing_private_file_credentials_keep_their_paths() {
     for in_workspace in [true, false] {
         let directory = tempfile::tempdir().unwrap();
         let connection_options = options(directory.path(), None);
@@ -631,7 +713,7 @@ async fn existing_file_credentials_outside_policy_migrate_on_save() {
             state
                 .saved_key_hint(&settings)
                 .unwrap()
-                .contains("copy your saved key here")
+                .contains("keep your saved key")
         );
 
         save(&settings, &state).unwrap();
@@ -641,8 +723,8 @@ async fn existing_file_credentials_outside_policy_migrate_on_save() {
             panic!("stored key source was not preserved");
         };
         let migrated = std::path::Path::new(migrated);
-        assert!(migrated.starts_with(&settings.credentials_dir));
-        assert!(migrated != source.as_path());
+        assert_eq!(migrated, source.as_path());
+        assert!(!settings.credentials_dir.exists());
         assert!(source.exists());
         assert!(
             !fs::read_to_string(config)
@@ -680,9 +762,9 @@ async fn safe_existing_file_reference_is_kept_without_creating_another_key() {
 async fn route_changes_choose_new_defaults_but_credential_edits_preserve_settings() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("existing.toml");
-    let mut document: DocumentMut = generate_default().parse().unwrap();
-    document["model"]["balanced"]["reasoning_effort"] = value("low");
-    document["model"]["balanced"]["service_tier"] = value("flex");
+    let mut document: DocumentMut = STANDARD_CONFIG.parse().unwrap();
+    document["model"]["anthropic"]["primary-model"]["reasoning_effort"] = value("low");
+    document["model"]["anthropic"]["primary-model"]["service_tier"] = value("flex");
     fs::write(&config, document.to_string()).unwrap();
 
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
@@ -694,12 +776,12 @@ async fn route_changes_choose_new_defaults_but_credential_edits_preserve_setting
     save(&settings, &state).unwrap();
     let after_credentials: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
     assert!(
-        after_credentials["model"]["balanced"]
+        after_credentials["model"]["anthropic"]["primary-model"]
             .get("reasoning_effort")
             .is_some()
     );
     assert!(
-        after_credentials["model"]["balanced"]
+        after_credentials["model"]["anthropic"]["primary-model"]
             .get("service_tier")
             .is_some()
     );
@@ -713,32 +795,40 @@ async fn route_changes_choose_new_defaults_but_credential_edits_preserve_setting
     save(&settings, &state).unwrap();
     let after_route: DocumentMut = fs::read_to_string(config).unwrap().parse().unwrap();
     assert_eq!(
-        after_route["model"]["balanced"]["reasoning_effort"].as_str(),
+        after_route["model"]["anthropic"]["primary-model"].to_string(),
+        after_credentials["model"]["anthropic"]["primary-model"].to_string()
+    );
+    assert_eq!(
+        after_route["model"]["anthropic"]["changed-route-model"]["reasoning_effort"].as_str(),
         Some("none")
     );
     assert!(
-        after_route["model"]["balanced"]
+        after_route["model"]["anthropic"]["changed-route-model"]
             .get("service_tier")
             .is_none()
     );
 }
 
 #[tokio::test]
-async fn credential_repair_preserves_unchanged_route_environment_references() {
+async fn credential_repair_preserves_unchanged_model_environment_references() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
     let missing_key = directory.path().join("missing.credential");
-    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
-    document["model"]["balanced"]["provider"] = value("$ROUTE_PROVIDER");
-    document["model"]["balanced"]["model"] = value("$ROUTE_MODEL");
+    let fixture = INLINE_CONFIG
+        .replacen(
+            "connection = \"anthropic\"",
+            "connection = \"$ROUTE_PROVIDER\"",
+            1,
+        )
+        .replacen("model = \"primary-model\"", "model = \"$ROUTE_MODEL\"", 1)
+        .replace("primary-model = {", "\"$ROUTE_MODEL\" = {");
+    let mut document: DocumentMut = fixture.parse().unwrap();
     document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
-    let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
-    fs::write(&config, original).unwrap();
+    fs::write(&config, document.to_string()).unwrap();
     let environment = |name: &str| match name {
         "ROUTE_PROVIDER" => Ok("anthropic".into()),
         "ROUTE_MODEL" => Ok("model-from-environment".into()),
-        "KUKU_HOME" => Err(std::env::VarError::NotPresent),
-        _ => std::env::var(name),
+        _ => Err(std::env::VarError::NotPresent),
     };
     let settings = Settings::load_for_first_run_with_lookup(
         options(directory.path(), Some(config.clone())),
@@ -756,29 +846,16 @@ async fn credential_repair_preserves_unchanged_route_environment_references() {
     save_with_lookup(&settings, &state, &environment, || {}).unwrap();
     let credential_only: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
     assert_eq!(
-        "$ROUTE_PROVIDER",
-        credential_only["model"]["balanced"]["provider"]
-            .as_str()
-            .unwrap()
+        Some("$ROUTE_PROVIDER"),
+        credential_only["default_model"]["connection"].as_str()
     );
     assert_eq!(
-        "$ROUTE_MODEL",
-        credential_only["model"]["balanced"]["model"]
-            .as_str()
-            .unwrap()
+        Some("$ROUTE_MODEL"),
+        credential_only["default_model"]["model"].as_str()
     );
-    assert_eq!(
-        "low",
-        credential_only["model"]["balanced"]["reasoning_effort"]
-            .as_str()
-            .unwrap()
-    );
-    assert_eq!(
-        "flex",
-        credential_only["model"]["balanced"]["service_tier"]
-            .as_str()
-            .unwrap()
-    );
+    let fields = &credential_only["model"]["anthropic"]["$ROUTE_MODEL"];
+    assert_eq!(Some("low"), fields["reasoning_effort"].as_str());
+    assert_eq!(Some("flex"), fields["service_tier"].as_str());
 
     let settings = Settings::load_with_lookup(
         options(directory.path(), Some(config.clone())),
@@ -789,25 +866,21 @@ async fn credential_repair_preserves_unchanged_route_environment_references() {
     let mut state = SetupState::new(&settings);
     state.model.set_text("intentional-new-model".into());
     save_with_lookup(&settings, &state, &environment, || {}).unwrap();
-    let route_changed: DocumentMut = fs::read_to_string(config).unwrap().parse().unwrap();
+    let edited: DocumentMut = fs::read_to_string(config).unwrap().parse().unwrap();
     assert_eq!(
-        "anthropic",
-        route_changed["model"]["balanced"]["provider"]
-            .as_str()
-            .unwrap()
+        Some("anthropic"),
+        edited["default_model"]["connection"].as_str()
     );
     assert_eq!(
-        "intentional-new-model",
-        route_changed["model"]["balanced"]["model"]
-            .as_str()
-            .unwrap()
+        Some("intentional-new-model"),
+        edited["default_model"]["model"].as_str()
     );
     assert_eq!(
-        route_changed["model"]["balanced"]["reasoning_effort"].as_str(),
-        Some("none")
+        edited["model"]["anthropic"]["$ROUTE_MODEL"].to_string(),
+        fields.to_string()
     );
     assert!(
-        route_changed["model"]["balanced"]
+        edited["model"]["anthropic"]["intentional-new-model"]
             .get("service_tier")
             .is_none()
     );
@@ -819,8 +892,8 @@ async fn intentional_route_change_pins_selected_route_across_environment_diverge
     let config = directory.path().join("custom.toml");
     let missing_key = directory.path().join("missing.credential");
     let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
-    document["model"]["balanced"]["provider"] = value("$ROUTE_PROVIDER");
-    document["model"]["balanced"]["model"] = value("$ROUTE_MODEL");
+    document["default_model"]["connection"] = value("$ROUTE_PROVIDER");
+    document["default_model"]["model"] = value("$ROUTE_MODEL");
     document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", missing_key.display()));
     let original = format!("{document}\n[discovery]\nextra_user_paths = [\"$KUKU_HOME\"]\n");
     fs::write(&config, original).unwrap();
@@ -853,11 +926,11 @@ async fn intentional_route_change_pins_selected_route_across_environment_diverge
     let written: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
     assert_eq!(
         "anthropic",
-        written["model"]["balanced"]["provider"].as_str().unwrap()
+        written["default_model"]["connection"].as_str().unwrap()
     );
     assert_eq!(
         "selected-model",
-        written["model"]["balanced"]["model"].as_str().unwrap()
+        written["default_model"]["model"].as_str().unwrap()
     );
 
     let service_settings = Settings::load_with_lookup(
@@ -866,16 +939,17 @@ async fn intentional_route_change_pins_selected_route_across_environment_diverge
     )
     .await
     .unwrap();
-    let service_route = service_settings.resolved.tiers.get("balanced").unwrap();
-    assert_eq!("anthropic", service_route.provider);
-    assert_eq!("selected-model", service_route.model);
+    assert_eq!(
+        Some(&ModelRef::new("anthropic", "selected-model")),
+        service_settings.default_model()
+    );
 }
 
 #[tokio::test]
 async fn stored_keys_are_referenced_by_path_not_written_to_config() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
-    fs::write(&config, generate_default()).unwrap();
+    fs::write(&config, STANDARD_CONFIG).unwrap();
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
@@ -906,7 +980,7 @@ async fn stored_keys_are_referenced_by_path_not_written_to_config() {
 async fn concurrent_config_edit_removes_only_the_newly_staged_key() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
-    fs::write(&config, generate_default()).unwrap();
+    fs::write(&config, STANDARD_CONFIG).unwrap();
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
@@ -923,7 +997,7 @@ async fn concurrent_config_edit_removes_only_the_newly_staged_key() {
     assert!(
         error
             .to_string()
-            .contains("changed while settings were open")
+            .contains("configuration changed since it was read")
     );
     assert_eq!(
         "external concurrent edit",
@@ -936,7 +1010,7 @@ async fn concurrent_config_edit_removes_only_the_newly_staged_key() {
 async fn simultaneous_settings_saves_allow_only_one_writer() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
-    fs::write(&config, generate_default()).unwrap();
+    fs::write(&config, STANDARD_CONFIG).unwrap();
     let first_settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
         .unwrap();
@@ -966,10 +1040,10 @@ async fn simultaneous_settings_saves_allow_only_one_writer() {
 
     assert!(first.is_ok() != second.is_ok());
     let saved = load_config(&config).unwrap();
-    assert!(
-        saved.model["balanced"].model == "writer-one-model"
-            || saved.model["balanced"].model == "writer-two-model"
-    );
+    assert!(matches!(
+        saved.default_model.unwrap().model.as_str(),
+        "writer-one-model" | "writer-two-model"
+    ));
 }
 
 #[tokio::test]
@@ -1025,8 +1099,8 @@ async fn stored_keys_are_private_when_data_directory_is_inside_workspace() {
         .set_text("fixture-only-not-a-real-key".into());
 
     assert!(settings.can_store_key());
-    let config = save(&settings, &state).unwrap();
-    let provider = &config.providers[&config.tiers[&config.default_tier].provider];
+    let (config, _) = save(&settings, &state).unwrap();
+    let provider = &config.providers[&config.default_model.connection];
     let ApiKey::File(path) = &provider.api_key else {
         panic!("expected a private credential reference");
     };

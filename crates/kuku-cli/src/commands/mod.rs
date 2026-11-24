@@ -18,6 +18,13 @@ use crate::cli_args::{Command, ConnectionArgs};
 /// The common exit contract for both command-line entrypoints.
 pub type CliResult = Result<(), Box<dyn std::error::Error>>;
 
+/// Return the documented process status for an unsuccessful CLI command.
+pub fn exit_status(error: &(dyn std::error::Error + 'static)) -> i32 {
+    error
+        .downcast_ref::<run::RunOutcome>()
+        .map_or(1, |outcome| outcome.exit_status())
+}
+
 /// Dispatch a script or local configuration command from either binary.
 pub async fn dispatch(command: Command, target: &ConnectionArgs) -> CliResult {
     match command {
@@ -31,11 +38,6 @@ pub async fn dispatch(command: Command, target: &ConnectionArgs) -> CliResult {
         Command::Config(args) => {
             require_local(target)?;
             config::run(args, target).await
-        }
-        Command::Init => {
-            require_local(target)?;
-            kuku_tui::setup(target.options()).await?;
-            Ok(())
         }
         Command::Auth(args) => {
             require_local(target)?;
@@ -55,10 +57,6 @@ pub async fn dispatch(command: Command, target: &ConnectionArgs) -> CliResult {
         }
         Command::Server(args) => service::standalone(args, target).await,
         Command::ManagedServer(args) => service::managed(args, target).await,
-        #[cfg(feature = "server")]
-        Command::Web(_) => {
-            Err("use the unified `kuku web` binary to open the browser interface".into())
-        }
     }
 }
 

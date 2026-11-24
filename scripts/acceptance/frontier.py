@@ -872,7 +872,7 @@ def run_live(args, case, source, image, directory, secrets):
             max_command_seconds = getattr(args, "max_command_seconds", None)
             if max_command_seconds is not None:
                 sdk_args.extend(["--max-command-seconds", str(max_command_seconds)])
-            caller = SimpleNamespace(sdk_binary=args.sdk_binary, config=config, connection=route.connection,
+            caller = SimpleNamespace(sdk_binary=args.sdk_binary, config=config, connection=route.connection, model=route.model,
                                      require_streaming=args.require_streaming, sdk_args=sdk_args, suite="frontier",
                                      max_command_seconds=max_command_seconds,
                                      max_request_bytes=requested_bytes,

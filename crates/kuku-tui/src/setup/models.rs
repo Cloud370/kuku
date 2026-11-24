@@ -9,10 +9,10 @@ use kuku::adapter::{
     setup_api_candidates, setup_endpoint_format, setup_model_list_targets,
 };
 use kuku::config::{
-    ApiKey, CustomServiceTier, ModelCapabilityDeclaration, ProviderConfig, ProviderFormat,
-    ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel, resolve_request_url,
+    ApiKey, CustomServiceTier, ModelCapabilityDeclaration, ModelRef, ProviderConfig,
+    ProviderFormat, ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel,
+    resolve_request_url,
 };
-use kuku::session::AgentConfig;
 
 use crate::editor::Editor;
 
@@ -186,11 +186,11 @@ impl SetupState {
         self.problem = None;
         self.review_models(settings);
     }
-    pub(super) fn route_name<'a>(&'a self, settings: &'a Settings) -> Option<&'a str> {
+    pub(super) fn configured_model<'a>(&'a self, settings: &'a Settings) -> Option<&'a ModelRef> {
         match &self.intent {
-            SetupIntent::Edit(name) => Some(name),
-            SetupIntent::Default if settings.existing => Some(&settings.default_tier),
-            SetupIntent::Default | SetupIntent::Add => None,
+            SetupIntent::Edit(model) => Some(model),
+            SetupIntent::Default => settings.default_model(),
+            SetupIntent::Add => None,
         }
     }
 
@@ -223,7 +223,7 @@ impl SetupState {
 
     pub(super) fn connection_options(&self, settings: &Settings) -> ProviderOptions {
         let mut options = match self.choice() {
-            ConnectionChoice::Existing(name) => settings.resolved.providers[name].options.clone(),
+            ConnectionChoice::Existing(name) => settings.providers()[name].options.clone(),
             ConnectionChoice::Preset(preset) => ProviderOptions {
                 profile: preset.profile(),
                 ..ProviderOptions::default()
@@ -507,40 +507,43 @@ impl SetupState {
             return Vec::new();
         };
         self.update_model_declarations(&mut connection);
-        let original = self.route_name(settings).and_then(|name| {
-            let route = settings.resolved.tier(name)?;
-            let effort = inspect_model(
-                &settings.resolved,
-                &AgentConfig {
-                    tier: Some(name.to_owned()),
-                    ..AgentConfig::default()
-                },
-            )
-            .ok()
-            .and_then(|selection| selection.settings.reasoning_effort);
-            Some((route, effort))
-        });
         let primary = self.primary_model();
         let subscription = connection.options.subscription.is_some();
         let models = self.model_ids().into_iter().flatten().map(|model| {
-            let existing = original.as_ref().filter(|(route, _)| {
-                route.model == model
-                    && matches!(self.choice(), ConnectionChoice::Existing(name) if &route.provider == name)
-            });
+            let existing = match self.choice() {
+                ConnectionChoice::Existing(name) => settings.resolved.as_ref().and_then(|config| {
+                    let id = ModelRef::new(name, &model);
+                    let fields = config.model(&id)?;
+                    let effort = inspect_model(config, &super::config::model_agent_config(&id))
+                        .ok()
+                        .and_then(|selection| selection.settings.reasoning_effort);
+                    Some((fields, effort))
+                }),
+                _ => None,
+            };
             let inferred = subscription
-                && existing.is_none_or(|(route, _)| !has_configured_reasoning(route));
-            let effort = if primary.as_ref() == Some(&model) && (self.reasoning_changed || inferred) {
+                && existing
+                    .as_ref()
+                    .is_none_or(|(fields, _)| !has_configured_reasoning(fields));
+            let effort = if primary.as_ref() == Some(&model) && (self.reasoning_changed || inferred)
+            {
                 self.displayed_reasoning(settings)
                     .filter(|effort| effort != ThinkLevel::ProviderDefault.as_str())
             } else {
-                existing.and_then(|(_, effort)| effort.clone())
+                existing.as_ref().and_then(|(_, effort)| effort.clone())
             };
             let service_tier = if primary.as_ref() == Some(&model) {
-                self.service_override(&model).map(|tier| tier.map(str::to_owned))
+                self.service_override(&model)
+                    .map(|tier| tier.map(str::to_owned))
             } else {
                 None
-            }.unwrap_or_else(|| existing.and_then(|(route, _)| route.service_tier.clone()));
-            TrialSelection { model, effort, service_tier }
+            }
+            .unwrap_or_else(|| existing.and_then(|(route, _)| route.service_tier.clone()));
+            TrialSelection {
+                model,
+                effort,
+                service_tier,
+            }
         });
         plan_model_trials(Arc::new(connection), models)
     }

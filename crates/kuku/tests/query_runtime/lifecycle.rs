@@ -27,6 +27,7 @@ async fn start_creates_session_events_under_kuku_home() {
             kuku_version,
             ts,
             created_at,
+            ..
         } => {
             assert_eq!(*schema_version, 2);
             assert_eq!(meta_session_id, &session_id);
@@ -330,6 +331,7 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
             session_id: session_id.to_string(),
             created_at: "2026-06-09T00:00:00Z".to_string(),
             kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+            default_model: None,
         })
         .unwrap();
     store

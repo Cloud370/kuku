@@ -64,13 +64,12 @@ pub(crate) fn resolve_agent_model(
     resolve_config(ResolveConfigInput {
         connection: config.connection.clone(),
         model: config.model.clone(),
-        tier: config.tier.clone(),
         reasoning_effort: config.reasoning_effort.clone(),
         output: config.output,
         service_tier: config.service_tier.clone(),
         max_output_tokens: config.max_output_tokens,
         max_output_tokens_per_request,
-        config: Some(host_config.clone()),
+        config: Some(host_config),
         ..Default::default()
     })
 }
@@ -138,7 +137,11 @@ impl Session {
         address: &str,
         config: AgentConfig,
     ) -> Result<AgentConfig> {
-        if config.instructions.is_some() && config.tier.is_some() && config.tools.is_some() {
+        if config.instructions.is_some()
+            && config.connection.is_some()
+            && config.model.is_some()
+            && config.tools.is_some()
+        {
             return Ok(config);
         }
         self.resolve_agent_preset(address, config)
@@ -225,7 +228,6 @@ impl Session {
             || [
                 &config.preset,
                 &config.connection,
-                &config.tier,
                 &config.model,
                 &config.reasoning_effort,
                 &config.service_tier,
@@ -265,7 +267,8 @@ fn resolve_defaults(
     mut config: AgentConfig,
     frozen_catalog: impl FnOnce() -> Result<Option<PromptCatalog>>,
 ) -> Result<AgentConfig> {
-    let Some(preset) = &config.preset else {
+    let Some(preset) = config.preset.clone() else {
+        bind_session_model(&mut config, options.config.default_model());
         return Ok(config);
     };
     let catalog = match frozen_catalog()? {
@@ -282,7 +285,7 @@ fn resolve_defaults(
             &options.config.discovery,
         )?
         .build();
-    let definition = registry.get(preset).ok_or_else(|| {
+    let definition = registry.get(&preset).ok_or_else(|| {
         let guidance = if registry.is_empty() {
             "No Agent presets are available. Omit preset to use defaults.".into()
         } else {
@@ -299,9 +302,11 @@ fn resolve_defaults(
         };
         Error::InvalidArgument(format!("preset '{preset}' was not found. {guidance}"))
     })?;
-    if config.tier.is_none() && options.model_config().tier(&definition.tier).is_some() {
-        config.tier = Some(definition.tier.clone());
+    if config.connection.is_none() && config.model.is_none() {
+        config.connection.clone_from(&definition.connection);
+        config.model.clone_from(&definition.model);
     }
+    bind_session_model(&mut config, options.config.default_model());
     config.tools.get_or_insert_with(|| {
         definition
             .tools
@@ -323,7 +328,11 @@ fn resolve_defaults(
             == crate::agent::definition::DefinitionSource::Builtin
         {
             let rendered = catalog.render(&format!("agents/{preset}.md"), minijinja::context! {
-                agent => minijinja::context! { preset => preset, tier => config.tier.as_deref() },
+                agent => minijinja::context! {
+                    preset => preset,
+                    connection => config.connection.as_deref(),
+                    model => config.model.as_deref(),
+                },
                 configured_tools => minijinja::value::Serde(config.tools.as_deref()),
                 workspace_root => config.workspace.as_ref().unwrap_or(&options.workspace).to_string_lossy().as_ref(),
             })?;
@@ -334,4 +343,11 @@ fn resolve_defaults(
         config.instructions = Some(instructions);
     }
     Ok(config)
+}
+
+fn bind_session_model(config: &mut AgentConfig, default: &crate::config::ModelRef) {
+    if config.connection.is_none() && config.model.is_none() {
+        config.connection = Some(default.connection.clone());
+        config.model = Some(default.model.clone());
+    }
 }

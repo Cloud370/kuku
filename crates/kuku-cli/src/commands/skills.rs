@@ -74,6 +74,19 @@ pub fn run(args: SkillsArgs, target: &ConnectionArgs) -> Result<(), Box<dyn std:
 mod tests {
     use super::build_registry_for;
 
+    fn fixture_config() -> String {
+        format!(
+            r#"default_model = {{ connection = "fixture", model = "fixture-model" }}
+[provider.fixture]
+format = "openai-responses"
+base_url = "https://fixture.example/v1"
+api_key = "fixture-key"
+
+{}"#,
+            kuku::config::generate_default(),
+        )
+    }
+
     fn temp_dir(prefix: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
             "{}-{}",
@@ -92,7 +105,7 @@ mod tests {
         let workspace = temp_dir("kuku-skills-workspace");
         let home = temp_dir("kuku-skills-home");
 
-        std::fs::write(home.join("config.toml"), kuku::config::generate_default()).unwrap();
+        std::fs::write(home.join("config.toml"), fixture_config()).unwrap();
 
         let pkg_dir = workspace
             .join(".kuku")
@@ -126,7 +139,7 @@ mod tests {
         let workspace = temp_dir("kuku-skills-disabled-workspace");
         let home = temp_dir("kuku-skills-disabled-home");
 
-        let config = kuku::config::generate_default()
+        let config = fixture_config()
             .replace("\r\n", "\n")
             .replace("[plugin]\nenabled = true", "[plugin]\nenabled = false")
             .replace("auto_discover = true", "auto_discover = false");
@@ -172,6 +185,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(home);
 
-        assert!(error.to_string().contains("invalid config"));
+        assert!(error.to_string().contains("invalid TOML"));
     }
 }

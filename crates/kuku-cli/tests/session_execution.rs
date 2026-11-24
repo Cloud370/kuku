@@ -6,6 +6,9 @@ use kuku::session::{AgentStatus, Session};
 use kuku_client::local::LocalService;
 use serde_json::{Value, json};
 
+#[path = "session_execution/cli_contract.rs"]
+mod cli_contract;
+
 fn tool_round(request: &httpmock::prelude::HttpMockRequest) -> usize {
     let body: Value =
         serde_json::from_slice(request.body.as_deref().unwrap_or_default()).unwrap_or(Value::Null);
@@ -72,25 +75,14 @@ fn config_file(home: &Path, primary: u16, secondary: u16) -> std::path::PathBuf 
         &path,
         format!(
             r#"
-default_model = "balanced"
-[model.balanced]
-provider = "primary"
-model = "fixture-model"
+default_model = {{ connection = "primary", model = "fixture-model" }}
+[model.primary.fixture-model]
 think = "off"
 max_output_tokens = 512
-[model.strong]
-provider = "primary"
-model = "fixture-model"
+[model.primary.reopened-exact-model]
 think = "off"
 max_output_tokens = 512
-[model.light]
-provider = "primary"
-model = "fixture-model"
-think = "off"
-max_output_tokens = 512
-[model.delegated]
-provider = "secondary"
-model = "fixture-model"
+[model.secondary.fixture-model]
 think = "off"
 max_output_tokens = 512
 [provider.primary]
@@ -112,13 +104,19 @@ reasoning_efforts = ["none"]
     path
 }
 
-fn invoke(workspace: &Path, home: &Path, config: &Path, args: &[&str]) -> Output {
-    let mut output = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+fn run_cli(workspace: &Path, home: &Path, config: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kuku-cli"));
+    command
         .current_dir(workspace)
         .env("KUKU_HOME", home)
         .arg("run")
         .arg("--config")
-        .arg(config)
+        .arg(config);
+    command
+}
+
+fn invoke(workspace: &Path, home: &Path, config: &Path, args: &[&str]) -> Output {
+    let mut output = run_cli(workspace, home, config)
         .args(args)
         .output()
         .unwrap();
@@ -165,8 +163,14 @@ fn fixture_sessions(workspace: &Path, home: &Path) -> kuku::Result<Value> {
 
 #[track_caller]
 fn result(output: &Output) -> Value {
-    assert!(
-        output.status.success(),
+    result_with_code(output, 0)
+}
+
+#[track_caller]
+fn result_with_code(output: &Output, code: i32) -> Value {
+    assert_eq!(
+        Some(code),
+        output.status.code(),
         "CLI failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -251,6 +255,8 @@ async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_m
         &[
             "--connection",
             "secondary",
+            "--model",
+            "fixture-model",
             "--stream-json",
             "fail at the model",
         ],
@@ -283,6 +289,7 @@ async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_m
     assert_eq!("started", failed_records[0]["event"]);
     let final_result = failed_records.last().unwrap();
     assert_eq!("session", final_result["type"]);
+    assert_eq!("failed", final_result["status"]);
     assert!(
         final_result["error"]
             .as_str()
@@ -383,8 +390,8 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
         &[
             "--session",
             session_id,
-            "--tier",
-            "balanced",
+            "--connection",
+            "primary",
             "--model",
             "reopened-exact-model",
             "--command-id",
@@ -395,7 +402,6 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
     ));
     assert_eq!("Explicit model.", overridden["response"]);
     assert_eq!("primary", overridden["config"]["connection"]);
-    assert_eq!("balanced", overridden["config"]["tier"]);
     assert_eq!("reopened-exact-model", overridden["config"]["model"]);
     let replayed = result(&invoke(
         workspace.path(),
@@ -404,8 +410,8 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
         &[
             "--session",
             session_id,
-            "--tier",
-            "balanced",
+            "--connection",
+            "primary",
             "--model",
             "reopened-exact-model",
             "--command-id",
@@ -414,7 +420,7 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
             "verify model selection",
         ],
     ));
-    assert_eq!("acknowledged", replayed["event"]);
+    assert_eq!("completed", replayed["event"]);
     assert_eq!(true, replayed["replayed"]);
     explicit_model.assert_hits(1);
     let show = Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
@@ -515,35 +521,38 @@ async fn cli_reopens_question_and_rejects_stale_answers_without_new_work() {
     let workspace = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let config = config_file(home.path(), mock.port(), mock.port());
-    let waiting = result(&invoke(
-        workspace.path(),
-        home.path(),
-        &config,
-        &["--command-id", "color-input", "--json", "ask for a color"],
-    ));
+    let waiting = result_with_code(
+        &invoke(
+            workspace.path(),
+            home.path(),
+            &config,
+            &["--command-id", "color-input", "--json", "ask for a color"],
+        ),
+        3,
+    );
     assert_eq!("waiting", waiting["event"]);
     let session_id = waiting["session_id"].as_str().unwrap();
     let request_id = waiting["question"]["id"].as_str().unwrap();
-    let duplicate = result(&invoke(
-        workspace.path(),
-        home.path(),
-        &config,
-        &[
-            "--session",
-            session_id,
-            "--command-id",
-            "color-input",
-            "--json",
-            "ask for a color",
-        ],
-    ));
-    assert_eq!("acknowledged", duplicate["event"]);
-    assert_eq!(true, duplicate["replayed"]);
-    assert_eq!(
-        waiting["question"]["id"],
-        duplicate["state"]["question"]["id"]
+    let duplicate = result_with_code(
+        &invoke(
+            workspace.path(),
+            home.path(),
+            &config,
+            &[
+                "--session",
+                session_id,
+                "--command-id",
+                "color-input",
+                "--json",
+                "ask for a color",
+            ],
+        ),
+        3,
     );
-    assert_eq!("waiting", duplicate["state"]["status"]);
+    assert_eq!("waiting", duplicate["status"]);
+    assert_eq!(true, duplicate["replayed"]);
+    assert_eq!(waiting["question"]["id"], duplicate["question"]["id"]);
+    assert_eq!("waiting", duplicate["agent_status"]);
 
     let reply = |command_id: &str| {
         Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
@@ -575,7 +584,7 @@ async fn cli_main_turn_completion_waits_for_running_independent_agent() {
         &primary,
         0,
         json!([
-            {"type":"tool_use","id":"create-worker","name":"create_agent","input":{"address":"worker","tier":"delegated","instructions":"Write the delegated proof file."}},
+            {"type":"tool_use","id":"create-worker","name":"create_agent","input":{"address":"worker","connection":"secondary","model":"fixture-model","instructions":"Write the delegated proof file."}},
             {"type":"tool_use","id":"send-worker","name":"send_message","input":{"to":"worker","message":"write delegated-proof.txt with delegated\n"}}
         ]),
         "tool_use",
@@ -693,7 +702,7 @@ async fn cli_disconnect_keeps_server_work_running_and_replay_does_not_restart_it
             "original interrupted work",
         ],
     ));
-    assert_eq!("acknowledged", acknowledged["event"]);
+    assert_eq!("completed", acknowledged["event"]);
     assert_eq!(true, acknowledged["replayed"]);
     let service = LocalService::resolve(home.path(), Some(&config_path)).unwrap();
     let client = kuku_client::Client::local(&service).await.unwrap();
@@ -733,7 +742,7 @@ async fn cli_disconnect_keeps_server_work_running_and_replay_does_not_restart_it
         ],
     ));
     assert_eq!("completed", continued["event"]);
-    assert_eq!("idle", continued["status"]);
+    assert_eq!("idle", continued["agent_status"]);
     model.assert_hits(2);
     stop_managed(home.path()).await;
 }

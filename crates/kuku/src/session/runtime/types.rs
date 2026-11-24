@@ -121,7 +121,7 @@ pub struct SessionOptions {
     pub data_dir: PathBuf,
     /// Stable session identity, generated when omitted.
     pub session_id: Option<String>,
-    /// Host configuration containing named connections and model tiers.
+    /// Host configuration containing named connections and registered models.
     pub config: Config,
     /// Optional host-published route updates for later preparation boundaries.
     pub model_config_updates: Option<Arc<arc_swap::ArcSwap<Config>>>,
@@ -149,9 +149,7 @@ impl SessionOptions {
             return std::borrow::Cow::Borrowed(&self.config);
         };
         let mut current = (**updates.load()).clone();
-        if current.tier(&self.config.default_tier).is_some() {
-            current.default_tier.clone_from(&self.config.default_tier);
-        }
+        current.default_model.clone_from(&self.config.default_model);
         std::borrow::Cow::Owned(current)
     }
 
@@ -376,15 +374,13 @@ fn default_named_values() -> usize {
 
 /// Agent-local behavior and explicit model selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AgentConfig {
     /// Optional contact card supplying behavior and initial defaults.
     pub preset: Option<String>,
-    /// Named connection, independent of its wire protocol.
+    /// Named connection. Provide together with [`Self::model`] to select an exact pair.
     pub connection: Option<String>,
-    /// Model tier used for reusable routing defaults.
-    pub tier: Option<String>,
-    /// Explicit model identifier overriding tier selection.
+    /// Exact model ID on the named connection. Omit both fields to use the preset or Session default.
     pub model: Option<String>,
     /// Explicit provider-supported reasoning setting.
     pub reasoning_effort: Option<String>,
@@ -853,6 +849,9 @@ pub struct AgentSnapshot {
 /// Consistent session state and journal cursor for a selected agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentView {
+    /// The default connection and model captured when this Session was created.
+    #[serde(default)]
+    pub session_default_model: Option<crate::config::ModelRef>,
     /// Selected agent's current state.
     pub snapshot: AgentSnapshot,
     /// Retained agent states in stable address order.

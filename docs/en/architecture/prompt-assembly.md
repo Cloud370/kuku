@@ -16,7 +16,7 @@ The execution context includes the workspace root and the platform of the proces
 
 ## Prepare the next Step
 
-Newly rendered frozen preludes put selected tool guidance (including delegation and memory-tool guidance) first, then Agent behavior, project policy (workspace instructions, workspace/platform and model tiers), and global/project Memory. Guidance remains conditional on the Agent's tools. Behavior precedes workspace policy because it can be shared across workspaces using the same Agent definition; different behavior still forms a distinct prefix. Recorded segments, snapshots and admitted messages retain their original order on resume, including policy-first segments. Successor segments that reuse a recorded prelude preserve its ordering and identity slot; only a freshly rendered prelude uses the new order.
+Newly rendered frozen preludes put selected tool guidance first, followed by Agent behavior, project policy, and global and project Memory. Project policy holds workspace instructions, workspace and platform facts, and the model catalog. Guidance follows the Agent's available tools. Behavior precedes workspace policy so workspaces with the same Agent definition can share that prefix. Resumed and successor segments that reuse a recorded prelude preserve its order.
 
 1. The active cursor reads new committed events for this Agent and retains the previously admitted prefix.
 2. Newly selected user input, assistant messages, tool-result views and runtime messages are recorded in `runtime.context_admitted`. A large tool result contributes its bounded model view while the full retained output remains available to the caller.
@@ -58,7 +58,7 @@ The same renderer can present a list of candidate models without constructing th
 
 ```jinja
 {% for model in models %}
-- {{ model.tier }} can receive {{ model.effective_input_modalities | join(", ") }}.
+- {{ model.connection }} / {{ model.model }} can receive {{ model.effective_input_modalities | join(", ") }}.
 {% endfor %}
 ```
 
@@ -70,13 +70,13 @@ The same renderer can present a list of candidate models without constructing th
 | `agent.image_input.supported` | Boolean for image input through the current Agent's actual adapter. It is false when support is unconfirmed or the adapter sends text only. |
 | `agent.image_input.status` | Machine-readable reason such as `supported`, `unconfirmed`, `unsupported_by_model`, or `unsupported_on_route`. |
 | `tools` | Final tool names after selection and policy filtering. |
-| `models` | Candidate routes with declared and effective modalities. |
+| `models` | Candidate connection and exact model pairs with declared and effective modalities. |
 | `step.permission_mode` | Effective permission mode for the current Step. |
 | `host` | Reserved for read-only values supplied by an SDK host. |
 
 Expose facts from their existing owners. For example, the model resolver merges manual declarations with discovered values, and the tool registry resolves the actual tool set. Add a named fact when a template needs a new runtime decision. Keep decisions involving side effects, such as authorization and dispatch, in the runtime.
 
-Choose template data by its placement. System and prelude assets receive segment facts, such as the Agent's model, tools and workspace. A Step-local asset can also use changing facts, such as a permission mode. Put frequently changing guidance in the Step suffix. Every asset uses the same grammar. A catalog preset receives the preset name, configured tier, configured tool names, and workspace when the runtime materializes its role instructions. Later Steps reuse those instructions. Direct Agent instructions are inserted as text.
+Choose template data by its placement. System and prelude assets receive segment facts, such as the Agent's model, tools and workspace. A Step-local asset can also use changing facts, such as a permission mode. Put frequently changing guidance in the Step suffix. The `blocks/models.md` asset renders the exact model pairs into `models_rendered` for the project policy's `<kuku_models>` block. A catalog preset receives its name, configured connection and model, tool names, and workspace when the runtime materializes its instructions. Later Steps reuse those instructions. Direct Agent instructions are inserted as text.
 
 ### Rendering and verification
 

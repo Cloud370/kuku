@@ -30,12 +30,17 @@ async fn anthropic_live_smoke_reads_a_real_file_via_tool_loop() {
             .kuku_home(home.path())
             .workspace(workspace.path())
             .provider(Provider::Anthropic)
-            .model(std::env::var("KUKU_ANTHROPIC_MODEL").expect("KUKU_ANTHROPIC_MODEL required"))
+            .model(
+                std::env::var("KUKU_TEST_ANTHROPIC_MODEL")
+                    .expect("KUKU_TEST_ANTHROPIC_MODEL required"),
+            )
             .base_url(
-                std::env::var("KUKU_ANTHROPIC_BASE_URL").expect("KUKU_ANTHROPIC_BASE_URL required"),
+                std::env::var("KUKU_TEST_ANTHROPIC_BASE_URL")
+                    .expect("KUKU_TEST_ANTHROPIC_BASE_URL required"),
             )
             .api_key(
-                std::env::var("KUKU_ANTHROPIC_API_KEY").expect("KUKU_ANTHROPIC_API_KEY required"),
+                std::env::var("KUKU_TEST_ANTHROPIC_API_KEY")
+                    .expect("KUKU_TEST_ANTHROPIC_API_KEY required"),
             )
             .max_output_tokens(256)
             .temperature(0.0)
@@ -53,11 +58,11 @@ async fn anthropic_live_smoke_reads_a_real_file_via_tool_loop() {
     .kuku_home(home.path())
         .workspace(workspace.path())
         .provider(Provider::Anthropic)
-    .model(std::env::var("KUKU_ANTHROPIC_MODEL").expect("KUKU_ANTHROPIC_MODEL required"))
+    .model(std::env::var("KUKU_TEST_ANTHROPIC_MODEL").expect("KUKU_TEST_ANTHROPIC_MODEL required"))
     .base_url(
-        std::env::var("KUKU_ANTHROPIC_BASE_URL").expect("KUKU_ANTHROPIC_BASE_URL required"),
+        std::env::var("KUKU_TEST_ANTHROPIC_BASE_URL").expect("KUKU_TEST_ANTHROPIC_BASE_URL required"),
     )
-    .api_key(std::env::var("KUKU_ANTHROPIC_API_KEY").expect("KUKU_ANTHROPIC_API_KEY required"))
+    .api_key(std::env::var("KUKU_TEST_ANTHROPIC_API_KEY").expect("KUKU_TEST_ANTHROPIC_API_KEY required"))
     .max_output_tokens(256)
     .temperature(0.0)
     .run()
@@ -87,9 +92,13 @@ async fn openai_compatible_live_smoke_returns_text() {
     require_live_tests();
     let output = query("Reply with exactly: ok")
         .provider(Provider::OpenAiCompatible)
-        .model(std::env::var("KUKU_OPENAI_MODEL").expect("KUKU_OPENAI_MODEL required"))
-        .base_url(std::env::var("KUKU_OPENAI_BASE_URL").expect("KUKU_OPENAI_BASE_URL required"))
-        .api_key(std::env::var("KUKU_OPENAI_API_KEY").expect("KUKU_OPENAI_API_KEY required"))
+        .model(std::env::var("KUKU_TEST_OPENAI_MODEL").expect("KUKU_TEST_OPENAI_MODEL required"))
+        .base_url(
+            std::env::var("KUKU_TEST_OPENAI_BASE_URL").expect("KUKU_TEST_OPENAI_BASE_URL required"),
+        )
+        .api_key(
+            std::env::var("KUKU_TEST_OPENAI_API_KEY").expect("KUKU_TEST_OPENAI_API_KEY required"),
+        )
         .max_output_tokens(128)
         .temperature(0.0)
         .run()
@@ -108,9 +117,13 @@ async fn openai_responses_live_smoke_returns_text_and_usage() {
     require_live_tests();
     let output = query("Reply with exactly: ok")
         .provider(Provider::OpenAiResponses)
-        .model(std::env::var("KUKU_OPENAI_MODEL").expect("KUKU_OPENAI_MODEL required"))
-        .base_url(std::env::var("KUKU_OPENAI_BASE_URL").expect("KUKU_OPENAI_BASE_URL required"))
-        .api_key(std::env::var("KUKU_OPENAI_API_KEY").expect("KUKU_OPENAI_API_KEY required"))
+        .model(std::env::var("KUKU_TEST_OPENAI_MODEL").expect("KUKU_TEST_OPENAI_MODEL required"))
+        .base_url(
+            std::env::var("KUKU_TEST_OPENAI_BASE_URL").expect("KUKU_TEST_OPENAI_BASE_URL required"),
+        )
+        .api_key(
+            std::env::var("KUKU_TEST_OPENAI_API_KEY").expect("KUKU_TEST_OPENAI_API_KEY required"),
+        )
         .max_output_tokens(128)
         .temperature(0.0)
         .run()

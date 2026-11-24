@@ -917,63 +917,6 @@ async fn a_connected_observer_does_not_retain_an_idle_writer() {
     drop(observer);
 }
 
-#[tokio::test]
-async fn multiple_projects_share_one_host_and_each_agent_resolves_its_named_connection() {
-    let first = mock_provider::start_mock_provider().await;
-    let second = mock_provider::start_mock_provider().await;
-    mock_provider::mock_text_response(&first, "first result");
-    let selected = second.mock(|when, then| {
-        when.method(Method::POST)
-            .path("/v1/messages")
-            .body_contains("second material")
-            .matches(|request| {
-                !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
-                    .contains("first material")
-            });
-        then.status(200).body(text_response("second result"));
-    });
-    let mut config = mock_provider::make_test_config(first.port());
-    let mut connection = config.providers["anthropic"].clone();
-    connection.base_url = second.base_url();
-    config.providers.insert("secondary".into(), connection);
-    let server = TestServer::start(config).await;
-    let workspace = tempfile::tempdir().unwrap();
-    let id = "shared-service";
-    server.submit(id, json!({"type":"send","command_id":"same","text":"first material","create":{"connection":"anthropic","model":"fixture-model"}})).await;
-    server.submit(id, json!({"type":"send","command_id":"same","text":"second material","workspace":workspace.path(),
-        "create":{"connection":"secondary","model":"fixture-model"}})).await;
-
-    let snapshot = server
-        .wait_for_snapshot(id, "main", |snapshot| {
-            snapshot["agent"]["last_output"] == "first result"
-        })
-        .await;
-    assert_eq!("anthropic", snapshot["selection"]["connection"]);
-    let second_workspace = workspace.path().canonicalize().unwrap();
-    let seen = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let response: Value = server
-                .request(wreq::Method::GET, &format!("/sessions/{id}/snapshot"))
-                .query(&[("workspace", second_workspace.to_str().unwrap())])
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-            if response["agent"]["last_output"] == "second result" {
-                break response;
-            }
-            tokio::time::sleep(Duration::from_millis(15)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!("secondary", seen["selection"]["connection"]);
-    assert_eq!(json!(second_workspace), seen["workspace"]);
-    selected.assert_hits(1);
-}
-
 fn request_contains_tool_result(request: &httpmock::prelude::HttpMockRequest) -> bool {
     String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).contains("\"tool_result\"")
 }

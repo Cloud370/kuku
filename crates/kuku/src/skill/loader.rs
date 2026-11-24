@@ -28,7 +28,11 @@ pub(crate) fn load_from_dir(dir: &Path, source: SkillSource) -> Result<Vec<Skill
     Ok(defs)
 }
 
-fn parse_skill(content: &str, skill_dir: &Path, source: &SkillSource) -> Result<SkillDefinition> {
+pub(super) fn parse_skill(
+    content: &str,
+    skill_dir: &Path,
+    source: &SkillSource,
+) -> Result<SkillDefinition> {
     let (frontmatter, body) = split_yaml_frontmatter(content);
     let mapping = frontmatter.ok_or_else(|| {
         Error::InvalidArgument(format!(

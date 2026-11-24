@@ -24,12 +24,13 @@ base64 = "0.22"
 kuku = { workspace = true }
 kuku-client = { path = "../kuku-client" }
 axum = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 arc-swap = { workspace = true }
 clap = { workspace = true }
 tokio-stream = { workspace = true }

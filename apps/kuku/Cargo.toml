@@ -21,7 +21,7 @@ embedded-web-assets = ["dep:rust-embed"]
 workspace = true
 
 [dependencies]
-kuku-cli = { path = "../../crates/kuku-cli", features = ["server"] }
+kuku-cli = { path = "../../crates/kuku-cli" }
 kuku-server = { path = "../../crates/kuku-server" }
 kuku-tui = { path = "../../crates/kuku-tui" }
 clap = { workspace = true }

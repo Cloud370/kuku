@@ -39,8 +39,8 @@ impl Settings {
             return Err("--max-context-tokens must be positive".into());
         }
         let max_output_tokens = number(args, "max-output-tokens", 32_768_u32)?;
-        for tier in config.tiers.values_mut() {
-            tier.context_window = tier.context_window.min(max_context_tokens);
+        for model in config.models.values_mut() {
+            model.context_window = model.context_window.min(max_context_tokens);
         }
         config.handoff.enabled = false;
         config.plugin.enabled = false;
@@ -152,7 +152,7 @@ async fn main() {
 pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
         println!(
-            "session_orchestrate --workspace DIR --prompt-file FILE --review-prompt-file FILE --continue-prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --command-id KEY --writer-connection NAME --writer-tier TIER --writer-model MODEL --writer-reasoning-effort VALUE --writer-service-tier VALUE --reviewer-connection NAME --reviewer-tier TIER --reviewer-model MODEL --reviewer-reasoning-effort VALUE --reviewer-service-tier VALUE --timer-ms 250 --max-requests 16 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300]"
+            "session_orchestrate --workspace DIR --prompt-file FILE --review-prompt-file FILE --continue-prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --command-id KEY --writer-connection NAME --writer-model MODEL --writer-reasoning-effort VALUE --writer-service-tier VALUE --reviewer-connection NAME --reviewer-model MODEL --reviewer-reasoning-effort VALUE --reviewer-service-tier VALUE --timer-ms 250 --max-requests 16 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300]"
         );
         return Ok(true);
     }
@@ -476,7 +476,6 @@ fn selection(
     let option = |suffix: &str| args.get(&format!("{address}-{suffix}")).cloned();
     AgentConfig {
         connection: option("connection"),
-        tier: option("tier"),
         model: option("model"),
         reasoning_effort: option("reasoning-effort"),
         service_tier: option("service-tier"),
@@ -505,7 +504,7 @@ pub(crate) fn arguments(
                 .is_some_and(|suffix| {
                     matches!(
                         suffix,
-                        "connection" | "tier" | "model" | "reasoning-effort" | "service-tier"
+                        "connection" | "model" | "reasoning-effort" | "service-tier"
                     )
                 })
         });

@@ -14,6 +14,6 @@ async fn main() {
 
     if let Err(err) = result {
         eprintln!("error: {err}");
-        std::process::exit(1);
+        std::process::exit(kuku_cli::commands::exit_status(err.as_ref()));
     }
 }

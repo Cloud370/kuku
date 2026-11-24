@@ -8,15 +8,15 @@
 | `KUKU_TUI_STATUSLINE` | 本次 TUI 启动的状态栏字段列表，逗号分隔（`none` 隐藏）。[终端偏好](config.md#终端偏好) |
 | `KUKU_TOKEN` | 连接显式 `--remote` 服务时使用的 Bearer Token |
 | `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 启动独立服务时设置的访问令牌 |
-| `ANTHROPIC_API_KEY` | `provider.anthropic` 默认使用的密钥变量 |
-| `OPENAI_API_KEY` | `provider.openai` 默认使用的密钥变量 |
-| `DEEPSEEK_API_KEY` | `provider.deepseek` 默认使用的密钥变量 |
-| `OPENROUTER_API_KEY` | `provider.openrouter` 默认使用的密钥变量 |
 | `KUKU_PROVIDER_TRACE` | `1` 开启完整请求 trace；`0` 关闭 |
 
-`config.toml` 中以 `$` 开头的字符串字段通常会在加载时展开环境变量。`api_key` 和[自定义请求头](config.md#请求头与请求体)保留 `$NAME`，在准备或发送请求时解析。自定义请求体中的 `$` 按字面值保留。API 密钥引用可以使用 `$NAME` 或 `file:<绝对路径>`。
+## 配置中的引用
 
-模型凭据和 `KUKU_PROVIDER_TRACE` 由**服务端**进程读取（环境变量密钥不能为空）；新客户端连入已运行的服务时沿用服务端自身的环境。[配置 kuku](../start/configuration.md)
+变量名可以自己选。`config.toml` 中完整的 `$NAME` 值引用对应的环境变量。例如，写入 `base_url = "$MY_GATEWAY_URL"`，并在 `default_model` 中写入 `model = "$MY_MODEL_ID"`。要为同一个 ID 设置选项，可用带引号的模型键 `[model.work."$MY_MODEL_ID"]`。
+
+kuku 在加载配置时展开 URL 和模型 ID 引用。API 密钥与自定义请求头保留 `$NAME`，到准备或发出请求时再解析。自定义请求体中的美元符号按字面值保留。API 密钥也可使用 `file:<绝对路径>`。[配置参考](config.md)
+
+请在加载配置的进程环境中设置引用的变量。CLI 或 TUI 发出的模型请求使用**服务端**环境。本地 `kuku config` 命令读取该命令进程的环境。若设置变量时服务已经启动，请等它空闲后重启。[配置指南](../start/configuration.md)
 
 ## Provider Trace 日志
 

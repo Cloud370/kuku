@@ -98,7 +98,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
         blocks: {
             let mut m = BTreeMap::new();
             m.insert("project-policy".into(), p!("blocks", "project-policy"));
-            m.insert("model-tiers".into(), p!("blocks", "model-tiers"));
+            m.insert("models".into(), p!("blocks", "models"));
             m.insert("delegation".into(), p!("blocks", "delegation"));
             m.insert("tool-guidance".into(), p!("blocks", "tool-guidance"));
             m.insert("memory".into(), p!("blocks", "memory"));

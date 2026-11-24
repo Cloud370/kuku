@@ -1,16 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchModels } from "@/api/sessions";
-import type { Snapshot } from "@/api/sessions";
+import type { ModelRef, Snapshot } from "@/api/sessions";
+
+function routeKey({ connection, model }: ModelRef) {
+  return JSON.stringify([connection, model]);
+}
 
 export function ModelControl({
   snapshot,
-  tier,
+  draftModel,
   onChange,
   disabled,
 }: {
   snapshot: Snapshot | null;
-  tier: string;
-  onChange: (tier: string) => void;
+  draftModel?: ModelRef;
+  onChange: (model?: ModelRef) => void;
   disabled?: boolean;
 }) {
   const models = useQuery({
@@ -18,11 +22,16 @@ export function ModelControl({
     queryFn: ({ signal }) => fetchModels(signal),
     staleTime: 30_000,
   });
-  const options = models.data?.tiers ?? [];
-  const defaultTier = models.data?.default_tier;
-  const value = snapshot ? (snapshot.agent.config.tier ?? "") : tier;
+  const options = models.data?.models ?? [];
+  const defaultModel = models.data?.default_model;
+  const config = snapshot?.agent.config;
+  const selected = config?.connection && config.model
+    ? { connection: config.connection, model: config.model }
+    : draftModel;
+  const value = selected ? routeKey(selected) : "";
   const selection = snapshot?.selection;
-  const defaultRoute = options.find(({ name }) => name === (value || defaultTier));
+  const fallback = selected ?? defaultModel;
+  const defaultRoute = fallback && options.find((option) => routeKey(option) === routeKey(fallback));
   const active = selection ?? defaultRoute;
   const capabilities = active?.capabilities;
   const source = (value: string) => value.replaceAll("_", " ");
@@ -37,26 +46,31 @@ export function ModelControl({
         </span>
       )}
       <select
-        aria-label="Model tier"
+        aria-label="Model"
         value={value}
         disabled={disabled || models.isPending || models.isError}
         onChange={(event) => {
-          onChange(event.target.value);
+          const option = options.find((option) => routeKey(option) === event.target.value);
+          onChange(option ? { connection: option.connection, model: option.model } : undefined);
         }}
         className="rounded border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-1.5 py-1 text-xs"
       >
-        <option value="">{defaultTier ? `Default (${defaultTier})` : "Server default"}</option>
-        {value && !options.some(({ name }) => name === value) && (
-          <option value={value}>{value}</option>
+        {(!snapshot || !selected) && (
+          <option value="">
+            {defaultModel ? `Default (${defaultModel.connection} · ${defaultModel.model})` : "Server default"}
+          </option>
+        )}
+        {selected && !options.some((option) => routeKey(option) === value) && (
+          <option value={value} disabled>{selected.connection} · {selected.model}</option>
         )}
         {options.map((option) => (
           <option
-            key={option.name}
-            value={option.name}
+            key={routeKey(option)}
+            value={routeKey(option)}
             disabled={!!option.error}
             title={option.error?.message}
           >
-            {option.name} · {option.model}
+            {option.connection} · {option.model}
           </option>
         ))}
       </select>

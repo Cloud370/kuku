@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use kuku::ProviderCapabilities;
-use kuku::config::{ProviderConfig, ThinkLevel, TierConfig};
+use kuku::config::{ModelConfig, ModelRef, ProviderConfig, ThinkLevel};
 
 use crate::setup::service_tier::valid_tier;
 
@@ -47,21 +47,23 @@ pub(in crate::setup) fn automatic_reasoning(capabilities: &ProviderCapabilities)
         .filter(|effort| efforts.contains(effort))
 }
 
-pub(in crate::setup) fn has_configured_reasoning(route: &TierConfig) -> bool {
+pub(in crate::setup) fn has_configured_reasoning(route: &ModelConfig) -> bool {
     route.reasoning_effort.is_some() || route.think != ThinkLevel::ProviderDefault
 }
 
 impl SetupState {
     pub(in crate::setup) fn displayed_reasoning(&self, settings: &Settings) -> Option<String> {
-        let configured = self.route_name(settings).and_then(|name| settings.resolved.tier(name))
-            .zip(self.primary_model())
-            .is_some_and(|(route, model)| {
-                route.model == model
-                    && matches!(self.choice(), ConnectionChoice::Existing(name) if route.provider == *name)
-                    && has_configured_reasoning(route)
-            });
-        if self.reasoning_changed || configured {
+        if self.reasoning_changed {
             self.reasoning.clone()
+        } else if let ConnectionChoice::Existing(name) = self.choice()
+            && let Some(model) = self.primary_model()
+            && let Some(settings) = settings.model(&ModelRef::new(name, model))
+            && has_configured_reasoning(settings)
+        {
+            settings
+                .reasoning_effort
+                .clone()
+                .or_else(|| Some(settings.think.as_str().into()))
         } else {
             automatic_reasoning(&self.capabilities(settings)?).map(str::to_owned)
         }
@@ -92,13 +94,13 @@ impl SetupState {
         if let Some(tier) = self.service_override(&model) {
             return tier;
         }
-        let route = self
-            .route_name(settings)
-            .and_then(|name| settings.resolved.tier(name))?;
-        (route.model == model
-            && matches!(self.choice(), ConnectionChoice::Existing(name) if route.provider == *name))
-        .then_some(route.service_tier.as_deref())
-        .flatten()
+        let ConnectionChoice::Existing(name) = self.choice() else {
+            return None;
+        };
+        settings
+            .model(&ModelRef::new(name, model))?
+            .service_tier
+            .as_deref()
     }
 
     pub(in crate::setup) fn service_choices(&self, settings: &Settings) -> Vec<Option<String>> {

@@ -124,12 +124,6 @@ fn context_conditions(when: When, query_text: &str) -> When {
 /// Shorthand for the common Anthropic query builder.
 fn anthro(query_text: &str, server: &MockServer) -> query::Query {
     let mut config = test_config();
-    let light_tier = config
-        .tiers
-        .get("balanced")
-        .expect("test config has balanced tier")
-        .clone();
-    config.tiers.insert("light".to_string(), light_tier);
     let provider = config
         .providers
         .get_mut("anthropic")
@@ -138,10 +132,8 @@ fn anthro(query_text: &str, server: &MockServer) -> query::Query {
     provider.api_key = ApiKey::Plaintext("test-key".to_string());
 
     query(query_text)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
-        .base_url(server.base_url())
-        .api_key("test-key")
         .config(config)
 }
 
@@ -161,10 +153,8 @@ fn anthro_profile(
     provider.api_key = ApiKey::Plaintext("test-key".to_string());
 
     query(query_text)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
-        .base_url(server.url(base_path))
-        .api_key("test-key")
         .config(config)
 }
 

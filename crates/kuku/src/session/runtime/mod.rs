@@ -190,7 +190,11 @@ impl Session {
             &id,
             creation.map(|(command, _, _)| command),
             options.prompts_dir.as_deref(),
+            &options.config.default_model,
         )?;
+        if let Some(default_model) = &state.default_model {
+            options.config.default_model.clone_from(default_model);
+        }
         if let Some(claim) = &state.creation {
             options.prompts_dir = claim.prompts_dir.clone();
         }
@@ -260,6 +264,11 @@ impl Session {
     /// Return the stable identity used when reopening this session.
     pub fn id(&self) -> &str {
         &self.inner.id
+    }
+
+    /// Return the default connection and model captured when this Session was created.
+    pub fn default_model(&self) -> &crate::config::ModelRef {
+        self.inner.options.config.default_model()
     }
 
     /// Return the authoritative append-only session journal.
@@ -426,17 +435,7 @@ impl Session {
         self.validate_input_values(&state, &input, values)?;
         let config = config
             .map(|config| {
-                let mut config = self.resolve_defaults(&target, config)?;
-                if config.tier.is_none()
-                    && config.connection.is_none()
-                    && config.model.is_none()
-                    && state
-                        .creation
-                        .as_ref()
-                        .is_some_and(|claim| claim.command.command_id == input.command_id)
-                {
-                    config.tier = Some(self.inner.options.config.default_tier.clone());
-                }
+                let config = self.resolve_defaults(&target, config)?;
                 self.validate_config(&config)?;
                 self.validate_queued_image_route(state.agent(&target)?, &config)?;
                 Ok::<_, Error>(config)
@@ -1020,6 +1019,9 @@ fn reduce_event(
     job_replay: &mut jobs::JobReplay,
     event: StoredEvent,
 ) -> Result<()> {
+    if let crate::event::EventPayload::SessionCreated { default_model, .. } = &event.payload {
+        state.default_model.clone_from(default_model);
+    }
     let record = Record::from_event(&event)?;
     state.turns.observe(&event, record.as_ref());
     if let Some(record) = record {

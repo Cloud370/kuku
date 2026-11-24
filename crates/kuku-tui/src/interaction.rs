@@ -434,8 +434,13 @@ impl App {
 
     pub(crate) fn search(&mut self, first: bool) {
         let available = self.available();
-        let current = matches!(&self.modal, Some(Modal::Picker(picker)) if first && picker.kind == PickerKind::Models)
-            .then(|| (self.pane().config().tier.clone(), self.resolved_model_route().ok()));
+        let current = if first
+            && matches!(&self.modal, Some(Modal::Picker(picker)) if picker.kind == PickerKind::Models)
+        {
+            self.resolved_model_route().ok()
+        } else {
+            None
+        };
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return;
         };
@@ -446,10 +451,7 @@ impl App {
             }
             PickerKind::Paths(_) if available => Search::Paths(query),
             PickerKind::Sessions if available => Search::Sessions(query),
-            PickerKind::Models if available && current.is_some() => {
-                let (tier, route) = current.expect("initial model search");
-                Search::Models { tier, route }
-            }
+            PickerKind::Models if available && first => Search::Models(current),
             PickerKind::Server if first => Search::Server,
             _ => {
                 picker.clamp_selection();
@@ -558,10 +560,10 @@ impl App {
                 "Choose the address used to send to this agent",
             ),
             ChoiceKind::AgentSetup(_) => unreachable!("agent setup retains its picker state"),
-            ChoiceKind::ModelRoute { tier, .. } => self.use_model_route(&tier),
+            ChoiceKind::ModelRoute { model, .. } => self.use_model_route(&model),
             ChoiceKind::EditModel(intent) => self.open_model_editor(intent),
             ChoiceKind::Close => {}
-            ChoiceKind::SetCurrentModelAsDefault => self.prepare_model_default(),
+            ChoiceKind::SetCurrentModelAsDefault => self.prepare_model_default(None),
             ChoiceKind::ConfirmModelDefault => self.confirm_model_default(ticket),
             ChoiceKind::CancelModelDefault => self.cancel_model_default(ticket),
             ChoiceKind::Speed(_) => unreachable!("Service tier choices use the main Agent"),
@@ -652,7 +654,6 @@ impl App {
     pub(crate) fn route_config(&self) -> AgentConfig {
         let mut config = self.pane().config().clone();
         config.connection = None;
-        config.tier = None;
         config.model = None;
         config.reasoning_effort = None;
         config.service_tier = None;

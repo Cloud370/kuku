@@ -2,18 +2,18 @@
 
 ## 从源码构建
 
-装好 Rust 和 Cargo 后，直接安装提供 `kuku` 命令的 workspace 包：
+装好 Rust 和 Cargo 后，从源码检出的根目录运行以下命令，安装与本文档对应的二进制。
 
 ```bash
-cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
+cargo install --locked --path apps/kuku
 kuku --help
 ```
 
-源码构建和发行包默认提供 TUI、CLI 命令和 HTTP 服务。要使用 `kuku web`，请[从源码构建并内嵌 Web 资源](../reference/cli.md#kuku-server-与-kuku-web)。
+这个 workspace 包提供 TUI、脚本命令和 HTTP 服务。要直接从开发分支构建，可运行 `cargo install --locked --git https://github.com/Cloud370/kuku kuku-app`。
 
 ## 安装已发布版本
 
-复制对应平台的命令，安装 [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4)。
+复制对应平台的命令，安装已发布的 [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4)。安装后参阅对应版本的文档。[该版本的快速开始](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.4/docs/zh/start/quickstart.md)
 
 **Linux（x86-64 或 ARM64）和 macOS（Apple Silicon）**
 
@@ -54,4 +54,4 @@ $kukuInstaller = Invoke-RestMethod "https://raw.githubusercontent.com/Cloud370/k
 
 ## 下一步
 
-确保用户主目录可写（或把 `KUKU_HOME` 指向一个可写目录），然后继续看[快速开始](quickstart.md)。
+使用从当前源码构建的二进制，按[快速开始](quickstart.md)完成配置。确保用户主目录可写，或把 `KUKU_HOME` 指向可写目录。

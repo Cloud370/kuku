@@ -2,13 +2,13 @@
 
 ## Config file location
 
-By default, kuku reads `~/.kuku/config.toml`, or `$KUKU_HOME/config.toml` when `KUKU_HOME` is set.
+Run `kuku config show` to see the selected file with credentials redacted. Run `kuku config validate` for its absolute path, diagnostics, and whether the local service has loaded that version. The [CLI reference](../reference/cli.md#kuku-config) explains how kuku selects the file and how to target another with `--config PATH`.
 
-Pass `--config PATH` to use another file, and run `kuku server status` to check which file the local service is actually using. To switch a running managed service to a different config file, wait until it is idle and run `kuku server restart --config PATH`. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
+Check the running service's config path with `kuku server status`. To switch a managed service to a different file, wait until it is idle and run `kuku server restart --config PATH`. [File layout](../reference/file-layout.md) · [Run the server](../guides/run-the-server.md)
 
 ## Interactive setup
 
-When you run `kuku` with no valid config or missing credentials for the default model, the welcome screen points you to `/model` to configure your first route. You can open the same flow directly with `kuku init`. Existing configs are preserved, and malformed configs are reported rather than overwritten.
+Run `kuku` from your project directory to set up your first connection and model. Press `F1` during setup to open the configuration guide for your build. If kuku reports a malformed config, correct the indicated file or use another file with `--config PATH`.
 
 From setup, choose either:
 
@@ -17,11 +17,15 @@ From setup, choose either:
 
 ChatGPT setup reads your account catalog. You can opt in to generation tests from **Settings**.
 
-Use the model picker to search and select one or more models (`Space` to multi-select, `Enter` to confirm), then review test outcomes in **Model tests** or adjust thinking, output limits, capabilities, and pricing under **Settings**. Run **Settings → Test tools** to verify synthetic tool calls on the route — a working text reply alone does not confirm tool support. If a Chat route requires Responses for tools, switch under **Settings → API type → Responses** and re-test before saving.
+Use the model picker to search and save one exact model in the initial setup. Review test outcomes in **Model tests** or adjust thinking, output limits, capabilities, and pricing under **Settings**. Run **Settings → Test tools** to verify synthetic tool calls on the route. If a Chat route requires Responses for tools, switch under **Settings → API type → Responses** and re-test before saving.
 
 Choose a custom connection, saved connection, or preset. For API-key connections, enter the provider URL, network path, and key. A custom connection takes its name from the URL host and any non-default port. Connections with the same host and port get distinct names. Setup uses the protocol from a saved connection, preset, or standard request URL. After model selection, setup tests the eligible protocols for a new custom base URL in parallel. It prefers Responses, then Chat Completions, then Messages when the preceding protocols are unsupported. An ambiguous result opens the API type picker. The network choices are the proxy environment, a direct connection, or an HTTP, SOCKS5, or SOCKS5H proxy. When a bare address has more than one standard candidate path, the editor checks them concurrently and opens the first usable model list automatically. The screen lists each request and its outcome. An unreadable catalog still allows a known model ID to be entered directly.
 
-Inside an active Session, run `/model` (or press `Ctrl+L`) to add or edit connections, switch the current Agent's route (**Use in this Session**), or save a new default (**Set as default**). [Terminal controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
+To add a model later, open `/model` and choose **Add model or connection**. Select an existing model and press `e` to edit it.
+
+## Select a model
+
+In `/model`, highlight a connection and model and press Enter to switch the current Agent. To change the default for new Sessions, highlight a model and press `d`, then confirm the config change. These actions let you change the current Agent and the default independently. [Terminal controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
 
 When saving a model with no configured thinking level, setup selects `medium` when supported. Otherwise it uses the lower middle of known ordered levels, the only available level, or a valid provider-declared default when the levels have no known order. A route with insufficient capability information follows the provider default. Manual settings take precedence.
 
@@ -29,18 +33,13 @@ To edit service tiers you added, select the route, press `e`, and open **Setting
 
 ## Providers and credentials
 
-The default config defines two providers:
+Choose whether to enter a key or reference an environment variable in setup. Enter the variable name you set for that service, for example `MY_GATEWAY_KEY`. The config records it as `api_key = "$MY_GATEWAY_KEY"`. When you paste a key, kuku writes it to an owner-only plaintext file under the data directory's `credentials/` and records its `file:` reference. [Environment variables](../reference/environment-variables.md) · [File layout](../reference/file-layout.md)
 
-- `provider.anthropic` with `api_key = "$ANTHROPIC_API_KEY"`
-- `provider.openai` with `api_key = "$OPENAI_API_KEY"`
-
-Supply keys either as an environment reference (`api_key = "$VARIABLE_NAME"`) or a key file (`api_key = "file:<absolute-path>"`). When you paste a key into interactive setup, kuku writes it to an owner-only plaintext file under `$KUKU_HOME/credentials/` and puts only the `file:` reference in `config.toml`. These files are not encrypted. [Config reference](../reference/config.md) · [File layout](../reference/file-layout.md)
-
-Environment variables are resolved by the server process, not the terminal client. If you export a new key in your shell after the local service is already running, run `kuku server restart` once it is idle. For remote servers, set the key on the server machine. Other string fields in `config.toml` also expand `$ENV_VAR_NAME` on load (for example, `base_url = "$KUKU_ANTHROPIC_BASE_URL"`).
+To write the file by hand, start with the [one-model TOML](../reference/config.md#minimal-config). Set referenced variables on the machine that runs the service. After you change the environment of an already-running local service, start a replacement with `kuku server restart` once the service is idle.
 
 ### Sign in to a subscription on a headless host
 
-In `kuku init` or **Add model** in `/model`, choose **Preset · ChatGPT subscription**. Choose the network mode and optionally name the account. Choose **Open authorization link** in a terminal with hyperlinks, or use **Ctrl+Y** to copy the complete address between the URL separators. After authorizing, paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The callback prompt shows a cursor while keeping the pasted URL hidden. If OpenAI rejects the code, use the fresh authorization link shown by kuku. After sign-in, the account is saved and setup starts finding models for that account.
+In first-run setup or `/model`, choose **Preset · ChatGPT subscription** when adding a connection. Choose the network mode and optionally name the account. Choose **Open authorization link** in a terminal with hyperlinks, or use **Ctrl+Y** to copy the complete address between the URL separators. After authorizing, paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The callback prompt shows a cursor while keeping the pasted URL hidden. If OpenAI rejects the code, use the fresh authorization link shown by kuku. After sign-in, the account is saved and setup starts finding models for that account.
 
 From a shell you can also run `kuku auth login chatgpt [name]` on the host running kuku. Sign-in without a name saves a short connection name such as `chatgpt` or `chatgpt-2`. To reauthorize an account, use its saved connection name or account alias.
 
@@ -58,17 +57,16 @@ If a provider request fails authentication in the TUI, press `F2` → **Repair c
 
 For remote or token-authenticated servers, fix the credentials on the server side and restart it there — the TUI never writes local key files for remote connections.
 
-## Model tiers
-
-Named tiers bundle a connection, model, thinking level, and token limits (for example `strong`, `balanced`, `light`). `default_model = "balanced"` sets the default. Override it per run with `--tier <name>`, or pick an exact route with `--connection <name> --model <model-id>`.
-
 ## Common config commands
 
 ```bash
 kuku config show
 kuku config validate
-kuku config set model.balanced.think high
+kuku config models
+kuku config models --discover --connection work
 ```
+
+Replace `work` with a connection saved in your config. To create or edit a config from a script, see [Run a task](../guides/run-a-task.md).
 
 ## Other sections
 

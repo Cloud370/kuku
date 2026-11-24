@@ -1,5 +1,7 @@
 # Web client
 
+This page describes the target browser design. The source client and embedded assets remain available for optional development and fixture checks. [Browser source](../../../apps/web) · [Shipped entry points](host-apps.md)
+
 The browser client is a workbench where each Session has its own page and address. It keeps the conversational grammar people already know, and grows a structured work log around it as work accumulates. Several Agents share one transcript: they speak, hand off work and ask questions in the same ordered log, and the reader changes perspective rather than location. This page owns the target design. [Interactive clients](interactive-clients.md) owns the shared client contract and delivery order across terminal and browser.
 
 ## Position
@@ -257,4 +259,4 @@ A Session-level read-only review of file mutations with commit state, aggregated
 - Protocol: the shared fixture and recorded real streams replay into the reducer, asserting room order, bylines, addressees, lens membership and derived view state rather than pixels.
 - Presentation: Storybook stories are built from recorded streams, so the component explorer and the regression source are the same artifacts; visual snapshots cover the room and a lens in both themes and all three widths.
 - Behaviour: the shared command, observation and recovery scenarios run against a real server with a controllable provider, as described in [Interactive clients](interactive-clients.md#testing-during-development). A two-Agent handoff is answered from the room, inspected in the asker's lens, reloaded, and continued in the terminal.
-- Delivery: the installed binary is checked through the existing acceptance entrypoint, including the browser handoff and a session started in the terminal and continued in the browser.
+- Verify the optional embedded build through the browser acceptance case, including the handoff and a Session started in the terminal and continued in the browser. [Installed checks](../contributing/testing.md#installed-client-acceptance)

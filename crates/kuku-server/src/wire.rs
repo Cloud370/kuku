@@ -149,6 +149,14 @@ impl Command {
         else {
             return Ok(None);
         };
+        if config_patch
+            .as_ref()
+            .is_some_and(|patch| patch.connection.is_some() != patch.model.is_some())
+        {
+            return Err(kuku::Error::InvalidArgument(
+                "select a model with both connection and model".into(),
+            ));
+        }
         let mut input = Input::new(command_id, address, text);
         input.source = http_input_source();
         input.bootstrap_skill.clone_from(bootstrap_skill);

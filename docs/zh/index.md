@@ -13,13 +13,11 @@ kuku 是高性能、低内存占用的文件原生 Agent 运行时与 Rust SDK�
 - [架构设计](architecture/index.md) — crate 边界、宿主应用、Prompt 装配与内部设计。
 - [参与开发](contributing/index.md) — 开发流程、测试规范、代码风格与发布流程。
 
-## 推荐阅读路径
+## 完成第一个任务
 
-1. [安装 kuku](start/install.md)
-2. [运行第一个任务](start/quickstart.md)
-3. [配置模型连接](start/configuration.md)
-4. [运行与继续任务](guides/run-a-task.md)
-5. [CLI 命令参考](reference/cli.md)
+- [从终端开始](start/quickstart.md)，配置一个模型并发送第一条消息。
+- [从脚本运行](guides/run-a-task.md)，配置并提交无头任务，再读取结果。
+- [嵌入 Rust SDK](reference/sdk.md#发送首个请求)，打开 Session 并发出首个请求。
 
 ## 关键页面
 

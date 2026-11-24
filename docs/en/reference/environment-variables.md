@@ -8,15 +8,15 @@
 | `KUKU_TUI_STATUSLINE` | Comma-separated status-line fields for this TUI launch (`none` hides it). [Terminal preferences](config.md#terminal-preferences) |
 | `KUKU_TOKEN` | Bearer token for connecting to an explicit `--remote` server |
 | `KUKU_SERVER_PASSWORD` | Bearer token required by a server started via `kuku server` |
-| `ANTHROPIC_API_KEY` | Default API key variable for `provider.anthropic` |
-| `OPENAI_API_KEY` | Default API key variable for `provider.openai` |
-| `DEEPSEEK_API_KEY` | Default API key variable for `provider.deepseek` |
-| `OPENROUTER_API_KEY` | Default API key variable for `provider.openrouter` |
 | `KUKU_PROVIDER_TRACE` | `1` enables full provider traces; `0` disables traces |
 
-String fields in `config.toml` starting with `$` normally resolve that environment variable on load. `api_key` and [custom request headers](config.md#request-headers-and-body) keep the `$NAME` reference and resolve it when preparing or sending the request. Custom request body strings keep a literal `$`. API-key references use either `$NAME` or `file:<absolute-path>`.
+## Config references
 
-Provider keys and `KUKU_PROVIDER_TRACE` are read from the **server** process environment (env keys must be non-empty). New clients connecting to an already-running server inherit the server's environment. [Configuration](../start/configuration.md)
+Choose your own variable names. A complete `$NAME` value in `config.toml` explicitly references that variable. For example, use `base_url = "$MY_GATEWAY_URL"` and `model = "$MY_MODEL_ID"` inside `default_model`. To apply model settings to that same ID, use the quoted model key `[model.work."$MY_MODEL_ID"]`.
+
+kuku expands URL and model references when loading the config. API keys and custom headers keep their `$NAME` references until request preparation or dispatch. Custom request body strings keep literal dollar signs. API keys can also use `file:<absolute-path>`. [Config reference](config.md)
+
+Set the referenced variables in the process that loads the config. For provider requests from CLI or TUI, this is the **server**. Local `kuku config` commands read the current invocation's environment. If the running service was started before you set the variables, restart it when idle. [Configuration guide](../start/configuration.md)
 
 ## Provider trace logs
 

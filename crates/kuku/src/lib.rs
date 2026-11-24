@@ -37,6 +37,7 @@ pub use adapter::{
     AdapterFuture, AgentSelection, ModelAdapter, ModelEvent, ModelRequest, ModelStream, ToolAccess,
     ToolAdapter, ToolCancellation, ToolOutput, ToolSpec, ToolStatus,
 };
+pub use config::ModelRef;
 pub use error::{Error, Result};
 pub use execution::OutputReference;
 pub use provider::trace::ProviderTraceMode;
@@ -44,6 +45,8 @@ pub use provider::types::ProviderFailureKind;
 
 /// Version and source revision embedded at build time.
 pub const BUILD_VERSION: &str = env!("KUKU_VERSION");
+/// Full source commit embedded at build time, or an empty string if unavailable.
+pub const BUILD_REVISION: &str = env!("KUKU_BUILD_REVISION");
 pub use provider::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
     ProviderSettings, ProviderUsage,

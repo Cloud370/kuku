@@ -58,14 +58,14 @@ Linux releases ship static musl archives for x86-64 and ARM64. CI builds both an
 
 The release profile uses `opt-level = 2` for runtime performance, with stripped symbols, Thin LTO, four codegen units and aborting panics. Compare binary sizes using the same target, features and source revision. Development/test executables retain debug information and are not distribution artifacts.
 
-Release archives ship the terminal client, server API, and both project license files. Build with `embedded-web-assets` when you want the optional Web UI. Use the acceptance selector's `interactive --archive` mode on the corresponding platform to verify an archive outside the source tree. [Web UI build](../reference/cli.md#kuku-server-and-kuku-web) · [Installed client acceptance](testing.md#installed-client-acceptance)
+Release archives include the terminal client, server API, the built-in `kuku-docs` Skill with documentation from the release commit, and both project license files. Use `interactive --archive` on the corresponding platform to verify an installed binary outside the source tree. [Installed client acceptance](testing.md#installed-client-acceptance)
 
 ## Update channels
 
 - `stable` checks `releases/latest/download/latest.json` and skips pre-releases
 - `alpha` checks the latest pre-release manifest
 
-Switch channels with `kuku config set update.channel alpha` or `kuku config set update.channel stable`.
+Set the channel with `kuku config set --patch 'update.channel = "alpha"'`. Use `stable` for published stable releases.
 
 ## When 1.0 matters
 

@@ -1,7 +1,6 @@
 ---
 name: main
 description: Main orchestrator — talks to the human, decides when to delegate
-tier: slow
 tool_profile: read_write
 ---
 

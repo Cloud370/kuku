@@ -60,14 +60,14 @@ Linux 发布包含 x86-64 和 ARM64 的静态 musl 包。CI 构建两种架构�
 
 release profile 使用 `opt-level = 2` 优先优化运行性能。构建去除符号，保留 Thin LTO、4 个 codegen unit 和 panic abort。比较二进制大小时，必须保持 target、feature 和源码版本一致。开发／测试可执行文件保留调试信息，不作为发行产物。
 
-发行包提供终端客户端、服务端 API 和两份项目许可证。需要可选的 Web 界面时，可启用 `embedded-web-assets` 构建。用验收入口的 `interactive --archive` 模式在相应平台验证源码树外的发行包。[构建 Web 界面](../reference/cli.md#kuku-server-与-kuku-web) · [安装客户端验收](testing.md#安装客户端验收)
+发行包包含终端客户端、服务端 API、两份项目许可证，以及携带发行提交文档的内置 `kuku-docs` Skill。用相应平台的 `interactive --archive` 验证安装后在源码树外运行的二进制。[安装客户端验收](testing.md#安装客户端验收)
 
 ## Update channels
 
 - `stable` 检查 `releases/latest/download/latest.json`，并跳过预发布
 - `alpha` 检查最新的预发布 manifest
 
-使用 `kuku config set update.channel alpha` 或 `kuku config set update.channel stable` 切换通道。
+用 `kuku config set --patch 'update.channel = "alpha"'` 设置通道。选择已发布的稳定版本时使用 `stable`。
 
 ## When 1.0 matters
 

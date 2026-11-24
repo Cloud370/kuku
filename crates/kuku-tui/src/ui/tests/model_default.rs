@@ -48,16 +48,16 @@ fn model_default_confirmation_shows_scope_and_actions_at_60x20_and_normal_size()
     let directory = tempfile::tempdir().unwrap();
     let config_path = directory.path().join("config.toml");
     let header = format!(
-        "Connection/model: openai/gpt-4\nConfig: {}\nDefault tier: balanced",
+        "Model: gpt-4\nConnection: openai\nConfig: {}",
         config_path.display()
     );
     let mut app = model_default_confirmation(header);
 
     let minimum = normalized_screen(&screen(&mut app, 60, 20));
     assert!(minimum.contains(SAVE_SCOPE));
-    assert!(minimum.contains("Connection/model: openai/gpt-4"));
+    assert!(minimum.contains("Model: gpt-4"));
     assert!(compact_screen(&minimum).contains(&compact_screen(&config_path.display().to_string())));
-    assert!(minimum.contains("Default tier: balanced"));
+    assert!(minimum.contains("Connection: openai"));
     assert!(minimum.contains("Save as default"));
     assert!(minimum.contains("Cancel"));
 
@@ -80,9 +80,7 @@ fn model_default_confirmation_scrolls_long_paths_without_hiding_scope_or_actions
             config_path.push_str(&format!("/config-segment-{index:02}"));
         }
         config_path.push_str("/final-config.toml");
-        let header = format!(
-            "Connection/model: openai/gpt-4\nConfig: {config_path}\nDefault tier: balanced"
-        );
+        let header = format!("Model: gpt-4\nConnection: openai\nConfig: {config_path}");
         let mut app = model_default_confirmation(header);
         let first_page = normalized_screen(&screen(&mut app, 60, 20));
         assert!(compact_screen(&first_page).contains(&compact_screen(SAVE_SCOPE)));
@@ -121,7 +119,7 @@ fn model_default_confirmation_scrolls_long_paths_without_hiding_scope_or_actions
 fn model_default_confirmation_requires_full_minimum_frame_and_escape_is_safe() {
     let directory = tempfile::tempdir().unwrap();
     let header = format!(
-        "Connection/model: openai/gpt-4\nConfig: {}\nDefault tier: balanced",
+        "Model: gpt-4\nConnection: openai\nConfig: {}",
         directory.path().join("config.toml").display()
     );
     for (width, height) in [(59, 20), (60, 19), (30, 10)] {
@@ -173,7 +171,7 @@ fn model_default_loading_and_error_states_do_not_render_confirmation_actions() {
 #[test]
 fn model_default_pointer_actions_survive_redraw_between_press_and_release() {
     for label in ["Save as default", "Cancel"] {
-        let mut app = model_default_confirmation("Connection/model: openai/gpt-4".into());
+        let mut app = model_default_confirmation("Model: gpt-4".into());
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let buffer = terminal
             .draw(|frame| render(frame, &mut app))
@@ -200,7 +198,7 @@ fn model_default_pointer_actions_survive_redraw_between_press_and_release() {
 #[test]
 fn model_default_resize_below_minimum_invalidates_save_hits_without_queuing_save() {
     for (width, height) in [(59, 20), (60, 19), (30, 10)] {
-        let mut app = model_default_confirmation("Connection/model: openai/gpt-4".into());
+        let mut app = model_default_confirmation("Model: gpt-4".into());
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let buffer = terminal
             .draw(|frame| render(frame, &mut app))

@@ -30,6 +30,7 @@ pub(super) struct Command {
 pub(super) struct CreationClaim {
     pub(super) command: Command,
     pub(super) created_at: String,
+    pub(super) default_model: Option<crate::config::ModelRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) prompts_dir: Option<PathBuf>,
 }
@@ -369,6 +370,7 @@ pub(super) struct State {
     pub(super) delegated_deliveries: HashMap<u64, DelegatedDelivery>,
     pub(super) withdrawals: HashMap<String, InputStatus>,
     pub(super) creation: Option<CreationClaim>,
+    pub(super) default_model: Option<crate::config::ModelRef>,
     pub(super) closing: bool,
     pub(super) closed: bool,
     pub(super) closed_cursor: u64,
@@ -961,6 +963,7 @@ impl State {
 
     pub(super) fn view(&self, address: &str, cursor: u64) -> Result<AgentView> {
         Ok(AgentView {
+            session_default_model: self.default_model.clone(),
             snapshot: self.snapshot(address)?,
             agents: self.snapshots(),
             cursor,

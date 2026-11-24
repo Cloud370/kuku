@@ -337,7 +337,7 @@ def csv_review(client, workspace, call):
 
 def delegate_reviewer(provider, prompt, instructions, task):
     provider.next(prompt).tool(
-        "create_agent", "create-reviewer", address="reviewer", tier="balanced",
+        "create_agent", "create-reviewer", address="reviewer",
         instructions=instructions,
     )
     provider.next("create-reviewer").tool(
@@ -780,10 +780,10 @@ class InstalledClient:
                         confirm_permissions=confirm_permissions)
 
     @contextlib.contextmanager
-    def command(self, workspace, *args, token=None):
+    def command(self, workspace, *args, token=None, stdin=subprocess.DEVNULL):
         env = self.env if token is None else {**self.env, "KUKU_TOKEN": token}
         process = subprocess.Popen(
-            [self.binary, *args], cwd=workspace, env=env, stdin=subprocess.DEVNULL,
+            [self.binary, *args], cwd=workspace, env=env, stdin=stdin,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
         )
         timed_out = False

@@ -22,12 +22,10 @@ fn options(server: &MockServer, workspace: &Path, data: &Path) -> (SessionOption
     let endpoint = format!("/context-{}", CASE.fetch_add(1, Ordering::Relaxed));
     let mut config = common::test_config();
     config.providers.get_mut("openai").unwrap().base_url = server.url(&endpoint);
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "context-fixture".into();
-    tier.think = kuku::config::ThinkLevel::Off;
-    tier.max_output_tokens = Some(128);
-    tier.context_window = 16_384;
+    let model_settings = common::set_test_model(&mut config, "openai", "context-fixture");
+    model_settings.think = kuku::config::ThinkLevel::Off;
+    model_settings.max_output_tokens = Some(128);
+    model_settings.context_window = 16_384;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
     config.discovery.auto_discover = false;
@@ -1053,6 +1051,10 @@ async fn a_named_connection_change_commits_a_successor_without_native_state_tran
         .config
         .providers
         .insert("other".into(), original.config.providers["openai"].clone());
+    original.config.models.insert(
+        kuku::ModelRef::new("other", "context-fixture"),
+        original.config.models[&original.config.default_model].clone(),
+    );
     let first = server.mock_async(|when, then| {
         when.method(POST).path(&path).matches(common::capture_http_request).matches(|request| !request.body.as_ref().unwrap().windows(b"SECOND_CONNECTION".len()).any(|window| window == b"SECOND_CONNECTION"));
         then.status(200).body(format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n", json!({"id":"native","choices":[{"delta":{"content":"PORTABLE_ANSWER","reasoning":"PRIVATE_THINKING","reasoning_details":[{"index":0,"type":"reasoning.encrypted","data":"PRIVATE_NATIVE_STATE"}]},"finish_reason":null}]}), json!({"id":"native","choices":[{"delta":{},"finish_reason":"stop"}]})));

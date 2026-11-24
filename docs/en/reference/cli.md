@@ -5,9 +5,9 @@
 - `kuku` opens the full-screen terminal interface (TUI).
 - `kuku run ...` runs a non-interactive task for scripts or headless terminals.
 
-The TUI, `kuku run`, and the web UI all talk to a kuku service. Locally, clients share one managed service per data directory. [Run the server](../guides/run-the-server.md)
+The TUI and `kuku run` talk to a kuku service. Local clients share one managed service per data directory. [Run the server](../guides/run-the-server.md)
 
-First-run setup and `kuku init` share the same interactive local provider setup flow. `kuku init` requires a TTY, can edit an existing valid config, does not start the server, and does not configure remote servers. [Configuration](../start/configuration.md)
+Run `kuku` to set up a first connection and model interactively. For headless setup, use [`kuku config set --patch`](#kuku-config). [Configuration guide](../start/configuration.md)
 
 ## Connection and workspace options
 
@@ -25,7 +25,7 @@ For `kuku run`, place all options before the prompt — remaining words are trea
 
 | Command | Purpose |
 |---|---|
-| `kuku run <prompt...>` | Submit a task and observe execution |
+| `kuku run ...` | Submit text or a prompt file and observe execution |
 | `kuku reply <session-id> <request-id>` | Answer a durable question or permission request |
 | `kuku show <session-id>` | Show a Session's final output |
 | `kuku events <session-id>` | Inspect durable Session events |
@@ -33,7 +33,6 @@ For `kuku run`, place all options before the prompt — remaining words are trea
 | `kuku pending ...` | Reconcile submissions with missing receipts |
 | `kuku delete <session-id>` | Delete a Session |
 | `kuku config ...` | Show, validate, or edit config |
-| `kuku init` | Run local provider and credential setup |
 | `kuku auth ...` | Sign in to and manage model subscriptions on the service host |
 | `kuku prompts ...` | Inspect or export Prompt assets |
 | `kuku agents ...` | List or inspect Agent presets |
@@ -41,7 +40,6 @@ For `kuku run`, place all options before the prompt — remaining words are trea
 | `kuku server ...` | Run an explicit HTTP server |
 | `kuku server status` | Inspect service identity and activity |
 | `kuku server restart` | Restart the managed local service when idle |
-| `kuku web ...` | Open the browser UI for the selected service |
 
 ## `kuku auth`
 
@@ -87,7 +85,7 @@ Workspace files stay unchanged by default. When rewinding to an earlier Turn on 
 | `Ctrl+C` | Clear the current draft (or exit TUI when the draft is empty; active server work continues). Inside an edit dialog, clears only that field. |
 | `Shift+Enter` or `Ctrl+J` | Insert a newline in the draft. |
 | `Esc` | Close an overlay, exit focused controls, or interrupt while running/cleaning up. Closing a reply editor preserves the reply draft. When idle with an empty composer, press `Esc` twice to open conversation history. |
-| `Ctrl+P` or `F1` | Show read-only shortcut help without losing your draft. |
+| `Ctrl+P` or `F1` | Show shortcut help and how to ask about kuku. The draft stays open. |
 | `/` (on empty draft) or `Ctrl+P` then `/` | Search slash commands and Skills above the composer. Picking a Skill inserts an editable `/skill:NAME` prefix. |
 | `@` or `Tab` | Complete workspace-relative file paths into the draft. |
 | `Alt+←` / `Alt+→` | Cycle between Agents (`main` first, others sorted by address, wrapping at ends). |
@@ -118,7 +116,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 | `/compact` | `/compress`, `/summarize` | Compact older context for the selected Agent once idle (also `/compact retry` and `/compact undo`). |
 | `/agents` | `/agent`, `/subagents` | Search Session Agents, switch recipients, or create an Agent. |
 | `/jobs` | `/job`, `/ps` | List background Jobs for the selected Agent, read live output, or cancel (`/jobs cancel <id>`). |
-| `/model` | `/models` | Enter switches to the highlighted route. `d` saves it as the default and switches, `e` edits it, and `/` searches. Ctrl+L opens the same list. |
+| `/model` | `/models` | Enter selects the highlighted connection and model for the current Agent. `d` opens confirmation to save it as the default for new Sessions, `e` edits it, and `/` searches. `Ctrl+L` opens the same list. |
 | `/speed [tier]` | `/fast`, `/ultra`, `/ultrafast` | Choose the selected Agent's service tier above the conversation input. The shortcuts choose `fast` or `ultrafast`. Select **Follow model default** to clear the override. Type to filter the available tiers and press Tab to complete the selection. An unknown tier can be added with an optional short probe. |
 | `/thinking` | `/think`, `/effort` | Pick a thinking level for the current Agent, choose **Use default** to clear the override, or press `D` + `Enter` on a writable local route to save as the model default. |
 | `/statusline` | `/status-line` | Preview, toggle, reorder, and save status-line fields to `tui.toml`. |
@@ -128,8 +126,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 | `/values` | `/value`, `/saved-values` | Browse saved values to read or attach to the draft. |
 | `/server` | `/service` | Inspect the connected service (`Ctrl+R` reconnects). |
 | `/restart` | `/restart-service` | Confirm restarting the managed local service (deferred while busy). |
-| `/web` | `/browser` | Open the conversation in the browser UI. |
-| `/help` | `/hotkeys` | Show keyboard shortcuts. |
+| `/help` | `/hotkeys` | Show keyboard shortcuts and how to ask about kuku. |
 | `/quit` | `/exit`, `/q` | Exit the TUI (accepted work continues on the server). |
 
 ### Reading the transcript
@@ -167,21 +164,41 @@ Customize fields interactively with `/statusline` (writes `tui.toml`) or per-lau
 
 ```text
 kuku run [OPTIONS] <PROMPT...>
+kuku run [OPTIONS] --prompt-file <PATH|->
 ```
 
 | Option | Meaning |
 |---|---|
+| `--prompt-file <PATH\|->` | Read the entire UTF-8 prompt from a file or from stdin with `-`. Supply one prompt source. |
 | `-s`, `--session <id>` | Continue an existing Session |
-| `-a`, `--agent <name>` | Target a specific Agent (defaults to `main`) |
-| `-m`, `--model <spec>` | Override model route for this run |
-| `--json` | Print one JSON object per line |
-| `-o`, `--output <path>` | Write final output to a file |
-| `--no-wait` | Return after the service accepts the input |
-| `--auto-approve` | Allow permission requests during this run |
-| `--wait-for-reply` | Stay attached while a durable request awaits an external reply |
-| `--timeout <seconds>` | Exit after this wait timeout without canceling server work |
+| `-c`, `--continue` | Continue the most recent Session |
+| `--agent <address>` | Target a specific Agent (defaults to `main`) |
+| `--preset <name>` | Create the Agent from a preset in a new Session |
+| `--connection <name>` and `--model <id>` | Select a configured pair by exact ID. Pass both options together. |
+| `--reasoning-effort <value>` | Override native reasoning for the selected model |
+| `--service-tier <value>` | Override the provider's native service option |
+| `--max-output-tokens <n>` | Cap output tokens per model request |
+| `--command-id <id>` | Give a submission a stable identity for an exact retry |
+| `--json` | Write one final JSON result to stdout |
+| `--stream-json` | Write live events and a final result to stdout as JSON Lines |
+| `--raw` / `--verbose` | Select plain text or detailed human-readable output |
+| `--show-thinking` | Include reported thinking while observing |
+| `--prompts-dir <path>` | Override bundled Prompt assets |
+| `--no-agents` / `--no-skills` | Disable delegation tools or Skill tools and loading |
 
-With `--json`, `kuku run` emits `session`, `accepted`, `delta`, `tool.call`, `tool.result`, `request`, `turn.completed`, `turn.failed`, and `error` lines. Wait timeouts exit with code `124`. [Run a task](../guides/run-a-task.md)
+File and stdin prompts are passed as text, including newlines. Use a positional prompt for explicit [Skill invocation](../guides/use-skills.md#use-skills-during-a-run).
+
+The final object has `type: "session"`, a `status` and `event` describing the outcome, and the `session_id` and `agent` when available. It includes `response`, `error`, and, when known, the actual `connection`, `model`, and `usage`. A waiting result identifies its `question` or `permission` by `id`. Diagnostics go to stderr. Argument errors can exit before there is a Session result.
+
+| Exit code | Result status | Meaning |
+|---|---|---|
+| `0` | `completed` | The run completed. |
+| `3` | `waiting` | An Agent needs an answer or permission. |
+| `1` | `failed` | The run failed. |
+| `130` | `cancelled` | The run was cancelled. |
+| `2` | | Command-line arguments were invalid. |
+
+[Run a task](../guides/run-a-task.md)
 
 ## `kuku reply`
 
@@ -189,11 +206,9 @@ With `--json`, `kuku run` emits `session`, `accepted`, `delta`, `tool.call`, `to
 kuku reply <SESSION_ID> <REQUEST_ID> --allow
 kuku reply <SESSION_ID> <REQUEST_ID> --deny
 kuku reply <SESSION_ID> <REQUEST_ID> --answer "<text>"
-kuku reply <SESSION_ID> <REQUEST_ID> --answer-file <path>
-kuku reply <SESSION_ID> <REQUEST_ID> --answer-stdin
 ```
 
-Answers a durable permission request or question. Returns cleanly if the same reply was already recorded.
+Answers a durable permission request or question and observes the continuation. Pass `--agent <address>` for a request from an Agent other than `main`. Use `--command-id <id>` to retry the same reply.
 
 ## `kuku show`
 
@@ -215,46 +230,68 @@ Prints durable Session events. `--json` writes one record per line to `stdout` a
 ## `kuku list`
 
 ```text
-kuku list [--json]
+kuku list [-a | --all] [--json]
+kuku list <SESSION_ID> [--json]
 ```
 
-Lists Sessions for the selected workspace.
+Lists Sessions for the selected workspace or all workspaces with `--all`. Pass a Session ID to list its Agents.
 
 ## `kuku pending`
 
 ```text
-kuku pending list [--json]
-kuku pending reconcile [--id <record-id>] [--json]
-kuku pending drop <record-id> [--json]
+kuku pending list
+kuku pending resend <COMMAND_ID> [--session <id>]
+kuku pending discard <COMMAND_ID> [--session <id>]
 ```
 
-Inspects and reconciles submissions whose HTTP receipt was lost due to a timeout or disconnect.
+Inspects submissions whose HTTP receipt was lost due to a timeout or disconnect. `list` checks for receipts. If a command is still unconfirmed, `resend` retries its original intent and `discard` removes the local pending record.
 
 ## `kuku delete`
 
 ```text
-kuku delete <SESSION_ID> [--force]
+kuku delete <SESSION_ID>
 ```
 
-Deletes a Session.
+Deletes a closed Session.
 
 ## `kuku config`
 
 ```text
-kuku config path
-kuku config show
+kuku config show [--json]
+kuku config models [--discover --connection NAME]
 kuku config validate
-kuku config set <key> <value>
-kuku config init
+kuku config set <KEY> <VALUE>
+kuku config set --patch <TOML>
 ```
 
-`kuku config show` redacts API keys. `kuku config set` updates scalar fields (for example `default_model`, `provider.<name>.model_pricing.<model>.mode`, or `provider.<name>.proxy.mode`). `kuku config init` writes the starter config file (non-interactive). Use `kuku init` for interactive provider and credential setup.
+All four commands select the local file in this order.
+
+1. The path passed with `--config PATH`.
+2. The running managed service's config path for this data directory.
+3. The data directory's `config.toml`.
+
+`show` writes redacted TOML to stdout and the path to stderr. Pass `--json` to get the TOML in the `config` field of a JSON result. The other commands report JSON by default. This includes `path`, `status`, `diagnostics` with any relevant field name, and `service.state`. Check for `valid` after validation and `updated` after a write.
+
+`validate` checks the local file and its model settings without making a provider request. Read `service.state` to see whether the current file version is `loaded`, `pending_reload`, `different_path`, `stopped`, or `unknown`. Config commands can run while the service is stopped. Repeat validation to confirm the loaded version. [Configuration](../start/configuration.md)
+
+`models` lists configured connection and model pairs. Each row contains `selection` or an `error` for that pair. With `--discover --connection NAME`, it queries that connection's model-list endpoint and returns the discovered exact IDs in `models[].id`.
+
+`set KEY VALUE` updates one scalar. Quote a TOML dotted path that contains a quoted model ID, for example `kuku config set 'model.work."your-model-id".max_output_tokens' 8192`. Use `--patch` for a complete change or to create a missing file. Pass TOML text as one argument.
+
+The optional top-level `delete` array lists TOML dotted paths to remove before merging the patch. For example, this patch removes a model registration while replacing the default with another configured pair.
+
+```toml
+delete = ['model.work."your-model-id"']
+default_model = { connection = "work", model = "another-model-id" }
+```
+
+Use `provider.NAME` to delete a connection and remove its dependent model registrations or replace them in the same patch. A patch merges nested tables and replaces `default_model` as a complete pair. The command validates the whole resulting file before publishing it. An invalid patch or a conflicting write returns a nonzero exit status and a diagnostic. [Minimal config](config.md#minimal-config) · [Headless setup](../guides/run-a-task.md#set-up-from-a-shell)
 
 ## `kuku prompts`
 
 ```text
-kuku prompts list [--json]
-kuku prompts show <name> [--json]
+kuku prompts
+kuku prompts show [NAME]
 kuku prompts export <dir>
 ```
 
@@ -271,26 +308,16 @@ kuku skills show <name>
 
 Lists and inspects discovered Agent presets and Skills.
 
-## `kuku server` and `kuku web`
+## `kuku server`
 
 ```text
-kuku server [--host <addr>] [--port <port>] [--password <secret>]
+kuku server [--listen <addr:port>] [--password <secret>] [--max-concurrent-runs <n>]
 kuku server status
-kuku server restart
-kuku web [--session <id>] [--agent <name>] [--print-url]
+kuku server restart [--config PATH]
 ```
 
 - `kuku server` requires `--password` or `KUKU_SERVER_PASSWORD`.
-- `kuku web` opens the browser UI on a service built with embedded Web assets. Managed sign-in links carry a short-lived, single-use ticket. Use `--print-url` to print the URL.
 - `kuku server status` returns service info as JSON (`{"state":"stopped"}` when local service is down).
 - `kuku server restart` exits `1` with `state: "deferred"` when busy, or `0` with `state: "restarted"` on success.
-
-To build the embedded web UI from a source checkout (requires Node.js 24 and npm):
-
-```bash
-npm --prefix apps/web ci
-npm --prefix apps/web run build
-cargo run --locked -p kuku-app --features embedded-web-assets -- web
-```
 
 [Run the server](../guides/run-the-server.md) · [Server API](server-api.md)

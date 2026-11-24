@@ -2,240 +2,112 @@ use std::fs;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
+use kuku::config::{ModelRef, parse_config_text, parse_config_text_with_env, publish_config};
 use kuku_client::ConnectionOptions;
-use sha2::Digest;
-use toml_edit::{DocumentMut, Item};
+use sha2::{Digest, Sha256};
 
-use super::{
-    ModelDefaultPlan, ResolvedModel, SAVE_SCOPE, edited_config, prepare, test_plan,
-    update_user_default,
-};
-
+use super::{ModelDefaultPlan, SAVE_SCOPE, edited_config, prepare, test_plan};
 use crate::local_settings::require_local;
 
 const CONFIG: &str = r#"# retained comment
-default_model = "light"
+default_model = { connection = "work", model = "gateway/model-2" }
 
 [provider.openai]
 format = "openai-responses"
-base_url = "https://api.openai.com/v1"
-api_key = "$OPENAI_API_KEY"
+base_url = "https://public.example.test/v1"
+api_key = "$MY_GATEWAY_KEY"
 
-[provider.openai.options]
-profile = "openai"
-reasoning_efforts = ["low", "medium"]
+[provider.work]
+format = "openai-responses"
+base_url = "https://work.example.test/v1"
+api_key = "$MY_WORK_KEY"
 
-[model.strong]
-provider = "openai"
-model = "strong-model"
-purpose = "keep strong"
+[model.openai."gateway/model-2"]
+service_tier = "priority"
+max_output_tokens = 222
 
-[model.balanced]
-provider = "openai"
-model = "balanced-model"
-
-[model.light]
-provider = "openai"
-model = "light-model"
+[model.work."gateway/model-2"]
+reasoning_effort = "low"
+max_output_tokens = 444
 "#;
 
-fn route(model: &str) -> ResolvedModel {
-    ResolvedModel {
-        connection: "openai".into(),
-        model: model.into(),
-    }
+fn route(model: &str) -> ModelRef {
+    ModelRef::new("openai", model)
 }
 
 fn edit_with_server_plan(
     raw: &str,
-    route: &ResolvedModel,
-    tier: &str,
-    overwrite_user_default: bool,
-) -> Result<(String, Vec<u8>), String> {
+    route: &ModelRef,
+    already_default: bool,
+    register_previous_default: Option<ModelRef>,
+) -> String {
     let plan = ModelDefaultPlan {
-        tier: tier.into(),
-        overwrite_user_default,
-        config_sha256: format!("{:x}", sha2::Sha256::digest(raw.as_bytes())),
+        config_sha256: format!("{:x}", Sha256::digest(raw.as_bytes())),
+        already_default,
+        register_previous_default,
     };
-    edited_config(raw.as_bytes(), route, &plan)
+    String::from_utf8(edited_config(raw.as_bytes(), route, &plan).unwrap()).unwrap()
 }
 
 #[test]
-fn matching_tier_is_preferred_and_repeated_route_saves_are_idempotent() {
-    let (tier, output) =
-        edit_with_server_plan(CONFIG, &route("light-model"), "light", false).unwrap();
-    assert_eq!(tier, "light");
-    assert_eq!(output, CONFIG.as_bytes());
-    let (tier, repeated) =
-        edit_with_server_plan(CONFIG, &route("light-model"), "light", false).unwrap();
-    assert_eq!(tier, "light");
-    assert_eq!(repeated, output);
-
-    let (tier, output) =
-        edit_with_server_plan(CONFIG, &route("balanced-model"), "balanced", false).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    assert_eq!(tier, "balanced");
-    assert!(output.contains("default_model = \"balanced\""));
-    assert!(output.contains("purpose = \"keep strong\""));
-    assert!(!output.contains("user-default"));
+fn default_changes_between_exact_pairs_without_touching_settings() {
+    let selected = route("gateway/model-2");
+    let output = edit_with_server_plan(CONFIG, &selected, false, None);
+    let before = parse_config_text(CONFIG).unwrap();
+    let after = parse_config_text(&output).unwrap();
+    assert_eq!(after.default_model, Some(selected));
+    assert_eq!(after.model, before.model);
+    assert_eq!(after.provider, before.provider);
+    assert!(output.contains("# retained comment"));
 }
 
 #[test]
-fn fallback_creates_or_overwrites_only_user_default() {
-    let selected = route("custom-model");
-    let (tier, output) = edit_with_server_plan(CONFIG, &selected, "user-default", true).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    assert_eq!(tier, "user-default");
-    assert!(output.contains("default_model = \"user-default\""));
-    assert!(output.contains("purpose = \"Saved by /model\""));
-    assert!(output.contains("model = \"strong-model\""));
-    assert!(output.contains("model = \"light-model\""));
-
-    let (tier, repeated) =
-        edit_with_server_plan(&output, &selected, "user-default", false).unwrap();
-    let repeated = String::from_utf8(repeated).unwrap();
-    assert_eq!(tier, "user-default");
-    assert_eq!(repeated.matches("[model.user-default]").count(), 1);
-    assert!(repeated.contains("model = \"custom-model\""));
-
-    let old = format!(
-        "{}\n[model.user-default]\nprovider = \"openai\"\nmodel = \"old-user-model\"\nreasoning_effort = \"high\"\nservice_tier = \"priority\"\nmax_output_tokens = 4096\n",
-        CONFIG.replace(
-            "default_model = \"light\"",
-            "default_model = \"user-default\""
-        )
+fn choosing_the_existing_default_keeps_its_environment_reference() {
+    let raw = CONFIG.replacen(
+        "model = \"gateway/model-2\"",
+        "model = \"$MY_DEFAULT_ID\"",
+        1,
     );
-    let (_, overwritten) = edit_with_server_plan(&old, &selected, "user-default", true).unwrap();
-    let overwritten = String::from_utf8(overwritten).unwrap();
-    assert!(overwritten.contains("model = \"custom-model\""));
-    assert!(overwritten.contains("model = \"strong-model\""));
-    assert!(overwritten.contains("model = \"light-model\""));
-    let fallback = overwritten.split("[model.user-default]").last().unwrap();
-    assert!(!fallback.contains("reasoning_effort"));
-    assert!(!fallback.contains("service_tier"));
-    assert!(!fallback.contains("max_output_tokens = 4096"));
+    let current = ModelRef::new("work", "gateway/model-2");
+    assert_eq!(raw, edit_with_server_plan(&raw, &current, true, None));
 }
 
 #[test]
-fn replacing_a_different_provider_default_discards_old_route_options() {
-    let mut document = r#"
-default_model = "user-default"
-
-[model.user-default]
-provider = "anthropic"
-model = "old-model"
-purpose = "old purpose"
-reasoning_effort = "high"
-service_tier = "priority"
-max_output_tokens = 4096
-
-[model.strong]
-provider = "openai"
-model = "strong-model"
-max_output_tokens = 2048
-"#
-    .parse::<DocumentMut>()
-    .unwrap();
-    update_user_default(&mut document, &route("new-model")).unwrap();
-    let output = document.to_string();
-    let fallback = document["model"]["user-default"].as_table_like().unwrap();
-    assert_eq!(
-        Some("openai"),
-        fallback.get("provider").and_then(Item::as_str)
-    );
-    assert_eq!(
-        Some("new-model"),
-        fallback.get("model").and_then(Item::as_str)
-    );
-    assert_eq!(
-        Some("Saved by /model"),
-        fallback.get("purpose").and_then(Item::as_str)
-    );
-    assert!(fallback.get("reasoning_effort").is_none());
-    assert!(fallback.get("service_tier").is_none());
-    assert!(fallback.get("max_output_tokens").is_none());
-    assert!(output.contains("max_output_tokens = 2048"));
-    assert!(output.contains("model = \"strong-model\""));
-}
-
-#[test]
-fn matched_tier_retains_its_existing_route_settings() {
-    let input = CONFIG.replace(
-        "model = \"balanced-model\"",
-        "model = \"balanced-model\"\nmax_output_tokens = 888",
-    );
-    let (tier, output) =
-        edit_with_server_plan(&input, &route("balanced-model"), "balanced", false).unwrap();
-    assert_eq!("balanced", tier);
-    assert!(
-        String::from_utf8(output)
-            .unwrap()
-            .contains("max_output_tokens = 888")
-    );
-}
-
-#[test]
-fn inline_tables_environment_references_comments_and_provider_options_survive() {
-    const TIER: &str = "KUKU_ISSUE100_DEFAULT_TIER";
-    const FORMAT: &str = "KUKU_ISSUE100_PROVIDER_FORMAT";
-
-    if !kuku::test_support::isolate_test(
-        module_path!(),
-        stringify!(inline_tables_environment_references_comments_and_provider_options_survive),
-        |command| {
-            command.env(TIER, "balanced");
-            command.env(FORMAT, "openai-responses");
-        },
-    ) {
-        return;
-    }
-
-    let input = r#"# keep this note
-default_model = "$KUKU_ISSUE100_DEFAULT_TIER"
-provider = { openai = { format = "$KUKU_ISSUE100_PROVIDER_FORMAT", base_url = "https://api.openai.com/v1", api_key = "$OPENAI_API_KEY", options = { profile = "openai", reasoning_efforts = ["low", "medium"] } } }
-model = { strong = { provider = "openai", model = "strong-model" }, balanced = { provider = " openai ", model = "balanced-model" }, light = { provider = "openai", model = "light-model" } }
+fn changing_an_implicit_default_keeps_its_raw_registration() {
+    let raw = r#"# keep server-owned references
+default_model = { connection = "$MY_CONNECTION", model = "$MY_DEFAULT_ID" }
+provider = { work = { format = "openai-responses", api_key = "$MY_WORK_KEY", base_url = "$MY_WORK_URL" }, openai = { format = "openai-responses", api_key = "$MY_GATEWAY_KEY" } }
+model = { openai = { "gateway/model-2" = { max_output_tokens = 200 } } }
 "#;
-    let (tier, output) =
-        edit_with_server_plan(input, &route("balanced-model"), "balanced", false).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    assert_eq!(tier, "balanced");
-    assert!(output.contains("# keep this note"));
-    assert!(output.contains("$KUKU_ISSUE100_PROVIDER_FORMAT"));
-    assert!(output.contains("reasoning_efforts = [\"low\", \"medium\"]"));
-    assert!(output.contains("provider = \" openai \""));
-    assert!(output.contains("default_model = \"balanced\""));
-    assert!(!output.contains("user-default"));
+    let selected = route("gateway/model-2");
+    let output = edit_with_server_plan(
+        raw,
+        &selected,
+        false,
+        Some(ModelRef::new("work", "$MY_DEFAULT_ID")),
+    );
+    assert!(output.contains("model = {"));
+    assert!(output.contains("base_url = \"$MY_WORK_URL\""));
+    assert!(output.contains("\"$MY_DEFAULT_ID\""));
+    assert!(output.contains("# keep server-owned references"));
+    let service_env = |name: &str| match name {
+        "MY_DEFAULT_ID" => Ok("upstream/first".into()),
+        "MY_WORK_URL" => Ok("https://work.example.test/v1".into()),
+        _ => Err(std::env::VarError::NotPresent),
+    };
+    let parsed = parse_config_text_with_env(&output, service_env).unwrap();
+    assert_eq!(parsed.default_model, Some(selected));
+    assert!(parsed.model["work"].contains_key("upstream/first"));
 }
 
 #[test]
-fn client_environment_does_not_override_the_service_validated_tier_or_expand_raw_refs() {
-    const TIER: &str = "KUKU_ISSUE100_CLIENT_DEFAULT_TIER";
-    const PROVIDER: &str = "KUKU_ISSUE100_CLIENT_PROVIDER";
-    const MODEL: &str = "KUKU_ISSUE100_CLIENT_MODEL";
-
-    if !kuku::test_support::isolate_test(
-        module_path!(),
-        stringify!(
-            client_environment_does_not_override_the_service_validated_tier_or_expand_raw_refs
-        ),
-        |command| {
-            command.env(TIER, "client-tier");
-            command.env(PROVIDER, "client-provider");
-            command.env(MODEL, "client-model");
-        },
-    ) {
-        return;
-    }
-
-    let input = format!(
-        "# preserve refs\ndefault_model = \"${TIER}\"\n[model.balanced]\nprovider = \"${PROVIDER}\"\nmodel = \"${MODEL}\"\n"
-    );
-    let edited = edit_with_server_plan(&input, &route("service-model"), "balanced", false);
-    let output = String::from_utf8(edited.unwrap().1).unwrap();
-    assert!(output.contains("default_model = \"balanced\""));
-    assert!(output.contains("provider = \"$KUKU_ISSUE100_CLIENT_PROVIDER\""));
-    assert!(output.contains("model = \"$KUKU_ISSUE100_CLIENT_MODEL\""));
-    assert!(output.contains("# preserve refs"));
+fn preparation_rejects_the_wrong_config_fingerprint() {
+    let plan = ModelDefaultPlan {
+        config_sha256: "a".repeat(64),
+        already_default: false,
+        register_previous_default: None,
+    };
+    assert!(edited_config(CONFIG.as_bytes(), &route("gateway/model-2"), &plan).is_err());
 }
 
 #[test]
@@ -255,35 +127,15 @@ async fn prepare_uses_normalized_managed_endpoint_and_rejects_other_origin_or_pa
 
     use crate::local_settings::same_service_endpoint;
 
-    const CONFIG: &str = r#"
-default_model = "balanced"
-
-[provider.openai]
-format = "openai-responses"
-base_url = "https://api.openai.com/v1"
-api_key = "test-key"
-profile = "openai"
-
-[model.strong]
-provider = "openai"
-model = "strong-model"
-think = "off"
-
-[model.balanced]
-provider = "openai"
-model = "balanced-model"
-think = "off"
-
-[model.light]
-provider = "openai"
-model = "light-model"
-think = "off"
-"#;
-
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let config_path = home.path().join("custom.toml");
-    fs::write(&config_path, CONFIG).unwrap();
+    let config = CONFIG
+        .replace("service_tier = \"priority\"", "")
+        .replace("reasoning_effort = \"low\"", "")
+        .replace("$MY_GATEWAY_KEY", "fixture-only-key")
+        .replace("$MY_WORK_KEY", "fixture-only-key");
+    fs::write(&config_path, &config).unwrap();
     let args = ServerArgs {
         listen: "127.0.0.1:0".into(),
         config: Some(config_path.clone()),
@@ -350,22 +202,26 @@ think = "off"
     ));
 
     let config_before_prepare = fs::read(&config_path).unwrap();
-    let prepared = prepare(&options, Some(&connection), route("balanced-model"))
+    let prepared = prepare(&options, Some(&connection), route("gateway/model-2"))
         .await
         .unwrap();
-    assert_eq!("balanced", prepared.tier);
+    assert_eq!(&route("gateway/model-2"), prepared.route());
+    let before = parse_config_text(&config).unwrap();
+    let after = parse_config_text(std::str::from_utf8(&prepared.updated_bytes).unwrap()).unwrap();
+    assert_eq!(before.model, after.model);
+    assert_eq!(after.default_model, Some(route("gateway/model-2")));
     assert_eq!(config_before_prepare, fs::read(&config_path).unwrap());
     server.abort();
     let _ = server.await;
 }
 
 #[test]
-fn confirmation_shows_route_path_tier_and_scope_sentence() {
-    let plan = test_plan(route("balanced-model"));
+fn confirmation_shows_exact_pair_and_path() {
+    let plan = test_plan(route("gateway/model-2"));
     let header = plan.confirmation_header();
-    assert!(header.contains("Connection/model: openai/balanced-model"));
+    assert!(header.contains("Connection: openai"));
+    assert!(header.contains("Model: gateway/model-2"));
     assert!(header.contains(&format!("Config: {}", plan.config_path.display())));
-    assert!(header.contains("Default tier: balanced"));
     assert!(!header.contains(SAVE_SCOPE));
 }
 
@@ -375,9 +231,9 @@ fn external_edit_is_not_overwritten() {
     let path = directory.path().join("config.toml");
     fs::write(&path, CONFIG).unwrap();
     let permissions = fs::metadata(&path).unwrap().permissions();
-    let changed = CONFIG.replace("light-model", "external-change");
+    let changed = CONFIG.replace("gateway/model-2", "external-change");
     fs::write(&path, &changed).unwrap();
-    let result = crate::config_file::publish_config(
+    let result = publish_config(
         &path,
         Some(CONFIG.as_bytes()),
         Some(&permissions),
@@ -392,13 +248,13 @@ fn external_edit_is_not_overwritten() {
 fn concurrent_saves_loaded_from_same_bytes_have_one_winner() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("config.toml");
-    let original = b"default_model = \"balanced\"\n";
+    let original = b"default_model = { connection = \"work\", model = \"old\" }\n";
     fs::write(&path, original).unwrap();
     let permissions = fs::metadata(&path).unwrap().permissions();
     let start = Arc::new(Barrier::new(3));
     let writers = [
-        b"default_model = \"strong\"\n".to_vec(),
-        b"default_model = \"light\"\n".to_vec(),
+        b"default_model = { connection = \"work\", model = \"first\" }\n".to_vec(),
+        b"default_model = { connection = \"work\", model = \"second\" }\n".to_vec(),
     ]
     .into_iter()
     .map(|updated| {
@@ -407,13 +263,7 @@ fn concurrent_saves_loaded_from_same_bytes_have_one_winner() {
         let start = Arc::clone(&start);
         thread::spawn(move || {
             start.wait();
-            crate::config_file::publish_config(
-                &path,
-                Some(original),
-                Some(&permissions),
-                &updated,
-                || {},
-            )
+            publish_config(&path, Some(original), Some(&permissions), &updated, || {})
         })
     })
     .collect::<Vec<_>>();

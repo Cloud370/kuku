@@ -306,6 +306,15 @@ impl Selection {
             }
             EventPayload::Unknown(value)
                 if value["agent"] == agent
+                    && value["kind"] == "runtime.step_prepared"
+                    && value["input_skills"]
+                        .as_array()
+                        .is_some_and(|skills| !skills.is_empty()) =>
+            {
+                value["turn"].as_u64()
+            }
+            EventPayload::Unknown(value)
+                if value["agent"] == agent
                     && value["kind"] == "runtime.model_retry"
                     && value["recovery"] == "regenerate_tool_arguments" =>
             {
@@ -352,7 +361,18 @@ impl Selection {
             {
                 model_content.clear();
                 summary.clear();
-                *structured = None;
+                *structured = structured.as_ref().and_then(|result| {
+                    if result["kind"] != "skill_load" {
+                        return None;
+                    }
+                    let name = result["name"].as_str().filter(|name| name.len() <= 64)?;
+                    let version = result["version"]
+                        .as_str()
+                        .filter(|version| version.len() == 64)?;
+                    Some(
+                        serde_json::json!({"kind": "skill_load", "name": name, "version": version}),
+                    )
+                });
                 files_read.clear();
                 files_changed.clear();
                 commands_run.clear();

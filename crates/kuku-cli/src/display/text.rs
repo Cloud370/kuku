@@ -186,10 +186,10 @@ impl Display {
         }
     }
 
-    pub fn session_start(&self, session_id: &str, tier: &str, model: &str) -> String {
+    pub fn session_start(&self, session_id: &str, connection: &str, model: &str) -> String {
         format!(
             "{} session: {} \u{b7} {} \u{b7} {} {}",
-            SESSION_PREFIX, session_id, tier, model, SESSION_PREFIX
+            SESSION_PREFIX, session_id, connection, model, SESSION_PREFIX
         )
     }
 

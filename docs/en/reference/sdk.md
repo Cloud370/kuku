@@ -1,6 +1,50 @@
 # SDK
 
-`kuku::Session` is the embedding entry point. [`session_task.rs`](../../../crates/kuku/examples/session_task.rs) is an ordinary Rust caller. The product server uses the same SDK and exposes it to terminal, script and browser clients through the [Server API](server-api.md).
+`kuku::Session` is the embedding entry point. The product server uses the same SDK and exposes it to terminal and script clients. [Server API](server-api.md)
+
+## First request
+
+With Rust and Cargo installed, create a project and add the SDK from the checkout that matches this guide. Replace `/path/to/kuku` with your checkout path.
+
+```bash
+cargo new kuku-first-request
+cd kuku-first-request
+cargo add --path /path/to/kuku/crates/kuku
+cargo add tokio --features macros,rt-multi-thread
+```
+
+Save the [minimal one-model config](config.md#minimal-config) as `config.toml` in the new project directory. Supply your connection URL and model ID, and export the key referenced by that file. Put this program in `src/main.rs`.
+
+```rust
+use std::{env, path::Path};
+
+use kuku::{AgentConfig, AgentStatus, Input, Session, SessionOptions};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = env::current_dir()?;
+    let data_dir = workspace.join(".kuku-sdk-data");
+    let config = kuku::config::load_config(Path::new("config.toml"))?.resolve()?;
+    let session = Session::open(SessionOptions::new(workspace, data_dir, config)).await?;
+
+    session.create_agent("create-main", "main", AgentConfig::default())?;
+    session.send(Input::new("first-input", "main", "Reply with a short greeting."))?;
+    let result = session.wait_for_agent("main").await;
+    session.close().await?;
+
+    let agent = result?;
+    if let Some(error) = agent.last_error {
+        return Err(error.into());
+    }
+    if agent.status != AgentStatus::Idle {
+        return Err(format!("Agent settled as {:?}", agent.status).into());
+    }
+    println!("{}", agent.last_output.ok_or("Agent returned no text")?);
+    Ok(())
+}
+```
+
+Run `cargo run` to print the model's reply. An Agent without an explicit selection starts with the Session's default connection and model. A host can also build `kuku::config::Config` in memory and pass it to the same `SessionOptions::new`. Use `ModelRef::new(connection, model)` for the default and as the key of each `Config.models` entry, and set credentials in `Config.providers`. The SDK's `ApiKey::Plaintext` accepts the value directly. [Complete command-line embedding example](../../../crates/kuku/examples/session_task.rs)
 
 ## Operations
 
@@ -15,6 +59,7 @@
 | `agent(address)` / `agents()` | Query derived snapshots without consuming output |
 | `agent_view(address)` | Selected Agent snapshot, queued inputs and a matching committed cursor |
 | `agent_selection(address)` | Inspect effective model settings, capabilities and final tool schemas without dispatch |
+| `wait_for_agent(address).await` | Wait up to 30 seconds for an Agent's current execution and read its settled snapshot |
 | `receipt(command_id)` / `input_receipt(&Input)` | Query and verify an earlier acknowledgement without resuming work |
 | `input_status(address, input_command_id)` | Query whether an input is queued, accepted or withdrawn |
 | `withdraw_input(command_id, address, input_command_id)` | Withdraw an input if it remains queued and return its status |
@@ -32,7 +77,9 @@
 
 The lower-level `Query` `Run` exposes host events through the non-exhaustive `UiEvent` and `ToolEvent` enums; keep a fallback match arm for each. `UiEvent` includes `ModelRequest` and `ModelRecovery`. `ModelRequest` carries the request ID and ordinal, while `ModelRecovery` carries request IDs and bounded retry information. See [Agent loop](../how-it-works/agent-loop.md) for their behavior.
 
-`SessionOptions::new(workspace, data_dir, config)` accepts named-provider configuration. Options add prompt assets, resource limits, and a host `ToolAuthorizer`. `AgentConfig` selects preset, tier, named connection, model, reasoning, service tier, output tokens, instructions, directory, and native skill defaults. Connection selection is independent of wire protocol. An explicit model overrides the selected tier’s model while retaining its other defaults. `AgentConfig.tools` overrides the preset’s final tool selection; collaboration tools are not added to a read-only preset. Preset instructions, tier and tool defaults are resolved and stored when creating or configuring the Agent. Later preset-file changes do not change those retained defaults. Lifecycle and receipt semantics live in [Sessions](../how-it-works/sessions.md).
+`SessionOptions::new(workspace, data_dir, config)` accepts resolved configuration. Options add Prompt assets, resource limits, and a host `ToolAuthorizer`. Set both `AgentConfig.connection` and `AgentConfig.model` for an explicit selection. With neither set, kuku uses the preset's pair if one is configured, then the Session default. Read the retained starting pair with `Session::default_model()`.
+
+`AgentConfig` can also set a preset, reasoning effort, service tier, output tokens, instructions, working directory, and Skill options. `AgentConfig.tools` overrides the preset's tool selection. The resolved preset instructions, model pair, and tools are stored when creating or configuring the Agent. Later file edits take effect when the preset is applied again. [Session lifecycle and receipts](../how-it-works/sessions.md)
 
 `Input.timing` distinguishes `InputTiming::NextStep`, the default, from `InputTiming::NextTurn`. `AgentSnapshot.execution_id` identifies the current execution. `Observation::Live` carries its source Agent, execution identity, Turn and latest committed cursor when the update was published. Use `agent_view` to start observation at the cursor that matches the selected Agent state.
 
@@ -90,7 +137,7 @@ Use `Session::read_agent_output(agent, output_id, &OutputRead)` to enforce the A
 cargo run -p kuku --example session_task -- \
   --workspace /path/to/work --prompt-file /path/to/task.txt \
   --config /path/to/config.toml --data-dir /path/to/session-data \
-  --connection deepseek --reasoning-effort low \
+  --connection work --model your-model-id \
   --output /path/to/result.json
 ```
 
@@ -114,7 +161,7 @@ Registered `ToolAdapter` calls share the host operation capacity. Override `Tool
 
 The default limits allow 64 Agents, 128 pending inputs per Agent, 65,536 input bytes, four simultaneous model streams, eight tools per Agent, 8 MiB per retained output, an 8 KiB first preview, and 128 transient observations. Set `RuntimeLimits::max_request_bytes` to cap serialized requests when the host needs a transport limit. Output previews require at least 1 KiB for a complete reference and flags.
 
-`RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent Turns and resets on reopen. `RuntimeLimits.max_output_tokens_per_request` optionally sets a host-wide ceiling on each response. Both default to `None`. An explicit Agent output setting overrides the tier setting. The host ceiling applies to every Agent. In Rust, `TierConfig.max_output_tokens`, `AgentSelection.max_output_tokens`, and `ModelSelection.max_output_tokens` are `Option<u32>`. An absent effective value delegates to the provider on protocols that allow it. The preparation record contains the value used for that request. `session_task --max-output-tokens N` sets both the host ceiling and the primary Agent's setting. See [model configuration](config.md#modelname).
+`RuntimeLimits.max_requests_per_open` optionally caps total attempts across all Agent Turns and resets on reopen. `RuntimeLimits.max_output_tokens_per_request` optionally sets a host-wide ceiling on each response. Both default to `None`. An explicit Agent output setting overrides the configured model setting. The host ceiling applies to every Agent. In Rust, `ModelConfig.max_output_tokens`, `AgentSelection.max_output_tokens`, and `ModelSelection.max_output_tokens` are `Option<u32>`. An absent effective value delegates to the provider on protocols that allow it. The preparation record contains the value used for that request. `session_task --max-output-tokens N` sets both the host ceiling and the primary Agent's setting. [Model settings](config.md#model-settings)
 
 `RuntimeLimits.retry_transient_provider_errors` defaults to true. The SDK permits up to six total attempts (five retries), with one 2/4/8/16/32-second exponential schedule and 0–25% jitter for retryable provider failures. A valid `Retry-After` of at most 30 seconds can lengthen a wait; missing, invalid, and longer hints do not disable retry, and hints over 30 seconds are ignored. The transport treats explicit authentication, permission, quota, context, request, and invalid-response failures as terminal. The SDK may retry an error before the first stream content; once output has begun, a retryable failure ends the attempt to avoid repeating emitted or persisted effects. Each retry reuses the prepared request and counts only when dispatched toward the caller's request budget. Set the option to false or pass `session_task --no-provider-retry` to disable retries. The example reports five permitted retries under `limits.automatic_retries` (zero when disabled).
 
@@ -136,8 +183,8 @@ cargo run -p kuku --example session_orchestrate -- \
   --prompt-file /path/to/draft.txt \
   --review-prompt-file /path/to/review.txt \
   --continue-prompt-file /path/to/continue.txt \
-  --writer-connection direct --writer-tier balanced \
-  --reviewer-connection openrouter-openai-responses --reviewer-tier light \
+  --writer-connection direct --writer-model writer-model-id \
+  --reviewer-connection openrouter-openai-responses --reviewer-model reviewer-model-id \
   --max-requests 16 --timer-ms 250 \
   --max-output-tokens 32768 --max-context-tokens 131072 \
   --data-dir /path/to/session-data --output /path/to/result.json

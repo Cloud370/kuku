@@ -40,7 +40,7 @@ pub(super) async fn dispatch_provider_step(
     existing_events: Vec<crate::event::StoredEvent>,
     mut frozen_context: Option<crate::query::frozen::ContextCommit>,
 ) -> Result<PendingStep> {
-    run_model_pre_request_hooks(&mut pending).await?;
+    run_model_pre_request_hooks(&mut pending, &resolved_config).await?;
     let handoff_active = pending.handoff_triggered;
     let correlation = super::request_correlation(&pending, &resolved_config);
     let capacity = match &pending.query.model_capacity {
@@ -554,7 +554,10 @@ async fn dispatch_prepared(
     }
 }
 
-async fn run_model_pre_request_hooks(pending: &mut PendingRun) -> Result<()> {
+async fn run_model_pre_request_hooks(
+    pending: &mut PendingRun,
+    resolved: &ResolvedProvider,
+) -> Result<()> {
     if let Some(ref plugin_reg) = pending.plugin_registry {
         let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ModelPreRequest);
         if !hooks.is_empty() {
@@ -566,7 +569,7 @@ async fn run_model_pre_request_hooks(pending: &mut PendingRun) -> Result<()> {
                     .unwrap()
                     .to_string_lossy()
                     .into(),
-                extra: serde_json::json!({ "tier": pending.query.tier }),
+                extra: serde_json::json!({ "connection": resolved.connection_name, "model": resolved.model }),
             };
             let sd = pending.events_path.parent().unwrap().to_path_buf();
             let ws = pending.workspace.clone();

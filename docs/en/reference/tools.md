@@ -37,21 +37,22 @@ Conditional skill tools:
 - `list_skills(offset?, limit?)`
 - `search_skills(query, offset?, limit?)`
 - `use_skill(skill_name)`
+- `skill_resources(skill_name, action, path?, query?, offset?, limit?)`
 
-When the default skill tool surface is enabled, the runtime exposes `list_skills`, `search_skills`, and `use_skill` together.
+Use `list_skills` or `search_skills` for discovery, `use_skill` for a Skill's instructions, and `skill_resources` to list, search, or read the built-in documentation after its Skill has loaded. [Skill resources](skill-format.md#skill-resources)
 
 ## Session Coordination Tools
 
 | Tool | Required args | Optional args | Risk |
 |---|---|---|---|
 | `ask_user` | `question` | none | `session` |
-| `create_agent` | `address` | `instructions`, `tools`, `preset`, `tier`, `workspace` | `session` |
+| `create_agent` | `address` | `instructions`, `tools`, `preset`, `connection`, `model`, `workspace` | `session` |
 | `send_message` | `to`, `message` | `wake`, `values` | `session` |
 | `list_agents` | none | `wait_for` | `session` |
 
 `create_agent` creates a stable, flat Session-local address with independent context; an optional `preset` supplies the contact card. Supply the instructions and task material the recipient needs. `send_message` addresses an existing Agent and returns a durable delivery receipt, not its final work result. Its `wake` defaults to true; false queues the input for explicit advancement. `list_agents` returns a compact status list. Pass `wait_for` with one Agent address to wait up to 30 seconds for its current execution and retrieve its settled reply. A timeout returns the current state. A settled reply can include `last_request` with the model and the requested and provider-reported service tiers. Fields without available evidence are omitted.
 
-Model-facing creation takes the address, role instructions, tool allowlist, preset, tier and working directory. Agents created with this tool receive `send_message` and `list_agents` alongside their selected or preset tools. An empty `tools` array selects only those two tools. The available model tiers include the configured `input_modalities` and `output_modalities` and the effective modalities of each route. The creation receipt reports the effective tool list and the selected Agent's input and output modalities and image input support. Hosts use the SDK to set an exact tool list and explicit provider settings.
+Supply `connection` and the exact `model` ID together for an explicit selection. Omit both to use the preset's selection or the Session default. Agents created with this tool receive `send_message` and `list_agents` alongside their selected or preset tools. An empty `tools` array selects only those two tools. The model catalog includes declared and effective modalities for each pair. The creation receipt reports the effective tool list, input and output modalities, and image input support. Hosts use the SDK to set an exact tool list and provider settings.
 
 `ask_user` persists a question and yields at the current tool-batch boundary. The host replies to its exact request identity through the SDK, CLI `reply`, or server response endpoint. Question and authorization waiting semantics are defined in [Sessions](../how-it-works/sessions.md#waiting-and-replies).
 

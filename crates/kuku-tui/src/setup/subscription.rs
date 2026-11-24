@@ -4,7 +4,7 @@ use std::path::Path;
 
 use kuku::adapter::{SubscriptionAccountInfo, SubscriptionStatus, subscription_account_info};
 use kuku::config::{
-    Config, ProviderConfig, ProviderFormat, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
+    ProviderConfig, ProviderFormat, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
 };
 use kuku_client::ConnectionOptions;
 use toml_edit::{Item, Value, value};
@@ -72,16 +72,13 @@ impl Settings {
     fn subscription_connections(
         &self,
     ) -> impl Iterator<Item = (&str, &SubscriptionAccount, &ProviderConfig)> {
-        self.resolved
-            .providers
-            .iter()
-            .filter_map(|(name, connection)| {
-                Some((
-                    name.as_str(),
-                    connection.options.subscription.as_ref()?,
-                    connection,
-                ))
-            })
+        self.providers().iter().filter_map(|(name, connection)| {
+            Some((
+                name.as_str(),
+                connection.options.subscription.as_ref()?,
+                connection,
+            ))
+        })
     }
 
     pub(super) fn subscription_connection(
@@ -173,7 +170,12 @@ impl Settings {
         let connection = entry(&mut document, "provider", &connection_name)?;
         set_connection_proxy(connection, proxy)?;
         let output = document.to_string();
-        parse_service_config(&output, &self.data_dir, &|name| std::env::var(name))?.resolve()?;
+        let raw = parse_service_config(&output, &self.data_dir, &|name| std::env::var(name))?;
+        if raw.default_model.is_some() {
+            raw.resolve()?;
+        } else {
+            raw.resolve_providers()?;
+        }
         write_config(self, output.as_bytes(), || {})?;
         Ok(connection_name)
     }
@@ -185,12 +187,7 @@ impl Settings {
         let ConnectionChoice::Existing(name) = choice else {
             return None;
         };
-        self.resolved
-            .providers
-            .get(name)?
-            .options
-            .subscription
-            .as_ref()
+        self.provider(name)?.options.subscription.as_ref()
     }
 
     pub(super) fn subscription_available(&self, choice: &ConnectionChoice) -> bool {
@@ -203,9 +200,10 @@ impl Settings {
     }
 }
 
-pub(super) fn account_info(config: &Config) -> BTreeMap<String, SubscriptionAccountInfo> {
-    config
-        .providers
+pub(super) fn account_info(
+    providers: &BTreeMap<String, ProviderConfig>,
+) -> BTreeMap<String, SubscriptionAccountInfo> {
+    providers
         .iter()
         .filter_map(|(name, provider)| {
             let account = provider.options.subscription.as_ref()?;
@@ -226,8 +224,8 @@ mod tests {
         DiscoveredModel, ModelTrial, Probe, SubscriptionAccountInfo, SubscriptionStatus,
     };
     use kuku::config::{
-        ModelCapabilityDeclaration, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
-        generate_default, load_config,
+        ModelCapabilityDeclaration, ModelRef, ProviderProxy, SubscriptionAccount,
+        SubscriptionChannel, load_config,
     };
     use kuku_client::ConnectionOptions;
     use ratatui::{
@@ -257,7 +255,7 @@ mod tests {
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         terminal
-            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::FirstRun))
             .unwrap();
         assert!(
             !terminal
@@ -266,45 +264,45 @@ mod tests {
                 .contains("Tests may cost money")
         );
 
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         terminal
-            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::FirstRun))
             .unwrap();
         let picker = terminal.backend().to_string();
         assert!(picker.contains("Preset · ChatGPT subscription"));
         assert!(!picker.contains("Add a ChatGPT account with"));
 
-        state.handle(key(KeyCode::Up), &settings, SetupMode::Init);
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Up), &settings, SetupMode::FirstRun);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         assert_eq!(SetupStep::Network, state.step);
         terminal
-            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::FirstRun))
             .unwrap();
         let network = terminal.backend().to_string();
         assert!(network.contains("› Use proxy from environment"));
         assert!(network.contains("No proxy"));
         assert!(network.contains("Enter proxy URL"));
 
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         assert_eq!(SetupStep::SubscriptionSignIn, state.step);
         assert_eq!(ProviderProxy::Environment, state.proxy);
-        state.handle(key(KeyCode::Esc), &settings, SetupMode::Init);
-        state.handle(key(KeyCode::Down), &settings, SetupMode::Init);
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Esc), &settings, SetupMode::FirstRun);
+        state.handle(key(KeyCode::Down), &settings, SetupMode::FirstRun);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         assert_eq!(SetupStep::SubscriptionSignIn, state.step);
         assert_eq!(ProviderProxy::Direct, state.proxy);
-        state.handle(key(KeyCode::Esc), &settings, SetupMode::Init);
-        state.handle(key(KeyCode::Up), &settings, SetupMode::Init);
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Esc), &settings, SetupMode::FirstRun);
+        state.handle(key(KeyCode::Up), &settings, SetupMode::FirstRun);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         assert_eq!(SetupStep::ProxyAddress, state.step);
         state.handle(
             Event::Paste(format!("http://{}", proxy.local_addr().unwrap())),
             &settings,
-            SetupMode::Init,
+            SetupMode::FirstRun,
         );
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         assert_eq!(SetupStep::SubscriptionSignIn, state.step);
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         poll_registration(&mut state, &mut settings).await;
 
         let url = ui::authorization_link(&state, Rect::new(0, 0, 60, 20)).unwrap();
@@ -321,7 +319,7 @@ mod tests {
         );
         let url_rows = u16::try_from(url.as_str().len().div_ceil(60)).unwrap();
         terminal
-            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::FirstRun))
             .unwrap();
         let prompt = "Paste callback URL > ";
         assert!(terminal.backend().to_string().contains(prompt.trim_end()));
@@ -329,9 +327,9 @@ mod tests {
             Position::new(prompt.len() as u16, 5 + url_rows),
             terminal.get_cursor_position().unwrap()
         );
-        state.handle(Event::Paste(bad_callback), &settings, SetupMode::Init);
+        state.handle(Event::Paste(bad_callback), &settings, SetupMode::FirstRun);
         terminal
-            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::FirstRun))
             .unwrap();
         let screen = terminal.backend().to_string();
         assert!(screen.contains("Callback received"));
@@ -343,7 +341,7 @@ mod tests {
             assert!((0..60).all(|column| buffer[(column, row)].symbol() == " "));
         }
         assert!(!screen.contains("fixture-callback-secret"));
-        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
         poll_registration(&mut state, &mut settings).await;
         assert!(
             state
@@ -443,7 +441,19 @@ mod tests {
         fs::create_dir(&workspace).unwrap();
         fs::create_dir(&data_dir).unwrap();
         let path = data_dir.join("config.toml");
-        fs::write(&path, generate_default()).unwrap();
+        fs::write(
+            &path,
+            r#"
+default_model = { connection = "fixture", model = "main-model" }
+[provider.fixture]
+format = "openai-responses"
+base_url = "https://fixture.invalid/v1"
+api_key = "$MY_FIXTURE_KEY"
+[model.fixture.main-model]
+max_output_tokens = 5000
+"#,
+        )
+        .unwrap();
         let options = ConnectionOptions {
             workspace: Some(workspace),
             data_dir: Some(data_dir),
@@ -526,10 +536,10 @@ mod tests {
         let screen = terminal.backend().to_string();
         assert!(screen.contains("account-model"));
         assert!(!screen.contains("Thinking"));
-        let saved = save(&settings, &add).unwrap();
-        let route = &saved.tiers["account-model"];
+        let (saved, _) = save(&settings, &add).unwrap();
+        let account_model = ModelRef::new("chatgpt-work", "account-model");
+        let route = saved.model(&account_model).unwrap();
         assert_eq!(Some("fast"), route.service_tier.as_deref());
-        assert_eq!("chatgpt-work", route.provider);
 
         add.models.discovered_from = Some(add.connection(&settings).unwrap());
         add.models.found = vec![DiscoveredModel {
@@ -572,12 +582,17 @@ mod tests {
         add.trials.stop();
 
         let settings = Settings::load(options).await.unwrap();
-        let mut edit = SetupState::for_intent(&settings, SetupIntent::Edit("account-model".into()));
+        let mut edit = SetupState::for_intent(&settings, SetupIntent::Edit(account_model.clone()));
         edit.models.add_manual("updated-model".into());
         select_service(&mut edit, &settings, "ultrafast");
-        let saved = save(&settings, &edit).unwrap();
-        let route = &saved.tiers["account-model"];
-        assert_eq!("updated-model", route.model);
+        let (saved, _) = save(&settings, &edit).unwrap();
+        assert_eq!(
+            Some("fast"),
+            saved.model(&account_model).unwrap().service_tier.as_deref()
+        );
+        let route = saved
+            .model(&ModelRef::new("chatgpt-work", "updated-model"))
+            .unwrap();
         assert_eq!(Some("ultrafast"), route.service_tier.as_deref());
         assert_eq!(
             Some(&account),

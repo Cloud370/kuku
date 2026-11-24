@@ -6,19 +6,7 @@ use super::{ApiKey, load_config, show_redacted};
 use crate::util::private_directory;
 
 const CONFIG: &str = r#"
-default_model = "balanced"
-
-[model.balanced]
-provider = "local"
-model = "fixture-model"
-
-[model.strong]
-provider = "local"
-model = "fixture-model"
-
-[model.light]
-provider = "local"
-model = "fixture-model"
+default_model = { connection = "local", model = "fixture-model" }
 
 [provider.local]
 format = "openai-chat"

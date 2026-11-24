@@ -18,15 +18,15 @@
 | 术语 | 含义 |
 |---|---|
 | `Provider` | 模型 API 适配器与连接配置 |
-| `Tier` | 命名的模型档位，如 `strong`、`balanced`、`light` |
-| `Think level` | 可移植的思考等级：`off`、`low`、`medium` 或 `high` |
+| 模型选择 | 由连接名和该连接上的精确模型 ID 组成 |
+| `Think level` | 可移植的思考偏好，包括 `provider-default`、`off`、`low`、`medium` 和 `high` |
 | `Handoff` | 压缩长历史后开启后继上下文段的摘要边界 |
 
 ## 扩展机制
 
 | 术语 | 含义 |
 |---|---|
-| Agent 预设 | 可自动发现的 Markdown 文件，定义初始指令、档位和工具 |
+| Agent 预设 | 可自动发现的 Markdown 文件，定义初始指令、模型选择和工具 |
 | `Skill` | 可按需加载到当前 Session 的打包指令集 |
 | `Package` | 打包 Hook、Skill 与配套资源的扩展包 |
 | `Hook` | 由运行时生命周期事件触发的外部进程 |

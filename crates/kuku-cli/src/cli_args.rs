@@ -28,7 +28,7 @@ pub struct ConnectionArgs {
     /// User data directory (default: KUKU_HOME or ~/.kuku).
     #[arg(long, global = true)]
     pub data_dir: Option<PathBuf>,
-    /// Configuration file for the managed service.
+    /// Configuration file for the managed service or a local config command.
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
     /// Explicit remote service URL.
@@ -104,8 +104,6 @@ pub enum Command {
     Pending(PendingArgs),
     /// Show or manage configuration
     Config(ConfigArgs),
-    /// Open interactive provider settings
-    Init,
     /// Sign in to or manage model subscription accounts
     Auth(SubscriptionAuthArgs),
     /// Show or export embedded prompt assets
@@ -116,9 +114,6 @@ pub enum Command {
     Skills(SkillsArgs),
     /// Start or manage the HTTP service
     Server(ServerCommandArgs),
-    /// Open the selected service in a browser
-    #[cfg(feature = "server")]
-    Web(WebArgs),
     /// Internal entry point used to launch the managed service.
     #[command(name = "__managed-server", hide = true)]
     ManagedServer(ServerCommandArgs),
@@ -241,21 +236,6 @@ pub enum ServerCommand {
     Restart,
 }
 
-/// Select the conversation to open in a browser.
-#[cfg(feature = "server")]
-#[derive(Args)]
-pub struct WebArgs {
-    /// Session to open.
-    #[arg(long)]
-    pub session: Option<String>,
-    /// Agent to focus within the Session.
-    #[arg(long, requires = "session")]
-    pub agent: Option<String>,
-    /// Print a one-time sign-in link for use on a headless terminal.
-    #[arg(long)]
-    pub print_url: bool,
-}
-
 /// Choose how to handle a pending command.
 #[derive(Args)]
 pub struct PendingArgs {
@@ -310,28 +290,33 @@ pub enum PromptsSubcommand {
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// The prompt to execute
-    #[arg(trailing_var_arg = true, required = true)]
+    /// The prompt to execute. Place options before the positional prompt.
+    #[arg(
+        trailing_var_arg = true,
+        required_unless_present = "prompt_file",
+        conflicts_with = "prompt_file"
+    )]
     pub prompt: Vec<String>,
 
-    /// Explicitly select the default trusted-local policy
-    #[arg(short = 'y', long = "yes")]
-    pub auto_yes: bool,
+    /// Read the complete UTF-8 prompt from a file, or stdin with `-`.
+    #[arg(long, value_name = "PATH|-", value_hint = clap::ValueHint::FilePath)]
+    pub prompt_file: Option<PathBuf>,
 
-    /// Exact model identifier (overrides the tier's model)
-    #[arg(long = "model")]
+    /// Exact configured model identifier
+    #[arg(long, requires = "connection")]
     pub model: Option<String>,
 
     /// Exact configured connection name
-    #[arg(long)]
+    #[arg(long, requires = "model")]
     pub connection: Option<String>,
+
+    /// Select a discovered Agent preset for a new Session
+    #[arg(long, conflicts_with_all = ["session", "cont"])]
+    pub preset: Option<String>,
+
     /// Caller command identity, allowing safe input retries
     #[arg(long)]
     pub command_id: Option<String>,
-
-    /// Reusable model tier
-    #[arg(long)]
-    pub tier: Option<String>,
 
     /// Stable agent address within the session
     #[arg(long, default_value = "main")]
@@ -548,17 +533,37 @@ pub struct ConfigArgs {
 
 #[derive(Subcommand)]
 pub enum ConfigSubcommand {
-    /// Show current configuration (redacted)
-    Show,
-    /// Inspect resolved models, configured settings and declared capabilities.
-    Models,
-    /// Validate config file
+    /// Show current configuration with credentials redacted.
+    Show {
+        /// Include the selected path and load status in a JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List configured models, or discover exact model IDs from one connection.
+    Models {
+        /// Query the selected connection's model-list endpoint.
+        #[arg(long, requires = "connection")]
+        discover: bool,
+        /// Connection to query for model discovery.
+        #[arg(long, requires = "discover")]
+        connection: Option<String>,
+    },
+    /// Validate the file and report whether the managed service loaded it.
     Validate,
-    /// Set a config value (e.g. model.balanced.think high)
+    /// Update a scalar field or apply a literal TOML patch in one write.
     Set {
-        /// Dot-notation config key (e.g. model.balanced.think)
-        key: String,
-        /// Value to set
-        value: String,
+        /// TOML dotted path for a scalar field.
+        #[arg(
+            required_unless_present = "patch",
+            requires = "value",
+            conflicts_with = "patch"
+        )]
+        key: Option<String>,
+        /// Value to set.
+        #[arg(requires = "key", allow_negative_numbers = true)]
+        value: Option<String>,
+        /// Literal TOML to merge. The root `delete` array lists paths to remove first.
+        #[arg(long, value_name = "TOML", conflicts_with_all = ["key", "value"])]
+        patch: Option<String>,
     },
 }

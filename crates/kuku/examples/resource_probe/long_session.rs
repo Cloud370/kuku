@@ -244,12 +244,10 @@ fn options(
 ) -> Result<SessionOptions, AnyError> {
     let mut config = common::test_config();
     config.providers.get_mut("openai").unwrap().base_url = "http://127.0.0.1:1".into();
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "long-session-fixture".into();
-    tier.think = ThinkLevel::Off;
-    tier.context_window = 131_072;
-    tier.max_output_tokens = Some(8192);
+    let model_settings = common::set_test_model(&mut config, "openai", "long-session-fixture");
+    model_settings.think = ThinkLevel::Off;
+    model_settings.context_window = 131_072;
+    model_settings.max_output_tokens = Some(8192);
     config.discovery.auto_discover = false;
     config.plugin.enabled = false;
     config.handoff.enabled = !model.inspect_only;

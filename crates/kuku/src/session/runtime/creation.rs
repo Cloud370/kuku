@@ -52,6 +52,7 @@ pub(super) fn prepare_journal(
     id: &str,
     command: Option<Command>,
     prompts_dir: Option<&Path>,
+    default_model: &crate::config::ModelRef,
 ) -> Result<()> {
     let head = writer.last_id();
     if let Some(command) = command {
@@ -60,6 +61,7 @@ pub(super) fn prepare_journal(
                 claim: CreationClaim {
                     command,
                     created_at: timestamp()?,
+                    default_model: Some(default_model.clone()),
                     prompts_dir: prompts_dir.map(Path::to_path_buf),
                 },
             };
@@ -70,6 +72,11 @@ pub(super) fn prepare_journal(
         }
     }
     if head == 0 || head == 1 && state.creation.is_some() {
+        let default_model = state
+            .creation
+            .as_ref()
+            .and_then(|claim| claim.default_model.as_ref())
+            .unwrap_or(default_model);
         let ts = match &state.creation {
             Some(claim) => claim.created_at.clone(),
             None => timestamp()?,
@@ -80,7 +87,9 @@ pub(super) fn prepare_journal(
             session_id: id.into(),
             created_at: ts,
             kuku_version: env!("CARGO_PKG_VERSION").into(),
+            default_model: Some(default_model.clone()),
         })?;
+        state.default_model = Some(default_model.clone());
     }
     Ok(())
 }

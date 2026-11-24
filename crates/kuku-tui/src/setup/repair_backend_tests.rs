@@ -2,7 +2,7 @@ use std::fs;
 use std::sync::Arc;
 
 use httpmock::prelude::{GET, MockServer};
-use kuku::config::{ApiKey, generate_default, load_config};
+use kuku::config::{ApiKey, load_config};
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{
     AgentProgress, AgentSelection, AgentStatus, Connection, ConnectionOptions, RetryFailureKind,
@@ -18,6 +18,20 @@ use super::{
     SavedCredentialRepair, authentication_failure, prepare, verify_config_route, verify_failure,
     verify_route, verify_saved_config,
 };
+
+const REPAIR_CONFIG: &str = r#"
+default_model = { connection = "openai", model = "fixture-model" }
+[provider.openai]
+format = "openai-responses"
+base_url = "https://api.openai.com/v1"
+api_key = "$MY_RESPONSES_KEY"
+[provider.anthropic]
+format = "anthropic"
+base_url = "https://api.anthropic.com"
+api_key = "$MY_MESSAGES_KEY"
+[model.openai.fixture-model]
+max_output_tokens = 2048
+"#;
 
 fn snapshot() -> Snapshot {
     let mut snapshot: Snapshot = serde_json::from_value(json!({
@@ -117,7 +131,7 @@ fn credential_repair_revalidates_request_identity_and_the_actual_failed_route() 
 #[test]
 fn credential_only_save_preserves_default_route_and_unrelated_configuration() {
     let directory = tempfile::tempdir().unwrap();
-    let mut document: DocumentMut = generate_default().parse().unwrap();
+    let mut document: DocumentMut = REPAIR_CONFIG.parse().unwrap();
     document["unrelated"] = value("keep");
     document["provider"]["openai"]["api_key"] = value("$KUKU_REPAIR_OLD_ENV");
     let settings = settings(directory.path(), &document.to_string());
@@ -149,7 +163,7 @@ fn credential_only_save_preserves_default_route_and_unrelated_configuration() {
 #[test]
 fn credential_save_failure_keeps_original_bytes_and_removes_the_staged_secret() {
     let directory = tempfile::tempdir().unwrap();
-    let settings = settings(directory.path(), generate_default());
+    let settings = settings(directory.path(), REPAIR_CONFIG);
     let concurrent = "concurrent settings change";
     fs::write(&settings.config_path, concurrent).unwrap();
     let permissions = fs::metadata(&settings.config_path).unwrap().permissions();
@@ -170,7 +184,7 @@ fn credential_save_failure_keeps_original_bytes_and_removes_the_staged_secret() 
 #[test]
 fn invalid_credential_never_creates_a_file_or_exposes_its_contents() {
     let directory = tempfile::tempdir().unwrap();
-    let settings = settings(directory.path(), generate_default());
+    let settings = settings(directory.path(), REPAIR_CONFIG);
     let original = fs::read(&settings.config_path).unwrap();
     let key = "fixture-repair-only-secret\nsecond-line";
     let error = save_credential(&settings, "anthropic", key).unwrap_err();
@@ -258,7 +272,7 @@ fn busy_service_keeps_the_saved_state_and_requires_an_explicit_restart_action() 
     let directory = tempfile::tempdir().unwrap();
     let app = crate::app::App::new(std::env::current_dir().unwrap(), None);
     let request = authentication_failure(&snapshot()).unwrap();
-    let settings = settings(directory.path(), generate_default());
+    let settings = settings(directory.path(), REPAIR_CONFIG);
     let service = ServiceIdentity {
         endpoint: "http://127.0.0.1:1".into(),
         instance_id: "before-restart".into(),
@@ -330,8 +344,8 @@ fn a_changed_saved_config_is_not_reported_as_applied() {
 #[test]
 fn the_same_connection_name_cannot_hide_a_changed_endpoint_or_protocol() {
     let directory = tempfile::tempdir().unwrap();
-    let mut settings = settings(directory.path(), generate_default());
-    let provider = &settings.resolved.providers["anthropic"];
+    let mut settings = settings(directory.path(), REPAIR_CONFIG);
+    let provider = &settings.providers()["anthropic"];
     let route = FailedRoute {
         connection: "anthropic".into(),
         model: "fixture-model".into(),
@@ -341,6 +355,8 @@ fn the_same_connection_name_cannot_hide_a_changed_endpoint_or_protocol() {
     assert!(verify_config_route(&settings, &route).is_ok());
     settings
         .resolved
+        .as_mut()
+        .unwrap()
         .providers
         .get_mut("anthropic")
         .unwrap()
@@ -348,12 +364,16 @@ fn the_same_connection_name_cannot_hide_a_changed_endpoint_or_protocol() {
     assert!(verify_config_route(&settings, &route).is_err());
     settings
         .resolved
+        .as_mut()
+        .unwrap()
         .providers
         .get_mut("anthropic")
         .unwrap()
         .base_url = route.endpoint.as_str().into();
     settings
         .resolved
+        .as_mut()
+        .unwrap()
         .providers
         .get_mut("anthropic")
         .unwrap()

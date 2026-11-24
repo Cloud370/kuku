@@ -24,15 +24,16 @@ pub fn run(args: AgentsArgs, target: &ConnectionArgs) -> Result<(), Box<dyn std:
     match args.cmd {
         None | Some(AgentsSubcommand::List) => {
             println!(
-                "{:<16} {:<20} {:<10} {:<12} DESCRIPTION",
-                "NAME", "SOURCE", "TIER", "TOOLS"
+                "{:<16} {:<20} {:<12} {:<24} {:<12} DESCRIPTION",
+                "NAME", "SOURCE", "CONNECTION", "MODEL", "TOOLS"
             );
             for def in registry.definitions() {
                 println!(
-                    "{:<16} {:<20} {:<10} {:<12} {}",
+                    "{:<16} {:<20} {:<12} {:<24} {:<12} {}",
                     def.name,
                     def.source.as_str(),
-                    def.tier,
+                    def.connection.as_deref().unwrap_or(""),
+                    def.model.as_deref().unwrap_or(""),
                     def.tool_profile.as_str(),
                     truncate(&def.description, 60),
                 );
@@ -46,7 +47,10 @@ pub fn run(args: AgentsArgs, target: &ConnectionArgs) -> Result<(), Box<dyn std:
             println!("name:            {}", def.name);
             println!("description:     {}", def.description);
             println!("source:          {}", def.source.as_str());
-            println!("tier:            {}", def.tier);
+            if let (Some(connection), Some(model)) = (&def.connection, &def.model) {
+                println!("connection:      {connection}");
+                println!("model:           {model}");
+            }
             println!("tool_profile:    {}", def.tool_profile.as_str());
             println!("max_turns:       {}", def.max_turns);
             println!("hash:            {}", def.hash);

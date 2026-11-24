@@ -29,4 +29,8 @@ kuku --help
 kuku config validate
 ```
 
-Run `kuku config show` to double-check your active tier and connection. [Configuration](../start/configuration.md)
+Use `kuku config show` to review the default connection and exact model ID. Check the path and loaded state in `kuku config validate`. Configs from earlier alpha releases with a named default require the current connection and model fields. [Minimal config](../reference/config.md#minimal-config)
+
+## Check the help version
+
+Run `kuku server status` to check the version of the running service. New Turns use the `kuku-docs` pages bundled with that service. A resumed Turn that already loaded the Skill keeps its recorded version. This also applies when you switch back to an older build. [Skill versions](../reference/skill-format.md#runtime-snapshotting)

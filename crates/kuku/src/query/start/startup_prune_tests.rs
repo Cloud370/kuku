@@ -9,9 +9,9 @@ use crate::query::types::RunState;
 
 fn test_config() -> Config {
     Config {
-        tiers: std::collections::BTreeMap::new(),
+        models: std::collections::BTreeMap::new(),
         providers: std::collections::BTreeMap::new(),
-        default_tier: "balanced".to_string(),
+        default_model: crate::config::ModelRef::default(),
         discovery: DiscoveryConfig::default(),
         handoff: HandoffConfig::default(),
         logs: LogsConfig::default(),
@@ -68,6 +68,7 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
             session_id: session_id.to_string(),
             created_at: "2026-06-07T00:00:00Z".to_string(),
             kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+            default_model: None,
         })
         .unwrap();
     store
@@ -192,6 +193,7 @@ async fn resumed_turn_ignores_new_bootstrap_skill_input_and_restores_snapshot() 
             session_id: session_id.to_string(),
             created_at: "2026-06-07T00:00:00Z".to_string(),
             kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+            default_model: None,
         })
         .unwrap();
     store
@@ -301,6 +303,7 @@ async fn resumed_turn_restores_bootstrap_skill_body_from_snapshot() {
             session_id: session_id.to_string(),
             created_at: "2026-06-07T00:00:00Z".to_string(),
             kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+            default_model: None,
         })
         .unwrap();
     store

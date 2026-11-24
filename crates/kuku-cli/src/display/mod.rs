@@ -18,10 +18,10 @@ mod tests {
     use super::text::Display;
 
     #[test]
-    fn session_start_contains_tier_and_model() {
+    fn session_start_contains_connection_and_model() {
         let d = Display::new(false, "medium");
-        let line = d.session_start("s_001", "strong", "claude-sonnet-4-6");
-        assert!(line.contains("strong"), "should contain tier");
+        let line = d.session_start("s_001", "work", "claude-sonnet-4-6");
+        assert!(line.contains("work"), "should contain connection");
         assert!(line.contains("claude-sonnet-4-6"), "should contain model");
         assert!(line.contains("s_001"), "should contain session id");
     }
@@ -284,7 +284,7 @@ mod tests {
         use kuku::query::ToolSummary;
         let summary = RunMetrics {
             session_id: "abc123".into(),
-            tier: "balanced".into(),
+            connection: "gateway".into(),
             model: "claude-sonnet-4-6".into(),
             turns: 1,
             input_tokens: 4500,
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(json["type"], "session");
         assert_eq!(json["event"], "completed");
         assert_eq!(json["session_id"], "abc123");
-        assert_eq!(json["tier"], "balanced");
+        assert_eq!(json["connection"], "gateway");
         assert_eq!(json["model"], "claude-sonnet-4-6");
         assert_eq!(json["turns"], 1);
         assert_eq!(json["input_tokens"], 4500);
@@ -341,7 +341,7 @@ mod tests {
         use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
         let summary = RunMetrics {
             session_id: "s".into(),
-            tier: "t".into(),
+            connection: "t".into(),
             model: "m".into(),
             turns: 1,
             input_tokens: 0,
@@ -373,7 +373,7 @@ mod tests {
         use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
         let summary = RunMetrics {
             session_id: "s".into(),
-            tier: "t".into(),
+            connection: "t".into(),
             model: "m".into(),
             turns: 1,
             input_tokens: 0,
@@ -401,7 +401,7 @@ mod tests {
         use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
         let line = OutputLine::session_interrupted(RunMetrics {
             session_id: "s".into(),
-            tier: "t".into(),
+            connection: "t".into(),
             model: "m".into(),
             turns: 1,
             input_tokens: 0,
@@ -428,7 +428,7 @@ mod tests {
         use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
         let line = OutputLine::session_interrupted(RunMetrics {
             session_id: "s".into(),
-            tier: "t".into(),
+            connection: "t".into(),
             model: "m".into(),
             turns: 1,
             input_tokens: 0,
@@ -455,7 +455,7 @@ mod tests {
         use crate::display::{OutputLine, RunMetrics, RunUsageSummary};
         let summary = RunMetrics {
             session_id: "s".into(),
-            tier: "t".into(),
+            connection: "t".into(),
             model: "m".into(),
             turns: 1,
             input_tokens: 4500,

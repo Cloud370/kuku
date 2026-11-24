@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use kuku::config::ModelRef;
 use kuku_client::local::SESSION_PROTOCOL_VERSION;
 use kuku_client::{Connection, ConnectionOptions, Error, ModelCatalog, SessionStatus};
 
 use crate::menu::{Choice, ChoiceKind};
-use crate::model_default::ResolvedModel;
 
 use super::{Search, busy, job_detail, value_choice};
 
@@ -86,12 +86,8 @@ pub(super) async fn find(
                 })
                 .collect()
         }
-        Search::Models { tier, route } => {
-            return Ok(model_choices(
-                client.models().await?,
-                tier.as_deref(),
-                route.as_ref(),
-            ));
+        Search::Models(route) => {
+            return Ok(model_choices(client.models().await?, route.as_ref()));
         }
         Search::Values(target) => {
             let choices: Vec<_> = client
@@ -132,67 +128,52 @@ pub(super) async fn find(
     Ok((choices, String::new()))
 }
 
-fn model_choices(
-    catalog: ModelCatalog,
-    tier: Option<&str>,
-    route: Option<&ResolvedModel>,
-) -> (Vec<Choice>, String) {
-    let named = tier.unwrap_or(&catalog.default_tier);
-    let mut matches = catalog.tiers.iter().filter(|tier| {
-        route.is_some_and(|route| tier.connection == route.connection && tier.model == route.model)
-    });
-    let current = matches
-        .clone()
-        .find(|tier| tier.name == named)
-        .or_else(|| matches.next().filter(|_| matches.next().is_none()))
-        .map(|tier| tier.name.clone());
+fn model_choices(catalog: ModelCatalog, current: Option<&ModelRef>) -> (Vec<Choice>, String) {
     let mut choices = Vec::new();
-    let mut default = catalog.default_tier.clone();
+    let default = &catalog.default_model;
     let labels = subscription_labels(&catalog.connections);
-    for tier in catalog.tiers {
-        let account = labels.get(tier.connection.as_str());
-        let (label, mut detail) = if let Some(account) = account {
-            (tier.model.clone(), account.clone())
-        } else {
-            (
-                tier.name.clone(),
-                format!("{} · {}", tier.model, tier.connection),
-            )
-        };
-        let selected = current.as_ref() == Some(&tier.name);
+    for model in catalog.models {
+        let account = labels.get(model.connection.as_str());
+        let mut detail = account.unwrap_or(&model.connection).clone();
+        let is_model = |id: &ModelRef| id.connection == model.connection && id.model == model.model;
+        let selected = current.is_some_and(is_model);
         if selected {
             detail.push_str(" · Current");
         }
-        if tier.name == catalog.default_tier {
-            default.clone_from(&tier.model);
-            detail.push_str(" · Default");
+        if is_model(default) {
+            detail.push_str(" · New Sessions default");
         }
-        if let Some(purpose) = tier.purpose.as_ref().filter(|purpose| {
-            account.is_none()
-                && !purpose.is_empty()
-                && *purpose != &tier.name
-                && *purpose != &tier.model
-        }) {
+        if let Some(purpose) = model
+            .purpose
+            .as_ref()
+            .filter(|purpose| account.is_none() && !purpose.is_empty() && *purpose != &model.model)
+        {
             detail.push_str(&format!(" · {purpose}"));
         }
-        if let Some(error) = &tier.error {
+        if let Some(error) = &model.error {
             let message = if account.is_some() {
-                error.message.replace(&tier.connection, "subscription")
+                error.message.replace(&model.connection, "subscription")
             } else {
                 error.message.clone()
             };
             detail.push_str(&format!(" · {message}"));
         }
         choices.push(Choice::new(
-            label,
+            model.model.clone(),
             detail,
             ChoiceKind::ModelRoute {
-                tier: Box::new(tier),
+                model: Box::new(model),
                 current: selected,
             },
         ));
     }
-    (choices, format!("Default · {default}"))
+    let connection = labels
+        .get(default.connection.as_str())
+        .unwrap_or(&default.connection);
+    (
+        choices,
+        format!("New Sessions default · {} · {connection}", default.model),
+    )
 }
 
 pub(super) async fn send_route_labels(
@@ -222,7 +203,9 @@ pub(super) async fn send_route_labels(
     })
 }
 
-fn subscription_labels(connections: &[kuku_client::ConnectionSummary]) -> BTreeMap<&str, String> {
+pub(crate) fn subscription_labels(
+    connections: &[kuku_client::ConnectionSummary],
+) -> BTreeMap<&str, String> {
     let mut counts = BTreeMap::new();
     for label in connections
         .iter()
@@ -290,28 +273,32 @@ async fn service_status(
 mod tests {
     use serde_json::json;
 
-    use super::model_choices;
+    use super::{ModelRef, model_choices};
     use crate::menu::ChoiceKind;
 
     #[test]
     fn subscription_routes_use_model_and_masked_email_for_display() {
         let catalog = serde_json::from_value(json!({
-            "default_tier":"internal-name/fixture",
+            "default_model":{"connection":"internal-name","model":"gpt-fixture"},
             "connections": [
                 {"name":"internal-name","protocol":"openai-responses","subscription_label":"ChatGPT · a***@e***"},
                 {"name":"other-internal-name","protocol":"openai-responses","subscription_label":"ChatGPT · a***@e***"}
             ],
-            "tiers": [
-                {"name":"internal-name/fixture","connection":"internal-name","model":"gpt-fixture"},
-                {"name":"other-internal-name/fixture","connection":"other-internal-name","model":"gpt-fixture"}
+            "models": [
+                {"connection":"internal-name","model":"gpt-fixture"},
+                {"connection":"other-internal-name","model":"gpt-fixture"}
             ]
         })).unwrap();
-        let (choices, _) = model_choices(catalog, None, None);
+        let current = ModelRef::new("other-internal-name", "gpt-fixture");
+        let (choices, _) = model_choices(catalog, Some(&current));
         assert_eq!(choices[0].label, "gpt-fixture");
-        assert_eq!(choices[0].detail, "ChatGPT · a***@e*** · #1 · Default");
-        assert_eq!(choices[1].detail, "ChatGPT · a***@e*** · #2");
+        assert_eq!(
+            choices[0].detail,
+            "ChatGPT · a***@e*** · #1 · New Sessions default"
+        );
+        assert_eq!(choices[1].detail, "ChatGPT · a***@e*** · #2 · Current");
         assert!(
-            matches!(&choices[0].kind, ChoiceKind::ModelRoute {tier, ..} if tier.name == "internal-name/fixture")
+            matches!(&choices[0].kind, ChoiceKind::ModelRoute {model, ..} if model.connection == "internal-name")
         );
     }
 }

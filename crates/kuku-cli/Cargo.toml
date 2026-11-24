@@ -16,9 +16,6 @@ path = "src/lib.rs"
 name = "kuku-cli"
 path = "src/bin/kuku-cli.rs"
 
-[features]
-server = []
-
 [lints]
 workspace = true
 
@@ -38,3 +35,6 @@ kuku = { workspace = true, features = ["test_support"] }
 httpmock = "0.7"
 tempfile = "3"
 wreq = { version = "6.0.0-rc.28", features = ["json"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+axum = { workspace = true }

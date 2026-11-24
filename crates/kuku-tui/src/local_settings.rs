@@ -1,8 +1,11 @@
+use std::time::Duration;
+
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions};
 use url::Url;
 
-pub(crate) const LOCAL_SERVICE_REQUIRED: &str = "Set current model as default requires the active local service; reopen /model on a local connection.";
+pub(crate) const LOCAL_SERVICE_REQUIRED: &str =
+    "Change model settings on the managed service host with /model or kuku config set.";
 pub(crate) const LOCAL_SERVICE_CHANGED: &str =
     "The local service or config changed; reopen /model before saving.";
 
@@ -79,4 +82,30 @@ pub(crate) fn ensure_same_service(
     } else {
         Err(LOCAL_SERVICE_CHANGED.into())
     }
+}
+
+pub(crate) async fn wait_for_config(
+    connection: Option<&Connection>,
+    service: &ServiceIdentity,
+    expected_hash: &str,
+) -> bool {
+    let Some(local) = connection.and_then(|connection| connection.local.as_ref()) else {
+        return false;
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match local.status().await {
+                Ok(Some(active)) if active.identity() == *service => {
+                    if active.status().config_sha256.as_deref() == Some(expected_hash) {
+                        return true;
+                    }
+                }
+                Ok(_) => return false,
+                Err(_) => {}
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or(false)
 }

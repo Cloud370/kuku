@@ -1,6 +1,7 @@
-use kuku_client::{Action, AgentConfig, Error, ModelCatalog, TierSummary};
+use kuku::config::ModelRef;
+use kuku_client::{Action, AgentConfig, Error, ModelCatalog, ModelSummary};
 
-use crate::jobs::Job;
+use crate::jobs::{Job, subscription_labels};
 use crate::menu::{Choice, ChoiceKind, PickerKind, PromptKind};
 use crate::text::{effort_label, service_tier_label, single_line};
 
@@ -29,7 +30,7 @@ impl AgentSetupStep {
 pub(crate) enum AgentSetupAction {
     Create,
     Open(AgentSetupStep),
-    Model(Option<String>),
+    Model(Option<ModelRef>),
     Thinking(Option<String>),
     Service(Option<String>),
 }
@@ -39,13 +40,37 @@ pub(crate) struct AgentSetup {
     address: Address,
     config: AgentConfig,
     models: Option<ModelCatalog>,
+    session_exists: bool,
+    session_default_model: Option<ModelRef>,
 }
 
 impl AgentSetup {
-    fn route(&self) -> Option<&TierSummary> {
+    fn default_model(&self) -> Option<&ModelRef> {
+        if self.session_exists {
+            self.session_default_model.as_ref()
+        } else {
+            Some(&self.models.as_ref()?.default_model)
+        }
+    }
+
+    fn route(&self) -> Option<&ModelSummary> {
         let catalog = self.models.as_ref()?;
-        let tier = self.config.tier.as_deref().unwrap_or(&catalog.default_tier);
-        catalog.tiers.iter().find(|route| route.name == tier)
+        let exact = self
+            .config
+            .connection
+            .as_deref()
+            .zip(self.config.model.as_deref());
+        let (connection, model) = match exact {
+            Some(pair) => pair,
+            None => {
+                let default = self.default_model()?;
+                (default.connection.as_str(), default.model.as_str())
+            }
+        };
+        catalog
+            .models
+            .iter()
+            .find(|route| route.connection == connection && route.model == model)
     }
 
     fn choices(&self, step: AgentSetupStep) -> Vec<Choice> {
@@ -66,13 +91,29 @@ impl AgentSetup {
                 })
             });
         let route_service = settings.and_then(|settings| settings.service_tier.as_deref());
+        let labels = self
+            .models
+            .as_ref()
+            .map(|catalog| subscription_labels(&catalog.connections));
+        let connection_label = |connection: &str| {
+            labels
+                .as_ref()
+                .and_then(|labels| labels.get(connection))
+                .cloned()
+                .unwrap_or_else(|| connection.to_owned())
+        };
+        let label =
+            |model: &str, connection: &str| format!("{model} · {}", connection_label(connection));
         match step {
             AgentSetupStep::Review => {
                 let mut choices = vec![choice("Create Agent", "", AgentSetupAction::Create)];
                 if self.models.is_some() {
                     choices.push(choice(
                         "Model",
-                        route.map_or("Default", |route| &route.model),
+                        route.map_or_else(
+                            || "Session default".into(),
+                            |route| label(&route.model, &route.connection),
+                        ),
                         AgentSetupAction::Open(AgentSetupStep::Model),
                     ));
                 }
@@ -96,25 +137,25 @@ impl AgentSetup {
                 let Some(catalog) = &self.models else {
                     return Vec::new();
                 };
-                let default = catalog
-                    .tiers
-                    .iter()
-                    .find(|route| route.name == catalog.default_tier);
                 std::iter::once(choice(
-                    "Default",
-                    default.map_or("", |route| &route.model),
+                    "Session default",
+                    self.default_model()
+                        .map_or_else(String::new, |id| label(&id.model, &id.connection)),
                     AgentSetupAction::Model(None),
                 ))
                 .chain(
                     catalog
-                        .tiers
+                        .models
                         .iter()
                         .filter(|route| route.error.is_none())
                         .map(|route| {
                             choice(
-                                &route.name,
                                 &route.model,
-                                AgentSetupAction::Model(Some(route.name.clone())),
+                                connection_label(&route.connection),
+                                AgentSetupAction::Model(Some(ModelRef::new(
+                                    &route.connection,
+                                    &route.model,
+                                ))),
                             )
                         }),
                 )
@@ -149,8 +190,9 @@ impl AgentSetup {
         }
     }
 
-    fn select_model(&mut self, tier: Option<String>) {
-        self.config.tier = tier;
+    fn select_model(&mut self, model: Option<ModelRef>) {
+        (self.config.connection, self.config.model) =
+            model.map_or((None, None), |id| (Some(id.connection), Some(id.model)));
         let caps = self.route().and_then(|route| route.capabilities.as_ref());
         let keep_thinking = self.config.reasoning_effort.as_ref().is_none_or(|value| {
             caps.is_some_and(|caps| {
@@ -185,6 +227,12 @@ impl App {
             address: Address::new(self.active.session.clone(), name),
             config: AgentConfig::default(),
             models: None,
+            session_exists: self.pane().exists,
+            session_default_model: self
+                .pane()
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.session_default_model.clone()),
         });
         let picker = self.picker(PickerKind::AgentSetup(AgentSetupStep::Review), Vec::new());
         picker.header = format!("{} · Loading models…", single_line(&setup.address.agent));
@@ -240,7 +288,7 @@ impl App {
                 self.show_agent_setup(step, setup);
                 return;
             }
-            AgentSetupAction::Model(tier) => setup.select_model(tier),
+            AgentSetupAction::Model(model) => setup.select_model(model),
             AgentSetupAction::Thinking(value) => setup.config.reasoning_effort = value,
             AgentSetupAction::Service(value) => setup.config.service_tier = value,
         }
@@ -280,5 +328,46 @@ impl App {
             picker.problem = model_problem;
         }
         picker.agent_setup = Some(setup);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Address, AgentConfig, AgentSetup, AgentSetupAction, AgentSetupStep, ModelRef};
+    use crate::menu::ChoiceKind;
+
+    #[test]
+    fn agent_creation_uses_the_existing_session_default_among_same_ids() {
+        let catalog = serde_json::from_value(json!({
+            "default_model": {"connection": "new", "model": "same/model"},
+            "connections": [
+                {"name":"new", "protocol":"openai-responses"},
+                {"name":"original", "protocol":"openai-responses"},
+            ],
+            "models": [
+                {"connection":"new", "model":"same/model"},
+                {"connection":"original", "model":"same/model"},
+            ],
+        }))
+        .unwrap();
+        let mut setup = AgentSetup {
+            address: Address::new("session".into(), "new-agent".into()),
+            config: AgentConfig::default(),
+            models: Some(catalog),
+            session_exists: true,
+            session_default_model: Some(ModelRef::new("original", "same/model")),
+        };
+        let choices = setup.choices(AgentSetupStep::Model);
+        assert_eq!(choices[0].detail, "same/model · original");
+        assert_eq!(setup.route().unwrap().connection, "original");
+        let ChoiceKind::AgentSetup(AgentSetupAction::Model(new)) = &choices[1].kind else {
+            panic!("expected the exact pair for the explicit model row");
+        };
+        setup.select_model(new.clone());
+        assert_eq!(setup.route().unwrap().connection, "new");
+        assert_eq!(setup.config.connection.as_deref(), Some("new"));
+        assert_eq!(setup.config.model.as_deref(), Some("same/model"));
     }
 }

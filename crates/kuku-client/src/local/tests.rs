@@ -51,6 +51,7 @@ impl ManagedFixture {
                 pid: Some(std::process::id()),
                 data_dir: Some(service.data_dir().to_string_lossy().into_owned()),
                 config_path: Some(service.config_path().to_string_lossy().into_owned()),
+                config_sha256: None,
                 busy: Vec::new(),
                 draining: false,
             }),

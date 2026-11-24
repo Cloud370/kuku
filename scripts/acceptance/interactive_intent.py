@@ -24,7 +24,7 @@ INTENT_REQUEST_BYTES = 64000
 REVIEW_REQUEST_BYTES = 192 * 1024
 TURN_TIMEOUT = 125
 ARTIFACT_LIMIT = 64 * 1024
-ROUTING_FIELDS = ("connection", "tier", "model", "reasoning_effort", "service_tier", "preset")
+ROUTING_FIELDS = ("connection", "model", "reasoning_effort", "service_tier", "preset")
 
 
 def files_at(workspace):
@@ -225,7 +225,7 @@ def delegation(client, boundary, folder, secret_values, route):
     stamp = "CEDAR-FORK-17"
     (workspace / "review.txt").write_text(stamp + "\n", encoding="utf-8")
     boundary.phase = "first-delegation"
-    prompt = ("Create an independent Agent named reviewer with its default route (leave model, tier, and connection unspecified). "
+    prompt = ("Create an independent Agent named reviewer with its default route (leave model and connection unspecified). "
               "Give reviewer the ability to send a message back to main. Ask it to read the one-line stamp in review.txt "
               "and use send_message to report the actual stamp to main. "
               "Tell me the stamp after reviewer messages it back.")
@@ -292,7 +292,7 @@ def delegation(client, boundary, folder, secret_values, route):
         save_screen(folder, "first-delegation", screen, secret_values)
         terminal.exit_cleanly()
     return {"name": "first-delegation", "passed": all(checks.values()), "checks": checks, "session_id": session,
-            "child_selection": {key: selection.get(key) for key in ("model", "connection", "tier", "settings")},
+            "child_selection": {key: selection.get(key) for key in ("model", "connection", "settings")},
             "first_create_request_status": first_create_status, "child_report_in_main_event_id": received,
             "main_tools": main_tools, "child_tools": reviewer_tools, "screen": "first-delegation.txt"}
 

@@ -7,10 +7,9 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use kuku::adapter::inspect_model;
-use kuku::config::{ModelEntry, parse_config_text};
+use kuku::config::{ModelRef, config_sha256, parse_config_text};
 use kuku::session::AgentConfig;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{ServiceState, failure};
 
@@ -24,9 +23,10 @@ pub(super) struct ModelDefaultPlanRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ModelDefaultPlan {
-    tier: String,
-    overwrite_user_default: bool,
     config_sha256: String,
+    already_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    register_previous_default: Option<ModelRef>,
 }
 
 #[derive(Debug)]
@@ -40,7 +40,7 @@ pub(super) async fn plan(
     State(service): State<Arc<ServiceState>>,
     Query(request): Query<ModelDefaultPlanRequest>,
 ) -> Response {
-    let (Some(_identity), Some(config_path)) = (&service.identity, &service.config_path) else {
+    let (Some(_identity), Some(config_source)) = (&service.identity, &service.config_source) else {
         return no_store(failure(
             StatusCode::CONFLICT,
             "managed_service_required",
@@ -54,7 +54,7 @@ pub(super) async fn plan(
             "a resolved connection and model are required",
         ));
     }
-    let path = config_path.clone();
+    let path = config_source.path.clone();
     let result = tokio::task::spawn_blocking(move || resolve_file_plan(&path, &request)).await;
     match result {
         Ok(Ok(plan)) => no_store(Json(plan).into_response()),
@@ -93,7 +93,7 @@ fn resolve_plan(
     bytes: &[u8],
     request: &ModelDefaultPlanRequest,
 ) -> Result<ModelDefaultPlan, PlanFailure> {
-    let config_sha256 = format!("{:x}", Sha256::digest(bytes));
+    let config_sha256 = config_sha256(bytes);
     if config_sha256 != request.config_sha256 {
         return Err(PlanFailure::ConfigChanged);
     }
@@ -101,76 +101,40 @@ fn resolve_plan(
     let file = parse_config_text(text).map_err(|_| PlanFailure::ConfigInvalid)?;
     let config = file.resolve().map_err(|_| PlanFailure::ConfigInvalid)?;
 
-    let mut matching = config
-        .tiers
-        .iter()
-        .filter(|(_, tier)| tier.provider == request.connection && tier.model == request.model)
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
-    if let Some(index) = matching
-        .iter()
-        .position(|name| name == &config.default_tier)
-    {
-        let default = matching.remove(index);
-        matching.insert(0, default);
-    }
-
-    if !matching.is_empty() {
-        for tier in matching {
-            if inspect_model(
-                &config,
-                &AgentConfig {
-                    tier: Some(tier.clone()),
-                    ..AgentConfig::default()
-                },
-            )
-            .is_ok_and(|selection| {
-                selection.connection == request.connection && selection.model == request.model
-            }) {
-                return Ok(ModelDefaultPlan {
-                    tier,
-                    overwrite_user_default: false,
-                    config_sha256,
-                });
-            }
-        }
+    let route = ModelRef::new(&request.connection, &request.model);
+    if config.model(&route).is_none() {
         return Err(PlanFailure::RouteUnusable);
     }
-
-    let mut fallback = file;
-    fallback.model.insert(
-        "user-default".into(),
-        ModelEntry {
-            request: None,
-            provider: request.connection.clone(),
-            model: request.model.clone(),
-            think: None,
-            reasoning_effort: None,
-            service_tier: None,
-            context_window: None,
-            max_output_tokens: None,
-            purpose: Some("Saved by /model".into()),
-            output: None,
-        },
-    );
-    fallback.default_model = Some("user-default".into());
-    let fallback = fallback.resolve().map_err(|_| PlanFailure::RouteUnusable)?;
-    if !inspect_model(
-        &fallback,
+    let current = config.default_model();
+    let already_default = &route == current;
+    let register_previous_default = if !already_default
+        && !file
+            .model
+            .get(&current.connection)
+            .is_some_and(|models| models.contains_key(&current.model))
+    {
+        #[derive(Deserialize)]
+        struct RawDefault {
+            default_model: ModelRef,
+        }
+        let raw = toml::from_str::<RawDefault>(text).map_err(|_| PlanFailure::ConfigInvalid)?;
+        Some(ModelRef::new(&current.connection, raw.default_model.model))
+    } else {
+        None
+    };
+    inspect_model(
+        &config,
         &AgentConfig {
-            tier: Some("user-default".into()),
+            connection: Some(route.connection),
+            model: Some(route.model),
             ..AgentConfig::default()
         },
     )
-    .is_ok_and(|selection| {
-        selection.connection == request.connection && selection.model == request.model
-    }) {
-        return Err(PlanFailure::RouteUnusable);
-    }
+    .map_err(|_| PlanFailure::RouteUnusable)?;
     Ok(ModelDefaultPlan {
-        tier: "user-default".into(),
-        overwrite_user_default: true,
         config_sha256,
+        already_default,
+        register_previous_default,
     })
 }
 
@@ -183,178 +147,59 @@ fn no_store(mut response: Response) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use kuku::config::config_sha256;
 
-    use axum::extract::{Query, State};
-    use axum::http::{StatusCode, header};
-    use sha2::{Digest, Sha256};
-
-    use super::{ModelDefaultPlanRequest, PlanFailure, ServiceState, plan, resolve_plan};
+    use super::{ModelDefaultPlanRequest, PlanFailure, resolve_plan};
 
     const CONFIG: &str = r#"
-default_model = "balanced"
+default_model = { connection = "work", model = "chat" }
 
-[provider.openai]
+[provider.work]
 format = "openai-chat"
-base_url = "https://api.openai.com/v1"
+base_url = "https://example.org/v1"
 api_key = "test-key"
-profile = "openai"
-service_tiers = ["auto", "priority"]
-reasoning_efforts = ["low", "medium", "high"]
 
-[model.strong]
-provider = "openai"
-model = "gpt-5"
-think = "off"
+[provider.other]
+format = "openai-chat"
+base_url = "https://other.example.org/v1"
+api_key = "test-key"
 
-[model.balanced]
-provider = "openai"
-model = "gpt-4"
-think = "off"
-
-[model.light]
-provider = "openai"
-model = "gpt-3.5"
-think = "off"
+[model.other."chat"]
+max_output_tokens = 512
 "#;
 
-    fn request(bytes: &[u8], model: &str) -> ModelDefaultPlanRequest {
+    fn request(connection: &str, model: &str) -> ModelDefaultPlanRequest {
         ModelDefaultPlanRequest {
-            connection: "openai".into(),
+            connection: connection.into(),
             model: model.into(),
-            config_sha256: format!("{:x}", Sha256::digest(bytes)),
+            config_sha256: config_sha256(CONFIG.as_bytes()),
         }
     }
 
     #[test]
-    fn uses_the_service_environment_and_prefers_a_usable_matching_default() {
-        const MODEL: &str = "KUKU_MODEL_DEFAULT_SERVICE_MODEL";
-
-        if !kuku::test_support::isolate_test(
-            module_path!(),
-            stringify!(uses_the_service_environment_and_prefers_a_usable_matching_default),
-            |command| {
-                command.env(MODEL, "server-model");
-            },
-        ) {
-            return;
-        }
-
-        let input = CONFIG.replace(
-            "model = \"gpt-4\"",
-            "model = \"$KUKU_MODEL_DEFAULT_SERVICE_MODEL\"",
-        );
-        let alternate = format!(
-            "{input}\n[model.alternate]\nprovider = \"openai\"\nmodel = \"server-model\"\nthink = \"off\"\n"
-        );
-        let plan = resolve_plan(
-            alternate.as_bytes(),
-            &request(alternate.as_bytes(), "server-model"),
-        )
-        .unwrap();
-        assert_eq!("balanced", plan.tier);
-        assert!(!plan.overwrite_user_default);
-    }
-
-    #[test]
-    fn falls_back_to_another_usable_matching_tier_before_user_default() {
-        let input = CONFIG.replace(
-            "model = \"gpt-4\"\nthink = \"off\"",
-            "model = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"",
-        ) + "\n[model.alternate]\nprovider = \"openai\"\nmodel = \"gpt-4\"\nthink = \"off\"\n";
-        let plan = resolve_plan(input.as_bytes(), &request(input.as_bytes(), "gpt-4")).unwrap();
-        assert_eq!("alternate", plan.tier);
-        assert!(!plan.overwrite_user_default);
-    }
-
-    #[test]
-    fn rejects_when_all_matching_tiers_are_unusable() {
-        let input = CONFIG.replace(
-            "model = \"gpt-4\"\nthink = \"off\"",
-            "model = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"",
-        ) + "\n[model.alternate]\nprovider = \"openai\"\nmodel = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"\n";
-        assert!(matches!(
-            resolve_plan(input.as_bytes(), &request(input.as_bytes(), "gpt-4")),
-            Err(PlanFailure::RouteUnusable)
-        ));
-    }
-
-    #[test]
-    fn fallback_validation_includes_provider_options() {
-        let invalid = CONFIG.replace(
-            "profile = \"openai\"",
-            "profile = \"compatible\"\nrouting = { order = [\"fast\"] }",
-        );
-        assert!(matches!(
-            resolve_plan(
-                invalid.as_bytes(),
-                &request(invalid.as_bytes(), "new-model")
-            ),
-            Err(PlanFailure::RouteUnusable)
-        ));
-        let valid = CONFIG
-            .replace(
-                "base_url = \"https://api.openai.com/v1\"",
-                "base_url = \"https://openrouter.ai/api/v1\"",
-            )
-            .replace(
-                "profile = \"openai\"",
-                "profile = \"openrouter\"\nrouting = { order = [\"fast\"] }",
+    fn accepts_only_the_exact_registered_pair_including_the_implicit_default() {
+        for connection in ["work", "other"] {
+            let plan = resolve_plan(CONFIG.as_bytes(), &request(connection, "chat")).unwrap();
+            assert_eq!(config_sha256(CONFIG.as_bytes()), plan.config_sha256);
+            assert_eq!(connection == "work", plan.already_default);
+            assert_eq!(
+                (connection == "other").then(|| kuku::config::ModelRef::new("work", "chat")),
+                plan.register_previous_default,
             );
-        let plan = resolve_plan(valid.as_bytes(), &request(valid.as_bytes(), "new-model")).unwrap();
-        assert_eq!("user-default", plan.tier);
-        assert!(plan.overwrite_user_default);
+        }
+        assert!(matches!(
+            resolve_plan(CONFIG.as_bytes(), &request("work", "unregistered")),
+            Err(PlanFailure::RouteUnusable)
+        ));
     }
 
     #[test]
-    fn changed_config_hash_is_rejected() {
-        let bytes = CONFIG.as_bytes();
-        let mut request = request(bytes, "gpt-4");
+    fn rejects_file_changes_since_the_client_snapshot() {
+        let mut request = request("work", "chat");
         request.config_sha256 = "0".repeat(64);
         assert!(matches!(
-            resolve_plan(bytes, &request),
+            resolve_plan(CONFIG.as_bytes(), &request),
             Err(PlanFailure::ConfigChanged)
         ));
-    }
-
-    #[tokio::test]
-    async fn unmanaged_service_cannot_validate_a_model_default_plan() {
-        use arc_swap::ArcSwap;
-        use kuku::config::Config;
-        use tokio::sync::Mutex;
-
-        let app = Arc::new(crate::AppState {
-            run_manager: Mutex::new(crate::run_manager::RunManager::new(1)),
-            config: Arc::new(ArcSwap::from_pointee(Config {
-                tiers: Default::default(),
-                providers: Default::default(),
-                default_tier: String::new(),
-                discovery: Default::default(),
-                handoff: Default::default(),
-                logs: Default::default(),
-                plugin: Default::default(),
-                update: Default::default(),
-            })),
-            password: None,
-            kuku_home: Default::default(),
-            authorizer: Arc::new(kuku::permission::TrustedLocal),
-        });
-        let service = Arc::new(ServiceState::new(
-            app,
-            None,
-            Some("/untrusted/path-is-not-used".into()),
-            None,
-        ));
-        let response = plan(
-            State(service),
-            Query(ModelDefaultPlanRequest {
-                connection: "openai".into(),
-                model: "gpt-4".into(),
-                config_sha256: "0".repeat(64),
-            }),
-        )
-        .await;
-        assert_eq!(StatusCode::CONFLICT, response.status());
-        assert_eq!("no-store", response.headers()[header::CACHE_CONTROL]);
     }
 }

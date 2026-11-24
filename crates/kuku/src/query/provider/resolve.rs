@@ -13,12 +13,11 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
     let config = match resolve_config(ResolveConfigInput {
         provider: pending.query.provider,
         model: pending.query.model.clone(),
-        tier: pending.query.tier.clone(),
         base_url: pending.query.base_url.clone(),
         api_key: pending.query.api_key.clone(),
         max_output_tokens: pending.query.max_output_tokens,
         max_output_tokens_per_request: pending.query.runtime_limits.max_output_tokens_per_request,
-        config: Some((*pending.config).clone()),
+        config: Some(&pending.config),
         connection: pending.query.connection.clone(),
         reasoning_effort: pending.query.reasoning_effort.clone(),
         output: pending.query.output,
@@ -93,17 +92,20 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
 pub(in crate::query) fn usable_model_routes(
     config: &crate::config::Config,
     builtin_adapter: bool,
-) -> Vec<crate::config::TierInfo> {
+    max_output_tokens_per_request: Option<u32>,
+) -> Vec<crate::config::ModelInfo> {
     config
-        .tier_infos()
+        .model_infos()
         .into_iter()
         .filter_map(|mut info| {
-            let selected = crate::adapter::inspect_model(
+            let selected = crate::session::runtime::resolve_agent_model(
                 config,
                 &crate::AgentConfig {
-                    tier: Some(info.name.clone()),
+                    connection: Some(info.connection.clone()),
+                    model: Some(info.model.clone()),
                     ..crate::AgentConfig::default()
                 },
+                max_output_tokens_per_request,
             )
             .ok()?;
             if selected.output != crate::config::RequestedOutput::Text {

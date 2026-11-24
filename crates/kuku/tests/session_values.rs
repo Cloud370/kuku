@@ -20,10 +20,8 @@ const READ_TASK: &str = "Read the attached evidence.";
 
 fn options(workspace: &Path, data: &Path) -> SessionOptions {
     let mut config = common::test_config();
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "values-test".into();
-    tier.think = kuku::config::ThinkLevel::Off;
+    let model_settings = common::set_test_model(&mut config, "openai", "values-test");
+    model_settings.think = kuku::config::ThinkLevel::Off;
     config.plugin.enabled = false;
     config.handoff.enabled = false;
     SessionOptions::new(workspace, data, config)

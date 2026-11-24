@@ -22,7 +22,6 @@ pub struct Query {
     pub(super) conversation: ConversationAddress,
     pub(super) provider: Option<crate::provider::Provider>,
     pub(super) model: Option<String>,
-    pub(super) tier: Option<String>,
     pub(super) config_path: Option<PathBuf>,
     pub(super) config_obj: Option<Config>,
     pub(super) base_url: Option<String>,
@@ -617,7 +616,6 @@ impl Query {
             conversation: ConversationAddress::MAIN,
             provider: None,
             model: None,
-            tier: None,
             config_path: None,
             config_obj: None,
             base_url: None,
@@ -697,13 +695,13 @@ impl Query {
         self
     }
 
-    /// Set the provider to use for this query.
+    /// Specify the wire protocol when supplying the model, endpoint, and credential directly.
     pub fn provider(mut self, provider: crate::provider::Provider) -> Self {
         self.provider = Some(provider);
         self
     }
 
-    /// Set the model alias or provider:model name.
+    /// Set the exact model ID. Specify its named connection when using a configuration.
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
         self
@@ -721,7 +719,7 @@ impl Query {
         self
     }
 
-    /// Set the API key directly, bypassing config resolution.
+    /// Supply the API key directly for this query.
     pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
         self.api_key = Some(api_key.into());
         self
@@ -739,9 +737,9 @@ impl Query {
         self
     }
 
-    /// Select a capability tier (strong/balanced/light). Mutually exclusive with `.model()`.
-    pub fn tier(mut self, tier: impl Into<String>) -> Self {
-        self.tier = Some(tier.into());
+    /// Select a configured connection together with [`Self::model`].
+    pub fn connection(mut self, connection: impl Into<String>) -> Self {
+        self.connection = Some(connection.into());
         self
     }
 
@@ -791,11 +789,6 @@ impl Query {
     }
 
     pub(super) fn validate(&self) -> Result<()> {
-        if self.tier.is_some() && self.model.is_some() && self.runtime.is_none() {
-            return Err(Error::InvalidArgument(
-                ".tier() and .model() are mutually exclusive".to_string(),
-            ));
-        }
         if self.max_output_tokens == Some(0) {
             return Err(Error::InvalidArgument(
                 ".max_output_tokens() must be a positive integer".to_string(),

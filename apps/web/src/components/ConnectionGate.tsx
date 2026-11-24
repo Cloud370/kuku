@@ -25,7 +25,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
         {data.busy.length > 0 && <p className="text-sm">Working Agents · {data.busy.join(", ")}</p>}
         {data.instance_id && (
           <p className="text-sm">
-            Use <code>kuku server restart</code>, then reopen with <code>kuku web</code>.
+            Use <code>kuku server restart</code>, then refresh this page.
           </p>
         )}
         <Button
@@ -64,7 +64,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
           {authRequired && (
             <>
               <p className="text-sm text-[var(--color-text-muted)]">
-                Open <code>kuku web</code> for local browser access.
+                Use an authenticated development link or enter the server access token.
               </p>
               {window.isSecureContext && (
                 <form className="flex gap-2" onSubmit={authenticate}>

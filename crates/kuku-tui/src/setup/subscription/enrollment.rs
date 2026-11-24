@@ -400,7 +400,6 @@ impl SetupState {
         let Stage::Registered(proxy, registration) = &flow.stage else {
             return true;
         };
-        self.subscription_saved = true;
         flow.next_poll = None;
         let published = settings
             .reload()

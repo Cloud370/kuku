@@ -39,7 +39,7 @@ pub use types::{
     RetryFailureKind, RetryMetadata, RetryPhase, RetrySource, RetryStopReason, RewindGroup,
     RewindGroupPage, SessionStatus, SessionSummary, Snapshot, Target, Timing,
 };
-pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
+pub use workspace::{ConnectionSummary, ModelCatalog, ModelSummary, SkillSummary};
 
 /// An unresolved approval and its execution context.
 #[derive(Debug, Clone, serde::Deserialize)]

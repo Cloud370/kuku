@@ -322,7 +322,7 @@ impl CredentialRepair {
                 "Credentials saved and local service restarted.\n\nReturn to the Session, then choose Continue to retry the existing input once. No retry has been sent."
             }
             Stage::Guidance => {
-                "Correct credentials on the service host; no local files changed.\n\n1. Run `kuku init` there with its config/data-dir options.\n   Or update the environment that launches that service.\n2. Run `kuku server restart` there when idle.\n3. Reconnect here, then choose Continue.\n\nThis client cannot write remote provider settings."
+                "Correct credentials on the service host.\n\n1. Open `kuku` and use `/model`, or run `kuku config set` there.\n   For an environment reference, update the service's environment.\n2. Run `kuku server restart` there when idle.\n3. Reconnect here, then choose Continue."
             }
             Stage::Failed => {
                 "Credential repair is unavailable for this view. No request was retried."

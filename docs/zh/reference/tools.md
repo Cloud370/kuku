@@ -37,21 +37,22 @@ Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模�
 - `list_skills(offset?, limit?)`
 - `search_skills(query, offset?, limit?)`
 - `use_skill(skill_name)`
+- `skill_resources(skill_name, action, path?, query?, offset?, limit?)`
 
-启用默认 skill Tool surface 时，运行时会一起暴露 `list_skills`、`search_skills` 和 `use_skill`。
+用 `list_skills` 或 `search_skills` 找到 Skill，通过 `use_skill` 加载指令。加载内置文档 Skill 后，使用 `skill_resources` 列出、搜索或读取资料。[Skill 资料](skill-format.md#skill-资料)
 
 ## Session 协作工具
 
 | Tool | Required args | Optional args | Risk |
 |---|---|---|---|
 | `ask_user` | `question` | none | `session` |
-| `create_agent` | `address` | `instructions`, `tools`, `preset`, `tier`, `workspace` | `session` |
+| `create_agent` | `address` | `instructions`, `tools`, `preset`, `connection`, `model`, `workspace` | `session` |
 | `send_message` | `to`, `message` | `wake`, `values` | `session` |
 | `list_agents` | none | `wait_for` | `session` |
 
 `create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。已结束的回复可以附带 `last_request`，其中包含请求所用的模型、请求指定的服务档位和供应商回报的服务档位。缺少依据的字段省略。
 
-模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。通过此工具创建的子 Agent 会在显式选择或预设工具之外获得 `send_message` 和 `list_agents`。传入空的 `tools` 数组时只提供这两个工具。候选模型路线会注明配置里的 `input_modalities` 和 `output_modalities`，以及路线实际可用的模态。创建回执会列出实际可用的工具、子 Agent 的输入和输出模态以及图像输入能力。宿主通过 SDK 指定精确的工具列表与供应商参数。
+显式选择模型时同时提供 `connection` 和精确 `model` ID。都省略时使用预设选中的模型或 Session 默认值。通过此工具创建的 Agent 会在选定工具之外获得 `send_message` 和 `list_agents`。传入空的 `tools` 数组时只提供这两个工具。模型目录列出两项组成的模型声明和实际可用模态。创建回执会列出实际可用的工具、输入和输出模态以及图像输入能力。宿主可通过 SDK 指定工具列表和供应商参数。
 
 `ask_user` 持久化问题，并在当前工具批次边界让出执行。宿主通过 SDK、CLI `reply` 或 server 回复端点，使用精确请求标识作答。问题和授权的等待语义见 [Session](../how-it-works/sessions.md#等待与回复)。
 

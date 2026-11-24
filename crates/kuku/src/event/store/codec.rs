@@ -154,7 +154,8 @@ fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_jso
             schema_version,
             session_id,
             created_at,
-            kuku_version
+            kuku_version,
+            default_model
         },
         PromptSnapshot {
             ts,

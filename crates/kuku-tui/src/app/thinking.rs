@@ -1,17 +1,16 @@
-use kuku::config::ThinkLevel;
+use kuku::config::{ModelRef, ThinkLevel};
 use kuku::{CapabilitySource, ProviderCapabilities, ProviderSettings};
 
 use crate::jobs::Job;
 use crate::menu::{Choice, ChoiceKind, PickerKind};
-use crate::model_default::ResolvedModel;
-use crate::setup::{SavedModelSetting, ThinkingDefaults, ThinkingSaveTarget};
+use crate::setup::{ThinkingDefaults, ThinkingSaveTarget, ThinkingSetting};
 use crate::text::effort_label;
 
 use super::{App, Modal, Pane};
 
 #[derive(Debug)]
 pub(crate) struct ThinkingPicker {
-    pub(crate) route: ResolvedModel,
+    pub(crate) route: ModelRef,
     pub(crate) current: Option<String>,
     pub(crate) inherited: Option<String>,
     pub(crate) declared: Option<String>,
@@ -19,7 +18,6 @@ pub(crate) struct ThinkingPicker {
     pub(crate) pending: bool,
     pub(crate) save: Option<ThinkingSaveTarget>,
     pub(crate) confirm: Option<String>,
-    tier: Option<String>,
 }
 
 impl Pane {
@@ -96,7 +94,6 @@ impl App {
         let picker = self.picker(PickerKind::Thinking, choices);
         picker.thinking = Some(Box::new(ThinkingPicker {
             route: route.clone(),
-            tier: config.tier.clone(),
             current,
             inherited,
             declared,
@@ -158,7 +155,7 @@ impl App {
             return;
         };
         if self.thinking_choice_current(Some(effort)) {
-            let change = SavedModelSetting::Thinking {
+            let change = ThinkingSetting {
                 target: target.clone(),
                 effort: effort.clone(),
             };
@@ -192,7 +189,6 @@ impl App {
         };
         picker.thinking.as_ref().is_some_and(|thinking| {
             self.available()
-                && self.pane().config().tier == thinking.tier
                 && self.resolved_model_route().as_ref() == Ok(&thinking.route)
                 && effort.is_none_or(|effort| {
                     self.pane().reasoning().is_some_and(|(_, caps)| {

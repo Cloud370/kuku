@@ -71,7 +71,7 @@ async fn threshold_handoff_injects_once_allows_tool_call_and_retains_configured_
     let session_id = "s_threshold_handoff_fixture";
     let first = query("prime handoff context")
         .session(session_id)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(prime_server.base_url())
         .api_key("test-key")
@@ -118,7 +118,7 @@ async fn threshold_handoff_injects_once_allows_tool_call_and_retains_configured_
 
     let second = query("trigger handoff with a tool")
         .session(session_id)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(handoff_server.base_url())
         .api_key("test-key")

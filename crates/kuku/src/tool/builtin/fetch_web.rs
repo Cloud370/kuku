@@ -24,11 +24,28 @@ pub(crate) async fn fetch_web(
     let Some(prompt) = args.get("prompt").and_then(Value::as_str) else {
         return ToolResultEnvelope::error("failed: missing prompt", "fetch_web requires prompt");
     };
-    let Some(model_tier) = args.get("model_tier").and_then(Value::as_str) else {
+    let (Some(connection), Some(model)) = (
+        args.get("connection").and_then(Value::as_str),
+        args.get("model").and_then(Value::as_str),
+    ) else {
         return ToolResultEnvelope::error(
-            "failed: missing model_tier",
-            "fetch_web requires model_tier — use a tier name from your configured model tiers",
+            "failed: missing model selection",
+            "fetch_web requires both connection and exact model ID from <kuku_models>",
         );
+    };
+    let resolved = match crate::session::runtime::resolve_agent_model(
+        config,
+        &crate::AgentConfig {
+            connection: Some(connection.into()),
+            model: Some(model.into()),
+            ..Default::default()
+        },
+        None,
+    ) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return ToolResultEnvelope::error("failed: resolve provider", error.to_string());
+        }
     };
 
     if let Err(e) = super::fetch_url::validate_url(url) {
@@ -37,19 +54,7 @@ pub(crate) async fn fetch_web(
 
     if let Some(cached) = cache_get(url) {
         let structured = serde_json::json!({"kind": "fetch_web", "url": url, "cached": true});
-        return if cached.truncated {
-            ToolResultEnvelope::ok_truncated(
-                format!("fetched (cached): {url}"),
-                cached.content,
-                structured,
-            )
-        } else {
-            ToolResultEnvelope::ok(
-                format!("fetched (cached): {url}"),
-                cached.content,
-                structured,
-            )
-        };
+        return ToolResultEnvelope::ok(format!("fetched (cached): {url}"), cached, structured);
     }
 
     let permit = match host.operations().acquire_owned().await {
@@ -78,24 +83,24 @@ pub(crate) async fn fetch_web(
     };
 
     let result = if markdown.len() < SMALL_CONTENT_THRESHOLD {
+        cache_put(url, &markdown);
         FetchedContent {
             content: markdown,
             truncated: false,
         }
     } else {
-        match call_secondary_llm(&markdown, prompt, model_tier, config, catalog).await {
+        match call_secondary_llm(&markdown, prompt, &resolved, catalog).await {
             Ok(summary) => summary,
             Err(_) => bounded_fallback_content(&markdown),
         }
     };
 
-    cache_put(url, &result.content, result.truncated);
-
     let structured = serde_json::json!({
         "kind": "fetch_web",
         "url": url,
         "prompt": prompt,
-        "model_tier": model_tier,
+        "connection": connection,
+        "model": model,
         "content_length": result.content.len(),
         "cached": false,
     });
@@ -216,30 +221,10 @@ fn html_to_markdown(url: &str, html: String) -> Result<String, ToolResultEnvelop
 async fn call_secondary_llm(
     content: &str,
     prompt: &str,
-    model_tier: &str,
-    config: &crate::config::Config,
+    resolved: &crate::provider::types::ResolvedProvider,
     catalog: &crate::prompt::PromptCatalog,
 ) -> Result<FetchedContent, ToolResultEnvelope> {
     use tokio_stream::StreamExt;
-
-    let resolved =
-        crate::provider::config::resolve_config(crate::provider::config::ResolveConfigInput {
-            tier: Some(model_tier.to_string()),
-            config: Some(config.clone()),
-            ..Default::default()
-        })
-        .or_else(|_| {
-            crate::provider::config::resolve_config(crate::provider::config::ResolveConfigInput {
-                config: Some(config.clone()),
-                ..Default::default()
-            })
-        })
-        .map_err(|e| {
-            ToolResultEnvelope::error(
-                "failed: resolve provider",
-                format!("cannot resolve tier '{model_tier}': {e}"),
-            )
-        })?;
 
     let max_chars = resolved.max_context_tokens as usize * 3;
     let end = content
@@ -286,7 +271,7 @@ async fn call_secondary_llm(
         thinking: resolved.thinking.clone(),
     };
 
-    let mut stream = crate::provider::stream_provider(&resolved, &request, None, None)
+    let mut stream = crate::provider::stream_provider(resolved, &request, None, None)
         .await
         .map_err(|e| {
             ToolResultEnvelope::error("failed: LLM call", format!("secondary LLM error: {e:?}"))
@@ -328,7 +313,7 @@ struct FetchedContent {
 }
 
 struct CacheEntry {
-    result: FetchedContent,
+    content: String,
     inserted_at: Instant,
 }
 
@@ -338,26 +323,23 @@ static URL_CACHE: LazyLock<Mutex<lru::LruCache<String, CacheEntry>>> = LazyLock:
     ))
 });
 
-fn cache_get(url: &str) -> Option<FetchedContent> {
+fn cache_get(url: &str) -> Option<String> {
     let mut cache = URL_CACHE.lock().ok()?;
     if let Some(entry) = cache.get(url) {
         if entry.inserted_at.elapsed() < CACHE_TTL {
-            return Some(entry.result.clone());
+            return Some(entry.content.clone());
         }
         cache.pop(url);
     }
     None
 }
 
-fn cache_put(url: &str, content: &str, truncated: bool) {
+fn cache_put(url: &str, content: &str) {
     if let Ok(mut cache) = URL_CACHE.lock() {
         cache.put(
             url.to_string(),
             CacheEntry {
-                result: FetchedContent {
-                    content: content.to_string(),
-                    truncated,
-                },
+                content: content.to_string(),
                 inserted_at: Instant::now(),
             },
         );
@@ -370,14 +352,12 @@ mod tests {
 
     fn test_context() -> (crate::config::Config, crate::prompt::PromptCatalog) {
         let catalog = crate::prompt::catalog::builtin_prompt_catalog();
-        let toml_str = crate::config::generate_default();
-        let file: crate::config::ConfigFile = toml::from_str(toml_str).unwrap();
-        let config = file.resolve().unwrap();
+        let config = crate::config::test_config();
         (config, catalog)
     }
 
     #[test]
-    fn validate_model_tier_is_required() {
+    fn validate_model_pair_is_required() {
         let (config, catalog) = test_context();
         let args = serde_json::json!({
             "url": "https://example.com",
@@ -390,13 +370,17 @@ mod tests {
             &catalog,
         ));
         assert_eq!(result.status, "error");
-        assert!(result.model_content.contains("model_tier"));
+        assert!(
+            result
+                .model_content
+                .contains("connection and exact model ID")
+        );
     }
 
     #[test]
     fn validate_missing_required_params() {
         let (config, catalog) = test_context();
-        let no_url = serde_json::json!({"prompt": "x", "model_tier": "light"});
+        let no_url = serde_json::json!({"prompt": "x", "connection": "test", "model": "fixture"});
         let r = tokio_test::block_on(fetch_web(
             &no_url,
             &crate::WorkspaceExecutionHost::default(),
@@ -405,7 +389,8 @@ mod tests {
         ));
         assert_eq!(r.status, "error");
 
-        let no_prompt = serde_json::json!({"url": "https://x.com", "model_tier": "light"});
+        let no_prompt =
+            serde_json::json!({"url": "https://x.com", "connection": "test", "model": "fixture"});
         let r = tokio_test::block_on(fetch_web(
             &no_prompt,
             &crate::WorkspaceExecutionHost::default(),
@@ -414,9 +399,9 @@ mod tests {
         ));
         assert_eq!(r.status, "error");
 
-        let no_tier = serde_json::json!({"url": "https://x.com", "prompt": "x"});
+        let no_pair = serde_json::json!({"url": "https://x.com", "prompt": "x"});
         let r = tokio_test::block_on(fetch_web(
-            &no_tier,
+            &no_pair,
             &crate::WorkspaceExecutionHost::default(),
             &config,
             &catalog,
@@ -426,22 +411,21 @@ mod tests {
 
     #[test]
     fn cache_round_trip() {
-        cache_put("https://test.com", "cached content", true);
+        cache_put("https://test.com", "cached content");
         let cached = cache_get("https://test.com").unwrap();
-        assert_eq!(cached.content, "cached content");
-        assert!(cached.truncated);
+        assert_eq!(cached, "cached content");
         assert_eq!(cache_get("https://other.com"), None);
     }
 
     #[test]
-    fn cached_fetch_preserves_truncation() {
+    fn cached_fetch_still_requires_a_registered_model_pair() {
         let (config, catalog) = test_context();
-        let url = "https://cached-truncated.example.com";
-        cache_put(url, "cached truncated content", true);
+        let url = "https://cached.example.com";
+        cache_put(url, "cached page content");
         let args = serde_json::json!({
             "url": url,
             "prompt": "summarize",
-            "model_tier": "light",
+            "connection": "test", "model": "missing",
         });
 
         let result = tokio_test::block_on(fetch_web(
@@ -451,9 +435,8 @@ mod tests {
             &catalog,
         ));
 
-        assert_eq!(result.status, "ok");
-        assert!(result.truncated);
-        assert_eq!(result.model_content, "cached truncated content");
+        assert_eq!(result.status, "error");
+        assert!(result.model_content.contains("is not registered"));
     }
 
     #[test]

@@ -243,10 +243,14 @@ impl Pane {
         if let Some((model, connection, effort)) = self.effective_model_identity() {
             Some(model_label(connection, model, effort))
         } else if self.snapshot.is_none() {
-            self.config()
-                .tier
-                .as_ref()
-                .map(|tier| format!("Tier {tier}"))
+            let config = self.config();
+            config
+                .connection
+                .as_deref()
+                .zip(config.model.as_deref())
+                .map(|(connection, model)| {
+                    model_label(connection, model, config.reasoning_effort.as_deref())
+                })
         } else {
             None
         }
@@ -254,8 +258,7 @@ impl Pane {
 
     fn model_route_changed(&self, config: &AgentConfig) -> bool {
         let current = self.config();
-        (&config.tier, &config.connection, &config.model)
-            != (&current.tier, &current.connection, &current.model)
+        (&config.connection, &config.model) != (&current.connection, &current.model)
     }
 
     fn set_snapshot(&mut self, snapshot: Box<Snapshot>) -> Option<u64> {
@@ -396,7 +399,6 @@ pub(crate) struct App {
     model_version: u64,
     pending_model_default: Option<PendingDefaultSave>,
     saving_model_default: Option<(u64, Selection)>,
-    saving_default_and_switch: Option<Selection>,
     pending_queue_action: Option<PendingQueueAction>,
     checking: VecDeque<String>,
     outstanding_checks: usize,
@@ -485,7 +487,6 @@ impl App {
             model_version: 0,
             pending_model_default: None,
             saving_model_default: None,
-            saving_default_and_switch: None,
             pending_queue_action: None,
             checking: VecDeque::new(),
             outstanding_checks: 0,
@@ -795,17 +796,14 @@ impl App {
                 self.model_editor_saved(ticket, editor, result)
             }
             Update::ModelSettingSaved(result) => self.model_setting_saved(result),
-            Update::ModelDefaultAndSwitchSaved(selection, tier, result) => {
-                self.model_default_and_switch_saved(selection, tier, result)
-            }
             Update::PreparedCredentialRepair(ticket, selection, result) => {
                 self.credential_repair_prepared(ticket, selection, result)
             }
             Update::SavedCredentialRepair(ticket, selection, result) => {
                 self.credential_repair_saved(ticket, selection, result)
             }
-            Update::PreparedDefault(ticket, selection, result) => {
-                self.prepared_model_default(ticket, selection, result)
+            Update::PreparedDefault(ticket, selection, follow_current, result) => {
+                self.prepared_model_default(ticket, selection, follow_current, result)
             }
             Update::SavedDefault(ticket, selection, result) => {
                 self.saved_model_default(ticket, selection, result)
@@ -851,10 +849,6 @@ impl App {
                     Err(error) => self.problem(format!("Service management · {error}")),
                 }
             }
-            Update::Web(result) => match result {
-                Ok(()) => self.message("Opened the browser"),
-                Err(error) => self.problem(format!("Open browser · {error}")),
-            },
             Update::ReplySource(selection, id, result) => self.copied_reply(selection, id, result),
             Update::Loaded(..)
             | Update::WatchConnected(..)

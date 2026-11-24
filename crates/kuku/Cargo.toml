@@ -51,6 +51,13 @@ fslock = "0.2"
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 minijinja = { version = "3.1", features = ["fuel", "serde"] }
 
+[build-dependencies]
+flate2 = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 rustix = { version = "1", features = ["fs"] }

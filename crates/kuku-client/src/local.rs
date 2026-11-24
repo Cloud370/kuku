@@ -25,7 +25,7 @@ use tokio::process::Child as DetachedChild;
 use self::windows::{DetachedChild, spawn_detached};
 
 /// Revision of the Session protocol expected by the product client.
-pub const SESSION_PROTOCOL_VERSION: u32 = 1;
+pub const SESSION_PROTOCOL_VERSION: u32 = 2;
 
 const MANAGEMENT_VERSION: u32 = 1;
 const DISCOVERY_LIMIT: u64 = 64 * 1024;
@@ -50,6 +50,8 @@ pub struct ServiceStatus {
     pub data_dir: Option<String>,
     /// Canonical configuration file used by the service.
     pub config_path: Option<String>,
+    /// SHA-256 of the configuration bytes most recently loaded by the service.
+    pub config_sha256: Option<String>,
     /// Active Agent work and cleanup holding the server open.
     pub busy: Vec<String>,
     /// Whether the server has paused admission to close Sessions.
@@ -129,7 +131,7 @@ pub enum LocalError {
     },
     /// The selected configuration does not exist.
     #[error(
-        "config file not found: {0}. Run kuku init to create the default config or select an existing --config"
+        "config file not found: {0}. Run kuku to set up a model, use kuku config set --patch TOML, or select an existing --config"
     )]
     ConfigMissing(PathBuf),
     /// The service uses an unsupported Session protocol.
@@ -179,7 +181,7 @@ impl LocalService {
         let config_path = config.unwrap_or(&default_config);
         let config_path = match config_path.canonicalize() {
             Ok(path) => path,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(error) if config.is_none() || error.kind() == io::ErrorKind::NotFound => {
                 std::path::absolute(config_path)?
             }
             Err(error) => return Err(error.into()),

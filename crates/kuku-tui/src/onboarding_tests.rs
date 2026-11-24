@@ -44,8 +44,13 @@ async fn stale_discovery_without_a_live_service_still_allows_setup() {
 async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("existing.toml");
-    let contents = kuku::config::generate_default()
-        .replace("$ANTHROPIC_API_KEY", "fixture-only-not-a-real-key");
+    let contents = r#"
+default_model = { connection = "fixture", model = "first-model" }
+[provider.fixture]
+format = "openai-responses"
+base_url = "https://fixture.invalid/v1"
+api_key = "fixture-only-not-a-real-key"
+"#;
     fs::write(&config, contents).unwrap();
     let options = ConnectionOptions {
         data_dir: Some(directory.path().join("data")),

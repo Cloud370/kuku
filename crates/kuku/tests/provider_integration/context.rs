@@ -28,7 +28,7 @@ async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
 
     let first = query("bootstrap turn")
         .session("s_provider_drift")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(first_server.base_url())
         .api_key("test-key")
@@ -66,7 +66,7 @@ async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
 
     let second = query("next turn")
         .session("s_provider_drift")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(second_server.base_url())
         .api_key("test-key")
@@ -107,7 +107,7 @@ async fn provider_request_uses_snapshot_then_history_then_current_input_frame() 
 
     let first = query("first input")
         .session("s_snapshot_order")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -135,7 +135,7 @@ async fn provider_request_uses_snapshot_then_history_then_current_input_frame() 
 
     let second = query("live input")
         .session("s_snapshot_order")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -179,7 +179,8 @@ async fn first_turn_request_includes_budgeted_skill_block_and_hints() {
             .method(POST)
             .path("/v1/messages")
             .body_contains("<kuku_skills>")
-            .body_contains("Available skills: 1 total")
+            .body_contains("Available skills: 2 total")
+            .body_contains("kuku-docs - Explain how to use this version of kuku")
             .body_contains("tdd - Write tests first")
             .body_contains("Use list_skills to browse available skills.")
             .body_contains("Use search_skills to find skills by task or workflow.");
@@ -195,7 +196,7 @@ async fn first_turn_request_includes_budgeted_skill_block_and_hints() {
             })));
     });
     let output = query("show skills")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")

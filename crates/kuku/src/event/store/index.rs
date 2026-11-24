@@ -29,7 +29,6 @@ pub(crate) struct ContextMarks {
 pub(crate) struct RouteSelectors {
     pub(crate) query_connection: Option<String>,
     pub(crate) query_model: Option<String>,
-    pub(crate) query_tier: Option<String>,
 }
 
 impl RouteSelectors {
@@ -37,7 +36,6 @@ impl RouteSelectors {
         Self {
             query_connection: config["connection"].as_str().map(str::to_owned),
             query_model: config["model"].as_str().map(str::to_owned),
-            query_tier: config["tier"].as_str().map(str::to_owned),
         }
     }
 }

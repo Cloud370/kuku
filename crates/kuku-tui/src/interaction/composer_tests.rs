@@ -1,6 +1,7 @@
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use kuku::config::ModelRef;
 use kuku_client::{Action, HistoryKind, HistoryPage, OutputReference, Timing};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -35,7 +36,7 @@ fn load_model(app: &mut App, applied: Option<&str>, next: Option<&str>) {
             "tools": [],
         })
     };
-    let config = |effort| json!({"tier":"fixture-model", "reasoning_effort":effort});
+    let config = |effort| json!({"connection":"fixture", "model":"gemini-4-neon", "reasoning_effort":effort});
     let snapshot = serde_json::from_value(json!({
         "session_id": app.active.session,
         "workspace": app.workspace,
@@ -153,7 +154,7 @@ fn command_and_model_lists_wrap_and_stay_above_the_composer() {
         position(&buffer, "Model route").1,
         position(&buffer, "Search models…").1
     );
-    assert!(position(&buffer, "d Default + switch").1 < position(&buffer, "keep this draft").1);
+    assert!(position(&buffer, "d Set default").1 < position(&buffer, "keep this draft").1);
     press(&mut app, KeyCode::Down);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 0));
 }
@@ -398,7 +399,7 @@ fn cycling_respects_pending_model_settings_and_changes_only_the_active_agent() {
     assert!(matches!(app.effects.as_slice(), [Job::Save(command)]
         if command.target == app.selection().target &&
         matches!(&command.action, Action::Configure { config }
-            if config.reasoning_effort.as_deref() == Some("max") && config.tier.as_deref() == Some("fixture-model"))));
+            if config.reasoning_effort.as_deref() == Some("max") && config.connection.as_deref() == Some("fixture") && config.model.as_deref() == Some("gemini-4-neon"))));
     app.key(cycle);
     assert_eq!(1, app.effects.len());
     assert!(app.notice.is_none());
@@ -486,7 +487,7 @@ fn use_default_clears_a_legacy_override_without_reconfiguring_the_route() {
     assert!(
         matches!(app.effects.as_slice(), [Job::Save(command), Job::ClosePicker]
         if matches!(&command.action, Action::Configure { config }
-            if config.reasoning_effort.is_none() && config.tier.as_deref() == Some("fixture-model")))
+            if config.reasoning_effort.is_none() && config.connection.as_deref() == Some("fixture") && config.model.as_deref() == Some("gemini-4-neon")))
     );
 }
 
@@ -621,16 +622,15 @@ fn model_picker_letters_are_actions_until_search_is_focused() {
     use crate::menu::{Choice, ChoiceKind};
 
     let mut app = connected_app();
-    let tier =
-        serde_json::from_value(json!({"name":"deep", "connection":"gateway", "model":"fixture"}))
-            .unwrap();
+    let model =
+        serde_json::from_value(json!({"connection":"gateway", "model":"provider/deep"})).unwrap();
     app.picker(
         PickerKind::Models,
         vec![Choice::new(
-            "deep",
-            "",
+            "provider/deep",
+            "gateway",
             ChoiceKind::ModelRoute {
-                tier: Box::new(tier),
+                model: Box::new(model),
                 current: false,
             },
         )],
@@ -645,30 +645,44 @@ fn model_picker_letters_are_actions_until_search_is_focused() {
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if !picker.search_focused));
 
     press(&mut app, KeyCode::Char('d'));
-    let (selection, tier) = std::mem::take(&mut app.effects)
+    let (ticket, selection, route) = std::mem::take(&mut app.effects)
         .into_iter()
         .find_map(|job| match job {
-            Job::SaveAndUseModel(selection, tier) => Some((selection, tier)),
+            Job::PrepareDefault {
+                ticket,
+                selection,
+                route,
+                follow_current: false,
+            } => Some((ticket, selection, route)),
             _ => None,
         })
-        .expect("queue the default save directly");
+        .expect("prepare the highlighted model as the new Session default");
+    assert_eq!(ModelRef::new("gateway", "provider/deep"), route);
+
     app.pane_mut().draft.insert("Keep this draft");
-    press(&mut app, KeyCode::Enter);
-    assert!(app.effects.is_empty());
-    assert_eq!(app.pane().draft.text(), "Keep this draft");
-    app.update(Update::ModelDefaultAndSwitchSaved(
+    app.update(Update::PreparedDefault(
+        ticket,
         selection.clone(),
-        tier.clone(),
-        Err("Save failed".into()),
+        false,
+        Ok(crate::model_default::test_plan(route)),
     ));
-    assert!(app.pane().config().tier.is_none());
-    app.save_and_use_model(tier.clone());
-    app.update(Update::ModelDefaultAndSwitchSaved(
-        selection,
-        tier,
-        Ok(true),
-    ));
-    assert_eq!(Some("deep"), app.pane().config().tier.as_deref());
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 1));
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        app.effects
+            .iter()
+            .any(|job| matches!(job, Job::SaveDefault { .. }))
+    );
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Save(_) | Job::Model(..)))
+    );
+    app.update(Update::SavedDefault(ticket, selection, Ok(true)));
+    assert_eq!(app.pane().draft.text(), "Keep this draft");
+    assert!(app.pane().config().connection.is_none());
+    assert!(app.pane().config().model.is_none());
 }
 
 #[test]
@@ -677,14 +691,12 @@ fn model_picker_aligns_details_and_fits_the_account_and_route_markers() {
 
     let mut app = connected_app();
     let route = |name, detail| {
-        let tier =
-            serde_json::from_value(json!({"name":name, "connection":"fixture", "model":name}))
-                .unwrap();
+        let model = serde_json::from_value(json!({"connection":"fixture", "model":name})).unwrap();
         Choice::new(
             name,
             detail,
             ChoiceKind::ModelRoute {
-                tier: Box::new(tier),
+                model: Box::new(model),
                 current: false,
             },
         )

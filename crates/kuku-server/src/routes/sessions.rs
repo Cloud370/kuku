@@ -244,6 +244,7 @@ fn session_snapshot(
     let mut value = json!({
         "ok":true,
         "session_id":id,
+        "session_default_model":view.session_default_model,
         "workspace":target.workspace,
         "cursor":view.cursor,
         "agent":view.snapshot,

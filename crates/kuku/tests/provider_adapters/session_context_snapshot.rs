@@ -35,9 +35,7 @@ pub(super) fn session_options(
     provider.options.profile = profile;
     provider.api_key = ApiKey::Plaintext(api_key.into());
     config.providers.insert(connection.into(), provider);
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = connection.into();
-    tier.model = MODEL.into();
+    common::set_test_model(&mut config, connection, MODEL);
     config.handoff.enabled = false;
     config.plugin.enabled = false;
     let mut options = SessionOptions::new(workspace, data, config);
@@ -58,6 +56,13 @@ pub(super) fn add_connection(
     provider.options.profile = profile;
     provider.api_key = ApiKey::Plaintext(api_key.into());
     options.config.providers.insert(name.into(), provider);
+    options.config.models.insert(
+        kuku::ModelRef::new(name, MODEL),
+        kuku::config::ModelConfig {
+            max_output_tokens: Some(48_000),
+            ..Default::default()
+        },
+    );
 }
 
 pub(super) fn agent_config(connection: &str) -> AgentConfig {

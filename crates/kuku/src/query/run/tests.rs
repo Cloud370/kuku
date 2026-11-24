@@ -15,9 +15,9 @@ use crate::query::types::{
 
 fn test_config() -> crate::config::Config {
     crate::config::Config {
-        tiers: std::collections::BTreeMap::new(),
+        models: std::collections::BTreeMap::new(),
         providers: std::collections::BTreeMap::new(),
-        default_tier: "balanced".to_string(),
+        default_model: crate::config::ModelRef::default(),
         discovery: crate::config::DiscoveryConfig::default(),
         handoff: crate::config::HandoffConfig::default(),
         logs: crate::config::LogsConfig::default(),

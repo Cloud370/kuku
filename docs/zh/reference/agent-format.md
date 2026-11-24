@@ -10,7 +10,8 @@ Agent 预设为新建 Session Agent 提供默认配置。预设名用于选择�
 ---
 name: my-reviewer
 description: Review tests and cite the relevant files
-tier: balanced
+connection: work
+model: your-model-id
 tools: [find_files, read_file, search_text]
 ---
 
@@ -24,12 +25,12 @@ Identify one missing test case and explain the expected behavior.
 | Markdown 正文 | Agent 默认行为指令 |
 | `name` | 预设名，默认取不含扩展名的文件名 |
 | `description` | 可选的目录简介 |
-| `tier` | 默认模型档位（也接受 `model`，默认 `balanced`） |
+| `connection`、`model` | 可选的已配置连接名与精确模型 ID，须成对填写。都省略时使用 Session 默认值。 |
 | `tools` | 显式工具名列表（空列表表示不挂载工具） |
 | `tool_profile` | 省略 `tools` 时的默认工具集：`read`（默认）、`read_write` 或 `none` |
 
-加载器也会解析 `max_turns`（默认 `10`）。Session 预设解析应用指令、模型档位和工具，执行预算由 Session 运行时限额控制。[预设解析](../../../crates/kuku/src/session/runtime/selection.rs) · [SDK 限额](sdk.md#限额与用量)
+加载器会将 `max_turns`（默认 `10`）解析为元数据。执行预算由 Session 运行时限额控制。[预设解析](../../../crates/kuku/src/session/runtime/selection.rs) · [SDK 限额](sdk.md#限额与用量)
 
 ## 使用预设
 
-模型可调用 `create_agent`（`{"address":"reviewer","preset":"my-reviewer"}`），再调用 `send_message`（`{"to":"reviewer","message":"Review the new tests"}`）。直接调用 SDK 时设置 `AgentConfig.preset`。显式传入的指令、档位与工具会覆盖预设默认值。[Session 协作工具](tools.md#session-协作工具)
+模型可调用 `create_agent`（`{"address":"reviewer","preset":"my-reviewer"}`），再调用 `send_message`（`{"to":"reviewer","message":"Review the new tests"}`）。直接调用 SDK 时设置 `AgentConfig.preset`。显式传入的指令、模型选择和工具会覆盖预设默认值。[Session 协作工具](tools.md#session-协作工具)

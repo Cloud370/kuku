@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderToolCall;
 use crate::session::runtime::JobControl;
+use crate::skill::bundle::{self, resources};
 use serde_json::json;
 
 use super::helpers::{is_inline_skill_tool, now_timestamp, resolved_tool_available};
@@ -84,7 +85,7 @@ pub(crate) fn write_tool_result(
     })
 }
 
-fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
+pub(super) fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
     if pending.query.runtime.is_some() {
         super::runtime_tools::runtime_session(pending)?
             .read_agent_events(pending.conversation.as_str())
@@ -152,7 +153,7 @@ fn clamp_inline_skill_tool_result(
     result
 }
 
-fn handle_use_skill(
+async fn handle_use_skill(
     pending: &mut PendingRun,
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
@@ -174,24 +175,73 @@ fn handle_use_skill(
         ));
     };
 
-    let skill_dir = def.source_path.as_deref().unwrap_or("").to_string();
-    let result = format!("<!-- loaded: {skill_dir} -->\n\n{}", def.instructions);
-
-    let events = current_skill_events(pending)?;
-    let mut skill_names =
-        crate::skill::session::loaded_skill_names(&events, pending.conversation.as_str());
-    if !skill_names.iter().any(|name| name == &def.name) {
-        skill_names.push(def.name.clone());
-        skill_names.sort();
-    }
-    let registry = current_skill_registry(pending);
-    EventStore::open(&pending.events_path)?.append(EventPayload::ContextSkills {
-        conversation: pending.conversation.as_str().to_string(),
-        turn: pending.turn,
-        ts: now_timestamp()?,
-        registry: serde_json::to_value(&registry)?,
-        bootstrap_loaded: skill_names,
-    })?;
+    let mut structured = json!({
+        "kind": "skill_load",
+        "conversation": pending.conversation.as_str(),
+        "name": def.name,
+        "description": def.description,
+        "source": def.source.as_str(),
+        "loaded": true,
+    });
+    let location = if def.source == crate::skill::definition::SkillSource::Builtin {
+        let Some(version) = pending
+            .skill_registry
+            .as_ref()
+            .and_then(|registry| registry.docs_bundle())
+        else {
+            return Ok(crate::tool::ToolResultEnvelope::error(
+                "missing Skill resource version",
+                "The Turn has no bundled resource version for kuku-docs.",
+            ));
+        };
+        let home = pending.kuku_home.clone();
+        let retained_version = version.to_owned();
+        let retained =
+            tokio::task::spawn_blocking(move || bundle::retain(&home, &retained_version)).await;
+        if let Err(error) = retained
+            .map_err(std::io::Error::other)
+            .and_then(|result| result)
+        {
+            return Ok(crate::tool::ToolResultEnvelope::error(
+                "Skill resource version unavailable",
+                error.to_string(),
+            ));
+        }
+        structured["version"] = json!(version);
+        "builtin:kuku-docs"
+    } else {
+        let events = current_skill_events(pending)?;
+        let mut skill_names =
+            crate::skill::session::loaded_skill_names(&events, pending.conversation.as_str());
+        let bootstrapped_docs = crate::skill::session::restore_turn_snapshot(
+            &events,
+            pending.conversation.as_str(),
+            pending.turn,
+        )
+        .is_some_and(|snapshot| {
+            snapshot
+                .bootstrap_loaded
+                .iter()
+                .any(|name| name == bundle::NAME)
+        });
+        if !bootstrapped_docs {
+            skill_names.retain(|name| name != bundle::NAME);
+        }
+        if !skill_names.iter().any(|name| name == &def.name) {
+            skill_names.push(def.name.clone());
+            skill_names.sort();
+        }
+        let registry = current_skill_registry(pending);
+        EventStore::open(&pending.events_path)?.append(EventPayload::ContextSkills {
+            conversation: pending.conversation.as_str().to_string(),
+            turn: pending.turn,
+            ts: now_timestamp()?,
+            registry: serde_json::to_value(&registry)?,
+            bootstrap_loaded: skill_names,
+        })?;
+        def.source_path.as_deref().unwrap_or("")
+    };
+    let result = format!("<!-- loaded: {location} -->\n\n{}", def.instructions);
 
     Ok(crate::tool::ToolResultEnvelope {
         status: "ok".to_string(),
@@ -200,15 +250,56 @@ fn handle_use_skill(
         truncated: false,
         faults: Default::default(),
         supplied_full_write: false,
-        structured: Some(json!({
-            "kind": "skill_load",
-            "conversation": pending.conversation.as_str(),
-            "name": def.name,
-            "description": def.description,
-            "source": def.source.as_str(),
-            "loaded": true,
-        })),
+        structured: Some(structured),
     })
+}
+
+async fn handle_skill_resources(
+    pending: &mut PendingRun,
+    tool_call: &ProviderToolCall,
+) -> Result<crate::tool::ToolResultEnvelope> {
+    use crate::tool::ToolResultEnvelope;
+
+    let request = match resources::Request::from_args(&tool_call.args) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(ToolResultEnvelope::error(
+                "invalid Skill resource arguments",
+                error,
+            ));
+        }
+    };
+    let Some(version) = pending
+        .skill_registry
+        .as_ref()
+        .and_then(|registry| registry.docs_bundle())
+    else {
+        return Ok(ToolResultEnvelope::error(
+            "Skill unavailable",
+            "kuku-docs is unavailable in this Turn's Skill snapshot.",
+        ));
+    };
+    let events = current_skill_events(pending)?;
+    if !crate::skill::session::docs_loaded_in_turn(
+        &events,
+        pending.conversation.as_str(),
+        pending.turn,
+        version,
+    ) {
+        return Ok(ToolResultEnvelope::error(
+            "Skill not loaded",
+            "Load kuku-docs with use_skill before reading its resources.",
+        ));
+    }
+    let home = pending.kuku_home.clone();
+    let version = version.to_owned();
+    let result = tokio::task::spawn_blocking(move || request.execute(&home, &version)).await;
+    Ok(result
+        .map_err(std::io::Error::other)
+        .and_then(|result| result)
+        .unwrap_or_else(|error| {
+            ToolResultEnvelope::error("Skill resource unavailable", error.to_string())
+        }))
 }
 
 fn handle_list_skills(
@@ -221,6 +312,7 @@ fn handle_list_skills(
         &registry,
         &events,
         pending.conversation.as_str(),
+        pending.turn,
         &tool_call.args,
     );
     let count = payload["skills"].as_array().map_or(0, Vec::len);
@@ -237,6 +329,7 @@ fn handle_search_skills(
         &registry,
         &events,
         pending.conversation.as_str(),
+        pending.turn,
         &tool_call.args,
     );
     let count = payload["skills"].as_array().map_or(0, Vec::len);
@@ -278,14 +371,12 @@ pub(super) async fn execute_tool_call(
             format!("unknown tool: {}", tool_call.name),
         ));
     }
-    if matches!(
-        tool_call.name.as_str(),
-        "use_skill" | "list_skills" | "search_skills"
-    ) {
+    if is_inline_skill_tool(&tool_call.name) {
         let result = match tool_call.name.as_str() {
-            "use_skill" => handle_use_skill(pending, tool_call)?,
+            "use_skill" => handle_use_skill(pending, tool_call).await?,
             "list_skills" => handle_list_skills(pending, tool_call)?,
             "search_skills" => handle_search_skills(pending, tool_call)?,
+            resources::TOOL_NAME => handle_skill_resources(pending, tool_call).await?,
             _ => unreachable!(),
         };
         let result = clamp_inline_skill_tool_result(pending, &tool_call.name, result);
@@ -456,9 +547,9 @@ mod tests {
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
-            tiers: std::collections::BTreeMap::new(),
+            models: std::collections::BTreeMap::new(),
             providers: std::collections::BTreeMap::new(),
-            default_tier: "balanced".to_string(),
+            default_model: crate::config::ModelRef::default(),
             discovery: crate::config::DiscoveryConfig::default(),
             handoff: crate::config::HandoffConfig::default(),
             logs: crate::config::LogsConfig::default(),

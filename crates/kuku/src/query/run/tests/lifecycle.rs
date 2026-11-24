@@ -16,6 +16,7 @@ async fn cancel_when_idle_produces_turn_end() {
                 session_id: "test".to_string(),
                 created_at: "2026-05-20T00:00:00Z".to_string(),
                 kuku_version: "0.1.0".to_string(),
+                default_model: None,
             })
             .unwrap();
         store

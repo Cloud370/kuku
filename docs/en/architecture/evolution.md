@@ -63,7 +63,7 @@ Use one advancing chain per Agent and short Session commit serialization. Model 
 
 ## Model resolution, context, and handoff
 
-Use a single configuration resolver. A chosen Preset supplies behavior and initial defaults; a chosen Tier supplies route/settings defaults; explicit Agent choices take precedence. Resolve against the exact configured connection/model and bind the result before request dispatch. Later edits to an Agent do not change others or silently rewrite their defaults. Configuration changes apply at explicit safe boundaries.
+Use a single configuration resolver. A chosen Preset supplies behavior and optional initial model defaults. Explicit Agent choices take precedence. Resolve settings for the exact configured connection and model before dispatch. Later edits to an Agent do not change others or silently rewrite their defaults. Configuration changes apply at explicit safe boundaries.
 
 Adapter capability metadata and validation serve SDK callers, user interfaces, and model-facing Agent tools. Reasoning and service choices remain separate; provider-specific values must be declared, validated, and recorded rather than silently ignored or forced into a universal ordering. Distinguish requested settings, resolved settings sent, and optional provider-reported settings. Explicitly incompatible choices fail; never claim an unreported setting was confirmed.
 

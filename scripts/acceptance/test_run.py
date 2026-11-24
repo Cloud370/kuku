@@ -450,7 +450,8 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_runner_grades_timed_out_sdk_only_after_verified_cleanup(self):
         args = SimpleNamespace(sdk_binary=self.directory / "session_task", config=self.directory / "config.toml",
-                               connection="fixture", require_streaming=False, sdk_args=[], suite="frontier")
+                               connection="fixture", model="fixture-model", require_streaming=False,
+                               sdk_args=[], suite="frontier")
         case = {"workspace": "/app", "artifacts": [], "timeout_sec": 20}
         summary = {"tests": 1, "passed": 1, "failed": 0, "skipped": 0, "pending": 0, "other": 0}
         sampler = mock.Mock()
@@ -578,7 +579,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(source, self.directory / "source" / "tasks" / case["id"])
         self.assertEqual((built, secrets), (image, creds))
 
-    def test_benchmark_model_and_effort_overrides_require_live_direct_deepseek(self):
+    def test_benchmark_model_and_effort_overrides_require_a_live_route(self):
         base = ["run.py", "benchmark", "--case", "regex-log"]
         for flags in (
             ["--suite", "frontier", "--provider", "deepseek"],
@@ -616,7 +617,7 @@ class AcceptanceTests(unittest.TestCase):
         config = self.directory / "config.toml"
         config.write_text("# local fixture\n")
         base = ["run.py", "--output", str(self.directory), "benchmark", "--mode", "live", "--case", "regex-log",
-                "--sdk-binary", "/fixture/sdk", "--config", str(config), "--connection", "fixture",
+                "--sdk-binary", "/fixture/sdk", "--config", str(config), "--connection", "fixture", "--model", "fixture-model",
                 "--reserve-usd", "0.5", "--reservation-reason", "local fixture"]
 
         def benchmark(_args, _directory, record, _secrets):
@@ -632,6 +633,8 @@ class AcceptanceTests(unittest.TestCase):
                     mock.patch.object(ACCEPTANCE, "run_benchmark", side_effect=benchmark) as run, mock.patch("builtins.print"):
                 self.assertEqual(ACCEPTANCE.main(), 0)
             self.assertEqual(run.call_args.args[0].sdk_args, [*limits, "--no-provider-retry"])
+            self.assertEqual((run.call_args.args[0].connection, run.call_args.args[0].model),
+                             ("fixture", "fixture-model"))
 
     def test_grader_cannot_reuse_a_report_left_by_the_agent(self):
         logs = self.directory / "logs"

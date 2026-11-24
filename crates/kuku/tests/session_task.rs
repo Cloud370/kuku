@@ -249,8 +249,13 @@ fn assert_terminal(report: &Value, terminal_kind: &str) {
 }
 
 fn config(server: &MockServer) -> String {
-    let mut config = format!(
-        r#"[provider.test-route]
+    format!(
+        r#"default_model = {{ connection = "test-route", model = "session-task-fixture" }}
+[model.test-route."session-task-fixture"]
+think = "off"
+context_window = 65536
+max_output_tokens = 1024
+[provider.test-route]
 format = "openai-chat"
 base_url = "{}"
 api_key = "mock-only"
@@ -263,17 +268,5 @@ enabled = false
 enabled = false
 "#,
         server.url("")
-    );
-    for tier in ["light", "balanced", "strong"] {
-        config.push_str(&format!(
-            r#"[model.{tier}]
-provider = "test-route"
-model = "session-task-fixture"
-think = "off"
-context_window = 65536
-max_output_tokens = 1024
-"#
-        ));
-    }
-    config
+    )
 }

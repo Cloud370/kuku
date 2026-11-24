@@ -2,6 +2,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use kuku::config::ModelRef;
 use kuku_client::local::BuildPolicy;
 use kuku_client::local::RestartOutcome;
 use kuku_client::{
@@ -14,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::menu::{Choice, ChoiceKind, Ticket};
-use crate::model_default::{self, PreparedDefaultSave, ResolvedModel};
+use crate::model_default::{self, PreparedDefaultSave};
 use crate::setup::{
     CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
     PreparedCredentialRepair, SavedCredentialRepair,
@@ -28,6 +29,7 @@ pub(crate) use history::LoadedHistory;
 mod observe;
 mod search;
 use search::find;
+pub(crate) use search::subscription_labels;
 
 const UPDATE_CAPACITY: usize = 64;
 
@@ -42,10 +44,7 @@ pub(crate) enum Search {
     Skills(String),
     Paths(String),
     Sessions(String),
-    Models {
-        tier: Option<String>,
-        route: Option<ResolvedModel>,
-    },
+    Models(Option<ModelRef>),
     Values(Target),
     Jobs(Target),
     Server,
@@ -61,8 +60,7 @@ pub(crate) struct ValueSave {
 pub(crate) enum Job {
     OpenModelEditor(u64, crate::setup::SetupIntent),
     SaveModelEditor(u64, Box<crate::setup::ModelEditor>),
-    SaveModelSetting(crate::setup::SavedModelSetting),
-    SaveAndUseModel(Selection, Box<kuku_client::TierSummary>),
+    SaveModelSetting(crate::setup::ThinkingSetting),
     PrepareCredentialRepair {
         ticket: u64,
         selection: Selection,
@@ -103,7 +101,7 @@ pub(crate) enum Job {
     Find(Ticket, Search),
     SendRouteLabels(u64, [String; 2]),
     AgentModels(u64),
-    ThinkingDefaults(u64, AgentConfig, ResolvedModel),
+    ThinkingDefaults(u64, AgentConfig, ModelRef),
     CustomSpeed(
         u64,
         Box<crate::app::speed::SpeedTarget>,
@@ -113,7 +111,8 @@ pub(crate) enum Job {
     PrepareDefault {
         ticket: u64,
         selection: Selection,
-        route: ResolvedModel,
+        route: ModelRef,
+        follow_current: bool,
     },
     SaveDefault {
         ticket: u64,
@@ -132,7 +131,6 @@ pub(crate) enum Job {
     Output(Selection, u64, String, u64, usize),
     PrepareRestart(u64),
     Restart(Box<kuku_client::local::ServiceIdentity>),
-    Web(Option<Target>),
     ReplySource(Selection, u64),
     Copy(String),
     PasteClipboard(Selection, u64, crate::clipboard::PasteSource),
@@ -150,11 +148,6 @@ pub(crate) enum Update {
     ModelEditorOpened(u64, Result<Box<crate::setup::ModelEditor>, String>),
     ModelEditorSaved(u64, Box<crate::setup::ModelEditor>, Result<bool, String>),
     ModelSettingSaved(Result<bool, String>),
-    ModelDefaultAndSwitchSaved(
-        Selection,
-        Box<kuku_client::TierSummary>,
-        Result<bool, String>,
-    ),
     PreparedCredentialRepair(u64, Selection, Result<PreparedCredentialRepair, String>),
     SavedCredentialRepair(u64, Selection, Result<CredentialRepairApplied, String>),
     Connected {
@@ -215,8 +208,8 @@ pub(crate) enum Update {
         Box<crate::app::speed::SpeedTarget>,
         Result<crate::setup::service_tier::SpeedResult, String>,
     ),
-    PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
-    SavedDefault(u64, Selection, Result<(), String>),
+    PreparedDefault(u64, Selection, bool, Result<PreparedDefaultSave, String>),
+    SavedDefault(u64, Selection, Result<bool, String>),
     Saved(Command, Result<(), Error>),
     ValueSaved(Selection, Option<String>, Result<NamedValue, Error>),
     BackgroundJobCancelled(Selection, Result<JobSnapshot, Error>),
@@ -229,7 +222,6 @@ pub(crate) enum Update {
     Output(Selection, u64, Result<OutputChunk, Error>),
     RestartPrepared(u64, Result<kuku_client::local::ServiceIdentity, Error>),
     Restarted(Result<Restarted, Error>),
-    Web(Result<(), Error>),
     ReplySource(Selection, u64, Result<String, Error>),
 }
 
@@ -311,22 +303,6 @@ impl Jobs {
                     Update::ModelSettingSaved(
                         crate::setup::save_setting(&options, connection.as_ref(), change).await,
                     )
-                });
-            }
-            Job::SaveAndUseModel(selection, tier) => {
-                let options = self.options.clone();
-                let connection = self.connection.clone();
-                self.spawn(async move {
-                    let change = crate::setup::SavedModelSetting::Default {
-                        name: tier.name.clone(),
-                        route: ResolvedModel {
-                            connection: tier.connection.clone(),
-                            model: tier.model.clone(),
-                        },
-                    };
-                    let result =
-                        crate::setup::save_setting(&options, connection.as_ref(), change).await;
-                    Update::ModelDefaultAndSwitchSaved(selection, tier, result)
                 });
             }
             Job::Connect => self.connect(),
@@ -417,6 +393,7 @@ impl Jobs {
                 ticket,
                 selection,
                 route,
+                follow_current,
             } => {
                 let options = self.options.clone();
                 let connection = self.connection.clone();
@@ -424,6 +401,7 @@ impl Jobs {
                     Update::PreparedDefault(
                         ticket,
                         selection,
+                        follow_current,
                         model_default::prepare(&options, connection.as_ref(), route).await,
                     )
                 });
@@ -731,7 +709,6 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 .await;
             Update::Output(selection, id, result)
         }
-        Job::Web(target) => Update::Web(web(&connection, target.as_ref()).await),
         Job::ReplySource(selection, id) => {
             let result = history_text(client, &selection.target, id, HistoryKind::Assistant).await;
             Update::ReplySource(selection, id, result)
@@ -739,7 +716,6 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         Job::OpenModelEditor(..)
         | Job::SaveModelEditor(..)
         | Job::SaveModelSetting(..)
-        | Job::SaveAndUseModel(..)
         | Job::PrepareCredentialRepair { .. }
         | Job::SaveCredentialRepair { .. }
         | Job::RestartCredentialRepair { .. }
@@ -878,21 +854,6 @@ fn busy(items: &[String], draining: bool) -> String {
     } else {
         "Ready".into()
     }
-}
-
-async fn web(connection: &Connection, target: Option<&Target>) -> Result<(), Error> {
-    let session = target.map(|target| target.session_id.as_str());
-    let agent = target.map(|target| target.agent.as_str());
-    let workspace = &connection.workspace;
-    let url = if connection.local.is_some() {
-        connection
-            .client
-            .browser_url(workspace, session, agent)
-            .await?
-    } else {
-        connection.client.web_url(workspace, session, agent)?
-    };
-    crate::open_browser(url.as_str()).map_err(Error::from)
 }
 
 fn disk_result<T>(result: Result<Result<T, Error>, tokio::task::JoinError>) -> Result<T, Error> {

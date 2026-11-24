@@ -199,7 +199,6 @@ configure_path
 echo ""
 echo "  kuku --help          Show usage"
 echo "  kuku --version       Show version"
-echo "  kuku init            Create the user configuration"
-echo "  kuku                 Open the terminal client in this directory"
+echo "  kuku                 Set up a model or open the terminal client"
 echo ""
 echo "Docs: https://kuku.run"

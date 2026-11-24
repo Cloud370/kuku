@@ -63,8 +63,6 @@ impl Workspace {
             [
                 "--writer-connection",
                 "writer-route",
-                "--writer-tier",
-                "balanced",
                 "--writer-model",
                 "writer-test",
                 "--writer-reasoning-effort",
@@ -73,8 +71,6 @@ impl Workspace {
                 "default",
                 "--reviewer-connection",
                 "reviewer-route",
-                "--reviewer-tier",
-                "light",
                 "--reviewer-model",
                 "reviewer-test",
                 "--reviewer-reasoning-effort",
@@ -100,22 +96,12 @@ impl Workspace {
 
 fn config(server: &MockServer) -> String {
     format!(
-        r#"default_model = "balanced"
-[model.balanced]
-provider = "writer-route"
-model = "writer-tier-default"
+        r#"default_model = {{ connection = "writer-route", model = "writer-test" }}
+[model.writer-route."writer-test"]
 think = "off"
 context_window = 131072
 max_output_tokens = 32768
-[model.light]
-provider = "reviewer-route"
-model = "reviewer-tier-default"
-think = "off"
-context_window = 131072
-max_output_tokens = 32768
-[model.strong]
-provider = "writer-route"
-model = "writer-tier-default"
+[model.reviewer-route."reviewer-test"]
 think = "off"
 context_window = 131072
 max_output_tokens = 32768

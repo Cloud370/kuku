@@ -101,11 +101,9 @@ impl Fixture {
 
         let mut config = common::test_config();
         config.providers.get_mut("openai").unwrap().base_url = server.url(route);
-        let tier = config.tiers.get_mut("balanced").unwrap();
-        tier.provider = "openai".into();
-        tier.model = "session-jobs".into();
-        tier.think = kuku::config::ThinkLevel::Off;
-        tier.max_output_tokens = None;
+        let model_settings = common::set_test_model(&mut config, "openai", "session-jobs");
+        model_settings.think = kuku::config::ThinkLevel::Off;
+        model_settings.max_output_tokens = None;
         config.plugin.enabled = false;
         config.handoff.enabled = false;
 

@@ -134,17 +134,14 @@ def setup_workspace(workspace):
 
 
 def config(endpoint):
-    tiers = "".join(f'''
-[model.{tier}]
-provider = "deepseek-chat"
-model = "{MODEL}"
+    return f'''default_model = {{ connection = "deepseek-chat", model = "{MODEL}" }}
+
+[model.deepseek-chat."{MODEL}"]
 think = "low"
 reasoning_effort = "low"
 context_window = 32768
 max_output_tokens = {MAX_OUTPUT}
-''' for tier in ("balanced", "strong", "light"))
-    return f'''default_model = "balanced"
-{tiers}
+
 [provider.deepseek-chat]
 format = "openai-chat"
 profile = "deepseek"
@@ -156,8 +153,13 @@ api_key = "$KUKU_TEST_DEEPSEEK_API_KEY"
 def handoff(client, workspace, browser, args, result):
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
-        tiers = client.request("GET", "/models").as_json()["tiers"]
-        assert all("error" not in tier for tier in tiers), "Server cannot resolve its model configuration"
+        assets = client.request("GET", "/", authenticated=False)
+        assert assets.status == 200 and assets.content_type.startswith("text/html"), (
+            "The live browser case requires an archive built with embedded Web assets"
+        )
+        catalog = client.request("GET", "/models").as_json()
+        assert catalog["default_model"] == {"connection": "deepseek-chat", "model": MODEL}
+        assert all("error" not in model for model in catalog["models"]), "Server cannot resolve its model configuration"
         paid_budget(args.ledger, "deepseek").reserve(
             args.run_id, RESERVATION_USD,
             "One installed-client development task. At most 12 upstream requests, 48000 serialized bytes "

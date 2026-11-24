@@ -1,10 +1,10 @@
 mod config {
     pub use kuku::config::{
         ApiKey, Config, CustomServiceTier, DiscoveryConfig, HandoffConfig, LogsConfig,
-        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
-        PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat,
-        ProviderOptions, ProviderProfile, RequestFields, RequestedOutput, ResolvedThinking,
-        SubscriptionChannel, ThinkLevel, TierConfig, UpdateConfig, resolve_request_url,
+        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelConfig,
+        ModelRef, ModelThinkingTest, PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig,
+        ProviderFormat, ProviderOptions, ProviderProfile, RequestFields, RequestedOutput,
+        ResolvedThinking, SubscriptionChannel, ThinkLevel, UpdateConfig, resolve_request_url,
     };
 }
 
@@ -59,7 +59,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use config::{ApiKey, Config, ProviderConfig, ProviderFormat, ThinkLevel, TierConfig};
+use config::{ApiKey, Config, ModelConfig, ModelRef, ProviderConfig, ProviderFormat, ThinkLevel};
 use kuku::Error;
 use kuku::adapter::inspect_model;
 use kuku::session::AgentConfig;
@@ -67,22 +67,20 @@ use provider::config::{ResolveConfigInput, resolve_config};
 use provider::types::{Provider, ProviderKind};
 
 fn default_config() -> Config {
-    let mut tiers = BTreeMap::new();
-    tiers.insert(
-        "balanced".to_string(),
-        TierConfig {
+    let default_model = ModelRef::new("anthropic", "claude-sonnet-4-6");
+    let models = BTreeMap::from([(
+        default_model.clone(),
+        ModelConfig {
             request: None,
             reasoning_effort: None,
             service_tier: None,
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
             think: ThinkLevel::Medium,
             context_window: 200_000,
             max_output_tokens: Some(48_000),
-            purpose: "balanced".to_string(),
+            purpose: String::new(),
             output: Default::default(),
         },
-    );
+    )]);
 
     let mut providers = BTreeMap::new();
     providers.insert(
@@ -105,9 +103,9 @@ fn default_config() -> Config {
     );
 
     Config {
-        tiers,
+        models,
         providers,
-        default_tier: "balanced".to_string(),
+        default_model,
         discovery: config::DiscoveryConfig::default(),
         handoff: config::HandoffConfig::default(),
         logs: config::LogsConfig::default(),
@@ -119,29 +117,28 @@ fn default_config() -> Config {
 #[test]
 fn builder_values_override_config_values() {
     let cfg = default_config();
-
     let resolved = resolve_config(ResolveConfigInput {
-        provider: Some(Provider::Anthropic),
-        model: Some("claude-opus-4-7".to_string()),
-        base_url: Some("https://builder.example".to_string()),
-        api_key: Some("builder-key".to_string()),
-        config: Some(cfg),
+        connection: Some("anthropic".into()),
+        model: Some("claude-sonnet-4-6".into()),
+        base_url: Some("https://builder.example".into()),
+        api_key: Some("builder-key".into()),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
-
     assert_eq!(resolved.kind, ProviderKind::Anthropic);
-    assert_eq!(resolved.model, "claude-opus-4-7");
+    assert_eq!(resolved.model, "claude-sonnet-4-6");
     assert_eq!(resolved.base_url, "https://builder.example");
     assert_eq!(resolved.api_key.resolve().unwrap(), "builder-key");
+    assert_eq!(Some(48_000), resolved.max_output_tokens);
 }
 
 #[test]
-fn tier_resolution_uses_config_defaults() {
+fn route_resolution_uses_config_defaults() {
     let cfg = default_config();
 
     let resolved = resolve_config(ResolveConfigInput {
-        config: Some(cfg),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
@@ -150,37 +147,6 @@ fn tier_resolution_uses_config_defaults() {
     assert_eq!(resolved.model, "claude-sonnet-4-6");
     assert_eq!(resolved.base_url, "https://api.anthropic.com");
     assert_eq!(resolved.api_key.resolve().unwrap(), "sk-ant-config");
-}
-
-#[test]
-fn generated_tiers_keep_known_anthropic_settings() {
-    let config = toml::from_str::<kuku::config::ConfigFile>(kuku::config::generate_default())
-        .unwrap()
-        .resolve()
-        .unwrap();
-    for (tier, model, requested, effective) in [
-        ("strong", "claude-sonnet-4-6", "high", "high"),
-        ("balanced", "claude-sonnet-4-6", "medium", "medium"),
-        ("light", "claude-haiku-4-5-20251001", "off", "none"),
-    ] {
-        let resolved = inspect_model(
-            &config,
-            &AgentConfig {
-                tier: Some(tier.into()),
-                ..AgentConfig::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(model, resolved.model);
-        assert_eq!(
-            Some(requested),
-            resolved.settings.requested_reasoning_effort.as_deref()
-        );
-        assert_eq!(
-            Some(effective),
-            resolved.settings.reasoning_effort.as_deref()
-        );
-    }
 }
 
 #[test]
@@ -220,9 +186,7 @@ fn unsupported_portable_thinking_preserves_the_request_without_a_native_value() 
         connection.format = format;
         connection.base_url = url.into();
         connection.options = Default::default();
-        let tier = cfg.tiers.get_mut("balanced").unwrap();
-        tier.model = model.into();
-        tier.think = think;
+        common::set_test_model(&mut cfg, "anthropic", model).think = think;
 
         let resolved = inspect_model(&cfg, &AgentConfig::default()).unwrap();
         assert_eq!(model, resolved.model);
@@ -260,7 +224,7 @@ fn selecting_connection_and_settings_does_not_resolve_its_credentials() {
     assert!(std::env::var_os(&missing).is_none());
     cfg.providers.get_mut("anthropic").unwrap().api_key = ApiKey::Env(missing.clone());
     let resolved = resolve_config(ResolveConfigInput {
-        config: Some(cfg),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
@@ -273,84 +237,31 @@ fn selecting_connection_and_settings_does_not_resolve_its_credentials() {
 }
 
 #[test]
-fn explicit_tier_selects_different_tier() {
-    let mut tiers = BTreeMap::new();
-    tiers.insert(
-        "balanced".to_string(),
-        TierConfig {
-            request: None,
-            reasoning_effort: None,
-            service_tier: None,
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
-            think: ThinkLevel::Medium,
-            context_window: 200_000,
-            max_output_tokens: Some(48_000),
-            purpose: "balanced".to_string(),
-            output: Default::default(),
-        },
-    );
-    tiers.insert(
-        "light".to_string(),
-        TierConfig {
-            request: None,
-            reasoning_effort: None,
-            service_tier: None,
-            provider: "anthropic".to_string(),
-            model: "claude-haiku-4-5-20251001".to_string(),
+fn explicit_pair_inherits_its_model_settings() {
+    let mut config = default_config();
+    let selection = ModelRef::new("anthropic", "claude-haiku-4-5-20251001");
+    config.models.insert(
+        selection.clone(),
+        ModelConfig {
             think: ThinkLevel::Off,
-            context_window: 200_000,
             max_output_tokens: Some(32_000),
-            purpose: "light".to_string(),
-            output: Default::default(),
+            ..Default::default()
         },
     );
-
-    let mut providers = BTreeMap::new();
-    providers.insert(
-        "anthropic".to_string(),
-        ProviderConfig {
-            options: kuku::config::ProviderOptions {
-                profile: kuku::config::ProviderProfile::Anthropic,
-                reasoning_efforts: Some(vec![
-                    "none".into(),
-                    "low".into(),
-                    "medium".into(),
-                    "high".into(),
-                ]),
-                ..Default::default()
-            },
-            format: config::ProviderFormat::Anthropic,
-            base_url: "https://api.anthropic.com".to_string(),
-            api_key: ApiKey::Plaintext("sk-ant-config".to_string()),
-        },
-    );
-
-    let cfg = Config {
-        tiers,
-        providers,
-        default_tier: "balanced".to_string(),
-        discovery: config::DiscoveryConfig::default(),
-        handoff: config::HandoffConfig::default(),
-        logs: config::LogsConfig::default(),
-        plugin: config::PluginConfig::default(),
-        update: config::UpdateConfig::default(),
-    };
-
     let resolved = resolve_config(ResolveConfigInput {
-        tier: Some("light".to_string()),
-        config: Some(cfg),
+        connection: Some(selection.connection),
+        model: Some(selection.model),
+        config: Some(&config),
         ..Default::default()
     })
     .unwrap();
-
     assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
     assert_eq!(resolved.think_level, ThinkLevel::Off);
     assert_eq!(Some(32_000), resolved.max_output_tokens);
 }
 
 #[test]
-fn host_ceiling_bounds_explicit_agent_or_tier_output() {
+fn host_ceiling_bounds_explicit_agent_or_model_output() {
     for (agent, host, expected) in [
         (None, None, 48_000),
         (Some(64_000), None, 64_000),
@@ -358,7 +269,7 @@ fn host_ceiling_bounds_explicit_agent_or_tier_output() {
         (Some(64_000), Some(2_048), 2_048),
     ] {
         let resolved = resolve_config(ResolveConfigInput {
-            config: Some(default_config()),
+            config: Some(&default_config()),
             max_output_tokens: agent,
             max_output_tokens_per_request: host,
             ..Default::default()
@@ -369,7 +280,7 @@ fn host_ceiling_bounds_explicit_agent_or_tier_output() {
 }
 
 #[test]
-fn chatgpt_sign_in_rejects_agent_tier_and_host_output_ceilings() {
+fn chatgpt_sign_in_rejects_agent_model_and_host_output_ceilings() {
     use kuku::config::{SubscriptionAccount, SubscriptionChannel};
 
     let temp = tempfile::tempdir().unwrap();
@@ -383,17 +294,18 @@ fn chatgpt_sign_in_rejects_agent_tier_and_host_output_ceilings() {
         ),
         ..Default::default()
     };
-    let name = config.default_tier.clone();
-    let tier = config.tiers.get_mut(&name).unwrap();
-    tier.model = "gpt-5".into();
-    tier.think = ThinkLevel::ProviderDefault;
+    common::set_test_model(&mut config, "anthropic", "gpt-5").think = ThinkLevel::ProviderDefault;
     assert!(matches!(
-        resolve_config(ResolveConfigInput { config: Some(config.clone()), ..Default::default() }),
+        resolve_config(ResolveConfigInput { config: Some(&config), ..Default::default() }),
         Err(Error::InvalidArgument(message)) if message.contains("cannot enforce max_output_tokens")
     ));
-    config.tiers.get_mut(&name).unwrap().max_output_tokens = None;
+    config
+        .models
+        .get_mut(&config.default_model)
+        .unwrap()
+        .max_output_tokens = None;
     let input = ResolveConfigInput {
-        config: Some(config),
+        config: Some(&config),
         ..Default::default()
     };
     assert_eq!(
@@ -424,8 +336,12 @@ fn optional_protocol_does_not_inherit_an_unrelated_messages_presets_limit() {
             options: Default::default(),
         },
     );
+    config.models.insert(
+        ModelRef::new("gateway", "new-model"),
+        ModelConfig::default(),
+    );
     let input = ResolveConfigInput {
-        config: Some(config),
+        config: Some(&config),
         connection: Some("gateway".into()),
         model: Some("new-model".into()),
         ..Default::default()
@@ -486,21 +402,22 @@ fn missing_config_returns_structured_error() {
 }
 
 #[test]
-fn builder_model_overrides_tier_model() {
+fn model_alone_is_rejected_for_a_configured_connection() {
     let cfg = default_config();
 
-    let resolved = resolve_config(ResolveConfigInput {
+    let error = resolve_config(ResolveConfigInput {
         model: Some("claude-opus-4-7".to_string()),
-        config: Some(cfg),
+        config: Some(&cfg),
         ..Default::default()
     })
-    .unwrap();
-
-    assert_eq!(resolved.model, "claude-opus-4-7");
+    .unwrap_err();
+    assert!(
+        matches!(error, Error::InvalidArgument(message) if message.contains("both connection and exact model"))
+    );
 }
 
 #[test]
-fn builder_values_override_all_config_tier_settings() {
+fn direct_builder_uses_only_its_own_output_limit() {
     let cfg = default_config();
 
     let resolved = resolve_config(ResolveConfigInput {
@@ -508,7 +425,8 @@ fn builder_values_override_all_config_tier_settings() {
         model: Some("claude-opus-4-7".to_string()),
         base_url: Some("https://custom-gateway.example".to_string()),
         api_key: Some("builder-key".to_string()),
-        config: Some(cfg),
+        max_output_tokens: Some(4_096),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
@@ -517,15 +435,17 @@ fn builder_values_override_all_config_tier_settings() {
     assert_eq!(resolved.model, "claude-opus-4-7");
     assert_eq!(resolved.base_url, "https://custom-gateway.example");
     assert_eq!(resolved.api_key.resolve().unwrap(), "builder-key");
+    assert_eq!(Some(4_096), resolved.max_output_tokens);
 }
 
 #[test]
-fn nonexistent_tier_returns_error() {
+fn unregistered_pair_returns_error() {
     let cfg = default_config();
 
     let error = resolve_config(ResolveConfigInput {
-        tier: Some("nonexistent".to_string()),
-        config: Some(cfg),
+        connection: Some("anthropic".into()),
+        model: Some("nonexistent".into()),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap_err();
@@ -538,7 +458,7 @@ fn config_api_key_and_base_url_are_used() {
     let cfg = default_config();
 
     let resolved = resolve_config(ResolveConfigInput {
-        config: Some(cfg),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
@@ -554,11 +474,20 @@ fn named_connection_selects_exact_gateway_with_the_same_protocol() {
     second.base_url = "https://second.example".into();
     second.api_key = ApiKey::Plaintext("second-key".into());
     cfg.providers.insert("second".into(), second);
+    let model = cfg.default_model.model.clone();
+    cfg.models.insert(
+        ModelRef::new("second", &model),
+        ModelConfig {
+            max_output_tokens: Some(16_000),
+            ..Default::default()
+        },
+    );
     let original = cfg.clone();
 
     let resolved = resolve_config(ResolveConfigInput {
         connection: Some("second".into()),
-        config: Some(cfg.clone()),
+        model: Some(model),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
@@ -566,6 +495,7 @@ fn named_connection_selects_exact_gateway_with_the_same_protocol() {
     assert_eq!("second", resolved.connection_name);
     assert_eq!("https://second.example", resolved.base_url);
     assert_eq!("second-key", resolved.api_key.resolve().unwrap());
+    assert_eq!(Some(16_000), resolved.max_output_tokens);
     assert_eq!(original, cfg);
 }
 
@@ -574,16 +504,18 @@ fn unknown_connection_and_mismatched_protocol_are_rejected() {
     for input in [
         ResolveConfigInput {
             connection: Some("missing".into()),
+            model: Some("claude-sonnet-4-6".into()),
             ..Default::default()
         },
         ResolveConfigInput {
             connection: Some("anthropic".into()),
+            model: Some("claude-sonnet-4-6".into()),
             provider: Some(Provider::OpenAiResponses),
             ..Default::default()
         },
     ] {
         let error = resolve_config(ResolveConfigInput {
-            config: Some(default_config()),
+            config: Some(&default_config()),
             ..input
         })
         .unwrap_err();
@@ -597,10 +529,9 @@ fn explicit_native_settings_are_validated_without_changing_reasoning() {
     let connection = cfg.providers.get_mut("anthropic").unwrap();
     connection.options.service_tiers = Some(vec!["priority".into()]);
     let resolved = resolve_config(ResolveConfigInput {
-        connection: Some("anthropic".into()),
         reasoning_effort: Some("low".into()),
         service_tier: Some("priority".into()),
-        config: Some(cfg.clone()),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
@@ -610,7 +541,7 @@ fn explicit_native_settings_are_validated_without_changing_reasoning() {
         let result = resolve_config(ResolveConfigInput {
             reasoning_effort: reasoning.map(str::to_string),
             service_tier: service.map(str::to_string),
-            config: Some(cfg.clone()),
+            config: Some(&cfg),
             ..Default::default()
         });
         assert!(matches!(result, Err(Error::MissingProviderConfig(_))));
@@ -618,15 +549,14 @@ fn explicit_native_settings_are_validated_without_changing_reasoning() {
 }
 
 #[test]
-fn deepseek_tier_mapping_is_separate_from_explicit_native_settings() {
+fn deepseek_portable_reasoning_is_separate_from_explicit_native_settings() {
     let mut cfg = default_config();
-    let tier = cfg.tiers.get_mut("balanced").unwrap();
-    tier.model = "deepseek-flash".into();
+    common::set_test_model(&mut cfg, "anthropic", "deepseek-flash");
     let connection = cfg.providers.get_mut("anthropic").unwrap();
     connection.base_url = "https://api.deepseek.com/anthropic".into();
     connection.options = Default::default();
     let resolved = resolve_config(ResolveConfigInput {
-        config: Some(cfg.clone()),
+        config: Some(&cfg),
         ..Default::default()
     })
     .unwrap();
@@ -651,7 +581,7 @@ fn deepseek_tier_mapping_is_separate_from_explicit_native_settings() {
     ] {
         assert!(
             resolve_config(ResolveConfigInput {
-                config: Some(cfg.clone()),
+                config: Some(&cfg),
                 ..input
             })
             .is_err()

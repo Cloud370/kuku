@@ -129,8 +129,8 @@ pub use kuku::test_support::anthropic_sse_response;
 
 pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
     use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ThinkLevel, TierConfig,
-        UpdateConfig,
+        ApiKey, Config, DiscoveryConfig, HandoffConfig, ModelConfig, ModelRef, ProviderConfig,
+        ThinkLevel, UpdateConfig,
     };
     use std::collections::BTreeMap;
 
@@ -154,27 +154,26 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
         },
     );
 
-    let mut tiers = BTreeMap::new();
-    tiers.insert(
-        "balanced".to_string(),
-        TierConfig {
+    let default_model = ModelRef::new("anthropic", "claude-sonnet-4-6");
+    let mut models = BTreeMap::new();
+    models.insert(
+        default_model.clone(),
+        ModelConfig {
             request: None,
             reasoning_effort: None,
             service_tier: None,
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
             think: ThinkLevel::Off,
             context_window: 200_000,
             max_output_tokens: Some(48_000),
-            purpose: "balanced".to_string(),
+            purpose: String::new(),
             output: Default::default(),
         },
     );
 
     Config {
-        tiers,
+        models,
         providers,
-        default_tier: "balanced".to_string(),
+        default_model,
         discovery: DiscoveryConfig::default(),
         handoff: HandoffConfig::default(),
         logs: kuku::config::LogsConfig::default(),

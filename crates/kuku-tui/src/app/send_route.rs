@@ -119,16 +119,12 @@ impl App {
     }
 
     pub(super) fn send_route_is_updating(&self) -> bool {
-        if self.default_switch_pending() {
-            return true;
-        }
         let Some(snapshot) = &self.pane().snapshot else {
             return false;
         };
         let settings_changed = |config: &AgentConfig| {
             let observed = &snapshot.agent.config;
-            config.tier != observed.tier
-                || config.connection != observed.connection
+            config.connection != observed.connection
                 || config.model != observed.model
                 || config.service_tier != observed.service_tier
         };

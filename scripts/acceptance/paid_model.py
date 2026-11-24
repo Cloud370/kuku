@@ -139,18 +139,15 @@ class Route:
 
     def config(self, endpoint, limits, *, context_window=None):
         context_window = min(self.context, 65536) if context_window is None else context_window
-        prefix = 'default_model = "balanced"\n'
         quote = json.dumps
-        for tier in ("balanced", "strong", "light"):
-            prefix += f"""
-[model.{tier}]
-provider = {quote(self.connection)}
-model = {quote(self.model)}
+        prefix = f'''default_model = {{ connection = {quote(self.connection)}, model = {quote(self.model)} }}
+
+[model.{self.connection}.{quote(self.model)}]
 think = {quote(self.effort if self.effort in ("low", "medium", "high") else "high")}
 reasoning_effort = {quote(self.effort)}
 context_window = {context_window}
 max_output_tokens = {limits.output_tokens}
-"""
+'''
         template = f"""
 [provider.{self.connection}]
 format = {quote(self.wire)}

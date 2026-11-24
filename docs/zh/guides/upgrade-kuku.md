@@ -29,4 +29,8 @@ kuku --help
 kuku config validate
 ```
 
-用 `kuku config show` 确认当前模型档和连接无误。[配置 kuku](../start/configuration.md)
+用 `kuku config show` 核对默认连接与精确模型 ID，再通过 `kuku config validate` 确认路径和加载状态。较早 alpha 版本使用的命名默认模型需要改为当前的连接与模型字段。[最小配置](../reference/config.md#最小配置)
+
+## 核对帮助版本
+
+运行 `kuku server status` 查看运行中的服务版本。新 Turn 使用该服务附带的 `kuku-docs` 页面。恢复已加载 Skill 的 Turn 时会沿用其中记录的资料版本，回退到旧构建时也是如此。[Skill 版本](../reference/skill-format.md#运行时快照)

@@ -144,7 +144,7 @@ async fn executes_list_skills_and_continues_to_final_response() {
     });
 
     let output = query("browse skills")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")

@@ -22,8 +22,9 @@ def frontier_request_bytes(requested):
 def validate_benchmark_arguments(args, metered, paid):
     if args.cpus <= 0:
         raise ValueError("--cpus must be positive")
-    if args.model is not None and (not metered or args.provider != "deepseek"):
-        raise ValueError("--model selects a direct DeepSeek model for Frontier live")
+    legacy_route = paid and not metered and bool(args.connection)
+    if args.model is not None and not legacy_route and (not metered or args.provider != "deepseek"):
+        raise ValueError("--model selects a direct DeepSeek model for Frontier live or pairs with --connection for legacy live")
     if args.wire is not None and (not metered or args.provider != "deepseek" or args.pi_prefix):
         raise ValueError("--wire selects a direct DeepSeek wire format for a Frontier SDK run")
     if args.reasoning_effort is not None and (not metered or args.provider != "deepseek"):
@@ -62,10 +63,10 @@ def add_benchmark_arguments(parser):
     parser.add_argument("--require-resource-evidence", action="store_true",
                         help="require kernel cgroup CPU, memory peak, OOM and harness RSS evidence")
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--connection")
+    parser.add_argument("--connection", help="configured connection for legacy live, paired with --model")
     parser.add_argument("--provider", choices=("openrouter", "deepseek"), default="openrouter",
                         help="Frontier live API service (default: openrouter)")
-    parser.add_argument("--model", help="priced model for direct DeepSeek Frontier live (default: deepseek-flash)")
+    parser.add_argument("--model", help="exact model ID for legacy live or direct DeepSeek Frontier live")
     parser.add_argument("--wire", choices=("openai-chat", "openai-responses"),
                         help="direct DeepSeek wire format for the SDK (default: openai-chat)")
     parser.add_argument("--reasoning-effort", choices=("low", "high", "max"),

@@ -2,7 +2,7 @@
 
 import contextlib
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlencode
 
 from playwright.sync_api import Error, expect, sync_playwright
 
@@ -10,12 +10,14 @@ from interactive_fixture import TOOL_OUTPUT, eventually
 
 
 def launch_url(client, workspace, session):
-    stdout, _ = client.cli(workspace, "web", "--print-url", "--session", session, "--agent", "main")
-    url = stdout.strip()
-    parts = urlsplit(url)
-    assert f"{parts.scheme}://{parts.netloc}" == f"http://{client.connection()['address']}"
-    assert parts.fragment.startswith("ticket="), "Browser launcher did not issue a single-use ticket"
-    assert client.connection()["token"] not in url, "Browser URL contains the managed service bearer token"
+    connection = client.connection()
+    response = client.request("POST", "/service/browser-ticket", connection=connection)
+    assert response.status == 200, "Optional Web build must issue a browser ticket"
+    ticket = response.as_json()["ticket"]
+    assert ticket, "Service issued an empty browser ticket"
+    query = urlencode({"workspace": workspace, "session": session, "agent": "main"})
+    url = f"http://{connection['address']}/?{query}#{urlencode({'ticket': ticket})}"
+    assert connection["token"] not in url, "Browser URL contains the managed service bearer token"
     return url
 
 

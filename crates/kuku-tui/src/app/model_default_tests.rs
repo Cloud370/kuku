@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use super::{App, Modal, PendingDefaultSave, PendingStage};
 use crate::jobs::Job;
 use crate::menu::PickerKind;
-use crate::model_default::ResolvedModel;
+use kuku::config::ModelRef;
 
 fn model() -> ModelSelection {
     ModelSelection {
@@ -82,6 +82,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
     };
     Snapshot {
         session_id: "session".into(),
+        session_default_model: Some(ModelRef::new("openai", "model-a")),
         workspace: PathBuf::from("workspace"),
         cursor: 31,
         agent,
@@ -105,7 +106,7 @@ fn stale_preparation_cannot_reopen_confirmation_for_another_target() {
     let ticket = picker.ticket.id;
     let old_selection = app.selection();
     app.generation = app.generation.wrapping_add(1);
-    app.prepared_model_default(ticket, old_selection, Err("ignored".into()));
+    app.prepared_model_default(ticket, old_selection, true, Err("ignored".into()));
     assert!(app.modal.is_none());
     assert!(
         !app.effects
@@ -123,6 +124,7 @@ fn confirmed_default_save_queues_file_persistence_not_agent_configuration() {
     app.pending_model_default = Some(PendingDefaultSave {
         ticket,
         selection: app.selection(),
+        follow_current: true,
         plan: crate::model_default::test_plan(route),
     });
     app.confirm_model_default(ticket);
@@ -154,7 +156,8 @@ fn resolved_pending_selection_is_saved_without_changing_current_execution() {
     app.prepared_model_default(
         ticket,
         active_selection,
-        Ok(crate::model_default::test_plan(ResolvedModel {
+        true,
+        Ok(crate::model_default::test_plan(ModelRef {
             connection: "anthropic".into(),
             model: "model-b".into(),
         })),
@@ -162,12 +165,9 @@ fn resolved_pending_selection_is_saved_without_changing_current_execution() {
     let Some(Modal::Picker(picker)) = &app.modal else {
         panic!("prepared default must open its confirmation");
     };
-    assert!(
-        picker
-            .header
-            .contains("Connection/model: anthropic/model-b")
-    );
-    assert!(!picker.header.contains("Connection/model: openai/model-a"));
+    assert!(picker.header.contains("Connection: anthropic"));
+    assert!(picker.header.contains("Model: model-b"));
+    assert!(!picker.header.contains("model-a"));
     app.confirm_model_default(ticket);
     let Some(Job::SaveDefault { plan, .. }) = app.effects.last() else {
         panic!("default save should be queued");
@@ -229,7 +229,7 @@ fn failed_pending_selection_and_draft_resolution_are_rejected() {
     assert!(draft.resolved_model_route().is_err());
 }
 
-fn saved_update_keeps_current_agent_state(result: Result<(), String>) {
+fn saved_update_keeps_current_agent_state(result: Result<bool, String>) {
     let mut app = App::new(PathBuf::new(), None);
     let snapshot = snapshot(selection("openai", "model-a"), None);
     app.pane_mut().exists = true;
@@ -247,7 +247,7 @@ fn saved_update_keeps_current_agent_state(result: Result<(), String>) {
 
 #[test]
 fn successful_default_save_update_keeps_current_agent_state() {
-    saved_update_keeps_current_agent_state(Ok(()));
+    saved_update_keeps_current_agent_state(Ok(true));
 }
 
 #[test]
@@ -266,6 +266,7 @@ fn escape_closes_prepared_default_confirmation_without_queuing_a_write() {
     app.prepared_model_default(
         ticket,
         selected.clone(),
+        true,
         Ok(crate::model_default::test_plan(route)),
     );
     assert!(

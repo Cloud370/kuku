@@ -10,6 +10,6 @@
 
 {% if models is not none %}
 <kuku_models>
-{% include "blocks/model-tiers.md" %}</kuku_models>
+{% include "blocks/models.md" %}</kuku_models>
 {% endif %}
 </kuku_project_context>

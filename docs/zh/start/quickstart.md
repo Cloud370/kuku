@@ -1,37 +1,27 @@
 # 快速开始
 
-## 配置模型
+## 发送第一条消息
 
-在你的项目目录里打开终端。全新的 `KUKU_HOME` 先跑一次 `kuku init`（已有配置直接复用现有 `config.toml` 即可）。
-
-默认生成的 `balanced` 档走 `anthropic` 连接，启动本地服务前在终端里设置 `ANTHROPIC_API_KEY`。如果要默认用 OpenAI，设置 `OPENAI_API_KEY`，把默认模型档切到 `openai` 连接并填入账号可用的模型 ID。详见[配置 kuku](configuration.md)。
-
-## 在终端里开始第一个任务
+[安装 kuku](install.md)，在项目目录里打开终端，运行：
 
 ```bash
 kuku
 ```
 
-输入「检查这个目录的文件，告诉我怎样运行测试」，按 Enter 发送。第一条消息会自动创建 Session，状态栏会显示当前 Workspace、Agent 和模型。
+全新的数据目录会进入配置流程。选择 Provider 预设或添加自定义连接，用自己决定的方式提供凭据，再选择一个精确的模型 ID。选 **Save and continue** 将它保存为新 Session 的默认值。设置页按 `F1` 可打开与构建版本对应的配置指南。[配置 kuku](configuration.md)
 
-Agent 执行期间：
+在输入框里输入「检查这个目录的文件，告诉我怎样运行测试」，按 Enter 发送。第一条消息会创建 Session，状态栏会显示当前工作区、Agent 和模型。
 
-- **Enter**：发送补充输入，在下一个安全的模型请求边界生效。
-- **Alt+Enter**：排队等到下一轮（Turn）再处理。
-- 关掉终端不会打断任务，本地服务会在后台继续跑完已接下的工作。
+Agent 执行期间，按 **Enter** 发送补充输入，在下一个安全的模型请求边界生效。按 **Alt+Enter** 将消息排到下一轮。关掉终端后，本地服务会继续处理已接下的工作。[终端操作](../reference/cli.md#终端界面)
 
-更多日常用法见[运行与继续任务](../guides/run-a-task.md)。
+## 询问用法
+
+配好模型后，可以直接问「怎么恢复上一次会话？」。Agent 可以查阅运行中的服务随附的文档。按 `F1` 或输入 `/help` 可再次找到提示。也可以从 `/` 菜单选择 `kuku-docs`，在 `/skill:kuku-docs` 前缀后输入问题。[使用 Skill](../guides/use-skills.md#询问-kuku-用法)
 
 ## 回到同一个 Session
 
-换一个终端进入同一工作目录，运行 `kuku`，输入 `/resume` 就能接上之前的 Session。如果你的构建内嵌了 Web UI，也可以用 `kuku web` 在浏览器里连同一个服务查看。[运行服务](../guides/run-the-server.md)
+换一个终端进入同一工作区，运行 `kuku`，用 `/resume` 重开之前的 Session。[管理 Session](../guides/manage-sessions.md)
 
 ## 从脚本运行
 
-```bash
-kuku run --json "Inspect the files in this directory"
-kuku list
-kuku show SESSION_ID
-```
-
-把 `SESSION_ID` 换成 `kuku run` 打印出的 ID。需要临时指定线路时，在提示词前加上 `--connection openai --model YOUR_MODEL_ID`。[CLI 参考](../reference/cli.md)
+在终端或脚本里使用 `kuku run`。[无头任务指南](../guides/run-a-task.md)介绍如何在 shell 里配置、从文件或标准输入提交任务，再读取结果。

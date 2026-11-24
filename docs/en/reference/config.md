@@ -2,18 +2,31 @@
 
 ## Location
 
-Default path is `~/.kuku/config.toml`, or `$KUKU_HOME/config.toml` when `KUKU_HOME` is set.
+The default path is `config.toml` in the data directory selected by `--data-dir`, `KUKU_HOME`, or `~/.kuku`, in that order.
 
-The HTTP server defaults to `config.toml` inside its data directory and accepts `--config <path>`. Check the active config of a running managed service with `kuku server status`.
+The server accepts `--config PATH`. Check the file a running service has loaded with `kuku server status`. First-run setup and `/model` edit the local config. [Configuration guide](../start/configuration.md) · [CLI path selection](cli.md#kuku-config) · [Terminal preferences](#terminal-preferences)
 
-First-run setup, `kuku init`, and TUI `/model` all edit this file. [Configuration](../start/configuration.md) · [Terminal preferences](#terminal-preferences)
+## Minimal config
+
+```toml
+default_model = { connection = "work", model = "your-model-id" }
+
+[provider.work]
+format = "openai-responses"
+base_url = "https://gateway.example/v1"
+api_key = "$MY_GATEWAY_KEY"
+```
+
+Replace the URL and model ID with the ones your connection offers. Set `MY_GATEWAY_KEY` in the service environment or change the reference to a variable you choose. The required `default_model` pair registers that model on its connection, so this config can run without a separate model table. [Environment references](environment-variables.md#config-references)
+
+When you change the default through the TUI or a CLI patch, kuku keeps the previous model registered if its connection remains and you have not explicitly deleted that model. For a manual edit, add a table such as `[model.old_connection."old-model"]` before changing `default_model` to keep the previous pair available to existing Sessions. Removing a model requires affected Agents to select another configured pair.
 
 ## Top-level keys
 
 | Key | Type | Meaning |
 |---|---|---|
-| `default_model` | string | Default tier name |
-| `model.<name>` | table | Tier definition |
+| `default_model` | table | Required default `connection` and exact `model` ID for new Sessions |
+| `model.<connection>."<model-id>"` | table | One registered model's settings |
 | `provider.<name>` | table | Provider connection definition |
 | `discovery` | table | Agent and Skill discovery settings |
 | `handoff` | table | Context compaction settings |
@@ -21,26 +34,31 @@ First-run setup, `kuku init`, and TUI `/model` all edit this file. [Configuratio
 | `plugin` | table | Package extension loading toggle |
 | `update` | table | Update source and channel |
 
-## `model.<name>`
+## Model settings
+
+Add a table for each additional model, or to set options on the default pair. Quote model IDs that contain dots, slashes, or other TOML key punctuation. A model ID can appear on multiple connections, each with its own settings.
+
+```toml
+[model.work."your-model-id"]
+context_window = 200000
+max_output_tokens = 8192
+
+[model.work."another-model-id"]
+max_output_tokens = 4096
+```
 
 | Field | Type | Meaning |
 |---|---|---|
-| `provider` | string | Provider name from `provider.<name>` |
-| `model` | string | Provider model ID |
-| `think` | `provider-default`\|`off`\|`low`\|`medium`\|`high` | Portable thinking preference (`provider-default` omits the wire effort) |
+| `think` | `provider-default`\|`off`\|`low`\|`medium`\|`high` | Portable thinking preference (defaults to `provider-default`) |
 | `reasoning_effort` | string | Native reasoning value; overrides `think` |
 | `service_tier` | string | Native service option, independent of reasoning |
-| `context_window` | integer | Max input tokens |
+| `context_window` | integer | Max input tokens (defaults to 200,000) |
 | `max_output_tokens` | positive integer, optional | Generation ceiling (including reasoning tokens when counted as output) |
 | `purpose` | string | Route description shown to humans and delegated Agents |
 | `output` | `text`\|`image` | Requested Agent output (defaults to `text`) |
 | `request` | table | Model route overrides for [request headers and body](#request-headers-and-body) |
 
-Set `default_model` to a tier name, or omit it when only one tier is configured. Legacy `strong`, `balanced`, and `light` tiers still resolve. In the TUI, **Set current model as default** reuses a matching tier or writes a normal `user-default` tier selected via `default_model`.
-
-When adding routes, setup uses the model name and appends a number if the name is taken, for example `gpt-6.1-terra-2`. Agents use these names when selecting a route.
-
-On Chat and Responses, omitting `max_output_tokens` uses the upstream default. Native Anthropic Messages requires a numeric value (set in the bundled Sonnet/Haiku presets; custom Messages routes take it from the tier, Agent, or host). Available context can still cap individual responses.
+On Chat and Responses, omitting `max_output_tokens` uses the upstream default. Native Anthropic Messages requires a numeric value from the model settings, Agent, or host. Available context can still cap individual responses.
 
 ## `provider.<name>`
 
@@ -66,7 +84,7 @@ On Chat and Responses, omitting `max_output_tokens` uses the upstream default. N
 
 ### Endpoints and proxies
 
-- Set either `base_url` or `endpoint_url`. For example, built-in `openai` uses `https://api.openai.com/v1` (Responses appends `/responses`; DeepSeek Chat appends `/chat/completions` to `https://api.deepseek.com` or `/v1`). Exact `endpoint_url` values are never suffixed. Use `models_url` when model listing lives at a separate address. [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- Set either `base_url` or `endpoint_url`. Responses appends `/responses` to a base URL like `https://api.openai.com/v1`. Chat Completions appends `/chat/completions`. The adapter uses `endpoint_url` verbatim. Use `models_url` when model listing lives at a separate address. [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 - `proxy.mode` accepts `environment` (default), `direct`, or `explicit`. Explicit mode requires `proxy.url` (`http://`, `socks5://` for client DNS, or `socks5h://` for proxy DNS). Optional proxy auth takes `proxy.auth.username` plus either `proxy.auth.password_env` or `proxy.auth.password_file` (absolute path, validated like credential files).
 
 ### Pricing and cost estimation
@@ -123,7 +141,7 @@ require_parameters = true
 data_collection = "deny"
 zdr = true
 
-[model.haiku.request.body]
+[model.openrouter."anthropic/claude-haiku-4.5".request.body]
 cache_control = { type = "ephemeral", ttl = "1h" }
 ```
 
@@ -216,7 +234,7 @@ custom = "https://example.com/latest.json"
 
 ## Default config example
 
-Starter template: `crates/kuku/assets/default-config.toml`.
+The starter template contains optional runtime settings and a commented example connection. [Starter template](../../../crates/kuku/assets/default-config.toml)
 
 ## Terminal preferences
 

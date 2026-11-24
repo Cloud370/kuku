@@ -1,16 +1,12 @@
-use std::io::{self, Write};
-use std::time::Duration;
-
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::execute;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::{Frame, Terminal};
 
 use crate::editor::Editor;
-use crate::terminal::{AuthorizationLink, FrameBackend};
+use crate::terminal::AuthorizationLink;
 use crate::text::{shorten_middle, single_line};
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING, compact_padding, emphasis, focused_row};
 
@@ -26,50 +22,6 @@ use model_pages::render_model_settings;
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 20;
 const MAX_CONTENT_WIDTH: u16 = 88;
-
-pub(super) async fn run(
-    settings: &mut Settings,
-    state: &mut SetupState,
-    mode: SetupMode,
-) -> io::Result<Finish> {
-    let _restore = TerminalRestore::new()?;
-    let backend = FrameBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)?;
-    loop {
-        state.poll_subscription(settings);
-        state.poll_probes(settings, mode);
-        let size = terminal.size()?;
-        let area = Rect::new(0, 0, size.width, size.height);
-        terminal
-            .backend_mut()
-            .set_authorization_link(authorization_link(state, area));
-        terminal.draw(|frame| render(frame, settings, state, mode))?;
-        if let Some(finish) = state.finish {
-            if finish == Finish::Cancel {
-                return Ok(finish);
-            }
-            let size = terminal.size()?;
-            if usable(size.width, size.height) {
-                return Ok(finish);
-            }
-            state.finish = None;
-            state.problem = Some("Resize to at least 60 columns by 20 rows before saving.".into());
-        }
-        if event::poll(Duration::ZERO)? {
-            let event = event::read()?;
-            let size = terminal.size()?;
-            if !usable(size.width, size.height) {
-                if handle_small_terminal_event(state, &event) {
-                    return Ok(Finish::Cancel);
-                }
-                continue;
-            }
-            state.handle(event, settings, mode);
-        } else {
-            tokio::time::sleep(Duration::from_millis(35)).await;
-        }
-    }
-}
 
 pub(super) fn authorization_link(state: &SetupState, outer: Rect) -> Option<AuthorizationLink> {
     if state.step != SetupStep::SubscriptionSignIn || !usable(outer.width, outer.height) {
@@ -132,12 +84,17 @@ pub(super) fn render(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if !usable(area.width, area.height) {
+        let guidance = if mode == SetupMode::FirstRun {
+            "F1 Configuration guide · Esc Exit"
+        } else {
+            "Esc / Ctrl+C cancels without saving."
+        };
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled("Terminal too small.", Style::default().fg(WARNING)),
                 Line::raw("Minimum: 60 columns by 20 rows."),
                 Line::raw("Resize to continue."),
-                Line::raw("Esc / Ctrl+C cancels without saving."),
+                Line::raw(guidance),
             ]),
             inner,
         );
@@ -202,6 +159,9 @@ fn render_step(
             {
                 option(frame, area, &mut row, name, index == state.models.cursor);
             }
+            if mode == SetupMode::FirstRun {
+                line(frame, area, &mut row, "F1  Configuration guide", MUTED);
+            }
         }
         SetupStep::ManualConfig => {
             line(frame, area, &mut row, "Manual configuration", ACCENT);
@@ -216,7 +176,7 @@ fn render_step(
                 frame,
                 area,
                 &mut row,
-                "Edit the provider and model entries in config.toml.",
+                "Set a default connection and model ID in config.toml.",
                 MUTED,
             );
             line(
@@ -226,6 +186,9 @@ fn render_step(
                 "Run kuku config validate to check them. Enter exits.",
                 MUTED,
             );
+            if mode == SetupMode::FirstRun {
+                line(frame, area, &mut row, "F1  Configuration guide", MUTED);
+            }
         }
         SetupStep::Connection => {
             line(frame, area, &mut row, "Choose a provider", ACCENT);
@@ -263,7 +226,7 @@ fn render_step(
                 &match &state.intent {
                     SetupIntent::Default => "Choose the default model ID".into(),
                     SetupIntent::Add => "Add a model to this connection".into(),
-                    SetupIntent::Edit(tier) => format!("Editing {tier}"),
+                    SetupIntent::Edit(id) => format!("Editing {} · {}", id.model, id.connection),
                 },
                 MUTED,
             );
@@ -517,7 +480,7 @@ fn render_review_warnings(
     }
     if let super::ConnectionChoice::Existing(name) = state.choice() {
         if state.connection(settings).is_ok_and(|connection| {
-            settings.resolved.provider(name).is_some_and(|previous| {
+            settings.provider(name).is_some_and(|previous| {
                 previous.format != connection.format
                     || previous.base_url != connection.base_url
                     || previous.options.endpoint_url != connection.options.endpoint_url
@@ -526,12 +489,11 @@ fn render_review_warnings(
         }) {
             let shared = settings
                 .resolved
-                .tiers
-                .iter()
-                .filter(|(route, tier)| {
-                    tier.provider == *name && state.route_name(settings) != Some(route)
-                })
-                .map(|(route, _)| route.as_str())
+                .as_ref()
+                .into_iter()
+                .flat_map(|config| config.models.keys())
+                .filter(|id| id.connection == *name && state.configured_model(settings) != Some(id))
+                .map(|id| id.model.as_str())
                 .collect::<Vec<_>>();
             if !shared.is_empty() {
                 line(
@@ -726,47 +688,4 @@ pub(super) fn mask_key(value: &str) -> String {
         .chain(std::iter::repeat_n('•', characters.len() - prefix - suffix))
         .chain(characters[characters.len() - suffix..].iter().copied())
         .collect()
-}
-
-struct TerminalRestore {
-    raw: bool,
-    paste: bool,
-    alternate: bool,
-}
-
-impl TerminalRestore {
-    fn new() -> io::Result<Self> {
-        use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
-        let mut restore = Self {
-            raw: false,
-            paste: false,
-            alternate: false,
-        };
-        enable_raw_mode()?;
-        restore.raw = true;
-        execute!(io::stdout(), crossterm::event::EnableBracketedPaste)?;
-        restore.paste = true;
-        execute!(io::stdout(), EnterAlternateScreen)?;
-        restore.alternate = true;
-        Ok(restore)
-    }
-}
-
-impl Drop for TerminalRestore {
-    fn drop(&mut self) {
-        use crossterm::cursor::Show;
-        use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
-        let mut output = io::stdout();
-        if self.paste {
-            let _ = execute!(output, crossterm::event::DisableBracketedPaste);
-        }
-        let _ = execute!(output, Show);
-        if self.alternate {
-            let _ = execute!(output, LeaveAlternateScreen);
-        }
-        if self.raw {
-            let _ = disable_raw_mode();
-        }
-        let _ = output.flush();
-    }
 }

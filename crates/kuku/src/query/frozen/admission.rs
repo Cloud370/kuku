@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::context::runtime::{AdmittedMessage, MessageOrigin};
 use crate::context::{CanonicalMessage, MessageBlock};
+use crate::skill::bundle;
 use crate::{Error, Result};
 
 use super::PendingRun;
@@ -68,6 +69,28 @@ pub(super) fn append_input_skills(
     }
     let mut seen = BTreeSet::new();
     names.retain(|name| seen.insert(name.clone()));
+    if names.iter().any(|name| name == bundle::NAME) {
+        let version = pending
+            .skill_registry
+            .as_ref()
+            .and_then(|registry| registry.docs_bundle())
+            .ok_or_else(|| {
+                Error::InvalidArgument(
+                    "kuku-docs is unavailable in this Turn's Skill snapshot".into(),
+                )
+            })?;
+        let events = super::super::tool_exec::current_skill_events(pending)?;
+        if crate::skill::session::docs_loaded_in_turn(
+            &events,
+            pending.conversation.as_str(),
+            pending.turn,
+            version,
+        ) {
+            names.retain(|name| name != bundle::NAME);
+        } else {
+            bundle::retain(&pending.kuku_home, version)?;
+        }
+    }
     let discovered = names
         .iter()
         .any(|name| {

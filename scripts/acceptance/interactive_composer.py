@@ -85,8 +85,7 @@ def agent_setup(client):
     text = config.read_text(encoding="utf-8")
     text = text.replace('reasoning_efforts = ["none"]',
                         'reasoning_efforts = ["none", "high"]\nservice_tiers = ["flex", "priority"]')
-    text = text.replace('[model.strong]\nprovider = "test-anthropic"\nmodel = "claude-sonnet-4-6"',
-                        '[model.strong]\nprovider = "test-anthropic"\nmodel = "review-model"')
+    text += '\n[model.test-anthropic."review-model"]\nthink = "off"\nmax_output_tokens = 4096\n'
     config.write_text(text, encoding="utf-8")
 
     with client.terminal(workspace) as terminal:
@@ -103,8 +102,8 @@ def agent_setup(client):
         terminal.press("\r")
         review = terminal.expect("› Create Agent", also=("Agent reviewer", "Thinking · None", "Service tier · Default"))["screen"]
         choose_agent_entry(terminal, review, "Model · claude-sonnet-4-6")
-        models = terminal.expect("strong · review-model", state="Agent model")["screen"]
-        choose_agent_entry(terminal, models, "strong · review-model")
+        models = terminal.expect("review-model", state="Agent model", also=("test-anthropic",))["screen"]
+        choose_agent_entry(terminal, models, "review-model")
         review = terminal.expect("Model · review-model", also=("Thinking · None", "Esc Back"))["screen"]
         choose_agent_entry(terminal, review, "Thinking · None")
         thinking = terminal.expect("High", state="Agent thinking")["screen"]
@@ -166,7 +165,7 @@ def composer_actions(client):
 
     def action(terminal, command):
         terminal.press("\x10")
-        terminal.expect("Keyboard shortcuts")
+        terminal.expect("Help and shortcuts")
         terminal.submit(command)
 
     def thinking(terminal):
@@ -184,6 +183,8 @@ def composer_actions(client):
         terminal.press("\x1b[A")
         terminal.expect("›/quit")
         terminal.press("\x1b[B")
+        terminal.expect("›/skill:kuku-docs")
+        terminal.press("\x1b[B")
         terminal.expect("›/new")
         terminal.press("\x7f")
         terminal.expect("New session", absent=("Actions and Skills",))
@@ -194,7 +195,7 @@ def composer_actions(client):
         terminal.press("\t")
         terminal.expect("/model", absent=("Actions and Skills", "/models"))
         terminal.press("\r")
-        models = terminal.expect("Model route", also=("Search models…", "Default ·"))["screen"]
+        models = terminal.expect("Model route", also=("Search models…", "New Sessions default"))["screen"]
         assert position(models, "Model route")[0] == position(models, "Search models…")[0]
         assert position(models, "Model route")[0] < position(models, "Ready")[0]
         screens.append(("Models at 60 columns", models))
@@ -261,7 +262,7 @@ def composer_actions(client):
 
         def saved_default():
             catalog = client.request("GET", "/models").as_json()
-            return next(tier for tier in catalog["tiers"] if tier["name"] == "balanced")["settings"]["reasoning_effort"]
+            return next(item for item in catalog["models"] if item["model"] == model)["settings"]["reasoning_effort"]
 
         eventually("Low persisted as the model default", lambda: saved_default() == "low")
         assert selected("high"), "Saving the default must retain the explicit Agent override"
@@ -278,7 +279,7 @@ def composer_actions(client):
         eventually("turbo applies on the next turn",
                    lambda: (snapshot().get("pending_selection") or {}).get("settings", {}).get("service_tier") == "turbo")
         catalog = client.request("GET", "/models").as_json()
-        capabilities = next(tier for tier in catalog["tiers"] if tier["name"] == "balanced")["capabilities"]
+        capabilities = next(item for item in catalog["models"] if item["model"] == model)["capabilities"]
         assert capabilities["custom_service_tiers"] == {"turbo": "unverified"}, capabilities
 
         terminal.press("\x03")

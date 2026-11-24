@@ -132,16 +132,14 @@ fn template_source(name: &str, text: &str) -> String {
         "blocks/delegation.md" if !text.contains("{%") => format!(
             "{{% if \"create_agent\" in tools and \"send_message\" in tools and \"list_agents\" in tools %}}{text}{{% endif %}}"
         ),
-        "blocks/project-policy.md" if text.contains("{{model_tiers_rendered}}") => {
-            model_tiers_section()
-                .replace_all(text, |captures: &regex::Captures<'_>| {
-                    format!(
-                        "{{% if models is not none %}}\n{}{{% endif %}}",
-                        &captures[0]
-                    )
-                })
-                .into_owned()
-        }
+        "blocks/project-policy.md" if text.contains("{{models_rendered}}") => models_section()
+            .replace_all(text, |captures: &regex::Captures<'_>| {
+                format!(
+                    "{{% if models is not none %}}\n{}{{% endif %}}",
+                    &captures[0]
+                )
+            })
+            .into_owned(),
         _ => text.to_owned(),
     }
 }
@@ -157,22 +155,22 @@ pub(crate) fn project_policy_has_date(text: &str, template: &str, current_date: 
     if matches_project_policy_date(text, template, current_date) {
         return true;
     }
-    if let Cow::Owned(template) = without_model_tiers(template) {
+    if let Cow::Owned(template) = without_models(template) {
         return matches_project_policy_date(text, &template, current_date);
     }
     false
 }
 
-fn model_tiers_section() -> &'static Regex {
+fn models_section() -> &'static Regex {
     static MODEL_TIERS_SECTION: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\r?\n<kuku_models>\r?\n\{\{model_tiers_rendered\}\}\r?\n</kuku_models>\r?\n")
-            .expect("model tiers section pattern is valid")
+        Regex::new(r"\r?\n<kuku_models>\r?\n\{\{models_rendered\}\}\r?\n</kuku_models>\r?\n")
+            .expect("model section pattern is valid")
     });
     &MODEL_TIERS_SECTION
 }
 
-fn without_model_tiers(template: &str) -> Cow<'_, str> {
-    model_tiers_section().replace_all(template, "")
+fn without_models(template: &str) -> Cow<'_, str> {
+    models_section().replace_all(template, "")
 }
 
 fn matches_project_policy_date(text: &str, template: &str, current_date: &str) -> bool {
@@ -189,10 +187,7 @@ fn matches_project_policy_date(text: &str, template: &str, current_date: &str) -
                 date = true;
                 pattern.push_str(&regex::escape(current_date));
             }
-            "workspace_root"
-            | "platform"
-            | "project_instructions_rendered"
-            | "model_tiers_rendered" => {
+            "workspace_root" | "platform" | "project_instructions_rendered" | "models_rendered" => {
                 pattern.push_str("(?s:.*?)");
             }
             _ => return false,
@@ -331,22 +326,25 @@ mod tests {
     }
 
     #[test]
-    fn project_date_matches_policy_with_model_tiers_removed() {
-        let template = "Project policy\r\n- Date: {{current_date}}\r\n\r\n<kuku_models>\r\n{{model_tiers_rendered}}\r\n</kuku_models>\r\nEnd of policy";
-        let without_tiers = render_project(
+    fn project_date_matches_policy_with_models_removed() {
+        let template = "Project policy\r\n- Date: {{current_date}}\r\n\r\n<kuku_models>\r\n{{models_rendered}}\r\n</kuku_models>\r\nEnd of policy";
+        let without_models = render_project(
             template,
             minijinja::context! { current_date => "2026-05-19", models => Option::<Vec<String>>::None },
         ).unwrap();
         assert_eq!(
-            without_tiers,
+            without_models,
             "Project policy\r\n- Date: 2026-05-19\r\nEnd of policy"
         );
-        let with_tiers = render_project(
+        let with_models = render_project(
             template,
-            minijinja::context! { current_date => "2026-05-19", models => vec!["balanced"], model_tiers_rendered => "balanced" },
+            minijinja::context! { current_date => "2026-05-19", models => vec!["connection=work model=fixture"], models_rendered => "connection=work model=fixture" },
         ).unwrap();
-        assert!(with_tiers.contains("<kuku_models>\r\nbalanced\r\n</kuku_models>"));
-        for text in [without_tiers, with_tiers] {
+        assert!(
+            with_models
+                .contains("<kuku_models>\r\nconnection=work model=fixture\r\n</kuku_models>")
+        );
+        for text in [without_models, with_models] {
             assert!(project_policy_has_date(&text, template, "2026-05-19"));
             assert!(!project_policy_has_date(&text, template, "2026-05-20"));
         }

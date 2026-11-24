@@ -31,6 +31,7 @@ fn session_created() -> EventPayload {
         session_id: "s_001".to_string(),
         created_at: "2026-05-13T00:00:00Z".to_string(),
         kuku_version: "0.1.0".to_string(),
+        default_model: None,
     }
 }
 

@@ -147,8 +147,49 @@ fn path_like_prompts_stay_plain_text() {
     let Some(Command::Run(args)) = cli.command else {
         panic!("expected run command")
     };
-    let (text, config) = run_input(&args);
+    let (text, config) = run_input(&args).unwrap();
     assert_eq!("/tmp/foo", text);
     assert_eq!(None, config.bootstrap_skill);
     assert!(config.no_agents);
+}
+
+#[test]
+fn prompt_source_and_exact_model_flags_are_checked_before_execution() {
+    for args in [
+        vec!["kuku", "run", "--preset", "fixture", "--prompt-file", "-"],
+        vec!["kuku", "run", "--prompt-file", "task.txt", "--json"],
+        vec![
+            "kuku",
+            "run",
+            "--connection",
+            "work",
+            "--model",
+            "example.v1",
+            "task",
+        ],
+    ] {
+        assert!(Cli::try_parse_from(&args).is_ok(), "{args:?}");
+    }
+    for args in [
+        vec!["kuku", "run"],
+        vec!["kuku", "run", "--prompt-file", "-", "task"],
+        vec!["kuku", "run", "--connection", "work", "task"],
+        vec!["kuku", "run", "--model", "example.v1", "task"],
+        vec![
+            "kuku",
+            "run",
+            "--preset",
+            "fixture",
+            "--session",
+            "saved",
+            "task",
+        ],
+        vec!["kuku", "run", "--preset", "fixture", "--continue", "task"],
+        vec!["kuku", "run", "--tier", "strong", "task"],
+        vec!["kuku", "run", "--yes", "task"],
+        vec!["kuku", "init"],
+        vec!["kuku", "web"],
+    ] {
+        assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
+    }
 }

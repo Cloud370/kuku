@@ -78,7 +78,6 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
     let route_selectors = RouteSelectors {
         query_connection: pending.query.connection.clone(),
         query_model: pending.query.model.clone(),
-        query_tier: pending.query.tier.clone(),
     };
     cursor.select_configuration(&route_selectors);
     let catalog = cursor
@@ -193,7 +192,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         segment.configuration = cursor.configuration.max(segment.configuration);
         segment.handoff = handoff;
         segment.connection = resolved.connection_name.clone();
-        segment.protocol = resolved.kind.as_str().into();
+        segment.protocol = resolved.kind.format().as_str().into();
         segment.model = resolved.model.clone();
         segment.endpoint = resolved.base_url.clone();
         segment.capabilities = Some(resolved.capabilities.clone());
@@ -477,9 +476,10 @@ fn initial_segment(
         project_memory,
         history: Vec::new(),
         tools: tools.to_vec(),
-        model_tiers: super::provider::usable_model_routes(
+        models: super::provider::usable_model_routes(
             &pending.config,
             pending.query.model_adapter.is_none(),
+            pending.query.runtime_limits.max_output_tokens_per_request,
         ),
         runtime_blocks: None,
         enable_memory: true,
@@ -556,7 +556,7 @@ fn signature(
     Ok(format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&(
-            resolved.kind.as_str(),
+            resolved.kind.format(),
             &resolved.connection_name,
             &resolved.base_url,
             &resolved.model,
@@ -622,7 +622,7 @@ fn check_route_snapshot(
     selectors: &RouteSelectors,
 ) -> Result<bool> {
     let connection_changed = segment.connection != resolved.connection_name;
-    let protocol_changed = segment.protocol != resolved.kind.as_str();
+    let protocol_changed = segment.protocol != resolved.kind.format().as_str();
     let model_changed = segment.model != resolved.model;
     let endpoint_changed = segment.endpoint != resolved.base_url;
     let effective_route_changed =
@@ -644,7 +644,7 @@ fn check_route_snapshot(
     let explicit_route_change = configured > segment.configuration && selectors_changed;
     if (route_changed || capabilities_changed) && !explicit_route_change {
         return Err(Error::MissingProviderConfig(format!(
-            "agent '{agent}' has a frozen provider route or capabilities that differ from the active configuration; restore the recorded route/profile, explicitly configure a different connection, model, or tier with configure_agent, or start a new Session"
+            "agent '{agent}' has a frozen provider route or capabilities that differ from the active configuration; restore the recorded route/profile, explicitly configure a different connection and model pair with configure_agent, or start a new Session"
         )));
     }
     Ok(route_changed)
@@ -816,7 +816,6 @@ mod snapshot_tests {
         let selectors = RouteSelectors {
             query_connection: Some("default".into()),
             query_model: Some("test-model".into()),
-            query_tier: Some("balanced".into()),
         };
         let segment = FrozenSegment {
             id: 1,
@@ -828,7 +827,7 @@ mod snapshot_tests {
             tools: Vec::new(),
             catalog: crate::prompt::builtin_prompt_catalog(),
             connection: resolved.connection_name.clone(),
-            protocol: resolved.kind.as_str().into(),
+            protocol: resolved.kind.format().as_str().into(),
             model: resolved.model.clone(),
             endpoint: resolved.base_url.clone(),
             capabilities: Some(resolved.capabilities.clone()),
@@ -898,7 +897,6 @@ mod snapshot_tests {
         let selectors = RouteSelectors {
             query_connection: Some("native".into()),
             query_model: Some("test-model".into()),
-            query_tier: Some("balanced".into()),
         };
         assert!(
             check_route_snapshot(
