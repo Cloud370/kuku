@@ -36,6 +36,8 @@ def exercise_permissions(client, workspace, outside):
         terminal.expect("Workspace permissions", also=("› Full access", "Read-only"))
         terminal.press(DOWN + "\r")
         terminal.expect("Permissions · Ask", state="Ready")
+        change_workspace_mode(client, terminal, path, "read-only", "Read-only")
+        change_workspace_mode(client, terminal, path, "ask", "Ask")
         terminal.submit(title)
         call = client.provider.next(title)
         assert "Current workspace permission mode: Ask." in json.dumps(call.request)
@@ -145,15 +147,17 @@ def exercise_permissions(client, workspace, outside):
         result.text("The existing file stays intact.")
         terminal.expect("The existing file stays intact.")
         assert direct.read_text(encoding="utf-8") == "direct write"
-        assert client.request("PUT", path, payload="read-only").as_json() == "read-only"
-        eventually("the statusline to show Read-only",
-                   lambda: terminal.request("screen")["screen"].splitlines()[-1].strip().startswith("Read-only"))
-        assert client.request("PUT", path, payload="ask").as_json() == "ask"
-        eventually("the statusline to show Ask",
-                   lambda: terminal.request("screen")["screen"].splitlines()[-1].strip().startswith("Ask"))
+        change_workspace_mode(client, terminal, path, "read-only", "Read-only")
+        change_workspace_mode(client, terminal, path, "ask", "Ask")
         terminal.exit_cleanly()
 
     print("Applied workspace modes and verified native tool and Agent directories, background approval, and terminal sound settings.")
+
+
+def change_workspace_mode(client, terminal, path, mode, label):
+    assert client.request("PUT", path, payload=mode).as_json() == mode
+    eventually(f"the statusline to show {label}",
+               lambda: terminal.request("screen")["screen"].splitlines()[-1].strip().startswith(label))
 
 
 def restart_pending_script(client, workspace, *, approved):

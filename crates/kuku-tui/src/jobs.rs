@@ -87,6 +87,7 @@ pub(crate) enum Job {
     },
     PendingApprovals(Selection),
     Observe(Selection),
+    ObserveWorkspacePermissions(Selection),
     StopObserving,
     Refresh(Selection),
     RefreshProgress(Selection),
@@ -313,6 +314,16 @@ impl Jobs {
                     self.observer = Some(self.tasks.spawn(observe::watch(
                         connection.clone(),
                         self.build,
+                        selection,
+                        self.sender.clone(),
+                    )));
+                }
+            }
+            Job::ObserveWorkspacePermissions(selection) => {
+                Self::abort(&mut self.observer);
+                if let Some(connection) = &self.connection {
+                    self.observer = Some(self.tasks.spawn(observe::watch_workspace_permissions(
+                        connection.client.clone(),
                         selection,
                         self.sender.clone(),
                     )));
@@ -686,6 +697,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::RestartCredentialRepair { .. }
         | Job::Connect
         | Job::Observe(_)
+        | Job::ObserveWorkspacePermissions(_)
         | Job::StopObserving
         | Job::Find(_, _)
         | Job::SendRouteLabels(..)

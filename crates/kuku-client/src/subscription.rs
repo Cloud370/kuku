@@ -137,6 +137,7 @@ pub(crate) enum SubscriptionScope {
     Agent,
     Session,
     AgentWithActivity,
+    WorkspacePermissions,
 }
 
 impl Subscription {
@@ -254,20 +255,26 @@ impl Subscription {
             after: u64,
             include_agent_activity: Option<bool>,
         }
-        let response = self
-            .client
-            .request(
-                Method::GET,
-                ["sessions", &self.target.session_id, "observe"],
-            )
-            .query(&Query {
-                workspace: &self.target.workspace,
-                agent: (self.scope != SubscriptionScope::Session)
-                    .then_some(self.target.agent.as_str()),
-                after: self.cursor,
-                include_agent_activity: (self.scope == SubscriptionScope::AgentWithActivity)
-                    .then_some(true),
-            })
+        let request = if self.scope == SubscriptionScope::WorkspacePermissions {
+            self.client
+                .request(Method::GET, ["workspaces", "permissions", "observe"])
+                .query(&[("workspace", self.target.workspace.as_path())])
+        } else {
+            self.client
+                .request(
+                    Method::GET,
+                    ["sessions", &self.target.session_id, "observe"],
+                )
+                .query(&Query {
+                    workspace: &self.target.workspace,
+                    agent: (self.scope != SubscriptionScope::Session)
+                        .then_some(self.target.agent.as_str()),
+                    after: self.cursor,
+                    include_agent_activity: (self.scope == SubscriptionScope::AgentWithActivity)
+                        .then_some(true),
+                })
+        };
+        let response = request
             .read_timeout(READ_TIMEOUT)
             .send()
             .await

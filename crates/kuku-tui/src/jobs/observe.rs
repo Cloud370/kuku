@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use kuku_client::local::{BuildPolicy, LocalError};
-use kuku_client::{Client, Connection, Error, SubscriptionUpdate};
+use kuku_client::{Client, Connection, Error, Observation, SubscriptionUpdate};
 use tokio::sync::mpsc;
 
 use super::{Message, Selection, Update, push};
@@ -47,6 +47,21 @@ pub(super) async fn watch(
             return;
         }
         tokio::time::sleep(RECONNECT_DELAY).await;
+    }
+}
+
+pub(super) async fn watch_workspace_permissions(
+    client: Client,
+    selection: Selection,
+    sender: mpsc::Sender<Message>,
+) {
+    let mut subscription = client.subscribe_workspace_permissions(&selection.target);
+    while let Ok(observation) = subscription.next().await {
+        if matches!(observation, Observation::WorkspacePermission { .. })
+            && !push(&sender, Update::Observation(selection.clone(), observation)).await
+        {
+            return;
+        }
     }
 }
 

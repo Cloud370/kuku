@@ -909,7 +909,8 @@ impl App {
             pane.watch = Watch::Connecting;
             self.effects.push(Job::Observe(self.selection()));
         } else {
-            self.effects.push(Job::StopObserving);
+            self.effects
+                .push(Job::ObserveWorkspacePermissions(self.selection()));
             self.preview_model();
             self.startup_skills = StartupSkills::Loading;
             self.effects.push(Job::StartupSkills(self.generation));

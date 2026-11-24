@@ -643,6 +643,16 @@ impl Client {
         Subscription::new(self.clone(), target, SubscriptionScope::Session, after)
     }
 
+    /// Observe permission changes for the target's workspace before a Session exists.
+    pub fn subscribe_workspace_permissions(&self, target: &Target) -> Subscription {
+        Subscription::new(
+            self.clone(),
+            target,
+            SubscriptionScope::WorkspacePermissions,
+            0,
+        )
+    }
+
     /// Follow the selected Agent's full stream and bounded progress from other Agents in its Session.
     pub fn subscribe_with_agent_activity(&self, target: &Target, after: u64) -> Subscription {
         Subscription::new(

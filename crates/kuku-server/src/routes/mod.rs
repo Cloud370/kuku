@@ -71,6 +71,10 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
             "/workspaces/permissions",
             get(workspaces::permission).put(workspaces::set_permission),
         )
+        .route(
+            "/workspaces/permissions/observe",
+            get(events::observe_workspace_permissions),
+        )
         .route("/workspaces/files", get(workspaces::files))
         .route("/workspaces/skills", get(workspaces::skills))
 }

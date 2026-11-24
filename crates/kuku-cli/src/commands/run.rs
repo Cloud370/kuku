@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     Acknowledgement, Action, AgentConfig, AgentSnapshot, AgentStatus, Command, Connection, Error,
-    JobStatus, Observation, PendingApproval, PermissionRequest, Snapshot, Target, Timing, new_id,
+    JobSnapshot, JobStatus, Observation, PendingApproval, PermissionRequest, Snapshot, Target,
+    Timing, new_id,
 };
 use serde_json::json;
 
@@ -329,8 +330,10 @@ async fn settle(
         .subscribe_session(target, receipt_cursor.saturating_sub(1));
     let mut settled = connection.client.snapshot(target).await?;
     let mut approvals = connection.client.pending_approvals(target).await?;
-    let job_id = replied_to.and_then(|approval| approval.job_id.as_deref());
-    let mut job_running = observed_job_running(connection, target, job_id).await?;
+    let mut job = match replied_to.and_then(|approval| approval.job_id.as_deref()) {
+        Some(id) => Some(connection.client.job(target, id).await?),
+        None => None,
+    };
     loop {
         if let Some(request) =
             observed_script_approval(&settled.agent, &approvals, receipt_cursor, replied_to)
@@ -338,11 +341,27 @@ async fn settle(
             settled.agent.permission = Some(request.clone());
             return Ok(settled.agent);
         }
-        let complete = if job_id.is_some() {
-            !job_running
-        } else {
-            is_settled(&settled, receipt_cursor, &approvals)
-        };
+        let agent_complete = is_settled(&settled, receipt_cursor, &approvals);
+        if job.is_none()
+            && agent_complete
+            && settled.agent.running_jobs != 0
+            && let Some(approval) =
+                replied_to.filter(|approval| approval.request.id.starts_with("script:"))
+        {
+            // Promotion may have occurred after the pending approval was looked up.
+            job = connection
+                .client
+                .jobs(target)
+                .await?
+                .into_iter()
+                .find(|job| {
+                    job.turn == approval.request.turn
+                        && job.tool_call_id == approval.request.tool_call_id
+                });
+        }
+        let complete = job
+            .as_ref()
+            .map_or(agent_complete, |job| job.status != JobStatus::Running);
         if complete && (!stream_json || observer.cursor() >= settled.cursor) {
             break;
         }
@@ -350,8 +369,8 @@ async fn settle(
             result = observer.next() => result?,
             signal = tokio::signal::ctrl_c() => {
                 signal?;
-                if let Some(job_id) = job_id {
-                    connection.client.cancel_job(target, job_id).await?;
+                if let Some(job) = &job {
+                    connection.client.cancel_job(target, &job.id).await?;
                     return Err("job cancelled after cleanup".into());
                 }
                 if let Some(execution_id) = settled.execution_id() {
@@ -378,7 +397,7 @@ async fn settle(
                     settled = connection.client.snapshot(target).await?;
                 }
                 if operation.as_deref() == Some("job_finished") {
-                    job_running = observed_job_running(connection, target, job_id).await?;
+                    refresh_observed_job(connection, target, &mut job).await?;
                 }
                 if matches!(
                     operation.as_deref(),
@@ -402,7 +421,7 @@ async fn settle(
                 }
                 settled = connection.client.snapshot(target).await?;
                 approvals = connection.client.pending_approvals(target).await?;
-                job_running = observed_job_running(connection, target, job_id).await?;
+                refresh_observed_job(connection, target, &mut job).await?;
             }
             Observation::Live { .. }
             | Observation::WorkspacePermission { .. }
@@ -429,13 +448,15 @@ async fn settle(
     Ok(settled.agent)
 }
 
-async fn observed_job_running(
+async fn refresh_observed_job(
     connection: &Connection,
     target: &Target,
-    job_id: Option<&str>,
-) -> Result<bool, Error> {
-    let Some(id) = job_id else { return Ok(false) };
-    Ok(connection.client.job(target, id).await?.status == JobStatus::Running)
+    job: &mut Option<JobSnapshot>,
+) -> Result<(), Error> {
+    if let Some(job) = job {
+        *job = connection.client.job(target, &job.id).await?;
+    }
+    Ok(())
 }
 
 fn observed_script_approval<'a>(
