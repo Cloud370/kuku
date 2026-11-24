@@ -12,3 +12,5 @@
 ## 从这里开始
 
 先看 [Development](development.md)，再把 [Code Style](code-style.md) 和 [Testing](testing.md) 当作日常工作规则。
+
+Issue 和 PR 的语言选择及 Commit 信息规范见[贡献指南](../../../CONTRIBUTING.md)。
