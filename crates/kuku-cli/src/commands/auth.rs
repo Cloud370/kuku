@@ -36,11 +36,10 @@ pub(super) async fn run(command: SubscriptionAuthCommand, target: &ConnectionArg
                 println!(
                     "{}\t{}\t{}\t{}",
                     account.channel().as_str(),
-                    account.name()?,
+                    name,
                     email,
                     status(info.status)
                 );
-                println!("  Connection: {name}");
             }
             Ok(())
         }
@@ -92,12 +91,14 @@ async fn login(
     if !io::stdin().is_terminal() {
         return Err("subscription sign-in needs a terminal for hidden callback input".into());
     }
+    let saved = name.and_then(|name| settings.connection(channel, name));
     let proxy = proxy
-        .or_else(|| {
-            name.and_then(|name| settings.connection(channel, name))
-                .map(|(_, _, connection)| connection.options.proxy.clone())
-        })
+        .or_else(|| saved.map(|(_, _, connection)| connection.options.proxy.clone()))
         .unwrap_or_default();
+    let name = match saved {
+        Some((_, account, _)) => Some(account.name()?),
+        None => name,
+    };
     let mut attempt = Box::new(
         SubscriptionLogin::start(settings.private_data_dir()?, channel, name, proxy.clone())
             .await?,
@@ -117,9 +118,11 @@ async fn login(
         }
     };
     let connection_name = settings.save_connection(&login.account, &proxy)?;
-    let name = login.account.name()?;
-    let label = login.info.masked_email.as_deref().unwrap_or(name);
-    println!("{label} ({name}): {}", status(login.info.status));
+    if let Some(email) = login.info.masked_email.as_deref() {
+        println!("{email}: {}", status(login.info.status));
+    } else {
+        println!("{connection_name}: {}", status(login.info.status));
+    }
     println!("Model connection: {connection_name}");
     if login.info.status == SubscriptionStatus::SignedIn {
         println!("Choose the connection in `kuku init` or `/model`.");

@@ -90,6 +90,23 @@ impl SubscriptionAccount {
             .ok_or_else(invalid_reference)
     }
 
+    /// Whether this account uses the identifier generated during sign-in.
+    pub fn has_generated_name(&self) -> bool {
+        self.name().is_ok_and(|name| {
+            let mut parts = name.split('-');
+            let prefix = parts.next();
+            let hex = |part: Option<&str>, len| {
+                part.is_some_and(|part| {
+                    part.len() == len && part.bytes().all(|ch| ch.is_ascii_hexdigit())
+                })
+            };
+            matches!(prefix, Some("email" | "account"))
+                && hex(parts.next(), 16)
+                && hex(parts.next(), 12)
+                && parts.next().is_none()
+        })
+    }
+
     /// Return the absolute reference to this account's private file.
     pub fn credential_file(&self) -> &Path {
         &self.credential_file

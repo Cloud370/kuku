@@ -51,7 +51,7 @@ pub fn subscription_display_label(
     if let Some(alias) = account
         .name()
         .ok()
-        .filter(|name| !generated_account_name(name))
+        .filter(|_| !account.has_generated_name())
     {
         label.push_str(" · ");
         label.push_str(alias);
@@ -64,18 +64,6 @@ pub fn subscription_display_label(
         label.push_str(email);
     }
     label
-}
-
-fn generated_account_name(name: &str) -> bool {
-    let mut parts = name.split('-');
-    let prefix = parts.next();
-    let hex = |part: Option<&str>, len| {
-        part.is_some_and(|part| part.len() == len && part.bytes().all(|ch| ch.is_ascii_hexdigit()))
-    };
-    matches!(prefix, Some("email" | "account"))
-        && hex(parts.next(), 16)
-        && hex(parts.next(), 12)
-        && parts.next().is_none()
 }
 
 fn is_email_suffix(suffix: &str) -> bool {

@@ -42,7 +42,7 @@ Environment variables are resolved by the server process, not the terminal clien
 
 In `kuku init` or **Add model** in `/model`, choose **Preset · ChatGPT subscription**. Choose the network mode and optionally name the account. Choose **Open authorization link** in a terminal with hyperlinks, or use **Ctrl+Y** to copy the complete address between the URL separators. After authorizing, paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The callback prompt shows a cursor while keeping the pasted URL hidden. If OpenAI rejects the code, use the fresh authorization link shown by kuku. After sign-in, the account is saved and setup starts finding models for that account.
 
-From a shell you can also run `kuku auth login chatgpt [name]` on the host running kuku. To reauthorize a saved account, use its saved name. Omit the name to derive one from the authorized identity.
+From a shell you can also run `kuku auth login chatgpt [name]` on the host running kuku. Sign-in without a name saves a short connection name such as `chatgpt` or `chatgpt-2`. To reauthorize an account, use its saved connection name or account alias.
 
 Setup defaults to the environment's proxy settings, with options for direct access or an explicit proxy. The selected mode applies to token exchange, renewal, model discovery, and inference. An explicit proxy failure stops the request. Set a SOCKS proxy to `socks5h://` to resolve provider addresses at the proxy. The browser follows its own network settings.
 

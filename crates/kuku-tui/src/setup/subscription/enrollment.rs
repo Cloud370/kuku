@@ -85,9 +85,8 @@ impl Enrollment {
         let channel = self.channel;
         let name = self.name.text().trim();
         let mut proxy = selected_proxy.clone();
-        let saved_proxy = settings
-            .subscription_connection(channel, name)
-            .map(|(_, _, connection)| &connection.options.proxy);
+        let saved = settings.subscription_connection(channel, name);
+        let saved_proxy = saved.map(|(_, _, connection)| &connection.options.proxy);
         if let (
             ProviderProxy::Explicit { url, auth },
             Some(ProviderProxy::Explicit {
@@ -100,7 +99,12 @@ impl Enrollment {
                 *auth = saved_auth.clone();
             }
         }
-        let name = (!name.is_empty()).then(|| name.to_owned());
+        let name = match saved {
+            Some((_, account, _)) => {
+                Some(account.name().map_err(|err| err.to_string())?.to_owned())
+            }
+            None => (!name.is_empty()).then(|| name.to_owned()),
+        };
         let login_proxy = proxy.clone();
         let task = tokio::spawn(async move {
             SubscriptionLogin::start(&data_dir, channel, name.as_deref(), login_proxy).await

@@ -39,7 +39,7 @@ impl SubscriptionSettings {
         self.settings.subscription_connections()
     }
 
-    /// Find the model connection associated with a named subscription account.
+    /// Find a subscription by account alias or saved connection name.
     pub fn connection(
         &self,
         channel: SubscriptionChannel,
@@ -89,9 +89,13 @@ impl Settings {
         channel: SubscriptionChannel,
         name: &str,
     ) -> Option<(&str, &SubscriptionAccount, &ProviderConfig)> {
-        self.subscription_connections().find(|(_, account, _)| {
-            account.channel() == channel && account.name().is_ok_and(|saved| saved == name)
-        })
+        let connections = || {
+            self.subscription_connections()
+                .filter(|(_, account, _)| account.channel() == channel)
+        };
+        connections()
+            .find(|(_, account, _)| account.name().is_ok_and(|saved| saved == name))
+            .or_else(|| connections().find(|(connection, _, _)| *connection == name))
     }
 
     pub(super) fn save_subscription_connection(
@@ -106,7 +110,9 @@ impl Settings {
                 "subscription account belongs to a different data directory".into(),
             ));
         }
-        let existing = self.subscription_connection(account.channel(), name);
+        let existing = self.subscription_connections().find(|(_, saved, _)| {
+            saved.channel() == account.channel() && saved.name().is_ok_and(|alias| alias == name)
+        });
         let mut document = self.document.clone();
         let connection_name = if let Some((connection_name, previous, _)) = existing {
             if previous != account {
@@ -116,12 +122,35 @@ impl Settings {
             }
             connection_name.to_owned()
         } else {
-            let connection_name = format!("{}-{name}", account.channel().as_str());
-            if self.raw.provider.contains_key(&connection_name) {
+            let channel = account.channel().as_str();
+            if self
+                .subscription_connection(account.channel(), name)
+                .is_some()
+            {
                 return Err(kuku::Error::InvalidArgument(format!(
-                    "model connection '{connection_name}' already exists"
+                    "subscription connection '{name}' already exists"
                 )));
             }
+            let reserved = |candidate: &str| {
+                self.raw.provider.contains_key(candidate)
+                    || self
+                        .subscription_connection(account.channel(), candidate)
+                        .is_some()
+            };
+            let connection_name = if account.has_generated_name() {
+                std::iter::once(channel.to_owned())
+                    .chain((2..).map(|index| format!("{channel}-{index}")))
+                    .find(|candidate| !reserved(candidate))
+                    .expect("an unused subscription connection name")
+            } else {
+                let candidate = format!("{channel}-{name}");
+                if reserved(&candidate) {
+                    return Err(kuku::Error::InvalidArgument(format!(
+                        "model connection '{candidate}' already exists"
+                    )));
+                }
+                candidate
+            };
             let connection = entry(&mut document, "provider", &connection_name)?;
             let (format, base) = match account.channel() {
                 SubscriptionChannel::ChatGpt => {
@@ -335,6 +364,69 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn generated_accounts_get_short_connections_and_reuse_them_when_saved_again() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("data");
+        let options = ConnectionOptions {
+            workspace: Some(root.path().to_owned()),
+            data_dir: Some(data_dir.clone()),
+            ..ConnectionOptions::default()
+        };
+        let channel = SubscriptionChannel::ChatGpt;
+        let first =
+            SubscriptionAccount::new(&data_dir, channel, "email-1234567890abcdef-111122223333")
+                .unwrap();
+        let second =
+            SubscriptionAccount::new(&data_dir, channel, "account-1234567890abcdef-444455556666")
+                .unwrap();
+        let settings = SubscriptionSettings::load(options.clone()).await.unwrap();
+        assert_eq!(
+            "chatgpt",
+            settings
+                .save_connection(&first, &ProviderProxy::Environment)
+                .unwrap()
+        );
+        let settings = SubscriptionSettings::load(options.clone()).await.unwrap();
+        assert_eq!(
+            "chatgpt-2",
+            settings
+                .save_connection(&second, &ProviderProxy::Environment)
+                .unwrap()
+        );
+        let settings = SubscriptionSettings::load(options.clone()).await.unwrap();
+        let (_, saved, _) = settings.connection(channel, "chatgpt").unwrap();
+        assert_eq!(&first, saved);
+        assert_eq!(
+            &second,
+            settings
+                .connection(channel, second.name().unwrap())
+                .unwrap()
+                .1
+        );
+        let collision = SubscriptionAccount::new(&data_dir, channel, "chatgpt").unwrap();
+        assert!(settings
+            .save_connection(&collision, &ProviderProxy::Direct)
+            .is_err());
+        assert_eq!(
+            "chatgpt",
+            settings
+                .save_connection(saved, &ProviderProxy::Direct)
+                .unwrap()
+        );
+        let settings = SubscriptionSettings::load(options).await.unwrap();
+        assert_eq!(2, settings.connections().count());
+        assert_eq!(
+            ProviderProxy::Direct,
+            settings
+                .connection(channel, "chatgpt")
+                .unwrap()
+                .2
+                .options
+                .proxy
+        );
     }
 
     #[tokio::test]
