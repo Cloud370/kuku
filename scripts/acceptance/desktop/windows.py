@@ -1,6 +1,7 @@
 """Drive the installed client in Windows Terminal on a dedicated Windows test desktop."""
 
 import argparse
+from collections import Counter
 from contextlib import contextmanager, suppress
 import ctypes
 from ctypes import wintypes
@@ -316,7 +317,8 @@ def selection_pixels(image):
     marker_spacing = marker_size + len(SELECTION) + 2
     matches = {}
     for y in range(image.height):
-        background = pixels[0, y]
+        # The message card can use a different background from the window margin.
+        background = Counter(pixels[x, y] for x in range(image.width)).most_common(1)[0][0]
         runs = []
         start = None
         for x in range(1, image.width):

@@ -14,10 +14,12 @@ except ImportError:
 class WindowsSelectionTests(unittest.TestCase):
     origin = (40, 60)
 
-    def reply(self, markers=2):
+    def reply(self, markers=2, *, card=False):
         image = Image.new("RGB", (360, 90))
         draw = ImageDraw.Draw(image)
         left, row, stride = 19, 40, 8
+        if card:
+            draw.rectangle((10, row - 10, 340, row + 10), fill=(38, 48, 58))
         marker_size = len(windows.SELECTION_MARKER)
         width = len(windows.SELECTION)
         spacing = (marker_size + width + 2) * stride
@@ -27,6 +29,11 @@ class WindowsSelectionTests(unittest.TestCase):
                 draw.rectangle((x - 1, row - 3, x + 1, row + 3), fill="white")
         first = left + (marker_size + 1) * stride
         return image, (first, first + (width - 1) * stride, row, stride)
+
+    def test_locates_markers_inside_a_message_card_with_a_different_background(self):
+        image, position = self.reply(card=True)
+
+        self.assertEqual(windows.selection_pixels(image), position)
 
     def test_waits_for_the_same_target_pixels_at_the_same_window_position(self):
         partial, _ = self.reply(markers=1)
