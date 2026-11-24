@@ -21,7 +21,9 @@ use super::state::{edit_field, SetupIntent, SetupState, SetupStep};
 use super::{ConnectionChoice, CredentialSource};
 
 mod capabilities;
-pub(super) use capabilities::{same_service_tier, CUSTOM_TIERS_ROW};
+pub(super) use capabilities::{
+    automatic_reasoning, has_configured_reasoning, same_service_tier, CUSTOM_TIERS_ROW,
+};
 mod pricing;
 
 pub(super) const PROTOCOLS: [ProviderFormat; 3] = [

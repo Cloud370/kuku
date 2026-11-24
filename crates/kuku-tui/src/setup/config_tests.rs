@@ -623,7 +623,7 @@ async fn safe_existing_file_reference_is_kept_without_creating_another_key() {
 }
 
 #[tokio::test]
-async fn route_changes_clear_explicit_route_options_but_credential_edits_do_not() {
+async fn route_changes_choose_new_defaults_but_credential_edits_preserve_settings() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("existing.toml");
     let mut document: DocumentMut = generate_default().parse().unwrap();
@@ -654,9 +654,10 @@ async fn route_changes_clear_explicit_route_options_but_credential_edits_do_not(
     state.model.set_text("changed-route-model".into());
     save(&settings, &state).unwrap();
     let after_route: DocumentMut = fs::read_to_string(config).unwrap().parse().unwrap();
-    assert!(after_route["model"]["balanced"]
-        .get("reasoning_effort")
-        .is_none());
+    assert_eq!(
+        after_route["model"]["balanced"]["reasoning_effort"].as_str(),
+        Some("none")
+    );
     assert!(after_route["model"]["balanced"]
         .get("service_tier")
         .is_none());
@@ -741,9 +742,10 @@ async fn credential_repair_preserves_unchanged_route_environment_references() {
             .as_str()
             .unwrap()
     );
-    assert!(route_changed["model"]["balanced"]
-        .get("reasoning_effort")
-        .is_none());
+    assert_eq!(
+        route_changed["model"]["balanced"]["reasoning_effort"].as_str(),
+        Some("none")
+    );
     assert!(route_changed["model"]["balanced"]
         .get("service_tier")
         .is_none());

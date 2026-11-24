@@ -725,15 +725,7 @@ fn save_with_lookup(
         };
         let old = settings.resolved.tier(&tier);
         let fields = entry(&mut document, "model", &tier)?;
-        if old.is_none_or(|route| route.provider != provider_name || route.model != model)
-            || (is_primary
-                && (state.reasoning_changed
-                    || state.output_changed
-                    || state.service_override(&model).is_some()))
-        {
-            validate_routes.push(tier);
-        }
-        save_route(
+        if save_route(
             fields,
             old,
             &provider_name,
@@ -741,7 +733,9 @@ fn save_with_lookup(
             state,
             is_primary,
             &connection,
-        );
+        ) {
+            validate_routes.push(tier);
+        }
     }
 
     let output = document.to_string();
@@ -802,7 +796,7 @@ fn save_route(
     state: &SetupState,
     primary: bool,
     connection: &kuku::config::ProviderConfig,
-) {
+) -> bool {
     let changed = old.is_none_or(|route| route.provider != provider || route.model != model);
     if changed || !is_environment_reference(fields.get("provider")) {
         fields.insert("provider", value(provider));
@@ -810,19 +804,32 @@ fn save_route(
     if changed || !is_environment_reference(fields.get("model")) {
         fields.insert("model", value(model));
     }
-    if changed || (primary && state.reasoning_changed) {
+    let manual = primary && state.reasoning_changed;
+    let automatic = if !manual
+        && (changed || old.is_none_or(|route| !super::models::has_configured_reasoning(route)))
+        && (changed
+            || !is_environment_reference(fields.get("think"))
+                && !is_environment_reference(fields.get("reasoning_effort")))
+    {
+        kuku::adapter::inspect_connection_model(connection, model)
+            .ok()
+            .and_then(|caps| super::models::automatic_reasoning(&caps).map(str::to_owned))
+    } else {
+        None
+    };
+    if changed || manual || automatic.is_some() {
         fields.insert("think", value(ThinkLevel::ProviderDefault.as_str()));
-        let effort = state
-            .reasoning
-            .as_deref()
-            .filter(|effort| *effort != ThinkLevel::ProviderDefault.as_str());
-        set_optional(
-            fields,
-            "reasoning_effort",
-            (primary && state.reasoning_changed)
-                .then_some(effort)
-                .flatten(),
-        );
+        let effort = if manual {
+            Some(
+                state
+                    .reasoning
+                    .as_deref()
+                    .unwrap_or(ThinkLevel::ProviderDefault.as_str()),
+            )
+        } else {
+            automatic.as_deref()
+        };
+        set_optional(fields, "reasoning_effort", effort);
     }
     if let Some(tier) = primary.then(|| state.service_override(model)).flatten() {
         set_optional(fields, "service_tier", tier);
@@ -845,6 +852,10 @@ fn save_route(
     {
         fields.insert("max_output_tokens", value(8192));
     }
+    changed
+        || manual
+        || automatic.is_some()
+        || (primary && (state.output_changed || state.service_override(model).is_some()))
 }
 
 fn edit_table<'a>(

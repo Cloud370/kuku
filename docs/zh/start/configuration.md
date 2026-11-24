@@ -25,6 +25,8 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 在 Session 里随时可以输入 `/model` 或按 `Ctrl+L` 添加/修改连接，选择 **Use in this Session** 切换当前 Agent 的线路，或 **Set as default** 存为新 Session 的默认线路。[终端控制](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
+保存没有配置思考档位的模型时，若支持 `medium`，设置优先选它。其余情况取已知顺序中间偏低的一档、唯一可用的档位，或在档位顺序未知时采用有效的上游声明默认值。能力信息不足时跟随供应商默认。手动设置优先。
+
 ## Provider 与凭据
 
 默认配置包含两个 Provider：

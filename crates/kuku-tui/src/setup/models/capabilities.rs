@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use kuku::config::ProviderConfig;
+use kuku::config::{ProviderConfig, ThinkLevel, TierConfig};
+use kuku::ProviderCapabilities;
 
 use crate::setup::service_tier::valid_tier;
 
@@ -18,7 +19,66 @@ pub(in crate::setup) fn same_service_tier(left: Option<&str>, right: Option<&str
         )
 }
 
+pub(in crate::setup) fn automatic_reasoning(capabilities: &ProviderCapabilities) -> Option<&str> {
+    const ORDER: [&str; 8] = [
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ];
+    let efforts: std::collections::BTreeSet<_> = capabilities
+        .selectable_reasoning_efforts()
+        .filter(|effort| *effort != ThinkLevel::ProviderDefault.as_str())
+        .collect();
+    if efforts.contains("medium") {
+        return Some("medium");
+    }
+    if efforts.len() == 1 {
+        return efforts.first().copied();
+    }
+    let ordered: Vec<_> = ORDER
+        .into_iter()
+        .filter(|effort| efforts.contains(effort))
+        .collect();
+    if !ordered.is_empty() && ordered.len() == efforts.len() {
+        return Some(ordered[(ordered.len() - 1) / 2]);
+    }
+    capabilities
+        .reasoning_default
+        .as_ref()
+        .map(|declared| declared.value.as_str())
+        .filter(|effort| efforts.contains(effort))
+}
+
+pub(in crate::setup) fn has_configured_reasoning(route: &TierConfig) -> bool {
+    route.reasoning_effort.is_some() || route.think != ThinkLevel::ProviderDefault
+}
+
 impl SetupState {
+    pub(in crate::setup) fn displayed_reasoning(&self, settings: &Settings) -> Option<String> {
+        let configured = self.route_name(settings).and_then(|name| settings.resolved.tier(name))
+            .zip(self.primary_model())
+            .is_some_and(|(route, model)| {
+                route.model == model
+                    && matches!(self.choice(), ConnectionChoice::Existing(name) if route.provider == *name)
+                    && has_configured_reasoning(route)
+            });
+        if self.reasoning_changed || configured {
+            self.reasoning.clone()
+        } else {
+            automatic_reasoning(&self.capabilities(settings)?).map(str::to_owned)
+        }
+    }
+
+    pub(in crate::setup) fn open_thinking(&mut self, settings: &Settings) {
+        self.models.cursor = self
+            .displayed_reasoning(settings)
+            .and_then(|current| {
+                self.thinking_choices(settings)
+                    .iter()
+                    .position(|choice| choice == &current)
+            })
+            .unwrap_or(0);
+        self.step = SetupStep::Thinking;
+    }
+
     pub(in crate::setup) fn service_override(&self, model: &str) -> Option<Option<&str>> {
         let (selected_model, tier) = self.selected_service.as_ref()?;
         (selected_model == model).then_some(tier.as_deref())
@@ -261,5 +321,39 @@ impl SetupState {
         } else {
             edit_field(&mut self.models.override_value, key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kuku::{CapabilitySource, DeclaredCapability, ProviderCapabilities};
+
+    use super::automatic_reasoning;
+
+    #[test]
+    fn reasoning_default_prefers_medium_then_a_known_middle_value() {
+        let default = |choices: &[&str], declared: Option<&str>| {
+            let caps = ProviderCapabilities {
+                reasoning_efforts: choices.iter().map(|choice| (*choice).into()).collect(),
+                reasoning_default: declared.map(|value| DeclaredCapability {
+                    value: value.into(),
+                    source: CapabilitySource::ModelList,
+                }),
+                ..Default::default()
+            };
+            automatic_reasoning(&caps).map(str::to_owned)
+        };
+        assert_eq!(
+            default(&["low", "medium", "high", "xhigh", "ultra"], Some("low")).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            default(&["high", "ultra", "xhigh", "low"], None).as_deref(),
+            Some("high")
+        );
+        assert_eq!(default(&["native"], None).as_deref(), Some("native"));
+        assert_eq!(default(&["a", "b"], Some("b")).as_deref(), Some("b"));
+        assert_eq!(default(&["a", "b"], None), None);
+        assert_eq!(default(&[], Some("low")), None);
     }
 }

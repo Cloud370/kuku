@@ -564,13 +564,9 @@ fn render_review_settings(
 ) {
     render_line(frame, area, row, Line::styled("Settings", emphasis(ACCENT)));
     *row += 1;
-    let unchanged_model = state.route_name(settings).and_then(|route| settings.resolved.tier(route))
-        .zip(state.primary_model())
-        .is_some_and(|(route, model)| route.model == model &&
-            matches!(state.choice(), super::ConnectionChoice::Existing(name) if route.provider == *name));
-    let effort = (unchanged_model || state.reasoning_changed)
-        .then_some(state.reasoning.as_deref())
-        .flatten()
+    let effort = state.displayed_reasoning(settings);
+    let effort = effort
+        .as_deref()
         .filter(|effort| *effort != "provider-default");
     let output = match state.output {
         kuku::config::RequestedOutput::Text => "Text",

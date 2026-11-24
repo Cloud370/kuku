@@ -218,11 +218,7 @@ pub(crate) async fn save_setting(
             "think",
             toml_edit::value(ThinkLevel::ProviderDefault.as_str()),
         );
-        config::set_optional(
-            fields,
-            "reasoning_effort",
-            (effort != ThinkLevel::ProviderDefault.as_str()).then_some(effort),
-        );
+        fields.insert("reasoning_effort", toml_edit::value(effort));
     } else {
         document["default_model"] = toml_edit::value(route);
     }

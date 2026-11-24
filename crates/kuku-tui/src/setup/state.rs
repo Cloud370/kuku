@@ -951,10 +951,7 @@ impl SetupState {
             ReviewAction::ApiType => {
                 self.open_protocol_picker(true);
             }
-            ReviewAction::Thinking => {
-                self.models.cursor = 0;
-                self.step = SetupStep::Thinking;
-            }
+            ReviewAction::Thinking => self.open_thinking(settings),
             ReviewAction::Service => self.open_service(settings),
             ReviewAction::Output => {
                 self.models.cursor = usize::from(self.output == RequestedOutput::Image);

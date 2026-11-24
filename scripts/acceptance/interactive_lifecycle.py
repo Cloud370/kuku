@@ -593,15 +593,17 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.press("\x1b[B\x1b[B\r")
                 terminal.expect("› Thinking")
                 terminal.press("\r")
-                terminal.expect("2 usable", also=("none · send to provider", "max"), absent=("high",))
-                terminal.press("\x1b[B\r")
+                terminal.expect("2 usable", also=("› none · send to provider", "max"), absent=("high",))
+                terminal.press("\x1b")
                 terminal.expect("Model capabilities")
                 terminal.press("\x1b")
                 terminal.expect("› Save and continue")
                 terminal.press("\r")
                 terminal.expect("New session", state="Ready")
                 saved_models = client.request("GET", "/models").as_json()["tiers"]
-                assert {item["model"] for item in saved_models} == {"alpha", "beta", "gamma"}
+                assert {item["model"]: item["settings"]["reasoning_effort"] for item in saved_models} == {
+                    "alpha": "none", "beta": "low", "gamma": "medium",
+                }
                 terminal.submit("Verify the saved thinking setting")
                 terminal.expect("Saved effort sent.", state="Finished")
                 assert runtime_requests == [("alpha", "none")]
