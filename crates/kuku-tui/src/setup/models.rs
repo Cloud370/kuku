@@ -8,8 +8,8 @@ use kuku::adapter::{
     ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, TrialSelection,
 };
 use kuku::config::{
-    resolve_request_url, ApiKey, ModelCapabilityDeclaration, ProviderConfig, ProviderFormat,
-    ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel,
+    resolve_request_url, ApiKey, CustomServiceTier, ModelCapabilityDeclaration, ProviderConfig,
+    ProviderFormat, ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel,
 };
 use kuku::session::AgentConfig;
 use kuku::ProviderCapabilities;
@@ -21,7 +21,7 @@ use super::state::{edit_field, SetupIntent, SetupState, SetupStep};
 use super::{ConnectionChoice, CredentialSource};
 
 mod capabilities;
-pub(super) use capabilities::same_service_tier;
+pub(super) use capabilities::{same_service_tier, CUSTOM_TIERS_ROW};
 mod pricing;
 
 pub(super) const PROTOCOLS: [ProviderFormat; 3] = [
@@ -48,6 +48,7 @@ pub(super) struct Models {
     pub(super) default: Option<String>,
     pub(super) overrides: BTreeMap<String, ModelCapabilityDeclaration>,
     pub(super) override_value: Editor,
+    custom_services: BTreeMap<String, BTreeMap<String, CustomServiceTier>>,
     pub(super) discovered_from: Option<ProviderConfig>,
 }
 
@@ -884,76 +885,6 @@ impl SetupState {
             self.step = SetupStep::ReviewSettings;
         } else {
             self.models.move_cursor(key.code, 2);
-        }
-    }
-
-    pub(super) fn choose_advanced(&mut self, key: KeyEvent, settings: &Settings) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-            let Some(id) = self.primary_model() else {
-                return;
-            };
-            let saved = self
-                .connection_options(settings)
-                .model_capabilities
-                .remove(&id)
-                .and_then(|entry| entry.manual);
-            let declaration = self
-                .models
-                .overrides
-                .entry(id)
-                .or_insert_with(|| saved.unwrap_or_default());
-            let value = match self.models.cursor {
-                0 => declaration
-                    .reasoning_efforts
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-                1 => declaration.reasoning_default.clone(),
-                2 => declaration
-                    .input_modalities
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-                3 => declaration
-                    .output_modalities
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-                _ => declaration
-                    .interfaces
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-            };
-            self.models
-                .override_value
-                .set_text(value.unwrap_or_default());
-            self.step = SetupStep::Override;
-        } else {
-            self.models.move_cursor(key.code, 5);
-        }
-    }
-
-    pub(super) fn edit_override(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-            let Some(id) = self.primary_model() else {
-                return;
-            };
-            let declaration = self.models.overrides.entry(id).or_default();
-            let text = self.models.override_value.text().trim();
-            let list = (!text.is_empty()).then(|| {
-                text.split(',')
-                    .map(str::trim)
-                    .filter(|item| !item.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            });
-            match self.models.cursor {
-                0 => declaration.reasoning_efforts = list,
-                1 => declaration.reasoning_default = (!text.is_empty()).then(|| text.to_owned()),
-                2 => declaration.input_modalities = list,
-                3 => declaration.output_modalities = list,
-                _ => declaration.interfaces = list,
-            }
-            self.step = SetupStep::Advanced;
-        } else {
-            edit_field(&mut self.models.override_value, key);
         }
     }
 }

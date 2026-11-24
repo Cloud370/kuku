@@ -7,6 +7,7 @@ mod probes;
 mod recovery;
 mod repair;
 mod repair_backend;
+pub(crate) mod service_tier;
 mod state;
 mod subscription;
 mod ui;

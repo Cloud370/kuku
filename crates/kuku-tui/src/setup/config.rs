@@ -213,15 +213,8 @@ impl Settings {
         match choice {
             ConnectionChoice::Existing(name) => {
                 if let Some(account) = self.subscription_for(choice) {
-                    let alias = account.name().unwrap_or(name);
-                    let email = self
-                        .subscription_info
-                        .get(name)
-                        .and_then(|info| info.masked_email.as_deref());
-                    return email.map_or_else(
-                        || format!("ChatGPT plan · {alias}"),
-                        |email| format!("ChatGPT plan · {alias} · {email}"),
-                    );
+                    let info = self.subscription_info.get(name);
+                    return kuku::adapter::subscription_display_label(account, info);
                 }
                 format!(
                     "Existing · {}",

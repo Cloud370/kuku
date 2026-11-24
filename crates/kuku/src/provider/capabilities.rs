@@ -137,7 +137,7 @@ pub(crate) fn resolve_capabilities(
         |entry| entry.service_tiers.as_ref(),
         |entry| entry.service_tiers.as_ref(),
     );
-    let (service_tiers, service_tier_source) = match declared_services {
+    let (mut service_tiers, service_tier_source) = match declared_services {
         Some(declared)
             if matches!(
                 declared.source,
@@ -156,6 +156,14 @@ pub(crate) fn resolve_capabilities(
             (!services.is_empty()).then_some(CapabilitySource::AdapterProfile),
         ),
     };
+    let custom_service_tiers = declaration
+        .map(|entry| entry.custom_service_tiers.clone())
+        .unwrap_or_default();
+    for tier in custom_service_tiers.keys() {
+        if !service_tiers.contains(tier) {
+            service_tiers.push(tier.clone());
+        }
+    }
     let input_modalities = resolve.field(
         |entry| entry.input_modalities.as_ref(),
         |entry| entry.input_modalities.as_ref(),
@@ -194,6 +202,7 @@ pub(crate) fn resolve_capabilities(
         system_prompt_update: resolve.field(|_| None, |entry| entry.system_prompt_update.as_ref()),
         service_tiers,
         service_tier_source,
+        custom_service_tiers,
         media_adapter,
     }
 }
@@ -265,6 +274,29 @@ impl ModelDeclarations<'_> {
     }
 }
 
+impl ProviderCapabilities {
+    /// Whether two tier names mean the same thing for this adapter.
+    pub fn equivalent_service_tiers(&self, left: &str, right: &str) -> bool {
+        match self.profile {
+            ProviderProfile::OpenAi | ProviderProfile::OpenRouter => {
+                let alias = |tier| matches!(tier, "fast" | "priority");
+                (alias(left) && alias(right))
+                    || (self.profile == ProviderProfile::OpenRouter
+                        && normalized_tier(Some(left)) == normalized_tier(Some(right)))
+                    || left == right
+            }
+            _ => left == right,
+        }
+    }
+
+    /// Whether the existing capability resolver accepts this value for the configured route.
+    pub fn supports_service_tier(&self, value: &str) -> bool {
+        self.service_tiers
+            .iter()
+            .any(|tier| self.equivalent_service_tiers(tier, value))
+    }
+}
+
 pub(crate) fn resolve_settings(
     connection: &str,
     capabilities: &ProviderCapabilities,
@@ -290,34 +322,21 @@ pub(crate) fn resolve_settings(
             think.and_then(|level| portable_reasoning(level, capabilities)),
         ),
     };
-    let native_service = service.as_deref().and_then(|tier| {
-        let allowed = &capabilities.service_tiers;
-        match capabilities.profile {
-            ProviderProfile::OpenRouter => {
-                let normalized = normalized_tier(Some(tier));
-                allowed
-                    .iter()
-                    .any(|value| normalized_tier(Some(value)) == normalized)
-                    .then_some(normalized)
-            }
-            ProviderProfile::OpenAi if matches!(tier, "fast" | "priority") => allowed
-                .iter()
-                .any(|value| matches!(value.as_str(), "fast" | "priority"))
-                .then_some(tier),
-            _ => None,
-        }
-    });
-    if native_service.is_none() {
+    if let Some(tier) = service
+        .as_deref()
+        .filter(|tier| !capabilities.supports_service_tier(tier))
+    {
         validate_choice(
             connection,
             "service_tier",
-            service.as_deref(),
+            Some(tier),
             &capabilities.service_tiers,
         )?;
     }
-    let resolved_service = native_service
-        .map(str::to_owned)
-        .or_else(|| service.clone());
+    let resolved_service = service.as_deref().map(|tier| match capabilities.profile {
+        ProviderProfile::OpenRouter => normalized_tier(Some(tier)).to_owned(),
+        _ => tier.to_owned(),
+    });
     Ok(ProviderSettings {
         requested_reasoning_effort,
         reasoning_effort,

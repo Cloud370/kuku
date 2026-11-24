@@ -313,7 +313,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.type(draft)
             terminal.press("\x0c")
             terminal.expect("Add model or connection")
-            terminal.press("\r")
+            terminal.press("/Add model or connection\r")
             terminal.expect("Set up a model")
             terminal.press("\r")
             terminal.expect(f"Existing · {endpoint.removeprefix('http://')}", absent=("Existing · custom",))
@@ -328,11 +328,11 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect("› Model tests", also=("Save models", "API URL", "gamma"))
             terminal.press("\x1b[A\r")
             terminal.expect("gamma", state="Model route")
-            terminal.press("gamma")
-            match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
-            terminal.click_text(match, "›gamma")
-            terminal.expect("Use in this Session", also=("Edit", "Set as default"))
-            terminal.press("\x1b[B\r")
+            terminal.press("/gamma")
+            terminal.expect("/ gamma", also=("›gamma",))
+            terminal.press("\x1b")
+            terminal.expect("e Edit")
+            terminal.press("e")
             terminal.expect("Set up a model")
             terminal.press("\r")
             terminal.expect("API URL")
@@ -362,11 +362,9 @@ def shared_model_editor(binary, bridge, directory):
 
             terminal.press("\x0c")
             terminal.expect("gamma", state="Model route", also=("delta",))
-            terminal.press("gamma")
+            terminal.press("/gamma")
             match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
             terminal.click_text(match, "›gamma")
-            terminal.expect("Use in this Session")
-            terminal.press("\r")
             terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
             terminal.press("\r")
             active = client.provider.next(draft)
@@ -632,9 +630,7 @@ def persistent_model_default(client):
         terminal.press("/model\r")
         models = terminal.expect("light", also=(chosen,))["screen"]
         initial_models = models
-        tier_click = terminal.click_text(models, "light")
-        tier_selected = terminal.expect("Use in this Session", also=(chosen,))["screen"]
-        terminal.press("\r")
+        terminal.click_text(models, "light")
         tier_return = terminal.expect("New session", state="Ready", also=(chosen,),
                                       absent=("Model route",))["screen"]
         terminal.submit(prompt)
@@ -643,43 +639,23 @@ def persistent_model_default(client):
         call.text("The Session model is selected.")
         terminal.expect("The Session model is selected.", state="Finished")
         session = client.session(workspace)
-        before = client.snapshot(workspace, session)["config"]
-        config_before_default = config_path.read_text()
 
-        def open_default_confirmation():
-            terminal.press("/model\r")
-            models = terminal.expect("Model route", also=(
-                "Set current model as default", "light", chosen,
-            ))["screen"]
-            clicked = terminal.click_text(models, "Set current model as default")
-            try:
-                confirmation = terminal.expect("Save as default", also=(chosen, "new sessions"))["screen"]
-            except AssertionError:
-                (client.directory / "model-default-failure.json").write_text(json.dumps({
-                    "initial_models_screen": initial_models, "tier_click": tier_click,
-                    "screen_after_tier_enter": tier_return, "models_before_default_click": models,
-                    "default_click": clicked, "last_screen": terminal.request("screen")["screen"],
-                    "session_config_before": before,
-                    "session_config_after": client.snapshot(workspace, session)["config"],
-                    "saved_default_is_light": 'default_model = "light"' in config_path.read_text(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-                raise
-            return models, clicked, confirmation
+        terminal.press("/model\r")
+        terminal.expect("balanced", also=("Model route",))
+        terminal.press("/balanced\r")
+        terminal.expect("The Session model is selected.", absent=("Model route",))
+        eventually("the current Session uses balanced",
+                   lambda: client.snapshot(workspace, session)["config"].get("tier") == "balanced")
 
-        cancel_models, default_click, _ = open_default_confirmation()
-        cancel_selected = terminal.expect("› Cancel", also=("Save as default", chosen))["screen"]
-        terminal.press("\r")
-        cancel_return = terminal.expect("The Session model is selected.", state="Finished",
-                                       absent=("Save as default", "Model route"))["screen"]
-        assert config_path.read_text() == config_before_default
-        assert client.snapshot(workspace, session)["config"] == before
-        models, save_click, confirmation = open_default_confirmation()
-        terminal.expect("› Cancel", also=(chosen, "new sessions"))
-        terminal.press("\x1b[A")
-        save_selected = terminal.expect("› Save as default", also=(chosen, "new sessions"))["screen"]
-        terminal.press("\r")
-        terminal.expect("Saved as default")
-        assert client.snapshot(workspace, session)["config"] == before
+        terminal.press("/model\r")
+        terminal.press("/light")
+        terminal.expect("/ light", also=("›light",))
+        terminal.press("\x1b")
+        models = terminal.expect("d Default + switch", also=(chosen,))["screen"]
+        terminal.press("d")
+        saved = terminal.expect(f"Saved {chosen} as default and switched")["screen"]
+        eventually("the current Session uses light",
+                   lambda: client.snapshot(workspace, session)["config"].get("tier") == "light")
         terminal.exit_cleanly()
     config = (client.home / "config.toml").read_text()
     assert 'default_model = "light"' in config and chosen in config
@@ -705,18 +681,15 @@ def persistent_model_default(client):
         terminal.exit_cleanly()
     client.provider.assert_idle()
     (client.directory / "model-default.json").write_text(json.dumps({
-        "initial_models_screen": initial_models, "tier_click": tier_click,
-        "selected_tier_screen": tier_selected,
-        "screen_after_tier_enter": tier_return, "models_before_default_click": cancel_models,
-        "models_before_save_click": models, "default_click": default_click, "save_click": save_click,
-        "cancel_selected_screen": cancel_selected, "cancel_return_screen": cancel_return,
-        "cancel_preserved_config": True, "save_selected_screen": save_selected,
-        "confirmation_screen": confirmation,
-        "unchanged_session_config": before,
+        "initial_models_screen": initial_models,
+        "screen_after_tier_click": tier_return,
+        "models_before_save": models,
+        "saved_default_screen": saved,
+        "current_session_model": chosen,
         "new_session_model": created.request["model"],
         "reopened_session_model": reopened.request["model"],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Persistent default {chosen} was used by new and reopened Sessions; saving kept the current config unchanged.")
+    print(f"Persistent default {chosen} was used by current, new, and reopened Sessions.")
 
 
 def readonly_rewind(client):

@@ -60,7 +60,7 @@ impl App {
     pub(crate) fn model_default_choice(&self) -> Choice {
         let detail = self
             .resolved_model_route()
-            .map(|route| format!("{} · {}", route.model, route.connection))
+            .map(|route| route.model)
             .unwrap_or_else(str::to_owned);
         Choice::new(
             "Set current model as default",

@@ -50,7 +50,7 @@ On Chat and Responses, omitting `max_output_tokens` uses the upstream default. N
 | `proxy` | table | Network proxy settings for discovery, trials, and requests |
 | `model_pricing` | table | USD accounting settings keyed by exact model ID |
 | `model_price_catalogs` | table | Public OpenRouter quotes saved during setup |
-| `model_capabilities` | table | Discovered/manual capability overrides keyed by exact model ID |
+| `model_capabilities` | table | Model-list declarations, manual overrides, tested thinking values, and custom service tiers keyed by exact model ID |
 | `api_key` | string | `$ENV_VAR_NAME`, literal key, or `file:<absolute-path>` |
 | `subscription` | table | Subscription account reference with `channel` and absolute `credential_file` |
 | `auth` | `bearer`\|`x-api-key` | Override auth header independently of `format` |
@@ -94,6 +94,8 @@ cache_read = 0.1
 ```
 
 ### Capabilities, profiles, and routing
+
+Each model capability entry may also contain a `custom_service_tiers` table. Its keys are native tier names and its values are `unverified` for user declarations and `confirmed` when a probe reported the requested tier. These names extend the discovered or manually overridden service tier list. For example, `provider.gateway.model_capabilities."example/model".custom_service_tiers.turbo = "unverified"` adds `turbo` to that connection and exact model.
 
 - **Capabilities**: Each `model_capabilities.<model>` entry separates `discovered` and `manual` blocks (`reasoning_efforts`, `reasoning_default`, `input_modalities`, `output_modalities`, `interfaces`, plus protocol-specific tables such as `protocols.anthropic_messages.system_prompt_update`). Manual overrides persist across refreshes; omitted fields remain unknown. Image-input routes may offer [image inspection](tools.md); built-in text adapters reject image-output requests before dispatch. [DeepSeek model list](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 - **Profiles and reasoning**: Under `profile = "auto"`, known hosts pick their endpoint profile; custom gateways use `compatible` and require explicit capability declarations for native options. Connections are selected by name (never by first matching `format`). `think` maps to a declared effort or falls back to upstream default; direct DeepSeek maps `medium` to `high`. `reasoning_effort` is an exact native value (never remapped; unsupported values fail before dispatch).

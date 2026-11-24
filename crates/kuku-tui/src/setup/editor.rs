@@ -33,7 +33,10 @@ pub(crate) enum ModelEditorAction {
 
 #[derive(Debug, Clone)]
 pub(crate) enum SavedModelSetting {
-    Default(String),
+    Default {
+        name: String,
+        route: ResolvedModel,
+    },
     Thinking {
         target: ThinkingSaveTarget,
         effort: String,
@@ -188,7 +191,14 @@ pub(crate) async fn save_setting(
     let current = active_service(options, connection).await?;
     ensure_same_service(&service, &current)?;
     let (route, effort) = match &change {
-        SavedModelSetting::Default(route) => (route.as_str(), None),
+        SavedModelSetting::Default { name, route } => {
+            if settings.resolved.tier(name).is_none_or(|candidate| {
+                candidate.provider != route.connection || candidate.model != route.model
+            }) {
+                return Err("The model route changed. Reopen /model.".into());
+            }
+            (name.as_str(), None)
+        }
         SavedModelSetting::Thinking { target, effort } => {
             ensure_same_service(&target.service, &current)?;
             let route = thinking_tier(&settings, target.requested_tier.as_deref(), &target.route)
@@ -248,7 +258,7 @@ fn thinking_tier<'a>(
         .map(String::as_str)
 }
 
-async fn active_settings(
+pub(super) async fn active_settings(
     options: &ConnectionOptions,
     connection: Option<&Connection>,
 ) -> Result<(ServiceIdentity, Settings), String> {

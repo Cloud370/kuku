@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::State;
 use axum::Json;
-use kuku::adapter::inspect_model;
+use kuku::adapter::{inspect_model, subscription_account_info, subscription_display_label};
 use kuku::session::AgentConfig;
 use serde_json::{json, Value};
 
@@ -11,11 +12,42 @@ use crate::error_mapping::{ApiError, Result};
 use crate::AppState;
 
 pub(super) async fn list(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let config = state.config.load();
+    let config = state.config.load_full();
+    let labels = if config
+        .providers
+        .values()
+        .any(|provider| provider.options.subscription.is_some())
+    {
+        let config = Arc::clone(&config);
+        tokio::task::spawn_blocking(move || {
+            config
+                .providers
+                .iter()
+                .filter_map(|(name, provider)| {
+                    let account = provider.options.subscription.as_ref()?;
+                    let info = subscription_account_info(account).ok();
+                    Some((
+                        name.clone(),
+                        subscription_display_label(account, info.as_ref()),
+                    ))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
     let connections = config
         .providers
         .iter()
-        .map(|(name, provider)| json!({"name":name,"protocol":provider.format}))
+        .map(|(name, provider)| {
+            let mut connection = json!({"name":name,"protocol":provider.format});
+            if let Some(label) = labels.get(name) {
+                connection["subscription_label"] = json!(label);
+            }
+            connection
+        })
         .collect::<Vec<_>>();
     let tiers = config
         .tiers

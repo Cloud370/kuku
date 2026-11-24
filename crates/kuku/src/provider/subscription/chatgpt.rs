@@ -18,7 +18,7 @@ use crate::config::{ProviderProxy, SubscriptionAccount, SubscriptionChannel};
 use crate::{Error, Result};
 
 use super::store::{now, AccountRecord, AccountStore, HostRegistration, Tokens};
-use super::{account_info, SubscriptionAccountInfo};
+use super::{account_info, is_email_suffix, SubscriptionAccountInfo};
 
 const ISSUER: &str = "https://auth.openai.com";
 const AUTH_ENDPOINT: &str = "https://auth.openai.com/api/accounts/authorize";
@@ -369,18 +369,41 @@ fn private_email(key: &[u8; 32], email: &str) -> Option<PrivateEmail> {
     if local.is_empty() || domain.is_empty() || email.chars().any(char::is_control) {
         return None;
     }
-    let visible = |part: &str| {
-        part.chars()
-            .next()
-            .filter(char::is_ascii_alphanumeric)
-            .unwrap_or('*')
-    };
+    let local_length = local.chars().count();
+    let ending = local
+        .chars()
+        .last()
+        .filter(|ch| local_length >= 4 && ch.is_ascii_alphanumeric());
+    let beginning = masked_prefix(local, usize::from(ending.is_some()));
+
+    let (domain_name, top_level) = domain
+        .rsplit_once('.')
+        .filter(|(name, suffix)| !name.is_empty() && is_email_suffix(suffix))
+        .unwrap_or((domain, ""));
+    let domain_prefix = masked_prefix(domain_name, 0);
+    let mut masked = format!("{beginning}***");
+    masked.extend(ending);
+    masked.push_str(&format!("@{domain_prefix}***"));
+    if !top_level.is_empty() {
+        masked.push('.');
+        masked.push_str(top_level);
+    }
+
     let identifier =
         private_identifier(key, b"email", &format!("{local}@{}", domain.to_lowercase()));
-    Some(PrivateEmail {
-        masked: format!("{}***@{}***", visible(local), visible(domain)),
-        identifier,
-    })
+    Some(PrivateEmail { masked, identifier })
+}
+
+fn masked_prefix(part: &str, visible_ending: usize) -> String {
+    let length = part
+        .chars()
+        .count()
+        .saturating_sub(1 + visible_ending)
+        .min(3);
+    part.chars()
+        .take(length)
+        .take_while(char::is_ascii_alphanumeric)
+        .collect()
 }
 
 fn automatic_name(
@@ -755,7 +778,12 @@ mod tests {
         let key = [7; 32];
         let private = private_email(&key, email).unwrap();
         let same = private_email(&key, "Ada.Lovelace@example.invalid").unwrap();
-        assert_eq!("A***@E***", private.masked);
+        assert_eq!("Ada***e@Exa***.invalid", private.masked);
+        assert_eq!("***@***.io", private_email(&key, "a@x.io").unwrap().masked);
+        assert_eq!(
+            "ab***@lo***",
+            private_email(&key, "abc@loc").unwrap().masked
+        );
         assert_eq!(private.identifier, same.identifier);
         assert_ne!(
             private.identifier,

@@ -23,8 +23,9 @@ use crate::{ProviderCapabilities, ProviderSettings, Result};
 
 pub use crate::provider::chunk::ProviderChunk as ModelEvent;
 pub use crate::provider::subscription::{
-    sign_out_subscription, subscription_account_info, SubscriptionAccountInfo, SubscriptionLogin,
-    SubscriptionLoginProgress, SubscriptionLoginResult, SubscriptionStatus,
+    sign_out_subscription, subscription_account_info, subscription_display_label,
+    SubscriptionAccountInfo, SubscriptionLogin, SubscriptionLoginProgress, SubscriptionLoginResult,
+    SubscriptionStatus,
 };
 
 /// An asynchronous host operation which retains its borrowed adapter until completion.

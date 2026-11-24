@@ -21,6 +21,15 @@ impl App {
             self.rewind_armed = false;
         }
         if Shortcut::ESCAPE.matches(key) {
+            if let Some(Modal::Picker(picker)) = &mut self.modal {
+                if key.kind == KeyEventKind::Press
+                    && picker.kind == PickerKind::Models
+                    && picker.search_focused
+                {
+                    picker.search_focused = false;
+                    return;
+                }
+            }
             if key.kind == KeyEventKind::Repeat
                 || self.back_from_thinking_confirmation()
                 || self.back_from_agent_setup()
@@ -119,7 +128,9 @@ impl App {
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
-            if picker.kind.searchable() {
+            if picker.kind.searchable()
+                && (picker.kind != PickerKind::Models || picker.search_focused)
+            {
                 picker.query.insert(&text.replace(['\r', '\n'], " "));
                 self.picker_query_changed();
             }

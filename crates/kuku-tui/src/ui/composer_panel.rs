@@ -253,8 +253,16 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
         .is_some_and(|thinking| thinking.save.is_some())
     {
         SAVE_HELP
-    } else if picker.kind == PickerKind::Thinking {
+    } else if matches!(picker.kind, PickerKind::Thinking | PickerKind::CustomSpeed) {
         THINKING_HELP
+    } else if picker.kind == PickerKind::Speed {
+        "↑↓ Move · Enter Apply · Type to filter or add a tier"
+    } else if picker.kind == PickerKind::Models {
+        if picker.search_focused {
+            "Enter Switch · Esc Back to list"
+        } else {
+            "Enter Switch · d Default + switch · e Edit · / Search"
+        }
     } else {
         MODEL_HELP
     };
@@ -295,7 +303,13 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, title: &str, picker: &mut Pi
     );
     frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
     if searchable && !field.is_empty() {
-        render_editor(frame, field, &mut picker.query, true, "Search models…");
+        let focused = picker.kind != PickerKind::Models || picker.search_focused;
+        let placeholder = if picker.kind == PickerKind::Speed {
+            "Tier name…"
+        } else {
+            "Search models…"
+        };
+        render_editor(frame, field, &mut picker.query, focused, placeholder);
     }
     usize::from(field.width).max(1)
 }

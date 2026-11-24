@@ -37,6 +37,7 @@ mod pending;
 mod reading;
 mod rewind;
 pub(crate) use rewind::REWIND_PAGE;
+pub(crate) mod speed;
 mod thinking;
 mod timing;
 mod values;
@@ -697,6 +698,12 @@ impl App {
                     }
                 }
             }
+            Update::SpeedLoaded(ticket, result, requested) => {
+                self.speed_loaded(ticket, result, requested)
+            }
+            Update::SpeedFinished(ticket, target, result) => {
+                self.speed_work_finished(ticket, target, result)
+            }
             Update::ThinkingDefaults(ticket, defaults) => self.thinking_defaults(ticket, defaults),
             Update::AgentModels(ticket, result) => self.agent_models_loaded(ticket, result),
             Update::ModelEditorOpened(ticket, result) => self.model_editor_opened(ticket, result),
@@ -704,6 +711,9 @@ impl App {
                 self.model_editor_saved(ticket, editor, result)
             }
             Update::ModelSettingSaved(result) => self.model_setting_saved(result),
+            Update::ModelDefaultAndSwitchSaved(selection, tier, result) => {
+                self.model_default_and_switch_saved(selection, tier, result)
+            }
             Update::PreparedCredentialRepair(ticket, selection, result) => {
                 self.credential_repair_prepared(ticket, selection, result)
             }

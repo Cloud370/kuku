@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use kuku_client::local::BuildPolicy;
-use kuku_client::local::{RestartOutcome, SESSION_PROTOCOL_VERSION};
+use kuku_client::local::RestartOutcome;
 use kuku_client::{
     Acknowledgement, AgentConfig, Client, Command, Connection, ConnectionOptions, Error,
     HistoryDestinations, HistoryKind, HistoryPage, JobSnapshot, JobStatus, ModelCatalog,
     ModelSelection, NamedValue, NamedValueKind, NamedValueSource, Observation, OutputChunk,
-    RewindGroupPage, SessionStatus, Snapshot, Target,
+    RewindGroupPage, Snapshot, Target,
 };
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -26,9 +26,10 @@ mod connect;
 mod history;
 pub(crate) use history::LoadedHistory;
 mod observe;
+mod search;
+use search::find;
 
 const UPDATE_CAPACITY: usize = 64;
-const SEARCH_DELAY: Duration = Duration::from_millis(70);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Selection {
@@ -41,7 +42,10 @@ pub(crate) enum Search {
     Skills(String),
     Paths(String),
     Sessions(String),
-    Models,
+    Models {
+        tier: Option<String>,
+        route: Option<ResolvedModel>,
+    },
     Values(Target),
     Jobs(Target),
     Server,
@@ -58,6 +62,7 @@ pub(crate) enum Job {
     OpenModelEditor(u64, crate::setup::SetupIntent),
     SaveModelEditor(u64, Box<crate::setup::ModelEditor>),
     SaveModelSetting(crate::setup::SavedModelSetting),
+    SaveAndUseModel(Selection, Box<kuku_client::TierSummary>),
     PrepareCredentialRepair {
         ticket: u64,
         selection: Selection,
@@ -89,6 +94,12 @@ pub(crate) enum Job {
     Find(Ticket, Search),
     AgentModels(u64),
     ThinkingDefaults(u64, AgentConfig, ResolvedModel),
+    LoadSpeed(u64, Selection, Target, Option<String>),
+    CustomSpeed(
+        u64,
+        Box<crate::app::speed::SpeedTarget>,
+        crate::setup::service_tier::SpeedWork,
+    ),
     ClosePicker,
     PrepareDefault {
         ticket: u64,
@@ -122,6 +133,11 @@ pub(crate) enum Update {
     ModelEditorOpened(u64, Result<Box<crate::setup::ModelEditor>, String>),
     ModelEditorSaved(u64, Box<crate::setup::ModelEditor>, Result<bool, String>),
     ModelSettingSaved(Result<bool, String>),
+    ModelDefaultAndSwitchSaved(
+        Selection,
+        Box<kuku_client::TierSummary>,
+        Result<bool, String>,
+    ),
     PreparedCredentialRepair(u64, Selection, Result<PreparedCredentialRepair, String>),
     SavedCredentialRepair(u64, Selection, Result<CredentialRepairApplied, String>),
     Connected {
@@ -158,6 +174,16 @@ pub(crate) enum Update {
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
     AgentModels(u64, Result<ModelCatalog, Error>),
     ThinkingDefaults(u64, crate::setup::ThinkingDefaults),
+    SpeedLoaded(
+        u64,
+        Result<Box<crate::app::speed::SpeedTarget>, String>,
+        Option<String>,
+    ),
+    SpeedFinished(
+        u64,
+        Box<crate::app::speed::SpeedTarget>,
+        Result<crate::setup::service_tier::SpeedResult, String>,
+    ),
     PreparedDefault(u64, Selection, Result<PreparedDefaultSave, String>),
     SavedDefault(u64, Selection, Result<(), String>),
     Saved(Command, Result<(), Error>),
@@ -256,6 +282,22 @@ impl Jobs {
                     )
                 });
             }
+            Job::SaveAndUseModel(selection, tier) => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                self.spawn(async move {
+                    let change = crate::setup::SavedModelSetting::Default {
+                        name: tier.name.clone(),
+                        route: ResolvedModel {
+                            connection: tier.connection.clone(),
+                            model: tier.model.clone(),
+                        },
+                    };
+                    let result =
+                        crate::setup::save_setting(&options, connection.as_ref(), change).await;
+                    Update::ModelDefaultAndSwitchSaved(selection, tier, result)
+                });
+            }
             Job::Connect => self.connect(),
             Job::Observe(selection) => {
                 Self::abort(&mut self.observer);
@@ -293,6 +335,45 @@ impl Jobs {
                         .await,
                     )
                 }));
+            }
+            Job::LoadSpeed(ticket, origin, target, requested) => {
+                Self::abort(&mut self.finder);
+                let connection = self.connection.clone();
+                self.finder = Some(self.spawn(async move {
+                    let result = async {
+                        let connection = connection.ok_or("Reconnect with Ctrl+R")?;
+                        let snapshot = connection
+                            .client
+                            .snapshot(&target)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        crate::app::speed::SpeedTarget::from_snapshot(origin, &snapshot)
+                            .map(Box::new)
+                    }
+                    .await;
+                    Update::SpeedLoaded(ticket, result, requested)
+                }));
+            }
+            Job::CustomSpeed(ticket, target, work) => {
+                let options = self.options.clone();
+                let connection = self.connection.clone();
+                let probing = matches!(work, crate::setup::service_tier::SpeedWork::Probe(_));
+                if probing {
+                    Self::abort(&mut self.finder);
+                }
+                let task = self.spawn(async move {
+                    let result = crate::setup::service_tier::custom_service_tier(
+                        &options,
+                        connection.as_ref(),
+                        &target,
+                        work,
+                    )
+                    .await;
+                    Update::SpeedFinished(ticket, target, result)
+                });
+                if probing {
+                    self.finder = Some(task);
+                }
             }
             Job::ClosePicker => Self::abort(&mut self.finder),
             history @ (Job::RewindHistory(..) | Job::RewindSource(..) | Job::HistoryJump(..)) => {
@@ -579,6 +660,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         Job::OpenModelEditor(..)
         | Job::SaveModelEditor(..)
         | Job::SaveModelSetting(..)
+        | Job::SaveAndUseModel(..)
         | Job::PrepareCredentialRepair { .. }
         | Job::SaveCredentialRepair { .. }
         | Job::RestartCredentialRepair { .. }
@@ -587,6 +669,8 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::StopObserving
         | Job::Find(_, _)
         | Job::ThinkingDefaults(..)
+        | Job::LoadSpeed(..)
+        | Job::CustomSpeed(..)
         | Job::ClosePicker
         | Job::PrepareRestart(_)
         | Job::Restart(_)
@@ -648,121 +732,6 @@ async fn push(sender: &mpsc::Sender<Message>, update: Update) -> bool {
     sender.send(Message::View(Box::new(update))).await.is_ok()
 }
 
-async fn find(
-    options: &ConnectionOptions,
-    connection: Option<&Connection>,
-    query: Search,
-) -> Result<(Vec<Choice>, String), Error> {
-    if matches!(query, Search::Server) {
-        return Ok((Vec::new(), service_status(options, connection).await?));
-    }
-    let connection = connection.ok_or_else(|| Error::Options("Reconnect with Ctrl+R".into()))?;
-    let client = &connection.client;
-    let workspace = &connection.workspace;
-    let choices = match query {
-        Search::Skills(query) => {
-            tokio::time::sleep(SEARCH_DELAY).await;
-            let query = query.trim_start_matches('/').trim_start_matches("skill:");
-            client
-                .skills(workspace, Some(query))
-                .await?
-                .into_iter()
-                .map(|skill| {
-                    Choice::new(
-                        format!("/skill:{}", skill.name),
-                        format!("Skill · {}", skill.description),
-                        ChoiceKind::Skill(skill.name),
-                    )
-                })
-                .collect()
-        }
-        Search::Paths(query) => {
-            tokio::time::sleep(SEARCH_DELAY).await;
-            client
-                .workspace_files(workspace, &query)
-                .await?
-                .into_iter()
-                .map(|path| Choice::new(&path, "Workspace path", ChoiceKind::Path(path.clone())))
-                .collect()
-        }
-        Search::Sessions(query) => {
-            tokio::time::sleep(SEARCH_DELAY).await;
-            client
-                .sessions(Some(workspace), Some(&query))
-                .await?
-                .into_iter()
-                .map(|session| {
-                    let state = if !session.waiting_agents.is_empty() {
-                        "Waiting"
-                    } else {
-                        match session.status {
-                            SessionStatus::Active => "Active",
-                            SessionStatus::Done => "Done",
-                            SessionStatus::Interrupted => "Interrupted",
-                        }
-                    };
-                    let title = if session.title.trim().is_empty() {
-                        session.session_id.clone()
-                    } else {
-                        session.title
-                    };
-                    Choice::new(
-                        &title,
-                        format!(
-                            "{} · {state} · {} · {} Turns",
-                            session.session_id.chars().take(8).collect::<String>(),
-                            session.mtime,
-                            session.turn_count
-                        ),
-                        ChoiceKind::Session {
-                            id: session.session_id,
-                            title: title.clone(),
-                            exists: true,
-                        },
-                    )
-                })
-                .collect()
-        }
-        Search::Models => return Ok(model_choices(client.models().await?)),
-        Search::Values(target) => {
-            let choices: Vec<_> = client
-                .named_values(&target)
-                .await?
-                .into_iter()
-                .map(value_choice)
-                .collect();
-            let header = if choices.is_empty() {
-                "No saved values · /save to name pasted text".into()
-            } else {
-                String::new()
-            };
-            return Ok((choices, header));
-        }
-        Search::Jobs(target) => {
-            let choices: Vec<_> = client
-                .jobs(&target)
-                .await?
-                .into_iter()
-                .map(|job| {
-                    Choice::new(
-                        job.id.clone(),
-                        job_detail(&job),
-                        ChoiceKind::BackgroundJob(Box::new(job)),
-                    )
-                })
-                .collect();
-            let header = if choices.is_empty() {
-                "No background jobs for this Agent"
-            } else {
-                "Select a job to see available actions"
-            };
-            return Ok((choices, header.into()));
-        }
-        Search::Server => unreachable!("handled above"),
-    };
-    Ok((choices, String::new()))
-}
-
 fn value_choice(value: NamedValue) -> Choice {
     let kind = match value.kind {
         NamedValueKind::Text => "Text",
@@ -805,62 +774,6 @@ pub(crate) fn job_detail(job: &JobSnapshot) -> String {
         detail.push_str(&single_line(&job.summary));
     }
     detail
-}
-
-fn model_choices(catalog: ModelCatalog) -> (Vec<Choice>, String) {
-    let mut choices = Vec::new();
-    let mut default = catalog.default_tier.clone();
-    for tier in catalog.tiers {
-        let mut detail = format!("{} · {}", tier.model, tier.connection);
-        if tier.name == catalog.default_tier {
-            default.clone_from(&tier.model);
-        }
-        if let Some(purpose) = tier
-            .purpose
-            .as_ref()
-            .filter(|purpose| *purpose != &tier.name)
-        {
-            detail.push_str(&format!(" · {purpose}"));
-        }
-        if let Some(error) = &tier.error {
-            detail.push_str(&format!(" · {}", error.message));
-        }
-        let label = tier.name.clone();
-        choices.push(Choice::new(
-            label,
-            detail,
-            ChoiceKind::ModelActions(Box::new(tier)),
-        ));
-    }
-    (choices, format!("Default · {default}"))
-}
-
-async fn service_status(
-    options: &ConnectionOptions,
-    connection: Option<&Connection>,
-) -> Result<String, Error> {
-    let workspace =
-        connection.map_or_else(|| options.workspace(), |item| Ok(item.workspace.clone()))?;
-    if options.remote.is_some() {
-        let client = options
-            .remote_connection()?
-            .expect("explicit remote client");
-        let health = client.health().await?;
-        return Ok(format!("Remote {}\nWorkspace {}\nBuild {} · service protocol {} · client protocol {SESSION_PROTOCOL_VERSION}",
-            client.endpoint(), workspace.display(), health.version, health.protocol_version));
-    }
-    let service = options.local_service()?;
-    if let Some(record) = service.status().await? {
-        let status = record.status();
-        return Ok(format!("Local {}\nWorkspace {}\nConfig {}\nBuild {} · service protocol {} · client protocol {SESSION_PROTOCOL_VERSION}\n{}",
-            record.endpoint(), workspace.display(), status.config_path.as_deref().unwrap_or("Unavailable"), status.version,
-            status.protocol_version, busy(&status.busy, status.draining)));
-    }
-    Ok(format!(
-        "Local service stopped\nWorkspace {}\nData {}",
-        workspace.display(),
-        service.data_dir().display()
-    ))
 }
 
 async fn prepare_restart(

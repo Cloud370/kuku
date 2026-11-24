@@ -8,7 +8,7 @@ mod session {
 
 mod config {
     pub use kuku::config::{
-        resolve_request_url, ApiKey, LogsConfig, MediaAdapterSupport, ModelPricing,
+        resolve_request_url, ApiKey, CustomServiceTier, LogsConfig, MediaAdapterSupport, ModelPricing,
         ModelThinkingTest, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions,
         ProviderProfile, ProviderProxy, RequestedOutput, ResolvedThinking, SubscriptionChannel, ThinkLevel,
     };

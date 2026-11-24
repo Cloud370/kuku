@@ -5,8 +5,8 @@ mod pricing;
 
 pub use endpoint::{resolve_models_url, resolve_request_url};
 pub use model_capabilities::{
-    MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
-    ProtocolCapabilityDeclaration, RequestedOutput,
+    CustomServiceTier, MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry,
+    ModelThinkingTest, ProtocolCapabilityDeclaration, RequestedOutput,
 };
 mod provider;
 mod resolve;

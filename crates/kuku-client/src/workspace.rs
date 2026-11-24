@@ -24,6 +24,8 @@ pub struct ConnectionSummary {
     pub name: String,
     /// Wire protocol used by this connection.
     pub protocol: ProviderFormat,
+    /// Subscription channel and account label with masked identity, when applicable.
+    pub subscription_label: Option<String>,
 }
 
 /// A named model route with its effective settings and supported options.

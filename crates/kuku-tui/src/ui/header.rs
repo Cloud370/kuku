@@ -232,7 +232,7 @@ fn welcome_details(app: &App, width: usize, rows: usize, separated: bool) -> Vec
     let pane = app.pane();
     let model = pane
         .effective_model_identity()
-        .map(|(model, connection, _)| format!("{connection}/{model}"))
+        .map(|(model, _, _)| model.to_owned())
         .or_else(|| pane.effective_model_label());
     if let Some(model) = model.filter(|_| rows >= 3) {
         details.push(welcome_field(

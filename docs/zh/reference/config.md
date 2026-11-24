@@ -50,7 +50,7 @@ Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值；原生 
 | `proxy` | table | 发现、探测与模型请求的网络代理设置 |
 | `model_pricing` | table | 按精确模型 ID 配置的美元计费规则 |
 | `model_price_catalogs` | table | 配置流程保存的 OpenRouter 公开报价 |
-| `model_capabilities` | table | 按精确模型 ID 配置的能力发现与手工覆盖 |
+| `model_capabilities` | table | 按模型 ID 记录列表声明、手工覆盖、试跑记录中的思考档位和自定义服务档位 |
 | `api_key` | string | `$ENV_VAR_NAME`、明文密钥或 `file:<绝对路径>` |
 | `subscription` | table | 订阅账号引用，包含 `channel` 和绝对路径 `credential_file` |
 | `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证头方式 |
@@ -94,6 +94,8 @@ cache_read = 0.1
 ```
 
 ### 模型能力、Profile 与路由
+
+每个模型能力条目也可以包含 `custom_service_tiers` 表。键为原生档位名，值为 `unverified`（由用户声明）或 `confirmed`（探测回报了请求的档位）。这些值会补充模型目录或手动覆盖中的档位列表。例如 `provider.gateway.model_capabilities."example/model".custom_service_tiers.turbo = "unverified"` 为该连接和指定模型添加 `turbo`。
 
 - **能力声明**：`model_capabilities.<model>` 区分 `discovered` 与 `manual`（支持 `reasoning_efforts`、`reasoning_default`、`input_modalities`、`output_modalities`、`interfaces` 及协议级扩展如 `protocols.anthropic_messages.system_prompt_update`）。刷新发现时保留手工覆盖，未填字段保持未知。声明图像输入的路由可启用[图像检查工具](tools.md)；内置文本适配器会在派发前拒绝图像输出请求。[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter 模型列表](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 - **Profile 与思考等级**：`profile = "auto"` 按已知主机名选择配置，自定义网关走 `compatible` 且原生选项需显式声明能力。连接严格按名称匹配，不会只凭 `format` 选第一个连接。`think` 在模型声明支持时映射并下发，否则交由上游默认（DeepSeek 直连将 `medium` 映射为 `high`）；`reasoning_effort` 按精确原生值下发，绝不静默改写，不支持时在派发前报错。

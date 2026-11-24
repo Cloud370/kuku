@@ -39,6 +39,72 @@ pub fn subscription_account_info(account: &SubscriptionAccount) -> Result<Subscr
     Ok(account_info(record.as_ref()))
 }
 
+/// Display a human-readable account label using an optional alias and masked email.
+pub fn subscription_display_label(
+    account: &SubscriptionAccount,
+    info: Option<&SubscriptionAccountInfo>,
+) -> String {
+    let channel = match account.channel() {
+        crate::config::SubscriptionChannel::ChatGpt => "ChatGPT",
+    };
+    let mut label = channel.to_owned();
+    if let Some(alias) = account
+        .name()
+        .ok()
+        .filter(|name| !generated_account_name(name))
+    {
+        label.push_str(" · ");
+        label.push_str(alias);
+    }
+    if let Some(email) = info
+        .and_then(|info| info.masked_email.as_deref())
+        .filter(|email| is_masked_email(email))
+    {
+        label.push_str(" · ");
+        label.push_str(email);
+    }
+    label
+}
+
+fn generated_account_name(name: &str) -> bool {
+    let mut parts = name.split('-');
+    let prefix = parts.next();
+    let hex = |part: Option<&str>, len| {
+        part.is_some_and(|part| part.len() == len && part.bytes().all(|ch| ch.is_ascii_hexdigit()))
+    };
+    matches!(prefix, Some("email" | "account"))
+        && hex(parts.next(), 16)
+        && hex(parts.next(), 12)
+        && parts.next().is_none()
+}
+
+fn is_email_suffix(suffix: &str) -> bool {
+    (2..=24).contains(&suffix.len()) && suffix.bytes().all(|ch| ch.is_ascii_alphabetic())
+}
+
+fn is_masked_email(email: &str) -> bool {
+    let masked_part = |part: &str, suffix_length| {
+        part == "****"
+            || part.split_once("***").is_some_and(|(beginning, ending)| {
+                beginning.len() <= 3
+                    && ending.len() <= suffix_length
+                    && beginning
+                        .bytes()
+                        .chain(ending.bytes())
+                        .all(|ch| ch.is_ascii_alphanumeric())
+            })
+    };
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    let domain_mask = if let Some((name, suffix)) = domain.split_once('.') {
+        is_email_suffix(suffix) && masked_part(name, 0)
+    } else {
+        masked_part(domain, 0)
+    };
+    masked_part(local, 1) && domain_mask
+}
+
 /// Clear the selected account's local tokens and report whether remote revocation was confirmed.
 pub async fn sign_out_subscription(
     account: &SubscriptionAccount,
@@ -160,7 +226,7 @@ fn account_info(record: Option<&AccountRecord>) -> SubscriptionAccountInfo {
     SubscriptionAccountInfo {
         masked_email: record
             .and_then(|record| record.masked_email.clone())
-            .filter(|email| !email.chars().any(char::is_control)),
+            .filter(|email| is_masked_email(email)),
         status,
     }
 }
@@ -185,6 +251,44 @@ fn sign_in_required(account: &SubscriptionAccount) -> Error {
     ))
 }
 
+#[cfg(test)]
+mod display_tests {
+    use crate::config::{SubscriptionAccount, SubscriptionChannel};
+
+    use super::{subscription_display_label, SubscriptionAccountInfo, SubscriptionStatus};
+
+    #[test]
+    fn label_uses_the_masked_email_and_never_exposes_automatic_names() {
+        let directory = std::env::temp_dir();
+        let account = SubscriptionAccount::new(
+            &directory,
+            SubscriptionChannel::ChatGpt,
+            "email-0123456789abcdef-abcdef123456",
+        )
+        .unwrap();
+        let mut info = SubscriptionAccountInfo {
+            masked_email: Some("a***@e***".into()),
+            status: SubscriptionStatus::SignedIn,
+        };
+        assert_eq!(
+            subscription_display_label(&account, Some(&info)),
+            "ChatGPT · a***@e***"
+        );
+        let alias =
+            SubscriptionAccount::new(&directory, SubscriptionChannel::ChatGpt, "work").unwrap();
+        assert_eq!(
+            subscription_display_label(&alias, Some(&info)),
+            "ChatGPT · work · a***@e***"
+        );
+        info.masked_email = Some("ali***e@exa***.com".into());
+        assert_eq!(
+            subscription_display_label(&alias, Some(&info)),
+            "ChatGPT · work · ali***e@exa***.com"
+        );
+        info.masked_email = Some("actual-address@example.com".into());
+        assert_eq!(subscription_display_label(&account, Some(&info)), "ChatGPT");
+    }
+}
 #[cfg(test)]
 mod tests {
     use serde_json::json;

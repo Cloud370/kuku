@@ -417,7 +417,7 @@ mod tests {
             .draw(|frame| ui::render(frame, &settings, &mut add, SetupMode::Session))
             .unwrap();
         let screen = terminal.backend().to_string();
-        assert!(screen.contains("ChatGPT plan · work · a***@e***"));
+        assert!(screen.contains("ChatGPT · work · a***@e***"));
         assert!(screen.contains("Fast · Availability unconfirmed"));
         assert!(screen.contains("Ultra Fast · Availability unconfirmed"));
         select_service(&mut add, &settings, "fast");

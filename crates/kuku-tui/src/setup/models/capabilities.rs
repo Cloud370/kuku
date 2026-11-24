@@ -1,10 +1,14 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use kuku::config::ProviderConfig;
 
+use crate::setup::service_tier::valid_tier;
+
 use super::SetupState;
 use crate::setup::config::Settings;
-use crate::setup::state::SetupStep;
+use crate::setup::state::{edit_field, SetupStep};
 use crate::setup::ConnectionChoice;
+
+pub(in crate::setup) const CUSTOM_TIERS_ROW: usize = 5;
 
 pub(in crate::setup) fn same_service_tier(left: Option<&str>, right: Option<&str>) -> bool {
     left == right
@@ -142,6 +146,14 @@ impl SetupState {
                 entry.discovered = Some(declaration);
             }
         }
+        for (id, tiers) in &self.models.custom_services {
+            connection
+                .options
+                .model_capabilities
+                .entry(id.clone())
+                .or_default()
+                .custom_service_tiers = tiers.clone();
+        }
         for (id, manual) in &self.models.overrides {
             connection
                 .options
@@ -149,6 +161,105 @@ impl SetupState {
                 .entry(id.clone())
                 .or_default()
                 .manual = Some(manual.clone());
+        }
+    }
+    pub(in crate::setup) fn choose_advanced(&mut self, key: KeyEvent, settings: &Settings) {
+        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
+            let Some(id) = self.primary_model() else {
+                return;
+            };
+            let saved = self
+                .connection_options(settings)
+                .model_capabilities
+                .remove(&id);
+            if self.models.cursor == CUSTOM_TIERS_ROW {
+                let tiers = self.models.custom_services.entry(id).or_insert_with(|| {
+                    saved
+                        .map(|entry| entry.custom_service_tiers)
+                        .unwrap_or_default()
+                });
+                self.models
+                    .override_value
+                    .set_text(tiers.keys().cloned().collect::<Vec<_>>().join(", "));
+                self.step = SetupStep::Override;
+                return;
+            }
+            let saved = saved.and_then(|entry| entry.manual);
+            let declaration = self
+                .models
+                .overrides
+                .entry(id)
+                .or_insert_with(|| saved.unwrap_or_default());
+            let value = match self.models.cursor {
+                0 => declaration
+                    .reasoning_efforts
+                    .as_ref()
+                    .map(|items| items.join(", ")),
+                1 => declaration.reasoning_default.clone(),
+                2 => declaration
+                    .input_modalities
+                    .as_ref()
+                    .map(|items| items.join(", ")),
+                3 => declaration
+                    .output_modalities
+                    .as_ref()
+                    .map(|items| items.join(", ")),
+                _ => declaration
+                    .interfaces
+                    .as_ref()
+                    .map(|items| items.join(", ")),
+            };
+            self.models
+                .override_value
+                .set_text(value.unwrap_or_default());
+            self.step = SetupStep::Override;
+        } else {
+            self.models.move_cursor(key.code, CUSTOM_TIERS_ROW + 1);
+        }
+    }
+
+    pub(in crate::setup) fn edit_override(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
+            let Some(id) = self.primary_model() else {
+                return;
+            };
+            let text = self.models.override_value.text().trim();
+            let list = (!text.is_empty()).then(|| {
+                text.split(',')
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            });
+            if self.models.cursor == CUSTOM_TIERS_ROW {
+                let values: Vec<String> = list.unwrap_or_default();
+                if !values.iter().all(|tier| valid_tier(tier)) {
+                    self.problem = Some("Enter tier names separated by commas.".into());
+                    return;
+                }
+                let tiers = self.models.custom_services.entry(id).or_default();
+                *tiers = values
+                    .into_iter()
+                    .map(|tier| {
+                        let evidence = tiers.get(&tier).copied().unwrap_or_default();
+                        (tier, evidence)
+                    })
+                    .collect();
+                self.step = SetupStep::Advanced;
+                self.problem = None;
+                return;
+            }
+            let declaration = self.models.overrides.entry(id).or_default();
+            match self.models.cursor {
+                0 => declaration.reasoning_efforts = list,
+                1 => declaration.reasoning_default = (!text.is_empty()).then(|| text.to_owned()),
+                2 => declaration.input_modalities = list,
+                3 => declaration.output_modalities = list,
+                _ => declaration.interfaces = list,
+            }
+            self.step = SetupStep::Advanced;
+        } else {
+            edit_field(&mut self.models.override_value, key);
         }
     }
 }

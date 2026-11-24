@@ -27,6 +27,9 @@ fn load_model(app: &mut App, applied: Option<&str>, next: Option<&str>) {
             "settings": {"reasoning_effort": effort},
             "capabilities": {
                 "reasoning_efforts": ["low", "medium", "high", "high", "max"],
+                "profile": "openrouter",
+                "service_tiers": ["priority", "provider-custom"],
+                "service_tier_source": "model_list",
                 "reasoning_default": {"value": "max", "source": "model_list"}
             },
             "tools": [],
@@ -148,7 +151,7 @@ fn command_and_model_lists_wrap_and_stay_above_the_composer() {
         position(&buffer, "Model route").1,
         position(&buffer, "Search models…").1
     );
-    assert!(position(&buffer, "Esc Close").1 < position(&buffer, "keep this draft").1);
+    assert!(position(&buffer, "d Default + switch").1 < position(&buffer, "keep this draft").1);
     press(&mut app, KeyCode::Down);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 0));
 }
@@ -478,4 +481,119 @@ fn use_default_clears_a_legacy_override_without_reconfiguring_the_route() {
         if matches!(&command.action, Action::Configure { config }
             if config.reasoning_effort.is_none() && config.tier.as_deref() == Some("fixture-model")))
     );
+}
+
+#[test]
+fn speed_uses_the_composer_and_applies_declared_tiers_without_probing() {
+    let mut app = connected_app();
+    load_model(&mut app, Some("high"), None);
+
+    action_picker(&mut app, "speed");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.kind == PickerKind::Speed && picker.kind.composer_anchored()));
+    assert!(app
+        .effects
+        .iter()
+        .all(|job| !matches!(job, Job::CustomSpeed(..))));
+
+    app.paste("provider-custom");
+    press(&mut app, KeyCode::Enter);
+    assert!(app
+        .effects
+        .iter()
+        .any(|job| matches!(job, Job::Save(command)
+        if command.target.agent == "main"
+        && matches!(&command.action, Action::Configure { config }
+            if config.service_tier.as_deref() == Some("provider-custom")
+            && config.reasoning_effort.as_deref() == Some("high")))));
+}
+
+#[test]
+fn custom_speed_can_be_saved_without_probing_and_then_applied() {
+    use kuku::config::CustomServiceTier;
+
+    use crate::setup::service_tier::{SpeedResult, SpeedWork};
+
+    let mut app = connected_app();
+    load_model(&mut app, Some("high"), None);
+    action_picker(&mut app, "speed turbo");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.kind == PickerKind::CustomSpeed && picker.kind.composer_anchored()));
+    assert!(app
+        .effects
+        .iter()
+        .all(|job| !matches!(job, Job::CustomSpeed(..))));
+
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    let (ticket, target) = std::mem::take(&mut app.effects)
+        .into_iter()
+        .find_map(|job| match job {
+            Job::CustomSpeed(
+                ticket,
+                target,
+                SpeedWork::Save(tier, CustomServiceTier::Unverified),
+            ) if tier == "turbo" => Some((ticket, target)),
+            _ => None,
+        })
+        .expect("save without a probe");
+    app.update(Update::SpeedFinished(
+        ticket,
+        target,
+        Ok(SpeedResult::Saved("turbo".into())),
+    ));
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
+        if matches!(&command.action, Action::Configure { config } if config.service_tier.as_deref() == Some("turbo")))));
+}
+
+#[test]
+fn model_picker_letters_are_actions_until_search_is_focused() {
+    use crate::menu::{Choice, ChoiceKind};
+
+    let mut app = connected_app();
+    let tier =
+        serde_json::from_value(json!({"name":"deep", "connection":"gateway", "model":"fixture"}))
+            .unwrap();
+    app.picker(
+        PickerKind::Models,
+        vec![Choice::new(
+            "deep",
+            "",
+            ChoiceKind::ModelRoute {
+                tier: Box::new(tier),
+                current: false,
+            },
+        )],
+    );
+
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('e'));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "de"));
+    assert!(app.effects.is_empty());
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if !picker.search_focused));
+
+    press(&mut app, KeyCode::Char('d'));
+    let (selection, tier) = std::mem::take(&mut app.effects)
+        .into_iter()
+        .find_map(|job| match job {
+            Job::SaveAndUseModel(selection, tier) => Some((selection, tier)),
+            _ => None,
+        })
+        .expect("queue the default save directly");
+    app.update(Update::ModelDefaultAndSwitchSaved(
+        selection.clone(),
+        tier.clone(),
+        Err("Save failed".into()),
+    ));
+    assert!(app.pane().config().tier.is_none());
+    app.update(Update::ModelDefaultAndSwitchSaved(
+        selection,
+        tier,
+        Ok(true),
+    ));
+    assert_eq!(Some("deep"), app.pane().config().tier.as_deref());
 }

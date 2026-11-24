@@ -97,7 +97,10 @@ async fn subscription_login_refresh_catalog_tools_and_revocation_share_the_proxy
                     );
                 let login = attempt.complete(callback.as_str()).await.unwrap();
                 assert_eq!(SubscriptionStatus::SignedIn, login.info.status);
-                assert_eq!(Some("a***@e***"), login.info.masked_email.as_deref());
+                assert_eq!(
+                    Some("an***a@exa***.invalid"),
+                    login.info.masked_email.as_deref()
+                );
                 assert!(login.account.name().unwrap().starts_with("email-"));
                 let before = std::fs::read_to_string(login.account.credential_file()).unwrap();
                 assert!(!before.contains("anna@example.invalid"));

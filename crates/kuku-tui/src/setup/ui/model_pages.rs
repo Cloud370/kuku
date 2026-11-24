@@ -2,7 +2,7 @@ use ratatui::{layout::Rect, Frame};
 
 use crate::theme::{ACCENT, MUTED, WARNING};
 
-use super::super::models::{protocol_label, same_service_tier, PROTOCOLS};
+use super::super::models::{protocol_label, same_service_tier, CUSTOM_TIERS_ROW, PROTOCOLS};
 use super::super::recovery::text_problem;
 use super::super::state::{SetupState, SetupStep};
 use super::{field, line, option, trial_usage, Settings};
@@ -416,6 +416,20 @@ pub(super) fn render_model_settings(
                         .and_then(|caps| caps.output_modalities.as_ref()),
                 ),
                 media(caps.as_ref().and_then(|caps| caps.interfaces.as_ref())),
+                Some(
+                    caps.as_ref()
+                        .filter(|caps| !caps.custom_service_tiers.is_empty())
+                        .map_or_else(
+                            || "None".into(),
+                            |caps| {
+                                caps.custom_service_tiers
+                                    .keys()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            },
+                        ),
+                ),
             ];
             for (index, (label, value)) in ADVANCED_LABELS.iter().zip(values).enumerate() {
                 let value = value.as_deref().unwrap_or("unknown");
@@ -440,7 +454,11 @@ pub(super) fn render_model_settings(
                 frame,
                 area,
                 row,
-                "Manual values · comma-separated · blank uses declarations",
+                if state.models.cursor == CUSTOM_TIERS_ROW {
+                    "Tier names · comma-separated · blank removes custom tiers"
+                } else {
+                    "Manual values · comma-separated · blank uses declarations"
+                },
                 MUTED,
             );
             field(frame, area, row, &mut state.models.override_value);
@@ -506,12 +524,13 @@ fn render_recovery(frame: &mut Frame<'_>, area: Rect, row: &mut u16, state: &Set
     }
 }
 
-const ADVANCED_LABELS: [&str; 5] = [
+const ADVANCED_LABELS: [&str; CUSTOM_TIERS_ROW + 1] = [
     "Native efforts",
     "Default effort",
     "Input modalities",
     "Output modalities",
     "Advertised interfaces",
+    "Custom service tiers",
 ];
 
 fn source_label(source: kuku::CapabilitySource) -> &'static str {

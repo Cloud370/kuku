@@ -29,6 +29,8 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 默认配置包含两个 Provider：
 
+要管理添加过的服务档位，选中路由后按 `e`，再打开 **Settings → Model capabilities → Custom service tiers**。[模型和服务档位快捷键](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
+
 - `provider.anthropic`：`api_key = "$ANTHROPIC_API_KEY"`
 - `provider.openai`：`api_key = "$OPENAI_API_KEY"`
 

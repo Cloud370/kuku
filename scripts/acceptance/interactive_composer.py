@@ -27,7 +27,7 @@ def startup_info(client):
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=28, cols=60)
         terminal.expect("preview-review", also=("Workspace", "work-startup-info", "Skills",
-                                                  "New session", "test-anthropic/claude-sonnet-4-6",
+                                                  "New session", "claude-sonnet-4-6",
                                                   "/skill: Browse", "Ctrl+L Model", "Ctrl+T Think", "Ctrl+P Help"))
         terminal.request("resize", rows=32, cols=132)
         draft = "check the welcome column"
@@ -211,6 +211,17 @@ def composer_actions(client):
         terminal.expect("Use default · Model default · Low", also=("High ✓", draft))
         terminal.press("\x1b")
         terminal.expect(draft, absent=("Use default",))
+
+        terminal.press("\x10/speed turbo\r")
+        custom_speed = terminal.expect("Custom service tier", also=("Probe and use", "Skip probe and use", draft))["screen"]
+        assert position(custom_speed, "Skip probe and use")[0] < position(custom_speed, draft)[0], custom_speed
+        terminal.press("\x1b[B\r")
+        terminal.expect("main · Service tier · turbo", also=(draft,))
+        eventually("turbo applies on the next turn",
+                   lambda: (snapshot().get("pending_selection") or {}).get("settings", {}).get("service_tier") == "turbo")
+        catalog = client.request("GET", "/models").as_json()
+        capabilities = next(tier for tier in catalog["tiers"] if tier["name"] == "balanced")["capabilities"]
+        assert capabilities["custom_service_tiers"] == {"turbo": "unverified"}, capabilities
 
         terminal.press("\x03")
         for word, submit in (("  exit  ", "\r"), (" quit ", "\x1b\r")):

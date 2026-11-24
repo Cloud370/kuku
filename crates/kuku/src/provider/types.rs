@@ -172,6 +172,9 @@ pub struct ProviderCapabilities {
     pub thinking_test: Option<crate::config::ModelThinkingTest>,
     /// Supported native service tiers.
     pub service_tiers: Vec<String>,
+    /// Additional service tiers supplied by the user and their probe evidence.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub custom_service_tiers: std::collections::BTreeMap<String, crate::config::CustomServiceTier>,
     /// Origin of the service choices, including an explicitly empty declaration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier_source: Option<CapabilitySource>,

@@ -25,6 +25,8 @@ Choose a custom connection, saved connection, or preset. For API-key connections
 
 Inside an active Session, run `/model` (or press `Ctrl+L`) to add or edit connections, switch the current Agent's route (**Use in this Session**), or save a new default (**Set as default**). [Terminal controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
 
+To edit service tiers you added, select the route, press `e`, and open **Settings → Model capabilities → Custom service tiers**. [Model and service tier keyboard controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
+
 ## Providers and credentials
 
 The default config defines two providers:

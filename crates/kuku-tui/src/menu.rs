@@ -26,17 +26,18 @@ pub(crate) enum ChoiceKind {
     },
     CreateAgent,
     AgentSetup(crate::app::agent_setup::AgentSetupAction),
-    Tier(String),
-    ModelActions(Box<kuku_client::TierSummary>),
+    ModelRoute {
+        tier: Box<kuku_client::TierSummary>,
+        current: bool,
+    },
     EditModel(crate::setup::SetupIntent),
-    ConfirmModelSetting(crate::setup::SavedModelSetting),
-    SaveModelSetting(crate::setup::SavedModelSetting),
     Close,
     Reconnect,
     SetCurrentModelAsDefault,
     ConfirmModelDefault,
     CancelModelDefault,
     Thinking(Option<String>),
+    Speed(crate::app::speed::SpeedAction),
     RewindMessage {
         event_id: u64,
         turn: u64,
@@ -89,6 +90,7 @@ impl ChoiceKind {
                     | CommandMenu::Jobs
                     | CommandMenu::Model
                     | CommandMenu::Thinking
+                    | CommandMenu::Speed
                     | CommandMenu::StatusLine
                     | CommandMenu::Save
                     | CommandMenu::Values
@@ -99,10 +101,9 @@ impl ChoiceKind {
                 | Self::Agent { .. }
                 | Self::CreateAgent
                 | Self::AgentSetup(_)
-                | Self::ModelActions(_)
+                | Self::ModelRoute { .. }
+                | Self::Speed(_)
                 | Self::EditModel(_)
-                | Self::ConfirmModelSetting(_)
-                | Self::SaveModelSetting(_)
                 | Self::Close
                 | Self::ConfirmRestart(_)
                 | Self::SetCurrentModelAsDefault
@@ -202,6 +203,8 @@ pub(crate) enum PickerKind {
     ModelActions,
     Restart,
     Thinking,
+    Speed,
+    CustomSpeed,
     Pending,
     PendingItem,
     Tools,
@@ -229,6 +232,8 @@ impl PickerKind {
             Self::ModelActions => "Model settings",
             Self::Restart => "Restart kuku service",
             Self::Thinking => "Thinking",
+            Self::Speed => "Service tier",
+            Self::CustomSpeed => "Custom service tier",
             Self::Pending => "Unconfirmed commands",
             Self::PendingItem => "Recover command",
             Self::Tools => "Saved outputs",
@@ -253,6 +258,7 @@ impl PickerKind {
                 | Self::Agents
                 | Self::AgentSetup(crate::app::agent_setup::AgentSetupStep::Model)
                 | Self::Models
+                | Self::Speed
                 | Self::Tools
                 | Self::Jobs
                 | Self::Values
@@ -266,7 +272,12 @@ impl PickerKind {
     pub(crate) fn composer_anchored(&self) -> bool {
         matches!(
             self,
-            Self::Commands | Self::Thinking | Self::Models | Self::ModelActions
+            Self::Commands
+                | Self::Thinking
+                | Self::Models
+                | Self::ModelActions
+                | Self::Speed
+                | Self::CustomSpeed
         )
     }
 }
@@ -300,9 +311,11 @@ pub(crate) struct Picker {
     pub(crate) problem: Option<String>,
     pub(crate) selected: usize,
     pub(crate) header_top: usize,
+    pub(crate) search_focused: bool,
     pub(crate) ticket: Ticket,
     pub(crate) rewind_history: Option<RewindHistory>,
     pub(crate) thinking: Option<Box<crate::app::ThinkingPicker>>,
+    pub(crate) speed: Option<Box<crate::app::speed::SpeedTarget>>,
     pub(crate) agent_setup: Option<Box<crate::app::agent_setup::AgentSetup>>,
     local: Vec<Choice>,
     remote: Vec<Choice>,
@@ -321,9 +334,11 @@ impl Picker {
             problem: None,
             selected: 0,
             header_top: 0,
+            search_focused: false,
             ticket: Ticket { id, revision: 0 },
             rewind_history: None,
             thinking: None,
+            speed: None,
             agent_setup: None,
             local,
             remote: Vec::new(),
@@ -348,6 +363,13 @@ impl Picker {
         self.loading = false;
         self.problem = None;
         self.clamp_selection();
+        if self.kind == PickerKind::Models && self.query.text().is_empty() {
+            if let Some(index) = self.visible_choices().iter().position(|choice| {
+                matches!(choice.kind, ChoiceKind::ModelRoute { current: true, .. })
+            }) {
+                self.selected = index;
+            }
+        }
         if !header.is_empty() {
             self.header = header;
         }
@@ -442,7 +464,7 @@ impl Picker {
             (self.kind == PickerKind::Commands).then(|| CommandInput::query(&query));
         let query = command_query.map_or(query.as_str(), |input| input.text());
         let exact_command = command_query.and_then(CommandInput::command);
-        let mut choices: Vec<_> = self
+        let local = self
             .local
             .iter()
             .filter(|choice| match (&choice.kind, command_query) {
@@ -454,14 +476,18 @@ impl Picker {
                     |exact| exact == *command,
                 ),
                 _ => choice.matches(query),
-            })
-            .chain(self.remote.iter().filter(|choice| {
-                !matches!(
-                    self.kind,
-                    PickerKind::Models | PickerKind::Values | PickerKind::Jobs
-                ) || choice.matches(query)
-            }))
-            .collect();
+            });
+        let remote = self.remote.iter().filter(|choice| {
+            !matches!(
+                self.kind,
+                PickerKind::Models | PickerKind::Values | PickerKind::Jobs
+            ) || choice.matches(query)
+        });
+        let mut choices: Vec<_> = if self.kind == PickerKind::Models {
+            remote.chain(local).collect()
+        } else {
+            local.chain(remote).collect()
+        };
         if matches!(self.kind, PickerKind::Commands | PickerKind::Agents) && !query.is_empty() {
             choices.sort_by_key(|choice| match choice.kind {
                 ChoiceKind::Command(command) if Some(command) == exact_command => 0,
@@ -626,11 +652,20 @@ mod tests {
             assert!(!labels.contains(&omitted));
         }
         for retained in [
-            "/new", "/resume", "/rewind", "/compact", "/server", "/restart", "/quit",
+            "/new",
+            "/resume",
+            "/rewind",
+            "/compact",
+            "/speed",
+            "/fast",
+            "/ultrafast",
+            "/server",
+            "/restart",
+            "/quit",
         ] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(16, choices.len());
+        assert_eq!(19, choices.len());
     }
 
     #[test]
