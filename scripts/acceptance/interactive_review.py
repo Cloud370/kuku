@@ -24,7 +24,7 @@ def run(client, terminal, prompt):
 
 def result_fact(root, call_id):
     for path in root.rglob("events.jsonl"):
-        with path.open() as journal:
+        with path.open(encoding="utf-8") as journal:
             for record in map(json.loads, journal):
                 if record.get("kind") == "tool.result" and record.get("tool_call_id") == call_id:
                     return record["structured"]
