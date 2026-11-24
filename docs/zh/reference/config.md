@@ -37,6 +37,8 @@ HTTP 服务默认读取数据目录下的 `config.toml`，也可通过 `--config
 
 可通过 `default_model` 指定默认档位；只有一个路由时也可省略。既有 `strong`、`balanced`、`light` 路由继续有效。TUI 的 **Set current model as default** 会复用匹配档位，或创建/更新普通 `user-default` 档位并通过 `default_model` 选中。
 
+添加更多路由时，设置向导使用模型名，重名时加数字后缀，例如 `gpt-6.1-terra-2`。Agent 通过这些名称选择路由。
+
 Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值；原生 Anthropic Messages 需要数值（内置 Sonnet/Haiku 预设已在 TOML 中填写，自定义 Messages 路由可从档位、Agent 或宿主获取）。单次响应仍受可用上下文余量约束。
 
 ## `provider.<name>`

@@ -719,7 +719,7 @@ fn save_with_lookup(
         let tier = match (is_primary, &edit_route, settings.existing) {
             (true, Some(name), _) => name.clone(),
             (true, None, false) => "default".into(),
-            _ => unique_route(routes, &provider_name, &model),
+            _ => unique_route(routes, &model),
         };
         let old = settings.resolved.tier(&tier);
         let fields = entry(&mut document, "model", &tier)?;
@@ -919,16 +919,12 @@ fn is_environment_reference(item: Option<&Item>) -> bool {
         .is_some_and(|value| value.starts_with('$'))
 }
 
-fn unique_route(routes: &dyn toml_edit::TableLike, provider: &str, model: &str) -> String {
+fn unique_route(routes: &dyn toml_edit::TableLike, model: &str) -> String {
     if !routes.contains_key(model) {
         return model.to_owned();
     }
-    let base = format!("{provider}/{model}");
-    if !routes.contains_key(&base) {
-        return base;
-    }
     (2..)
-        .map(|index| format!("{base}-{index}"))
+        .map(|index| format!("{model}-{index}"))
         .find(|name| !routes.contains_key(name))
         .expect("a unique model route")
 }

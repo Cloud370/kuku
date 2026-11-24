@@ -464,6 +464,45 @@ async fn preset_save_adds_an_inline_provider_without_overwriting_existing() {
 }
 
 #[tokio::test]
+async fn adding_a_duplicate_model_saves_a_short_route_name_and_keeps_its_connection() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("inline.toml");
+    let mut document: DocumentMut = INLINE_CONFIG.parse().unwrap();
+    let model = "gpt-6.1-terra";
+    document["model"][model] = "{ provider = \"anthropic\", model = \"gpt-6.1-terra\" }"
+        .parse::<toml_edit::Value>()
+        .map(toml_edit::Item::Value)
+        .unwrap();
+    fs::write(&config, document.to_string()).unwrap();
+
+    let settings = Settings::load(options(directory.path(), Some(config.clone())))
+        .await
+        .unwrap();
+    let mut state = SetupState::for_intent(&settings, crate::setup::SetupIntent::Add);
+    state.selected = state
+        .choices
+        .iter()
+        .position(|choice| {
+            matches!(choice, crate::setup::ConnectionChoice::Existing(name) if name == "openai")
+        })
+        .unwrap();
+    state.load_selection(&settings);
+    state.model.set_text(model.into());
+    let resolved = save(&settings, &state).unwrap();
+
+    let parsed = load_config(&config).unwrap();
+    let short_route = "gpt-6.1-terra-2";
+    assert_eq!("anthropic", parsed.model[model].provider);
+    assert_eq!("openai", parsed.model[short_route].provider);
+    assert_eq!(model, parsed.model[short_route].model);
+    assert!(resolved
+        .tier_infos()
+        .iter()
+        .any(|info| info.name == short_route));
+    assert!(!parsed.model.contains_key("openai/gpt-6.1-terra"));
+}
+
+#[tokio::test]
 async fn new_configuration_saves_a_single_default_route() {
     let directory = tempfile::tempdir().unwrap();
     let settings = Settings::load(options(directory.path(), None))

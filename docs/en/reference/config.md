@@ -37,6 +37,8 @@ First-run setup, `kuku init`, and TUI `/model` all edit this file. [Configuratio
 
 Set `default_model` to a tier name, or omit it when only one tier is configured. Legacy `strong`, `balanced`, and `light` tiers still resolve. In the TUI, **Set current model as default** reuses a matching tier or writes a normal `user-default` tier selected via `default_model`.
 
+When adding routes, setup uses the model name and appends a number if the name is taken, for example `gpt-6.1-terra-2`. Agents use these names when selecting a route.
+
 On Chat and Responses, omitting `max_output_tokens` uses the upstream default. Native Anthropic Messages requires a numeric value (set in the bundled Sonnet/Haiku presets; custom Messages routes take it from the tier, Agent, or host). Available context can still cap individual responses.
 
 ## `provider.<name>`
