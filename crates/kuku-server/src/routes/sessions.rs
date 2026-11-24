@@ -493,6 +493,7 @@ mod retry_progress_tests {
             turn_started_at_ms: None,
             turn_elapsed_ms: None,
             cache_warning: None,
+            last_model_route: None,
             execution_id: None,
             last_output: None,
             last_error: Some("connection failed".into()),

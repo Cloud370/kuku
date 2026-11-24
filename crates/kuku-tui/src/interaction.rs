@@ -103,7 +103,7 @@ impl App {
             return;
         }
         match &mut self.modal {
-            Some(Modal::Help | Modal::ExitConfirmation) => {}
+            Some(Modal::Help | Modal::ExitConfirmation | Modal::SendRouteConfirmation(_)) => {}
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {
                     self.read_output(offset);
@@ -379,6 +379,8 @@ impl App {
 
     pub(crate) fn search(&mut self, first: bool) {
         let available = self.available();
+        let current = matches!(&self.modal, Some(Modal::Picker(picker)) if first && picker.kind == PickerKind::Models)
+            .then(|| (self.pane().config().tier.clone(), self.resolved_model_route().ok()));
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return;
         };
@@ -389,7 +391,10 @@ impl App {
             }
             PickerKind::Paths(_) if available => Search::Paths(query),
             PickerKind::Sessions if available => Search::Sessions(query),
-            PickerKind::Models if first && available => Search::Models,
+            PickerKind::Models if available && current.is_some() => {
+                let (tier, route) = current.expect("initial model search");
+                Search::Models { tier, route }
+            }
             PickerKind::Server if first => Search::Server,
             _ => {
                 picker.clamp_selection();
@@ -455,6 +460,10 @@ impl App {
             self.close_picker();
             return;
         }
+        if let ChoiceKind::Speed(action) = choice {
+            self.choose_speed(ticket, action);
+            return;
+        }
         if let ChoiceKind::AgentSetup(action) = choice {
             self.choose_agent_setup(action);
             return;
@@ -494,21 +503,13 @@ impl App {
                 "Choose the address used to send to this agent",
             ),
             ChoiceKind::AgentSetup(_) => unreachable!("agent setup retains its picker state"),
-            ChoiceKind::Tier(tier) => {
-                let mut config = self.route_config();
-                config.tier = Some(tier);
-                self.configure(config);
-            }
-            ChoiceKind::ModelActions(tier) => self.open_model_actions(*tier),
+            ChoiceKind::ModelRoute { tier, .. } => self.use_model_route(&tier),
             ChoiceKind::EditModel(intent) => self.open_model_editor(intent),
-            ChoiceKind::ConfirmModelSetting(change) => self.confirm_model_setting(change),
-            ChoiceKind::SaveModelSetting(change) => {
-                self.effects.push(Job::SaveModelSetting(change))
-            }
             ChoiceKind::Close => {}
             ChoiceKind::SetCurrentModelAsDefault => self.prepare_model_default(),
             ChoiceKind::ConfirmModelDefault => self.confirm_model_default(ticket),
             ChoiceKind::CancelModelDefault => self.cancel_model_default(ticket),
+            ChoiceKind::Speed(_) => unreachable!("Service tier choices use the main Agent"),
             ChoiceKind::Thinking(_) => unreachable!("thinking uses the checked model route"),
             ChoiceKind::RewindMessage { .. } => {
                 unreachable!("rewind messages load their source before confirmation")
@@ -546,7 +547,7 @@ impl App {
         }
     }
 
-    fn close_picker(&mut self) {
+    pub(crate) fn close_picker(&mut self) {
         self.modal = None;
         self.modal_selection.clear();
         self.effects.push(Job::ClosePicker);
@@ -586,7 +587,7 @@ impl App {
         })));
     }
 
-    fn route_config(&self) -> AgentConfig {
+    pub(crate) fn route_config(&self) -> AgentConfig {
         let mut config = self.pane().config().clone();
         config.connection = None;
         config.tier = None;

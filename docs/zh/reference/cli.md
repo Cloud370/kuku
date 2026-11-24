@@ -42,6 +42,18 @@ TUI、`kuku run` 和浏览器界面都通过 kuku 服务提交任务。本地客
 | `kuku server restart` | 空闲时重启受管本地服务 |
 | `kuku web ...` | 打开所选服务的浏览器界面 |
 
+## `kuku auth`
+
+| 命令 | 用途 |
+|---|---|
+| `kuku auth login chatgpt [名称]` | 添加账号或重新授权已保存的账号 |
+| `kuku auth list` | 查看账号名称、脱敏邮箱和登录状态 |
+| `kuku auth models chatgpt <名称>` | 列出该账号可用的模型 |
+| `kuku auth proxy chatgpt <名称> (--proxy URL \| --proxy-from-env \| --no-proxy)` | 修改已保存账号的网络模式 |
+| `kuku auth logout chatgpt <名称>` | 清除该账号的令牌并尝试远程撤销 |
+
+执行 `login` 时省略网络选项，则已保存的账号沿用原设置，新账号跟随环境。代理需要认证时，传入 `--proxy-user` 和 `--proxy-password-env` 或 `--proxy-password-file` 之一。密码从引用的来源读取。[无头登录流程](../start/configuration.md#在无头主机登录订阅)
+
 ## 终端界面
 
 ### 发送、编辑与停止
@@ -98,7 +110,8 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `/compact` | `/compress`、`/summarize` | 空闲时压缩当前 Agent 的较早上下文（支持 `/compact retry` 与 `/compact undo`）。 |
 | `/agents` | `/agent`、`/subagents` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。 |
 | `/jobs` | `/job`、`/ps` | 列出当前 Agent 的后台 Job，读取实时输出或取消（`/jobs cancel <id>`）。 |
-| `/model` | `/models` | 选择、添加或编辑模型路由（`Ctrl+L` 相同）。 |
+| `/model` | `/models` | Enter 切换到高亮路由，`d` 设为默认并切换，`e` 编辑，`/` 搜索。Ctrl+L 打开同一个列表。 |
+| `/speed [档位]` | `/fast`、`/ultra`、`/ultrafast` | 在会话输入框上方选择当前 Agent 的服务档位。快捷命令选择 `fast` 或 `ultrafast`。选择 **Follow model default** 清除覆盖设置。输入可筛选已有档位，按 Tab 补全选中的档位。添加未知档位时可以选择是否探测。 |
 | `/thinking` | `/think`、`/effort` | 设置当前 Agent 思考等级，选 **Use default** 清除覆盖，或在可写本地路由上按 `D` + `Enter` 设为模型默认。 |
 | `/statusline` | `/status-line` | 预览、开关、排序并保存状态栏字段到 `tui.toml`。 |
 | `/save` | `/save-value` | 发送前为粘贴内容或草稿命名保存。 |
@@ -120,7 +133,9 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 
 ### 状态与用量
 
-底部状态栏默认显示生效模型与思考等级（如 `gemini-4-neon · High`，`Default` 表示由 Provider 自行决定）、连接提示、当前 Agent、工作区、上下文用量、缓存命中率、平均 TPS、累计输入和输出 token 以及请求费用。待生效的模型/思考设置显示在 **Next model request**。
+底部状态栏默认显示生效模型、思考等级和已配置的服务档位，例如 `gpt-6.2-sol xhigh ultrafast`、连接提示、当前 Agent、工作区、上下文用量、缓存命中率、平均 TPS、累计输入和输出 token 以及请求费用。待生效的设置显示在 **Next model request**。
+
+如果下一条消息的模型路由或生效服务档位与该 Agent 上一次请求不同，输入框上方会显示变化并提醒缓存可能无法复用。再按一次 Enter，按原先的时机发送。Esc 收起提示并保留草稿。
 
 输入区上方显示收件人（`To <agent>`）、输入投递状态（`Draft`、`Awaiting receipt`、`Input queued`、`Input accepted`）、当前 Turn 实时耗时及执行状态：
 

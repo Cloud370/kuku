@@ -11,6 +11,7 @@ use wreq::header::HeaderValue;
 use crate::config::{
     resolve_models_url, resolve_request_url, ModelCapabilityDeclaration,
     ProtocolCapabilityDeclaration, ProviderAuth, ProviderConfig, ProviderFormat,
+    SubscriptionChannel,
 };
 use crate::{Error, Result};
 
@@ -84,7 +85,10 @@ pub fn setup_model_list_targets(
     connection: &ProviderConfig,
     infer_base_path: bool,
 ) -> Result<Vec<ModelListTarget>> {
-    if connection.options.models_url.is_some() || connection.options.endpoint_url.is_some() {
+    if connection.options.subscription.is_some()
+        || connection.options.models_url.is_some()
+        || connection.options.endpoint_url.is_some()
+    {
         return model_list_targets(connection, infer_base_path);
     }
     let mut targets = model_list_targets(connection, infer_base_path)?;
@@ -131,7 +135,14 @@ pub async fn discover_models(connection: &ProviderConfig) -> Result<Vec<Discover
         options.endpoint_url.as_deref(),
     )?;
     let profile = profile_for(&endpoint, options.profile);
-    let key = connection.api_key.resolve()?;
+    let subscription = connection.options.subscription.as_ref();
+    let key = match subscription {
+        Some(account) => {
+            account.validate_connection(format, &connection.base_url, options)?;
+            super::subscription::authorization_token(account, &options.proxy).await?
+        }
+        None => connection.api_key.resolve()?,
+    };
     let slot = cached_slot(connection, &destination, &key);
     let mut cache = if let Some(slot) = &slot {
         Some(slot.lock().await)
@@ -171,7 +182,7 @@ pub async fn discover_models(connection: &ProviderConfig) -> Result<Vec<Discover
             response.status().as_u16()
         )));
     }
-    let models = read_model_list(response).await?;
+    let models = read_model_list(response, subscription.map(|account| account.channel())).await?;
     if let Some(cache) = &mut cache {
         cache.latest = Some((Instant::now(), Arc::from(models.clone())));
     }
@@ -208,7 +219,10 @@ pub(super) fn cached_models(target: &ModelListTarget) -> Option<Arc<[DiscoveredM
     (at.elapsed() <= CATALOG_STALE).then(|| Arc::clone(models))
 }
 
-async fn read_model_list(response: wreq::Response) -> Result<Vec<DiscoveredModel>> {
+async fn read_model_list(
+    response: wreq::Response,
+    subscription: Option<SubscriptionChannel>,
+) -> Result<Vec<DiscoveredModel>> {
     let stream = response.bytes_stream();
     tokio::pin!(stream);
     let mut bytes = Vec::new();
@@ -219,7 +233,71 @@ async fn read_model_list(response: wreq::Response) -> Result<Vec<DiscoveredModel
         }
         bytes.extend_from_slice(&chunk);
     }
-    parse_model_list(&bytes)
+    match subscription {
+        Some(SubscriptionChannel::ChatGpt) => parse_chatgpt_models(&bytes),
+        None => parse_model_list(&bytes),
+    }
+}
+
+fn parse_chatgpt_models(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
+    #[derive(Deserialize)]
+    struct Catalog {
+        models: Vec<Model>,
+    }
+    #[derive(Deserialize)]
+    struct Model {
+        slug: String,
+        display_name: Option<String>,
+        visibility: Option<String>,
+        service_tiers: Option<Vec<CatalogValue>>,
+        supported_reasoning_levels: Option<Vec<CatalogValue>>,
+        default_reasoning_level: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum CatalogValue {
+        Id(String),
+        ServiceTier { id: String },
+        ReasoningLevel { effort: String },
+        Unknown(serde::de::IgnoredAny),
+    }
+
+    fn declared_values(values: Option<Vec<CatalogValue>>) -> Option<Vec<String>> {
+        let values = values?;
+        let empty = values.is_empty();
+        let ids: Vec<_> = values
+            .into_iter()
+            .filter_map(|value| match value {
+                CatalogValue::Id(id) | CatalogValue::ServiceTier { id } => Some(id),
+                CatalogValue::ReasoningLevel { effort } => Some(effort),
+                CatalogValue::Unknown(_) => None,
+            })
+            .collect();
+        (empty || !ids.is_empty()).then_some(ids)
+    }
+
+    let catalog: Catalog = serde_json::from_slice(bytes)
+        .map_err(|_| discovery_error("unexpected ChatGPT model catalog format"))?;
+    let mut seen = HashSet::new();
+    Ok(catalog
+        .models
+        .into_iter()
+        .filter(|model| {
+            model.visibility.as_deref() == Some("list")
+                && valid_model_id(&model.slug)
+                && seen.insert(model.slug.clone())
+        })
+        .map(|model| DiscoveredModel {
+            id: model.slug,
+            name: model.display_name,
+            capabilities: ModelCapabilityDeclaration {
+                service_tiers: declared_values(model.service_tiers),
+                reasoning_efforts: declared_values(model.supported_reasoning_levels),
+                reasoning_default: model.default_reasoning_level,
+                ..ModelCapabilityDeclaration::default()
+            },
+        })
+        .collect())
 }
 
 #[derive(Deserialize)]
@@ -268,13 +346,7 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
     let mut models = Vec::with_capacity(list.data.len());
     let mut seen = HashSet::new();
     for model in list.data {
-        if model.id.is_empty()
-            || model.id.starts_with('$')
-            || model
-                .id
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-        {
+        if !valid_model_id(&model.id) {
             continue;
         }
         if !seen.insert(model.id.clone()) {
@@ -315,13 +387,65 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
     Ok(models)
 }
 
+fn valid_model_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.starts_with('$')
+        && !id
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+}
+
 fn discovery_error(message: &str) -> Error {
     Error::InvalidArgument(format!("Model discovery: {message}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_model_list;
+    use super::{parse_chatgpt_models, parse_model_list};
+
+    #[test]
+    fn chatgpt_models_follow_the_accounts_order_and_visibility() {
+        let models = parse_chatgpt_models(
+            br#"{"models":[
+            {"slug":"second","display_name":"Second","visibility":"list","service_tiers":[
+                {"id":"priority","name":"Fast","description":"Faster processing"},
+                {"id":"ultrafast","name":"Ultrafast","description":"Lowest latency"},
+                {"name":"Unrecognized"}, "default"
+            ], "supported_reasoning_levels":[{"effort":"low","description":"Low"},
+                {"effort":"high","description":"High"},{"name":"Unrecognized"}],
+               "default_reasoning_level":"low"},
+            {"slug":"hidden","visibility":"private"},
+            {"slug":"first","display_name":"First","visibility":"list"},
+            {"slug":"first","display_name":"Ignore duplicate","visibility":"list"}
+        ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            vec![("second", Some("Second")), ("first", Some("First"))],
+            models
+                .iter()
+                .map(|model| (model.id.as_str(), model.name.as_deref()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            Some(vec![
+                "priority".into(),
+                "ultrafast".into(),
+                "default".into()
+            ]),
+            models[0].capabilities.service_tiers
+        );
+        assert_eq!(None, models[1].capabilities.service_tiers);
+        assert_eq!(
+            Some(vec!["low".into(), "high".into()]),
+            models[0].capabilities.reasoning_efforts
+        );
+        assert_eq!(
+            Some("low"),
+            models[0].capabilities.reasoning_default.as_deref()
+        );
+        assert_eq!(None, models[1].capabilities.reasoning_efforts);
+    }
 
     #[test]
     fn provider_model_lists_keep_omissions_and_protocol_scope() {

@@ -230,7 +230,8 @@ def targeted_delegation(client):
         first, second = client.provider.next(), client.provider.next()
         parent, child = (first, second) if "dispatch" in json.dumps(first.request["messages"]) else (second, first)
         child.expect(task)
-        assert not child.request.get("tools"), child.request.get("tools")
+        child_tools = sorted(tool["name"] for tool in child.request.get("tools", []))
+        assert child_tools == ["list_agents", "send_message"], child_tools
         assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
         assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
         parent.tool("list_agents", "collect", wait_for="writer")

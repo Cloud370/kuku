@@ -74,6 +74,9 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         options.endpoint_url.as_deref(),
     )?;
     let capabilities = resolve_capabilities(&endpoint, &model, kind, &options);
+    let route_request = tier
+        .filter(|tier| tier.provider == name && tier.model == model)
+        .and_then(|tier| tier.request.clone());
     let settings_tier =
         tier.filter(|tier| input.tier.is_some() || (tier.provider == name && tier.model == model));
     let think = settings_tier.map(|tier| tier.think);
@@ -139,7 +142,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             "connection '{name}': Anthropic Messages requires max_tokens. Set max_output_tokens for model '{model}' on the tier or request, or provide a host output limit."
         )));
     }
-    Ok(ResolvedProvider {
+    let resolved = ResolvedProvider {
         connection_name: name,
         kind,
         model,
@@ -151,9 +154,14 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         think_level: think.unwrap_or(ThinkLevel::Off),
         thinking: Default::default(),
         options,
+        route_request,
         settings,
         capabilities,
-    })
+    };
+    resolved
+        .validate_output_limit(max_output_tokens)
+        .map_err(|message| Error::InvalidArgument(message.into()))?;
+    Ok(resolved)
 }
 
 fn select_tier<'a>(cfg: Option<&'a Config>, name: Option<&str>) -> Result<Option<&'a TierConfig>> {

@@ -24,6 +24,10 @@ wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
 httpdate = "1"
 sha2 = "0.10"
 base64 = "0.22"
+getrandom = "0.4"
+hmac = "0.12"
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+uuid = { version = "1", features = ["v4"] }
 bytes = "1"
 crc32fast = "1"
 fastrand = "2"
@@ -70,5 +74,7 @@ name = "query_runtime"
 required-features = ["test_support"]
 
 [dev-dependencies]
+boring2 = "5.0.0-alpha.13"
 httpmock = "0.7"
+tokio-boring2 = "5.0.0-alpha.13"
 tokio-test = "0.4"

@@ -315,7 +315,7 @@ pub(crate) fn redact_headers(headers: &HeaderMap) -> serde_json::Map<String, Val
         .iter()
         .map(|(name, value)| {
             let name = name.as_str().to_ascii_lowercase();
-            let value = if is_secret_header(&name) {
+            let value = if value.is_sensitive() || is_secret_header(&name) {
                 REDACTED.to_string()
             } else {
                 value.to_str().unwrap_or("<non-utf8>").to_string()

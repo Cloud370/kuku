@@ -1,10 +1,10 @@
 mod config {
     pub use kuku::config::{
-        resolve_request_url, ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig,
-        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
-        PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat,
-        ProviderOptions, ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel,
-        TierConfig, UpdateConfig,
+        resolve_request_url, ApiKey, Config, CustomServiceTier, DiscoveryConfig, HandoffConfig,
+        LogsConfig, MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry,
+        ModelThinkingTest, PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig,
+        ProviderFormat, ProviderOptions, ProviderProfile, RequestFields, RequestedOutput,
+        ResolvedThinking, SubscriptionChannel, ThinkLevel, TierConfig, UpdateConfig,
     };
 }
 
@@ -62,6 +62,7 @@ fn default_config() -> Config {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),
@@ -266,6 +267,7 @@ fn explicit_tier_selects_different_tier() {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),
@@ -280,6 +282,7 @@ fn explicit_tier_selects_different_tier() {
     tiers.insert(
         "light".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),
@@ -351,6 +354,50 @@ fn host_ceiling_bounds_explicit_agent_or_tier_output() {
         })
         .unwrap();
         assert_eq!(Some(expected), resolved.max_output_tokens);
+    }
+}
+
+#[test]
+fn chatgpt_sign_in_rejects_agent_tier_and_host_output_ceilings() {
+    use kuku::config::{SubscriptionAccount, SubscriptionChannel};
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = default_config();
+    let provider = config.providers.get_mut("anthropic").unwrap();
+    provider.format = config::ProviderFormat::OpenAiResponses;
+    provider.base_url = "https://api.openai.com/v1".into();
+    provider.options = config::ProviderOptions {
+        subscription: Some(
+            SubscriptionAccount::new(temp.path(), SubscriptionChannel::ChatGpt, "test").unwrap(),
+        ),
+        ..Default::default()
+    };
+    let name = config.default_tier.clone();
+    let tier = config.tiers.get_mut(&name).unwrap();
+    tier.model = "gpt-5".into();
+    tier.think = ThinkLevel::ProviderDefault;
+    assert!(matches!(
+        resolve_config(ResolveConfigInput { config: Some(config.clone()), ..Default::default() }),
+        Err(Error::InvalidArgument(message)) if message.contains("cannot enforce max_output_tokens")
+    ));
+    config.tiers.get_mut(&name).unwrap().max_output_tokens = None;
+    let input = ResolveConfigInput {
+        config: Some(config),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_config(input.clone()).unwrap().max_output_tokens,
+        None
+    );
+    for (agent, host) in [(Some(256), None), (None, Some(256))] {
+        assert!(matches!(
+            resolve_config(ResolveConfigInput {
+                max_output_tokens: agent,
+                max_output_tokens_per_request: host,
+                ..input.clone()
+            }),
+            Err(Error::InvalidArgument(message)) if message.contains("cannot enforce max_output_tokens")
+        ));
     }
 }
 

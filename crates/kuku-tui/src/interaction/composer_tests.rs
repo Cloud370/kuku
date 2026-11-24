@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Update};
-use crate::menu::PickerKind;
+use crate::menu::{ChoiceKind, PickerKind};
 use crate::setup::ThinkingDefaults;
 
 use super::tests::{connected_app, insert_message, press};
@@ -27,6 +27,9 @@ fn load_model(app: &mut App, applied: Option<&str>, next: Option<&str>) {
             "settings": {"reasoning_effort": effort},
             "capabilities": {
                 "reasoning_efforts": ["low", "medium", "high", "high", "max"],
+                "profile": "openrouter",
+                "service_tiers": ["priority", "provider-custom"],
+                "service_tier_source": "model_list",
                 "reasoning_default": {"value": "max", "source": "model_list"}
             },
             "tools": [],
@@ -148,7 +151,7 @@ fn command_and_model_lists_wrap_and_stay_above_the_composer() {
         position(&buffer, "Model route").1,
         position(&buffer, "Search models…").1
     );
-    assert!(position(&buffer, "Esc Close").1 < position(&buffer, "keep this draft").1);
+    assert!(position(&buffer, "d Default + switch").1 < position(&buffer, "keep this draft").1);
     press(&mut app, KeyCode::Down);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 0));
 }
@@ -355,7 +358,7 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         );
         assert!(text.contains("Medium ✓ · Agent override"), "{text}");
         assert!(text.contains("Provider declares · Max"), "{text}");
-        assert!(text.contains("gemini-4-neon · Low"), "{text}");
+        assert!(text.contains("gemini-4-neon low"), "{text}");
         assert!(
             text.contains("Thinking · gemini-4-neon · Next request"),
             "{text}"
@@ -445,8 +448,8 @@ fn thinking_cycle_keeps_the_draft_route_and_other_cells_stable_until_it_resolves
         model.settings.reasoning_effort = Some("medium".into());
         app.update(Update::DefaultModel(*version, Ok(model)));
         let after = frame(&mut app, width);
-        let (x, y) = position(&before, "Low");
-        assert_eq!((x, y), position(&after, "Medium"));
+        let (x, y) = position(&before, "low");
+        assert_eq!((x, y), position(&after, "medium"));
         assert_eq!(
             position(&before, "Ctrl+T think"),
             position(&after, "Ctrl+T think")
@@ -468,7 +471,7 @@ fn use_default_clears_a_legacy_override_without_reconfiguring_the_route() {
     app.open_thinking();
     let screen = frame(&mut app, 60);
     let text = lines(&screen).join("\n");
-    assert!(text.contains("gemini-4-neon · Default"), "{text}");
+    assert!(text.contains("gemini-4-neon Default"), "{text}");
     assert!(text.contains("Current · Default"), "{text}");
     assert!(!text.contains("Provider default"), "{text}");
     app.effects.clear();
@@ -478,4 +481,219 @@ fn use_default_clears_a_legacy_override_without_reconfiguring_the_route() {
         if matches!(&command.action, Action::Configure { config }
             if config.reasoning_effort.is_none() && config.tier.as_deref() == Some("fixture-model")))
     );
+}
+
+#[test]
+fn speed_uses_the_composer_and_applies_declared_tiers_without_probing() {
+    let mut app = connected_app();
+    load_model(&mut app, Some("high"), None);
+
+    action_picker(&mut app, "speed");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.kind == PickerKind::Speed && picker.kind.composer_anchored()));
+    assert!(app
+        .effects
+        .iter()
+        .all(|job| !matches!(job, Job::CustomSpeed(..))));
+
+    app.paste("provider-cu");
+    press(&mut app, KeyCode::Tab);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.query.text() == "provider-custom"));
+    press(&mut app, KeyCode::Enter);
+    assert!(app
+        .effects
+        .iter()
+        .any(|job| matches!(job, Job::Save(command)
+        if command.target.agent == "main"
+        && matches!(&command.action, Action::Configure { config }
+            if config.service_tier.as_deref() == Some("provider-custom")
+            && config.reasoning_effort.as_deref() == Some("high")))));
+}
+
+fn reviewer_speed_fixture() -> App {
+    let mut app = connected_app();
+    load_model(&mut app, Some("low"), None);
+    let reviewer = crate::app::Address::new(app.active.session.clone(), "reviewer".into());
+    app.select(reviewer, true, String::new());
+    load_model(&mut app, Some("high"), None);
+    let mut snapshot = app.pane().snapshot.clone().unwrap();
+    snapshot.cursor += 1;
+    snapshot.agent.config.service_tier = Some("priority".into());
+    let model = snapshot.selection.as_mut().unwrap();
+    model.model = "reviewer-model".into();
+    model.connection = "reviewer-gateway".into();
+    model.settings.service_tier = Some("priority".into());
+    model.capabilities.service_tiers.push("ultrafast".into());
+    app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
+    app.effects.clear();
+    app
+}
+
+#[test]
+fn speed_commands_configure_the_selected_agent() {
+    for (command, tier) in [
+        ("speed", "ultrafast"),
+        ("fast", "fast"),
+        ("ultrafast", "ultrafast"),
+        ("ultra", "ultrafast"),
+    ] {
+        let mut app = reviewer_speed_fixture();
+        action_picker(&mut app, command);
+        press(&mut app, KeyCode::Enter);
+        if command == "speed" {
+            assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+                if picker.kind == PickerKind::Speed && picker.header == "reviewer · reviewer-model"));
+            app.paste("ul");
+            assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+                if matches!(picker.selected_choice(),
+                    Some(ChoiceKind::Speed(crate::app::speed::SpeedAction::Apply(Some(ref tier))))
+                    if tier == "ultrafast")));
+            press(&mut app, KeyCode::Enter);
+        }
+        let mut changes = app.effects.iter().filter_map(|job| match job {
+            Job::Save(command) => Some(command),
+            _ => None,
+        });
+        let change = changes
+            .next()
+            .expect("selected Agent configuration command");
+        assert_eq!(change.target.agent, "reviewer");
+        assert!(matches!(&change.action, Action::Configure { config }
+            if config.service_tier.as_deref() == Some(tier) && config.reasoning_effort.as_deref() == Some("high")));
+        assert!(changes.next().is_none());
+        assert!(!app.notice.as_ref().unwrap().text.contains("Cache may miss"));
+    }
+}
+
+#[test]
+fn custom_speed_can_be_saved_without_probing_and_then_applied() {
+    use kuku::config::CustomServiceTier;
+
+    use crate::setup::service_tier::{SpeedResult, SpeedWork};
+
+    let mut app = connected_app();
+    load_model(&mut app, Some("high"), None);
+    action_picker(&mut app, "speed turbo");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.kind == PickerKind::CustomSpeed && picker.kind.composer_anchored()));
+    assert!(app
+        .effects
+        .iter()
+        .all(|job| !matches!(job, Job::CustomSpeed(..))));
+
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    let (ticket, target) = std::mem::take(&mut app.effects)
+        .into_iter()
+        .find_map(|job| match job {
+            Job::CustomSpeed(
+                ticket,
+                target,
+                SpeedWork::Save(tier, CustomServiceTier::Unverified),
+            ) if tier == "turbo" => Some((ticket, target)),
+            _ => None,
+        })
+        .expect("save without a probe");
+    app.update(Update::SpeedFinished(
+        ticket,
+        target,
+        Ok(SpeedResult::Saved("turbo".into())),
+    ));
+    assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
+        if matches!(&command.action, Action::Configure { config } if config.service_tier.as_deref() == Some("turbo")))));
+}
+
+#[test]
+fn model_picker_letters_are_actions_until_search_is_focused() {
+    use crate::menu::{Choice, ChoiceKind};
+
+    let mut app = connected_app();
+    let tier =
+        serde_json::from_value(json!({"name":"deep", "connection":"gateway", "model":"fixture"}))
+            .unwrap();
+    app.picker(
+        PickerKind::Models,
+        vec![Choice::new(
+            "deep",
+            "",
+            ChoiceKind::ModelRoute {
+                tier: Box::new(tier),
+                current: false,
+            },
+        )],
+    );
+
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('e'));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "de"));
+    assert!(app.effects.is_empty());
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if !picker.search_focused));
+
+    press(&mut app, KeyCode::Char('d'));
+    let (selection, tier) = std::mem::take(&mut app.effects)
+        .into_iter()
+        .find_map(|job| match job {
+            Job::SaveAndUseModel(selection, tier) => Some((selection, tier)),
+            _ => None,
+        })
+        .expect("queue the default save directly");
+    app.pane_mut().draft.insert("Keep this draft");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.effects.is_empty());
+    assert_eq!(app.pane().draft.text(), "Keep this draft");
+    app.update(Update::ModelDefaultAndSwitchSaved(
+        selection.clone(),
+        tier.clone(),
+        Err("Save failed".into()),
+    ));
+    assert!(app.pane().config().tier.is_none());
+    app.save_and_use_model(tier.clone());
+    app.update(Update::ModelDefaultAndSwitchSaved(
+        selection,
+        tier,
+        Ok(true),
+    ));
+    assert_eq!(Some("deep"), app.pane().config().tier.as_deref());
+}
+
+#[test]
+fn model_picker_aligns_details_and_fits_the_account_and_route_markers() {
+    use crate::menu::{Choice, ChoiceKind};
+
+    let mut app = connected_app();
+    let route = |name, detail| {
+        let tier =
+            serde_json::from_value(json!({"name":name, "connection":"fixture", "model":name}))
+                .unwrap();
+        Choice::new(
+            name,
+            detail,
+            ChoiceKind::ModelRoute {
+                tier: Box::new(tier),
+                current: false,
+            },
+        )
+    };
+    app.picker(
+        PickerKind::Models,
+        vec![
+            route(
+                "gpt-6.2-sol",
+                "ChatGPT · team-operations · ali***e@exa***.com · Current · Default",
+            ),
+            route("gpt-6.2-astra", "ChatGPT · other · sam***e@exa***.com"),
+            Choice::new("Set current model as default", "", ChoiceKind::Close),
+        ],
+    );
+    let screen = frame(&mut app, 94);
+    assert_eq!(
+        position(&screen, "ChatGPT · team-operations").0,
+        position(&screen, "ChatGPT · other").0
+    );
+    position(&screen, "ali***e@exa***.com · Current · Default");
 }

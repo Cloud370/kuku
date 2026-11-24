@@ -13,6 +13,7 @@ pub(super) enum RecoveryAction {
     Skip,
     ChangeKey,
     ChangeUrl,
+    SignIn,
 }
 
 impl RecoveryAction {
@@ -22,6 +23,7 @@ impl RecoveryAction {
             Self::Skip => "Skip this model",
             Self::ChangeKey => "Change API key",
             Self::ChangeUrl => "Change API URL",
+            Self::SignIn => "Reauthorize account",
         }
     }
 }
@@ -133,8 +135,18 @@ impl SetupState {
         };
         let check = self.trials.text_check(model);
         let mut actions = Vec::new();
-        if let Some(repair) = repair_for(check) {
-            actions.push(repair);
+        match (self.subscription.is_some(), check) {
+            (
+                true,
+                SetupTextCheck::Failed {
+                    kind: Some(ProviderFailureKind::Authentication),
+                    ..
+                },
+            ) => {
+                actions.push(RecoveryAction::SignIn);
+            }
+            (false, check) => actions.extend(repair_for(check)),
+            _ => {}
         }
         actions.push(RecoveryAction::Retry);
         if self.models.selected.len() > 1
@@ -229,6 +241,15 @@ impl SetupState {
                     protocol_fixed: self.protocol_fixed,
                 });
                 self.step = SetupStep::Address;
+            }
+            RecoveryAction::SignIn => {
+                if let Some(account) = &self.subscription {
+                    self.problem = Some(format!(
+                        "On the service host, run kuku auth login {} {}, then retry.",
+                        account.channel().as_str(),
+                        account.name().unwrap_or("ACCOUNT")
+                    ));
+                }
             }
         }
     }

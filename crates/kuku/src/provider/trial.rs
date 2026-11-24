@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_stream::StreamExt;
 
-use crate::config::{ProviderConfig, ProviderProfile};
+use crate::config::{ProviderConfig, RequestFields};
 use crate::event::ModelStopReason;
 use crate::{Error, Result};
 
@@ -89,6 +89,18 @@ pub async fn trial_model(
         .map_err(|problem| *problem.error)
 }
 
+/// Test with the selected model route's request fields layered over the connection's fields.
+pub async fn trial_model_with_route_request(
+    connection: &ProviderConfig,
+    model: &str,
+    trial: ModelTrial,
+    request: Option<&RequestFields>,
+) -> Result<TrialResult> {
+    run_trial(connection, model, trial, None, request)
+        .await
+        .map_err(|problem| *problem.error)
+}
+
 pub(super) struct TrialProblem {
     pub error: Box<Error>,
     pub route_missing: bool,
@@ -116,7 +128,7 @@ pub(super) async fn trial_with_route_evidence(
     model: &str,
     trial: ModelTrial,
 ) -> std::result::Result<TrialResult, TrialProblem> {
-    run_trial(connection, model, trial, None).await
+    run_trial(connection, model, trial, None, None).await
 }
 
 pub(super) async fn run_trial(
@@ -124,10 +136,11 @@ pub(super) async fn run_trial(
     model: &str,
     trial: ModelTrial,
     probe_effort: Option<&str>,
+    route_request: Option<&RequestFields>,
 ) -> std::result::Result<TrialResult, TrialProblem> {
     tokio::time::timeout(
         TRIAL_TIMEOUT,
-        trial_request(connection, model, trial, probe_effort),
+        trial_request(connection, model, trial, probe_effort, route_request),
     )
     .await
     .map_err(|_| Error::Provider {
@@ -143,6 +156,7 @@ async fn trial_request(
     model: &str,
     trial: ModelTrial,
     probe_effort: Option<&str>,
+    route_request: Option<&RequestFields>,
 ) -> std::result::Result<TrialResult, TrialProblem> {
     let capabilities = crate::adapter::inspect_connection_model(connection, model)?;
     let mut challenge = None;
@@ -183,6 +197,7 @@ async fn trial_request(
         base_url: connection.base_url.clone(),
         api_key: SecretString::from_config(connection.api_key.clone()),
         options: connection.options.clone(),
+        route_request: route_request.cloned(),
         capabilities,
         settings,
         ..ResolvedProvider::default()
@@ -191,22 +206,29 @@ async fn trial_request(
     if tool_trial {
         tools::set_challenge(config.kind, &mut body);
     }
-    apply_settings(&config, &mut body);
-    body.as_object_mut()
-        .expect("trial body")
-        .remove("stream_options");
-    if config.capabilities.profile == ProviderProfile::OpenRouter {
-        body["provider"] = serde_json::to_value(config.options.routing.clone().unwrap_or_default())
-            .map_err(|_| Error::InvalidArgument("Invalid routing for the model trial.".into()))?;
+    apply_settings(&config, &mut body, config.options.subscription.is_some());
+    let url = request_url(&config).map_err(trial_error)?;
+    let fields = super::request_fields::prepare(
+        &config,
+        &url,
+        &mut body,
+        super::request_fields::RequestPurpose::SingleRequest,
+        None,
+        || None,
+    )
+    .map_err(trial_error)?;
+    if let Some(account) = &config.options.subscription {
+        super::subscription::apply_request_shape(account.channel(), &mut body);
     }
     let mut prepared = PreparedProviderRequest {
         kind: config.kind,
         connection_name: config.connection_name.clone(),
         model: model.into(),
-        url: request_url(&config).map_err(trial_error)?,
+        url,
         body: PreparedBody::from_json(body),
         settings: config.settings.clone(),
         correlation_id: None,
+        fields,
     };
     let response = receive_trial(&config, &prepared).await?;
     let pricing = RequestPricing::new(
@@ -265,6 +287,9 @@ async fn receive_trial(
             ..TrialProblem::from(invalid_receipt())
         });
     }
+    if config.options.subscription.is_some() {
+        return receive_subscription_trial(response.response).await;
+    }
     let mut stream = response.response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -275,6 +300,58 @@ async fn receive_trial(
         bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).map_err(|_| invalid_receipt().into())
+}
+
+async fn receive_subscription_trial(
+    response: wreq::Response,
+) -> std::result::Result<Value, TrialProblem> {
+    let mut decoder = super::sse::SseDecoder::default();
+    let mut stream = response.bytes_stream();
+    let mut size = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|_| invalid_receipt())?;
+        size = size.saturating_add(bytes.len());
+        if size > MAX_TRIAL_RESPONSE {
+            return Err(invalid_receipt().into());
+        }
+        for frame in decoder.feed(&bytes).map_err(trial_error)? {
+            if let Some(receipt) = subscription_trial_receipt(&frame)? {
+                return Ok(receipt);
+            }
+        }
+    }
+    if let Some(frame) = decoder.finish().map_err(trial_error)? {
+        if let Some(receipt) = subscription_trial_receipt(&frame)? {
+            return Ok(receipt);
+        }
+    }
+    Err(invalid_receipt().into())
+}
+
+fn subscription_trial_receipt(frame: &str) -> Result<Option<Value>> {
+    let Some(frame) = super::sse::parse_sse_frame(frame) else {
+        return Ok(None);
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&frame.data) else {
+        return Ok(None);
+    };
+    match value["type"].as_str().or(frame.event.as_deref()) {
+        Some("response.completed" | "response.incomplete") => Ok(Some(value["response"].take())),
+        Some("response.failed" | "error") => {
+            let error = value
+                .pointer("/response/error")
+                .or_else(|| value.get("error"))
+                .unwrap_or(&value);
+            let failure = super::error::classify_stream_error(
+                error["code"].as_str().unwrap_or_default(),
+                error["message"]
+                    .as_str()
+                    .unwrap_or("subscription model trial failed"),
+            );
+            Err(trial_error(failure))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
@@ -303,6 +380,9 @@ fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
     }
     let messages = json!([{"role":"user","content":content}]);
     match config.kind {
+        ProviderKind::OpenAiResponses if config.options.subscription.is_some() => json!({
+            "model":config.model,"input":messages
+        }),
         ProviderKind::OpenAiResponses => json!({
             "model":config.model,"input":messages,"max_output_tokens":TRIAL_OUTPUT_TOKENS
         }),
@@ -489,7 +569,30 @@ mod tests {
     use crate::config::{ApiKey, ProviderConfig, ProviderFormat};
     use crate::event::ModelStopReason;
 
-    use super::{interpret_trial, recognized_colors, RequestPricing};
+    use super::{
+        interpret_trial, recognized_colors, subscription_trial_receipt, tools, ProviderKind,
+        RequestPricing,
+    };
+
+    #[test]
+    fn subscription_trial_continues_the_streamed_tool_call() {
+        let initial = r#"event: response.created
+data: {"type":"response.created","response":{"status":"in_progress"}}"#;
+        assert!(subscription_trial_receipt(initial).unwrap().is_none());
+        let completed = r#"event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","namespace":"kuku","name":"kuku_setup_check","call_id":"call_1","arguments":"{}"}]}}"#;
+        let receipt = subscription_trial_receipt(completed).unwrap().unwrap();
+        let mut continuation = json!({ "input": [] });
+        assert!(tools::continue_call(
+            ProviderKind::OpenAiResponses,
+            &mut continuation,
+            &receipt,
+            "tool-result"
+        ));
+        assert_eq!("kuku", continuation["input"][0]["namespace"]);
+        assert_eq!("call_1", continuation["input"][1]["call_id"]);
+        assert_eq!("tool-result", continuation["input"][1]["output"]);
+    }
 
     #[test]
     fn chat_trial_distinguishes_a_cut_off_reply_from_a_wrong_image_answer() {

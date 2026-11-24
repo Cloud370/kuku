@@ -85,6 +85,7 @@ pub(super) async fn check_reasoning(
             service_tier,
         },
         Some(effort),
+        None,
     )
     .await;
     match (check, result) {

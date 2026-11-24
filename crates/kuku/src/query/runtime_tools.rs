@@ -525,7 +525,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "address": {"type": "string", "description": "Stable Session-local name."},
                     "instructions": {"type": "string", "description": "Standing role or constraints for this Agent."},
-                    "tools": {"type": "array", "items": {"type":"string"}, "description":"Exact tool names. Omit to use defaults. An empty array means no tools."},
+                    "tools": {"type": "array", "items": {"type":"string"}, "description":"Tool names in addition to send_message and list_agents. Omit to use defaults. An empty array gives only the two messaging tools."},
                     "preset": {"type": "string", "description": "Configured Agent preset name. Omit to use the Session defaults. An unknown name returns available examples."},
                     "tier": {"type": "string", "description": "Configured model tier from <kuku_models>. Omit to use the preset or Session default."},
                     "reasoning_effort": {"type": "string", "description": "Supported thinking value from the selected route in <kuku_models>."},
@@ -562,7 +562,8 @@ pub(super) async fn execute(
         "create_agent" => {
             let (address, config) = create_agent_input(&call.args)?;
             let preset = config.preset.clone();
-            let mut receipt = serde_json::to_value(session.create_agent(&key, &address, config)?)?;
+            let receipt = session.create_agent_from_tool(&key, &address, config)?;
+            let mut receipt = serde_json::to_value(receipt)?;
             let config = session.agent(&address)?.config;
             receipt["initial_status"] = serde_json::json!(crate::AgentStatus::Idle);
             receipt["workspace"] =

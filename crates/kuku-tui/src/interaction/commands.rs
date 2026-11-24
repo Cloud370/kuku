@@ -11,6 +11,7 @@ enum Invocation {
     Command(CommandMenu),
     RestoreContext,
     CancelJob(String),
+    Speed(String),
 }
 
 impl Invocation {
@@ -19,6 +20,13 @@ impl Invocation {
         let Some(operation) = words.next() else {
             return Ok(Self::Command(command));
         };
+        if command == CommandMenu::Speed {
+            return if words.next().is_none() && crate::setup::service_tier::valid_tier(operation) {
+                Ok(Self::Speed(operation.into()))
+            } else {
+                Err("Use /speed or /speed <tier>".into())
+            };
+        }
         if command == CommandMenu::Compact {
             return match (operation, words.next()) {
                 ("undo", None) => Ok(Self::RestoreContext),
@@ -53,8 +61,10 @@ impl App {
         let Some((input, command)) = CommandInput::draft(text)
             .and_then(|input| input.command().map(|command| (input, command)))
             .filter(|(input, command)| {
-                matches!(command, CommandMenu::Jobs | CommandMenu::Compact)
-                    || input.arguments.trim().is_empty()
+                matches!(
+                    command,
+                    CommandMenu::Jobs | CommandMenu::Compact | CommandMenu::Speed
+                ) || input.arguments.trim().is_empty()
             })
         else {
             self.send(timing);
@@ -123,6 +133,7 @@ impl App {
     fn perform(&mut self, invocation: Invocation) {
         let command = match invocation {
             Invocation::Command(command) => command,
+            Invocation::Speed(tier) => return self.open_speed(Some(tier)),
             Invocation::CancelJob(id) => return self.cancel_background_job(id),
             Invocation::RestoreContext => {
                 if self.pane().exists {
@@ -151,6 +162,9 @@ impl App {
             }
             CommandMenu::Model => self.open_models(),
             CommandMenu::Thinking => self.open_thinking(),
+            CommandMenu::Speed => self.open_speed(None),
+            CommandMenu::Fast => self.open_speed(Some("fast".into())),
+            CommandMenu::Ultrafast => self.open_speed(Some("ultrafast".into())),
             CommandMenu::StatusLine => self.open_statusline(),
             CommandMenu::Save => self.open_value_save(),
             CommandMenu::Values => self.open_values(),

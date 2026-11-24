@@ -57,6 +57,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
         turn_started_at_ms: Some(1),
         turn_elapsed_ms: None,
         cache_warning: None,
+        last_model_route: None,
         execution_id: Some(12),
         last_output: None,
         last_error: None,

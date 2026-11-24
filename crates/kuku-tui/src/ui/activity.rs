@@ -283,10 +283,13 @@ pub(super) fn render_heading(
     let show_thinking = left_width >= core_width + key_width
         && app.modal.is_none()
         && app.available()
-        && app.pane().effective_reasoning().is_some_and(|(_, caps)| {
-            caps.selectable_reasoning_efforts()
-                .any(|level| level != ThinkLevel::ProviderDefault.as_str())
-        });
+        && app
+            .pane()
+            .effective_model_settings()
+            .is_some_and(|(_, caps)| {
+                caps.selectable_reasoning_efforts()
+                    .any(|level| level != ThinkLevel::ProviderDefault.as_str())
+            });
     let thinking_width = if show_thinking { key_width } else { 0 };
     let render_metrics = left_width >= core_width + thinking_width + METER_SLOT + gap;
     let mut line = frame.ring.line(phase_width);

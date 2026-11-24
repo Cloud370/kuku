@@ -6,6 +6,12 @@ use crate::menu::{ChoiceKind, PickerKind};
 impl App {
     pub(super) fn key(&mut self, key: KeyEvent) {
         self.dismiss_confirmation();
+        if matches!(self.modal, Some(Modal::SendRouteConfirmation(_)))
+            && !Shortcut::ESCAPE.matches(key)
+            && !Shortcut::ENTER.matches(key)
+        {
+            self.close_picker();
+        }
         if self.modal.is_some() {
             self.modal_selection.cancel_drag();
         } else if !(self.opens_command_menu(key)
@@ -21,6 +27,15 @@ impl App {
             self.rewind_armed = false;
         }
         if Shortcut::ESCAPE.matches(key) {
+            if let Some(Modal::Picker(picker)) = &mut self.modal {
+                if key.kind == KeyEventKind::Press
+                    && picker.kind == PickerKind::Models
+                    && picker.search_focused
+                {
+                    picker.search_focused = false;
+                    return;
+                }
+            }
             if key.kind == KeyEventKind::Repeat
                 || self.back_from_thinking_confirmation()
                 || self.back_from_agent_setup()
@@ -96,6 +111,12 @@ impl App {
             Some(Modal::Output(_)) => self.output_key(key),
             Some(Modal::StatusLineEditor(_)) => self.statusline_key(key),
             Some(Modal::ExitConfirmation) => self.exit_confirmation_key(key),
+            Some(Modal::SendRouteConfirmation(_)) => {
+                if Shortcut::ENTER.matches(key) && key.kind == KeyEventKind::Press {
+                    self.confirm_send_route();
+                }
+            }
+
             None => self.composer_key(key),
         }
         if let Some(pane) = self.panes.get_mut(&address) {
@@ -107,6 +128,9 @@ impl App {
 
     pub(super) fn paste(&mut self, text: &str) {
         self.dismiss_confirmation();
+        if matches!(self.modal, Some(Modal::SendRouteConfirmation(_))) {
+            self.close_picker();
+        }
         if self.modal.is_some() {
             self.modal_selection.cancel_drag();
         } else {
@@ -119,7 +143,9 @@ impl App {
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
-            if picker.kind.searchable() {
+            if picker.kind.searchable()
+                && (picker.kind != PickerKind::Models || picker.search_focused)
+            {
                 picker.query.insert(&text.replace(['\r', '\n'], " "));
                 self.picker_query_changed();
             }

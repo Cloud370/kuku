@@ -51,8 +51,8 @@ pub use turns::{HistoryPoint, TurnIndex};
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CacheWarning, CostTotals,
     Input, InputSource, InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus,
-    ModelUsageSample, PendingInput, QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary,
-    SessionOptions, TurnSummary, UsageTotals, Withdrawal, WorkspaceIoLimits,
+    ModelRequestRoute, ModelUsageSample, PendingInput, QuestionRequest, Receipt, RuntimeLimits,
+    SessionCostSummary, SessionOptions, TurnSummary, UsageTotals, Withdrawal, WorkspaceIoLimits,
 };
 pub use values::{
     NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
@@ -256,6 +256,25 @@ impl Session {
         address: &str,
         config: AgentConfig,
     ) -> Result<Receipt> {
+        self.create_agent_with_defaults(command_id, address, config, false)
+    }
+
+    pub(crate) fn create_agent_from_tool(
+        &self,
+        command_id: &str,
+        address: &str,
+        config: AgentConfig,
+    ) -> Result<Receipt> {
+        self.create_agent_with_defaults(command_id, address, config, true)
+    }
+
+    fn create_agent_with_defaults(
+        &self,
+        command_id: &str,
+        address: &str,
+        config: AgentConfig,
+        include_messaging: bool,
+    ) -> Result<Receipt> {
         validate_key(command_id)?;
         validate_address(address)?;
         let digest = fingerprint(&("create_agent", address, &config))?;
@@ -272,7 +291,16 @@ impl Session {
         if state.agents.len() >= self.inner.options.limits.max_agents {
             return Err(Error::InvalidArgument("session agent limit reached".into()));
         }
-        let config = self.resolve_agent_preset(address, config)?;
+        let mut config = self.resolve_agent_preset(address, config)?;
+        if include_messaging && !config.no_agents {
+            if let Some(tools) = &mut config.tools {
+                for name in ["send_message", "list_agents"] {
+                    if !tools.iter().any(|tool| tool == name) {
+                        tools.push(name.into());
+                    }
+                }
+            }
+        }
         self.validate_config(&config)?;
         self.commit(
             &mut state,

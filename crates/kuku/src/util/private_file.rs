@@ -5,7 +5,7 @@ use std::path::Path;
 const MAX_KEY_BYTES: u64 = 4096;
 
 pub(crate) fn read_private_key(path: &Path) -> io::Result<String> {
-    let file = open_private_key(path)?;
+    let file = open_private_file(path)?;
     if file.metadata()?.len() > MAX_KEY_BYTES {
         return Err(invalid_contents());
     }
@@ -43,7 +43,7 @@ fn invalid_contents() -> io::Error {
 }
 
 #[cfg(unix)]
-fn open_private_key(path: &Path) -> io::Result<File> {
+pub(crate) fn open_private_file(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
     let file = std::fs::OpenOptions::new()
@@ -65,12 +65,12 @@ fn open_private_key(path: &Path) -> io::Result<File> {
 }
 
 #[cfg(windows)]
-fn open_private_key(path: &Path) -> io::Result<File> {
+pub(crate) fn open_private_file(path: &Path) -> io::Result<File> {
     super::private_directory::open_private_key(path)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_private_key(_path: &Path) -> io::Result<File> {
+pub(crate) fn open_private_file(_path: &Path) -> io::Result<File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "private credential files are unsupported on this platform",

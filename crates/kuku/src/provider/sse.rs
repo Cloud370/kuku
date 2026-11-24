@@ -114,14 +114,14 @@ async fn emit_frame(
 }
 
 #[derive(Default)]
-struct SseDecoder {
+pub(super) struct SseDecoder {
     buffer: Vec<u8>,
     scan: usize,
     line_start: usize,
 }
 
 impl SseDecoder {
-    fn feed(&mut self, bytes: &[u8]) -> Result<Vec<String>, ProviderFailure> {
+    pub(super) fn feed(&mut self, bytes: &[u8]) -> Result<Vec<String>, ProviderFailure> {
         self.buffer.extend_from_slice(bytes);
         let mut frames = Vec::new();
         let mut consumed = 0;
@@ -170,7 +170,7 @@ impl SseDecoder {
         None
     }
 
-    fn finish(&mut self) -> Result<Option<String>, ProviderFailure> {
+    pub(super) fn finish(&mut self) -> Result<Option<String>, ProviderFailure> {
         if self.buffer.is_empty() {
             return Ok(None);
         }

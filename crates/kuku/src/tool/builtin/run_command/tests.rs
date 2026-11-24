@@ -830,6 +830,17 @@ fn process_is_running(pid: u32) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+async fn wait_for_process_exit(pid: u32) {
+    timeout(Duration::from_secs(2), async {
+        while process_is_running(pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("descendant {pid} did not exit during cleanup"));
+}
+
+#[cfg(target_os = "linux")]
 fn process_tree_args(command: &str, timeout: u32, native: bool) -> serde_json::Value {
     if native {
         serde_json::json!({"program":"/bin/sh","args":["-c",command],"cwd":".","timeout":timeout})
@@ -864,10 +875,7 @@ async fn cancelling_a_command_stops_its_descendant_process() {
             .unwrap()
             .unwrap();
         assert_eq!("cancelled", result.status);
-        assert!(
-            !process_is_running(pid),
-            "cancelled command left descendant {pid} running"
-        );
+        wait_for_process_exit(pid).await;
     }
 }
 
@@ -892,7 +900,7 @@ async fn timeout_stops_descendants_and_dropping_the_command_future_does_too() {
             .unwrap()
             .unwrap();
         assert_eq!(true, result.structured.unwrap()["timed_out"]);
-        assert!(!process_is_running(pid));
+        wait_for_process_exit(pid).await;
         let worker_dir = dir.path().to_path_buf();
         let worker = tokio::spawn(async move {
             run_command(
@@ -906,13 +914,7 @@ async fn timeout_stops_descendants_and_dropping_the_command_future_does_too() {
         let pid = wait_for_pid(&dir.path().join("dropped.pid")).await;
         worker.abort();
         assert!(worker.await.unwrap_err().is_cancelled());
-        timeout(Duration::from_secs(2), async {
-            while process_is_running(pid) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        wait_for_process_exit(pid).await;
     }
 }
 

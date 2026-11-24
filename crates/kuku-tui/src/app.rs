@@ -36,7 +36,9 @@ mod notice;
 mod pending;
 mod reading;
 mod rewind;
+pub(crate) mod send_route;
 pub(crate) use rewind::REWIND_PAGE;
+pub(crate) mod speed;
 mod thinking;
 mod timing;
 mod values;
@@ -202,7 +204,7 @@ impl Pane {
                     .as_ref()
                     .map(|model| (&model.settings, &model.capabilities))
             })
-            .or_else(|| self.effective_reasoning())
+            .or_else(|| self.effective_model_settings())
     }
 
     pub(crate) fn waiting_for_configuration(&self) -> bool {
@@ -240,20 +242,6 @@ impl Pane {
         } else {
             None
         }
-    }
-
-    pub(crate) fn next_model_label(&self, width: usize) -> Option<String> {
-        if self.next_thinking().is_some() {
-            return None;
-        }
-        let model = self.snapshot.as_ref()?.pending_selection.as_ref()?;
-        let route = crate::text::single_line(&format!("{}/{}", model.connection, model.model));
-        let effort = crate::text::effort_label(model.settings.reasoning_effort.as_deref());
-        let prefix = "Next model request · ";
-        Some(format!(
-            "{prefix}{}",
-            crate::text::with_suffix(&route, &effort, width.saturating_sub(prefix.len()))
-        ))
     }
 
     fn model_route_changed(&self, config: &AgentConfig) -> bool {
@@ -322,13 +310,14 @@ pub(crate) enum Modal {
     Output(Box<OutputViewer>),
     StatusLineEditor(StatusLineEditor),
     ExitConfirmation,
+    SendRouteConfirmation(Box<send_route::SendRouteConfirmation>),
 }
 
 impl Modal {
     pub(crate) fn composer_anchored(&self) -> bool {
         match self {
             Self::Picker(picker) => picker.kind.composer_anchored(),
-            Self::ExitConfirmation => true,
+            Self::ExitConfirmation | Self::SendRouteConfirmation(_) => true,
             Self::Help | Self::Prompt(_) | Self::Output(_) | Self::StatusLineEditor(_) => false,
         }
     }
@@ -379,6 +368,7 @@ pub(crate) struct App {
     model_version: u64,
     pending_model_default: Option<PendingDefaultSave>,
     saving_model_default: Option<(u64, Selection)>,
+    saving_default_and_switch: Option<Selection>,
     pending_queue_action: Option<PendingQueueAction>,
     checking: VecDeque<String>,
     outstanding_checks: usize,
@@ -455,6 +445,7 @@ impl App {
             model_version: 0,
             pending_model_default: None,
             saving_model_default: None,
+            saving_default_and_switch: None,
             pending_queue_action: None,
             checking: VecDeque::new(),
             outstanding_checks: 0,
@@ -684,6 +675,7 @@ impl App {
             Update::RewindGroupHistory(selection, request, result) => {
                 self.apply_rewind_group_history_update(selection, request, result);
             }
+            Update::SendRouteLabels(ticket, labels) => self.send_route_labels(ticket, labels),
             Update::Found(ticket, result) => {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {
                     if picker.ticket == ticket {
@@ -697,6 +689,9 @@ impl App {
                     }
                 }
             }
+            Update::SpeedFinished(ticket, target, result) => {
+                self.speed_work_finished(ticket, target, result)
+            }
             Update::ThinkingDefaults(ticket, defaults) => self.thinking_defaults(ticket, defaults),
             Update::AgentModels(ticket, result) => self.agent_models_loaded(ticket, result),
             Update::ModelEditorOpened(ticket, result) => self.model_editor_opened(ticket, result),
@@ -704,6 +699,9 @@ impl App {
                 self.model_editor_saved(ticket, editor, result)
             }
             Update::ModelSettingSaved(result) => self.model_setting_saved(result),
+            Update::ModelDefaultAndSwitchSaved(selection, tier, result) => {
+                self.model_default_and_switch_saved(selection, tier, result)
+            }
             Update::PreparedCredentialRepair(ticket, selection, result) => {
                 self.credential_repair_prepared(ticket, selection, result)
             }

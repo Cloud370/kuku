@@ -9,7 +9,9 @@ use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::Result;
 
 use super::record::Record;
-use super::{AgentSnapshot, AgentStatus, CacheWarning, TurnSummary, UsageTotals};
+use super::{
+    AgentSnapshot, AgentStatus, CacheWarning, ModelRequestRoute, TurnSummary, UsageTotals,
+};
 
 mod cache;
 use cache::{CacheHistory, TurnCache};
@@ -30,6 +32,10 @@ struct IndexedTurn {
     end: Option<TurnEnd>,
     cache: TurnCache,
     preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prepared_model_route: Option<ModelRequestRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_model_route: Option<ModelRequestRoute>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -165,12 +171,17 @@ impl TurnIndex {
             .cache
             .get(&snapshot.address)
             .and_then(CacheHistory::warning);
-        let Some((_, turn)) = snapshot
+        let Some((position, turn)) = snapshot
             .turn
             .and_then(|id| self.indexed(&snapshot.address, id))
         else {
             return;
         };
+        snapshot.last_model_route = self.by_agent[&snapshot.address][..=position]
+            .iter()
+            .rev()
+            .find_map(|turn| turn.last_model_route.as_ref())
+            .cloned();
         snapshot.turn_started_at_ms = turn.start;
         snapshot.turn_elapsed_ms = turn
             .end
@@ -195,6 +206,8 @@ impl TurnIndex {
                         end: None,
                         cache: TurnCache::default(),
                         preview: None,
+                        prepared_model_route: None,
+                        last_model_route: None,
                     });
             }
             Some(Record::TurnSettled {
@@ -226,8 +239,24 @@ impl TurnIndex {
                 {
                     self.preview(conversation, *turn, text);
                 }
-                if let EventPayload::Unknown(value) = &event.payload {
-                    self.observe_cache(value);
+                match &event.payload {
+                    EventPayload::Unknown(value) => match value["kind"].as_str() {
+                        Some("runtime.step_prepared") => self.observe_prepared(value),
+                        Some("runtime.model_dispatched") => {
+                            if let (Some(address), Some(turn)) =
+                                (value["agent"].as_str(), value["turn"].as_u64())
+                            {
+                                self.promote_route(address, turn);
+                            }
+                        }
+                        _ => {}
+                    },
+                    EventPayload::ModelResponse {
+                        conversation, turn, ..
+                    } => {
+                        self.promote_route(conversation.as_deref().unwrap_or("main"), *turn);
+                    }
+                    _ => {}
                 }
                 if let EventPayload::ToolCall {
                     conversation, turn, ..
@@ -248,10 +277,7 @@ impl TurnIndex {
         }
     }
 
-    fn observe_cache(&mut self, value: &serde_json::Value) {
-        if value["kind"] != "runtime.step_prepared" {
-            return;
-        }
+    fn observe_prepared(&mut self, value: &serde_json::Value) {
         let (Some(address), Some(id)) = (value["agent"].as_str(), value["turn"].as_u64()) else {
             return;
         };
@@ -263,10 +289,40 @@ impl TurnIndex {
         else {
             return;
         };
+        turn.prepared_model_route = (|| {
+            let service_tier = match value["settings"].get("service_tier") {
+                Some(serde_json::Value::String(name)) => Some(Some(name.as_str())),
+                Some(serde_json::Value::Null) => Some(None),
+                _ => None,
+            };
+            ModelRequestRoute::new(
+                value["connection"].as_str()?,
+                value["model"].as_str()?,
+                value["protocol"].as_str()?.parse().ok()?,
+                value["url"].as_str()?,
+                service_tier,
+            )
+        })();
         turn.cache.prepare(value);
+        let cache = &turn.cache;
         if let Some(history) = self.cache.get_mut(address) {
-            history.observe_prefix(&turn.cache);
+            history.observe_prefix(cache);
         }
+    }
+
+    fn promote_route(&mut self, address: &str, id: u64) {
+        if let Some(turn) = self.open_turn(address, id) {
+            if let Some(route) = turn.prepared_model_route.take() {
+                turn.last_model_route = Some(route);
+            }
+        }
+    }
+
+    fn open_turn(&mut self, address: &str, id: u64) -> Option<&mut IndexedTurn> {
+        self.by_agent
+            .get_mut(address)?
+            .last_mut()
+            .filter(|turn| turn.id == id && turn.end.is_none())
     }
 
     fn indexed(&self, address: &str, turn: u64) -> Option<(usize, &IndexedTurn)> {
@@ -307,6 +363,7 @@ impl TurnIndex {
         if known.end.is_some() {
             return;
         }
+        known.prepared_model_route = None;
         let cache = std::mem::take(&mut known.cache);
         let summary = TurnSummary {
             elapsed_ms: known
@@ -351,6 +408,69 @@ mod tests {
 
     use super::super::AgentStatus;
     use super::{EventPayload, EventStore, Record, TurnIndex, UsageTotals};
+
+    #[test]
+    fn previous_request_route_survives_replay_for_each_turn_and_agent() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("events.jsonl");
+        let mut store = EventStore::open(&path).unwrap();
+        let main = accept(&mut store, 1, "main", None);
+        let peer = accept(&mut store, 2, "reviewer", None);
+        let mut record = |agent: &str, turn, model: &str, tier: Option<&str>| {
+            store
+                .append(EventPayload::Unknown(json!({
+                    "kind": "runtime.step_prepared", "agent": agent, "turn": turn,
+                    "connection": "gateway", "model": model, "protocol": "openai-responses",
+                    "url": "http://fixture/v1/responses", "settings": {"service_tier": tier}
+                })))
+                .unwrap();
+            store
+                .append(EventPayload::ModelResponse {
+                    conversation: Some(agent.into()),
+                    turn,
+                    ts: "2026-10-01T01:30:02Z".into(),
+                    request_id: "req_1".into(),
+                    text: "Hello".into(),
+                    thinking: None,
+                    stop_reason: None,
+                    input_tokens_total: None,
+                    output_tokens_total: None,
+                })
+                .unwrap();
+        };
+        record("main", main, "first", None);
+        record("reviewer", peer, "peer", Some("flex"));
+        finish(&mut store, 4, "main", main, UsageTotals::default());
+        let next = accept(&mut store, 5, "main", None);
+        store
+            .append(EventPayload::Unknown(json!({
+                "kind": "runtime.step_prepared", "agent": "main", "turn": next,
+                "connection": "gateway", "model": "never returned", "protocol": "openai-responses",
+                "url": "http://fixture/v1/responses"
+            })))
+            .unwrap();
+        finish(&mut store, 6, "main", next, UsageTotals::default());
+        let (index, _) = TurnIndex::read(&path).unwrap();
+        let route = |agent, turn| {
+            index
+                .indexed(agent, turn)
+                .unwrap()
+                .1
+                .last_model_route
+                .as_ref()
+                .unwrap()
+        };
+        assert_eq!(route("main", main).model, "first");
+        assert_eq!(route("main", main).service_tier(), Some(None));
+        assert_eq!(route("reviewer", peer).model, "peer");
+        assert_eq!(route("reviewer", peer).service_tier(), Some(Some("flex")));
+        assert!(index
+            .indexed("main", next)
+            .unwrap()
+            .1
+            .last_model_route
+            .is_none());
+    }
 
     fn append(store: &mut EventStore, second: u8, record: Record) -> u64 {
         store

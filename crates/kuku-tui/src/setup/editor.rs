@@ -1,19 +1,23 @@
 use std::time::Duration;
 
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use kuku::adapter::inspect_model;
 use kuku::config::ThinkLevel;
 use kuku::session::AgentConfig;
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions};
-use ratatui::Frame;
+use ratatui::{layout::Rect, Frame};
 
+use crate::editor::Editor;
 use crate::local_settings::{active_service, ensure_same_service};
 use crate::model_default::ResolvedModel;
 
 use super::config::{self, Settings};
 use super::state::{SetupIntent, SetupState};
 use super::{Finish, SetupMode};
+
+const MAX_MODEL_BYTES: usize = 256;
+const MAX_KEY_BYTES: usize = 4096;
 
 pub(crate) struct ModelEditor {
     settings: Settings,
@@ -29,7 +33,10 @@ pub(crate) enum ModelEditorAction {
 
 #[derive(Debug, Clone)]
 pub(crate) enum SavedModelSetting {
-    Default(String),
+    Default {
+        name: String,
+        route: ResolvedModel,
+    },
     Thinking {
         target: ThinkingSaveTarget,
         effort: String,
@@ -103,13 +110,25 @@ impl ModelEditor {
         super::ui::render(frame, &self.settings, &mut self.state, mode);
     }
 
+    pub(crate) fn authorization_link(
+        &self,
+        area: Rect,
+    ) -> Option<crate::terminal::AuthorizationLink> {
+        super::ui::authorization_link(&self.state, area)
+    }
+
     pub(crate) fn probe_deadline(&self) -> Option<std::time::Instant> {
-        self.state.probe_deadline()
+        self.state
+            .probe_deadline()
+            .into_iter()
+            .chain(self.state.subscription_deadline())
+            .min()
     }
 
     pub(crate) fn poll_probes(&mut self) -> bool {
         let mode = self.mode();
-        self.state.poll_probes(&self.settings, mode)
+        let registration = self.state.poll_subscription(&mut self.settings);
+        self.state.poll_probes(&self.settings, mode) || registration
     }
 
     pub(crate) fn failed(&mut self, problem: String) {
@@ -172,7 +191,14 @@ pub(crate) async fn save_setting(
     let current = active_service(options, connection).await?;
     ensure_same_service(&service, &current)?;
     let (route, effort) = match &change {
-        SavedModelSetting::Default(route) => (route.as_str(), None),
+        SavedModelSetting::Default { name, route } => {
+            if settings.resolved.tier(name).is_none_or(|candidate| {
+                candidate.provider != route.connection || candidate.model != route.model
+            }) {
+                return Err("The model route changed. Reopen /model.".into());
+            }
+            (name.as_str(), None)
+        }
         SavedModelSetting::Thinking { target, effort } => {
             ensure_same_service(&target.service, &current)?;
             let route = thinking_tier(&settings, target.requested_tier.as_deref(), &target.route)
@@ -192,11 +218,7 @@ pub(crate) async fn save_setting(
             "think",
             toml_edit::value(ThinkLevel::ProviderDefault.as_str()),
         );
-        config::set_optional(
-            fields,
-            "reasoning_effort",
-            (effort != ThinkLevel::ProviderDefault.as_str()).then_some(effort),
-        );
+        fields.insert("reasoning_effort", toml_edit::value(effort));
     } else {
         document["default_model"] = toml_edit::value(route);
     }
@@ -232,7 +254,7 @@ fn thinking_tier<'a>(
         .map(String::as_str)
 }
 
-async fn active_settings(
+pub(super) async fn active_settings(
     options: &ConnectionOptions,
     connection: Option<&Connection>,
 ) -> Result<(ServiceIdentity, Settings), String> {
@@ -285,4 +307,68 @@ async fn wait_for_catalog(connection: Option<&Connection>, config: &kuku::config
     })
     .await
     .is_ok()
+}
+
+pub(super) fn valid_model_id(input: &str) -> Result<String, String> {
+    let model = input.trim();
+    if model.is_empty() {
+        return Err("Enter a model ID.".into());
+    }
+    if model.len() > MAX_MODEL_BYTES
+        || model
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err("Model IDs must be a single line of at most 256 bytes.".into());
+    }
+    if model.starts_with('$') {
+        return Err("Enter a literal model ID, not an environment-variable reference.".into());
+    }
+    Ok(model.to_owned())
+}
+
+pub(super) fn valid_env_name(input: &str) -> Result<String, String> {
+    let name = input.trim();
+    let mut characters = name.chars();
+    if !characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        || !characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    {
+        return Err("Use a portable environment-variable name, such as ANTHROPIC_API_KEY.".into());
+    }
+    Ok(name.to_owned())
+}
+
+pub(super) fn valid_stored_key(input: &str) -> Result<String, String> {
+    if input.chars().any(char::is_control) {
+        return Err("Keys must be a single line of at most 4096 bytes.".into());
+    }
+    let key = input.trim();
+    if key.is_empty() {
+        return Err("Enter a key or leave blank to keep the saved key.".into());
+    }
+    if key.len() > MAX_KEY_BYTES {
+        return Err("Keys must be a single line of at most 4096 bytes.".into());
+    }
+    Ok(key.to_owned())
+}
+
+pub(super) fn edit_field(editor: &mut Editor, key: KeyEvent) {
+    match key.code {
+        KeyCode::Left => editor.left(),
+        KeyCode::Right => editor.right(),
+        KeyCode::Home => editor.home(),
+        KeyCode::End => editor.end(),
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            editor.insert(&character.to_string());
+        }
+        _ => {}
+    }
 }

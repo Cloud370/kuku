@@ -410,7 +410,10 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && properties.as_object().unwrap().len() == 8
                 && properties["reasoning_effort"]["type"] == "string"
                 && properties["service_tier"]["type"] == "string"
-                && properties["tools"]["description"].as_str().is_some_and(|text| text.contains("empty array means no tools"))
+                && properties["tools"]["description"].as_str().is_some_and(|text| {
+                    text.contains("send_message and list_agents")
+                        && text.contains("empty array gives only the two messaging tools")
+                })
                 && context.contains("<kuku_models>")
                 && context.contains("balanced")
                 && context.contains("Omit tier to use the default model")
@@ -426,7 +429,7 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             json!({"tool_calls":[
                 tool("default", "create_agent", json!({
                     "address":"reviewer","instructions":"Review code for defects.",
-                    "tier":"","preset":"","workspace":"","tools":["read_file","send_message"]
+                    "tier":"","preset":"","workspace":"","tools":[]
                 })),
                 tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"balanced"})),
                 tool("conflicting-tools", "create_agent", json!({
@@ -456,7 +459,7 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             tool_count(request) == 6
                 && created["initial_status"] == "idle"
                 && created["workspace"].is_string()
-                && created["effective_tools"] == json!(["read_file", "send_message"])
+                && created["effective_tools"] == json!(["send_message", "list_agents"])
                 && content("unknown-preset").contains("Available examples:")
                 && content("unknown-preset").contains("review")
                 && content("wrong-route").contains("unknown field `connection`")
@@ -494,7 +497,9 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                     .is_some_and(|tools| tools.contains(&json!("create_agent")))
                 && preset["model_selection"]["preset"] == "review"
                 && preset["effective_tools"].as_array().is_some_and(|tools| {
-                    tools.contains(&json!("read_file")) && !tools.contains(&json!("send_message"))
+                    tools.contains(&json!("read_file"))
+                        && tools.contains(&json!("send_message"))
+                        && tools.contains(&json!("list_agents"))
                 })
         },
         response(json!({"content":"Reviewers configured."}), "stop"),
@@ -572,7 +577,7 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
     assert_eq!(None, reviewer.config.max_output_tokens);
     assert!(!reviewer.config.no_agents);
     assert_eq!(
-        Some(vec!["read_file".into(), "send_message".into()]),
+        Some(vec!["send_message".into(), "list_agents".into()]),
         reviewer.config.tools
     );
     assert!(session.agent("blocked-reviewer").is_err());

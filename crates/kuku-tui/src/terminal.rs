@@ -1,11 +1,13 @@
-use std::io::{self, Stdout, Write};
+use std::io::{self, IsTerminal, Stdout, Write};
 use std::time::{Duration, Instant, SystemTime};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crossterm::cursor::{Hide, MoveTo, Show};
 #[cfg(not(windows))]
 use crossterm::event::EventStream;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::style::Colored;
 use crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
@@ -32,6 +34,115 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(25);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(33);
 const MAX_RENDER_COOLDOWN: Duration = Duration::from_millis(60);
 const UPDATE_BATCH: usize = 32;
+
+/// Read from a terminal with echo disabled and restore its input mode before returning.
+pub fn read_hidden_line(prompt: &str, max_bytes: usize) -> io::Result<String> {
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "hidden input requires a terminal",
+        ));
+    }
+    let mode = HiddenInput::enter()?;
+    let mut output = io::stderr().lock();
+    write!(output, "{prompt}")?;
+    output.flush()?;
+    let result = read_hidden_events(max_bytes);
+    drop(output);
+    drop(mode);
+    result
+}
+
+struct HiddenInput {
+    bracketed: bool,
+    _raw: RawMode,
+}
+
+impl HiddenInput {
+    fn enter() -> io::Result<Self> {
+        let raw = RawMode::enter()?;
+        let bracketed = io::stderr().is_terminal()
+            && std::env::var("TERM").as_deref() != Ok("dumb")
+            && execute!(io::stderr(), EnableBracketedPaste).is_ok();
+        Ok(Self {
+            bracketed,
+            _raw: raw,
+        })
+    }
+}
+
+impl Drop for HiddenInput {
+    fn drop(&mut self) {
+        let mut output = io::stderr();
+        if self.bracketed {
+            let _ = execute!(output, DisableBracketedPaste);
+        }
+        let _ = output.write_all(b"\r\n");
+        let _ = output.flush();
+    }
+}
+
+struct RawMode;
+
+impl RawMode {
+    fn enter() -> io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+fn read_hidden_events(max_bytes: usize) -> io::Result<String> {
+    let mut value = String::new();
+    let mut too_long = false;
+    loop {
+        match event::read()? {
+            Event::Paste(text) => value.push_str(&text),
+            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+                KeyCode::Enter if too_long => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "input is too long",
+                    ));
+                }
+                KeyCode::Enter => return Ok(value),
+                KeyCode::Esc => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "input cancelled",
+                    ))
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "input cancelled",
+                    ));
+                }
+                KeyCode::Char(character)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    value.push(character);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        too_long |= value.len() > max_bytes;
+        if too_long {
+            value.clear();
+        }
+    }
+}
 
 struct PaintSchedule {
     dirty: bool,
@@ -201,6 +312,16 @@ impl Screen {
         app: &mut App,
         activity: ActivityFrame,
     ) -> io::Result<(CompletedFrame<'_>, bool)> {
+        let authorization_link = match &app.model_editor {
+            Some(editor) => {
+                let size = self.terminal.size()?;
+                editor.authorization_link(Rect::new(0, 0, size.width, size.height))
+            }
+            None => None,
+        };
+        self.terminal
+            .backend_mut()
+            .set_authorization_link(authorization_link);
         let target_changed = self.painted_target != app.active;
         if target_changed {
             self.painted_target.clone_from(&app.active);
@@ -267,23 +388,95 @@ impl WideCells {
     }
 }
 
-struct FrameBackend<W> {
+pub(crate) struct AuthorizationLink {
+    url: String,
+    label_position: Position,
+    area: Rect,
+    first_row: usize,
+}
+
+impl AuthorizationLink {
+    pub(crate) const LABEL: &str = "[Open authorization link]";
+
+    pub(crate) fn new(url: &str, label_position: Position, area: Rect, first_row: usize) -> Self {
+        let mut link = Self {
+            url: url.to_owned(),
+            label_position,
+            area,
+            first_row,
+        };
+        link.first_row = first_row.min(link.last_page_start());
+        link
+    }
+
+    pub(crate) fn first_row(&self) -> usize {
+        self.first_row
+    }
+
+    pub(crate) fn last_page_start(&self) -> usize {
+        self.url
+            .len()
+            .div_ceil(usize::from(self.area.width.max(1)))
+            .saturating_sub(self.area.height.into())
+    }
+
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (u16, &str)> {
+        self.url
+            .as_bytes()
+            .chunks(usize::from(self.area.width.max(1)))
+            .skip(self.first_row)
+            .take(usize::from(self.area.height))
+            .enumerate()
+            .map(|(row, text)| {
+                (
+                    self.area.y + row as u16,
+                    std::str::from_utf8(text).expect("encoded URL is ASCII"),
+                )
+            })
+    }
+
+    fn draw(&self, commands: &mut Vec<u8>) -> io::Result<()> {
+        queue!(
+            commands,
+            MoveTo(self.label_position.x, self.label_position.y)
+        )?;
+        write!(
+            commands,
+            "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
+            self.url,
+            Self::LABEL
+        )?;
+        if self.last_page_start() == 0 {
+            queue!(commands, MoveTo(self.area.x, self.area.y))?;
+            commands.write_all(self.url.as_bytes())?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct FrameBackend<W> {
     output: W,
     commands: Vec<u8>,
     position: Position,
     visible: bool,
     painted_cursor: Option<Position>,
+    authorization_link: Option<AuthorizationLink>,
 }
 
 impl<W: Write> FrameBackend<W> {
-    fn new(output: W) -> Self {
+    pub(crate) fn new(output: W) -> Self {
         Self {
             output,
             commands: Vec::new(),
             position: Position::ORIGIN,
             visible: false,
             painted_cursor: None,
+            authorization_link: None,
         }
+    }
+
+    pub(crate) fn set_authorization_link(&mut self, link: Option<AuthorizationLink>) {
+        self.authorization_link = link;
     }
 
     fn begin(&mut self) -> io::Result<()> {
@@ -355,6 +548,9 @@ impl<W: Write> Backend for FrameBackend<W> {
         }
         self.begin()?;
         let bytes = &mut self.commands;
+        if let Some(link) = &self.authorization_link {
+            link.draw(bytes)?;
+        }
         if let Some(Position { x, y }) = cursor {
             queue!(bytes, MoveTo(x, y), Show)?;
         }
@@ -369,16 +565,18 @@ impl<W: Write> Backend for FrameBackend<W> {
 
 struct Restore {
     enhanced_keyboard: bool,
+    #[cfg(not(windows))]
+    _raw: RawMode,
     #[cfg(windows)]
     _modes: windows::ConsoleModes,
 }
 
 impl Restore {
     fn new() -> io::Result<Self> {
-        #[cfg(not(windows))]
-        crossterm::terminal::enable_raw_mode()?;
         Ok(Self {
             enhanced_keyboard: false,
+            #[cfg(not(windows))]
+            _raw: RawMode::enter()?,
             #[cfg(windows)]
             _modes: windows::ConsoleModes::enter()?,
         })
@@ -434,8 +632,6 @@ impl Drop for Restore {
         let _ = execute!(stdout, DisableBracketedPaste);
         let _ = execute!(stdout, LeaveAlternateScreen);
         let _ = execute!(stdout, Show);
-        #[cfg(not(windows))]
-        let _ = crossterm::terminal::disable_raw_mode();
     }
 }
 
@@ -454,20 +650,26 @@ impl Clipboard {
                 return Ok("Copied to clipboard");
             }
         }
-        let mut terminal = io::stdout().lock();
-        write!(terminal, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
-        terminal.flush()?;
+        send_to_terminal_clipboard(&text)?;
         Ok("Sent text to terminal clipboard")
     }
+}
+
+pub(crate) fn send_to_terminal_clipboard(text: &str) -> io::Result<()> {
+    let mut terminal = io::stdout().lock();
+    write!(terminal, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
+    terminal.flush()
 }
 
 #[cfg(test)]
 mod tests {
     use ratatui::backend::{Backend, ClearType};
     use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Rect};
 
     use super::{
-        strip_cell_colors, Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL,
+        strip_cell_colors, AuthorizationLink, Duration, FrameBackend, Instant, PaintSchedule,
+        FRAME_INTERVAL,
     };
 
     #[test]
@@ -532,6 +734,34 @@ mod tests {
             !screen.cell(0, 2).unwrap().inverse(),
             "{:?}",
             String::from_utf8_lossy(&bytes)
+        );
+    }
+
+    #[test]
+    fn an_authorization_badge_links_to_the_complete_raw_url() {
+        let url = "https://example.test/authorize?state=example";
+        let mut backend = FrameBackend::new(Vec::new());
+        let link = AuthorizationLink::new(url, Position::new(1, 1), Rect::new(1, 3, 20, 3), 0);
+        assert_eq!(url, link.rows().map(|(_, text)| text).collect::<String>());
+        assert_eq!(0, link.last_page_start());
+        backend.set_authorization_link(Some(link));
+        let mut cell = Cell::EMPTY;
+        cell.set_symbol("X");
+        backend.draw([(1, 1, &cell)].into_iter()).unwrap();
+        backend.flush().unwrap();
+        let output = String::from_utf8(backend.output).unwrap();
+        let hyperlink = format!(
+            "\x1b[2;2H\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\",
+            AuthorizationLink::LABEL
+        );
+        assert!(output.contains(&hyperlink));
+        assert!(output.contains(&format!("\x1b[4;2H{url}")));
+        let scrolled =
+            AuthorizationLink::new(url, Position::new(1, 1), Rect::new(1, 3, 20, 2), usize::MAX);
+        assert_eq!(1, scrolled.first_row());
+        assert_eq!(
+            &url[20..],
+            scrolled.rows().map(|(_, text)| text).collect::<String>()
         );
     }
 

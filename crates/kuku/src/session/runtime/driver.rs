@@ -647,6 +647,7 @@ mod tests {
         tiers.insert(
             "balanced".into(),
             TierConfig {
+                request: None,
                 provider: "openai".into(),
                 model: "runtime-test".into(),
                 think: ThinkLevel::Off,

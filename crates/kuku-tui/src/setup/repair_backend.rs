@@ -118,6 +118,18 @@ pub(crate) async fn prepare(
         &environment,
     )
     .map_err(|_| CHANGED)?;
+    if let Some(account) = settings
+        .resolved
+        .providers
+        .get(&route.connection)
+        .and_then(|provider| provider.options.subscription.as_ref())
+    {
+        return Err(format!(
+            "Sign in again on the service host with kuku auth login {} {}.",
+            account.channel().as_str(),
+            account.name().unwrap_or("ACCOUNT")
+        ));
+    }
     if !settings.can_store_key() || !settings.resolved.providers.contains_key(&route.connection) {
         return Err("Private credential storage is unavailable for this connection. Correct the service configuration on its host and restart it before retrying.".into());
     }

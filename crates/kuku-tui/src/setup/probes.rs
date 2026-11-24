@@ -579,6 +579,34 @@ fn probe_detail(
                         None => "Received".into(),
                     },
                 };
+                let detail = match probe {
+                    Probe::Trial {
+                        connection,
+                        check: ModelTrial::Text { service_tier, .. },
+                        ..
+                    } if connection.options.subscription.is_some()
+                        && matches!(
+                            service_tier.as_deref(),
+                            Some("fast" | "priority" | "ultrafast")
+                        ) =>
+                    {
+                        let speed = trial
+                            .provider_report
+                            .as_ref()
+                            .and_then(|report| report.service_tier.as_deref())
+                            .map_or_else(
+                                || "Speed unreported".into(),
+                                |tier| {
+                                    format!(
+                                        "{} reported",
+                                        crate::text::service_tier_label(Some(tier))
+                                    )
+                                },
+                            );
+                        format!("{speed} · {detail}")
+                    }
+                    _ => detail,
+                };
                 if trial.image_match == Some(false) || !trial.text_returned {
                     ("!", detail, WARNING)
                 } else {

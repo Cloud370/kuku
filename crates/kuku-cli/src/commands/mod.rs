@@ -1,6 +1,7 @@
 //! CLI subcommand implementations.
 
 pub mod agents;
+mod auth;
 pub mod config;
 pub mod delete;
 pub mod events;
@@ -35,6 +36,10 @@ pub async fn dispatch(command: Command, target: &ConnectionArgs) -> CliResult {
             require_local(target)?;
             kuku_tui::setup(target.options()).await?;
             Ok(())
+        }
+        Command::Auth(args) => {
+            require_local(target)?;
+            auth::run(args.command, target).await
         }
         Command::Prompts(args) => {
             require_local(target)?;

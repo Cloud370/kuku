@@ -742,6 +742,8 @@ async fn stopped_execution_retains_pending_inputs_and_deduplicates_cancel_and_ad
         .send(Input::new("start", "main", "start blocking model"))
         .unwrap();
     let first = next_call(&mut calls).await;
+    let dispatched = session.agent("main").unwrap().last_model_route.unwrap();
+    assert_eq!(dispatched.model, first.request.model);
     let execution = session.agent("main").unwrap().execution_id.unwrap();
     let input = next_turn("queued", "retain this work");
     let delivery = session.send(input.clone()).unwrap();
@@ -751,6 +753,12 @@ async fn stopped_execution_retains_pending_inputs_and_deduplicates_cancel_and_ad
         .unwrap();
     assert!(first.response.send(Reply::Text("cancelled")).is_err());
     assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
+    assert_eq!(
+        session.agent("main").unwrap().last_model_route.as_ref(),
+        Some(&dispatched)
+    );
+    let replayed = Session::read_view(session.events_path(), "main").unwrap();
+    assert_eq!(replayed.snapshot.last_model_route, Some(dispatched));
     assert_eq!(delivery, session.send(input).unwrap());
     assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
     assert!(calls.try_recv().is_err());

@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::config::{
     ApiKey, MediaAdapterSupport, ProviderOptions, ProviderProfile, RequestedOutput,
+    SubscriptionChannel,
 };
 use crate::context::CanonicalMessage;
 use crate::context::ContextAssembly;
@@ -117,8 +118,24 @@ pub(crate) struct ResolvedProvider {
     pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
     pub(crate) options: ProviderOptions,
+    pub(crate) route_request: Option<crate::config::RequestFields>,
     pub(crate) settings: ProviderSettings,
     pub(crate) capabilities: ProviderCapabilities,
+}
+
+impl ResolvedProvider {
+    pub(super) fn validate_output_limit(&self, limit: Option<u32>) -> Result<(), &'static str> {
+        if limit.is_some()
+            && self
+                .options
+                .subscription
+                .as_ref()
+                .is_some_and(|account| account.channel() == SubscriptionChannel::ChatGpt)
+        {
+            return Err("ChatGPT sign-in cannot enforce max_output_tokens. Choose a connection that supports output limits or remove the explicit ceiling.");
+        }
+        Ok(())
+    }
 }
 
 impl Default for ResolvedProvider {
@@ -135,6 +152,7 @@ impl Default for ResolvedProvider {
             think_level: crate::config::ThinkLevel::Off,
             thinking: Default::default(),
             options: Default::default(),
+            route_request: None,
             settings: Default::default(),
             capabilities: Default::default(),
         }
@@ -160,6 +178,9 @@ pub struct ProviderSettings {
 pub struct ProviderCapabilities {
     /// Endpoint family that interprets these settings.
     pub profile: ProviderProfile,
+    /// Subscription channel used by the configured connection, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription_channel: Option<crate::config::SubscriptionChannel>,
     /// Whether the gateway accepts the Anthropic cache-control extension on the selected route.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub prompt_cache_control: bool,
@@ -172,6 +193,9 @@ pub struct ProviderCapabilities {
     pub thinking_test: Option<crate::config::ModelThinkingTest>,
     /// Supported native service tiers.
     pub service_tiers: Vec<String>,
+    /// Additional service tiers supplied by the user and their probe evidence.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub custom_service_tiers: std::collections::BTreeMap<String, crate::config::CustomServiceTier>,
     /// Origin of the service choices, including an explicitly empty declaration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier_source: Option<CapabilitySource>,
@@ -251,6 +275,14 @@ pub(crate) struct PreparedProviderRequest {
     pub(crate) body: PreparedBody,
     pub(crate) settings: ProviderSettings,
     pub(crate) correlation_id: Option<String>,
+    pub(super) fields: PreparedRequestFields,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct PreparedRequestFields {
+    pub(super) headers: wreq::header::HeaderMap,
+    pub(super) request_id_headers: Vec<wreq::header::HeaderName>,
+    pub(super) private_body_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

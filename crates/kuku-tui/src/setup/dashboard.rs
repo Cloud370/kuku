@@ -331,6 +331,27 @@ impl<'a> TestOverview<'a> {
         if self.models.is_empty() || room == 0 {
             return;
         }
+        if connection.is_some_and(|connection| connection.options.subscription.is_some())
+            && self.batch.selected_rows().next().is_none()
+        {
+            let room = usize::from(room);
+            let remainder_row = usize::from(self.models.len() > room && room > 1);
+            let visible = self.models.len().min(room - remainder_row);
+            for model in self.models.iter().take(visible) {
+                let name = shorten_middle(model, usize::from(area.width));
+                line(frame, area, row, &name, ACCENT);
+            }
+            if visible < self.models.len() && visible < room {
+                line(
+                    frame,
+                    area,
+                    row,
+                    &format!("+{} more models", self.models.len() - visible),
+                    MUTED,
+                );
+            }
+            return;
+        }
         if room < 3 {
             line(
                 frame,

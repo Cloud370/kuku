@@ -247,6 +247,7 @@ pub fn test_config() -> kuku::config::Config {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),

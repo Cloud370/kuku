@@ -14,7 +14,7 @@
 | `OPENROUTER_API_KEY` | `provider.openrouter` 默认使用的密钥变量 |
 | `KUKU_PROVIDER_TRACE` | `1` 开启完整请求 trace；`0` 关闭 |
 
-`config.toml` 中任何以 `$` 开头的字符串字段都会在加载时展开对应环境变量；`api_key` 例外，会保留 `$NAME` 引用并在调用 Provider 时解析。`$NAME` 和 `file:<绝对路径>` 互相独立，不会自动回退。
+`config.toml` 中以 `$` 开头的字符串字段通常会在加载时展开环境变量。`api_key` 和[自定义请求头](config.md#请求头与请求体)保留 `$NAME`，在准备或发送请求时解析。自定义请求体中的 `$` 按字面值保留。API 密钥引用可以使用 `$NAME` 或 `file:<绝对路径>`。
 
 模型凭据和 `KUKU_PROVIDER_TRACE` 由**服务端**进程读取（环境变量密钥不能为空）；新客户端连入已运行的服务时沿用服务端自身的环境。[配置 kuku](../start/configuration.md)
 

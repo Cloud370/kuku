@@ -4,7 +4,7 @@ use crate::jobs::{Job, Selection};
 use crate::menu::{Choice, ChoiceKind, PickerKind};
 use crate::model_default::{PreparedDefaultSave, ResolvedModel};
 
-use super::{App, Modal, PendingStage};
+use super::{App, Modal, Pane, PendingStage};
 
 pub(super) struct PendingDefaultSave {
     ticket: u64,
@@ -15,6 +15,40 @@ pub(super) struct PendingDefaultSave {
 #[cfg(test)]
 #[path = "model_default_tests.rs"]
 mod tests;
+
+impl Pane {
+    pub(crate) fn next_model_label(&self, width: usize) -> Option<String> {
+        if self.next_thinking().is_some() {
+            return None;
+        }
+        let snapshot = self.snapshot.as_ref()?;
+        let model = snapshot.pending_selection.as_ref()?;
+        if snapshot.selection.as_ref().is_some_and(|active| {
+            active.connection == model.connection
+                && active.model == model.model
+                && active.protocol == model.protocol
+                && active.request_url == model.request_url
+                && active.settings.service_tier != model.settings.service_tier
+        }) {
+            let tier = crate::text::service_tier_label(model.settings.service_tier.as_deref());
+            return Some(crate::text::shorten(
+                &format!("Next service tier · {tier}"),
+                width,
+            ));
+        }
+        let route = if model.capabilities.subscription_channel.is_some() {
+            crate::text::single_line(&model.model)
+        } else {
+            crate::text::single_line(&format!("{}/{}", model.connection, model.model))
+        };
+        let effort = crate::text::effort_label(model.settings.reasoning_effort.as_deref());
+        let prefix = "Next model request · ";
+        Some(format!(
+            "{prefix}{}",
+            crate::text::with_suffix(&route, &effort, width.saturating_sub(prefix.len()))
+        ))
+    }
+}
 
 impl App {
     pub(crate) fn resolved_model_route(&self) -> Result<ResolvedModel, &'static str> {
@@ -60,7 +94,7 @@ impl App {
     pub(crate) fn model_default_choice(&self) -> Choice {
         let detail = self
             .resolved_model_route()
-            .map(|route| format!("{} · {}", route.model, route.connection))
+            .map(|route| route.model)
             .unwrap_or_else(str::to_owned);
         Choice::new(
             "Set current model as default",
@@ -233,7 +267,8 @@ impl App {
 
     pub(super) fn model_change_in_flight(&self) -> bool {
         let target = self.target(&self.active);
-        self.pane().waiting_for_configuration()
+        self.default_switch_pending()
+            || self.pane().waiting_for_configuration()
             || self.pending.values().any(|item| {
                 item.command.target == target
                     && matches!(item.command.action, Action::Configure { .. })

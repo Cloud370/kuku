@@ -55,6 +55,9 @@ pub enum PromptCacheScope {
 /// Optional connection behavior and capability declarations.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderOptions {
+    /// A renewable subscription account used by this connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<super::SubscriptionAccount>,
     /// Exact model request URL, taking precedence over the base URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_url: Option<String>,
@@ -91,6 +94,9 @@ pub struct ProviderOptions {
     /// Scope for Responses prompt caching; ignored by other protocols.
     #[serde(default)]
     pub prompt_cache_scope: PromptCacheScope,
+    /// Additional request headers and JSON fields for this connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<super::RequestFields>,
 }
 
 /// How the HTTP transport reaches a provider connection.

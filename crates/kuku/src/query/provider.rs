@@ -433,6 +433,18 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     dispatch_provider_step(pending, resolved_config, existing_events, None).await
 }
 
+pub(super) fn request_correlation(
+    pending: &PendingRun,
+    resolved: &crate::provider::types::ResolvedProvider,
+) -> crate::provider::types::ProviderCorrelation {
+    crate::provider::types::ProviderCorrelation {
+        session_id: pending.session_id.clone(),
+        agent_address: pending.conversation.as_str().into(),
+        connection_name: resolved.connection_name.clone(),
+        workspace: pending.workspace.clone(),
+    }
+}
+
 pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) -> Result<()> {
     ensure_resolved(&mut pending)?;
     let resolved = pending
@@ -452,12 +464,7 @@ pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) 
         permit = capacity.acquire_owned() => permit.map_err(|_| crate::Error::InvalidArgument("session model capacity is closed".into()))?,
     };
     let mut context = super::frozen::prepare(&mut pending, true)?;
-    let correlation = crate::provider::types::ProviderCorrelation {
-        session_id: pending.session_id.clone(),
-        agent_address: pending.conversation.as_str().into(),
-        connection_name: resolved.connection_name.clone(),
-        workspace: pending.workspace.clone(),
-    };
+    let correlation = request_correlation(&pending, &resolved);
     let before = dispatch::prepare_request(&pending, &resolved, &correlation, &context.request)?;
     pending.request_base = Some(context.request);
     if matches!(

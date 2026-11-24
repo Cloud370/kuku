@@ -14,7 +14,7 @@
 | `OPENROUTER_API_KEY` | Default API key variable for `provider.openrouter` |
 | `KUKU_PROVIDER_TRACE` | `1` enables full provider traces; `0` disables traces |
 
-Any string field in `config.toml` starting with `$` resolves that environment variable on load, except `api_key`, which keeps the `$NAME` reference and resolves it when calling the provider. `$NAME` and `file:<absolute-path>` are mutually exclusive and never fall back to each other.
+String fields in `config.toml` starting with `$` normally resolve that environment variable on load. `api_key` and [custom request headers](config.md#request-headers-and-body) keep the `$NAME` reference and resolve it when preparing or sending the request. Custom request body strings keep a literal `$`. API-key references use either `$NAME` or `file:<absolute-path>`.
 
 Provider keys and `KUKU_PROVIDER_TRACE` are read from the **server** process environment (env keys must be non-empty). New clients connecting to an already-running server inherit the server's environment. [Configuration](../start/configuration.md)
 

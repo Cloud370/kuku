@@ -1,12 +1,16 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
+use crate::app::speed::SpeedAction;
 use crate::app::{App, Modal};
 use crate::keys::Shortcut;
 use crate::menu::{ChoiceKind, PickerKind};
 
 impl App {
     pub(super) fn picker_key(&mut self, key: KeyEvent) {
-        if self.thinking_picker_key(key) || self.rewind_picker_key(key) {
+        if self.model_picker_key(key)
+            || self.thinking_picker_key(key)
+            || self.rewind_picker_key(key)
+        {
             return;
         }
         let page = self.modal_page as isize;
@@ -40,6 +44,15 @@ impl App {
                     (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
                         self.complete_command(command);
                     }
+                    (
+                        PickerKind::Speed,
+                        Some(ChoiceKind::Speed(
+                            SpeedAction::Apply(Some(tier)) | SpeedAction::Custom(tier),
+                        )),
+                    ) if picker.query.text() != tier => {
+                        picker.query.set_text(tier);
+                        self.picker_query_changed();
+                    }
                     (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
                     | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {
                         let kind = picker.kind.clone();
@@ -64,6 +77,7 @@ impl App {
             key if Shortcut::PAGE_UP.matches(key) => picker.move_by(-page),
             key if Shortcut::PAGE_DOWN.matches(key) => picker.move_by(page),
             _ if picker.kind.searchable()
+                && (picker.kind != PickerKind::Models || picker.search_focused)
                 && super::edit(&mut picker.query, key, self.modal_editor_width, false) =>
             {
                 self.picker_query_changed();
@@ -72,11 +86,42 @@ impl App {
         }
     }
 
+    fn model_picker_key(&mut self, key: KeyEvent) -> bool {
+        let Some(Modal::Picker(picker)) = &mut self.modal else {
+            return false;
+        };
+        if picker.kind != PickerKind::Models || picker.search_focused || !key.modifiers.is_empty() {
+            return false;
+        }
+        if key.code == KeyCode::Char('/') && key.kind == KeyEventKind::Press {
+            picker.search_focused = true;
+            return true;
+        }
+        let KeyCode::Char(action @ ('d' | 'e')) = key.code else {
+            return false;
+        };
+        if key.kind != KeyEventKind::Press {
+            return true;
+        }
+        let Some(ChoiceKind::ModelRoute { tier, .. }) = picker.selected_choice() else {
+            return true;
+        };
+        self.close_picker();
+        if action == 'd' {
+            self.save_and_use_model(tier);
+        } else {
+            self.open_model_editor(crate::setup::SetupIntent::Edit(tier.name));
+        }
+        true
+    }
+
     pub(super) fn picker_query_changed(&mut self) {
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return;
         };
-        if picker.kind == PickerKind::Commands && !picker.query.text().starts_with('/') {
+        if picker.kind == PickerKind::Speed {
+            self.update_speed_choices();
+        } else if picker.kind == PickerKind::Commands && !picker.query.text().starts_with('/') {
             self.close_picker();
             self.focus_composer();
         } else {

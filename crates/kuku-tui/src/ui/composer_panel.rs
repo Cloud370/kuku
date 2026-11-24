@@ -29,6 +29,8 @@ pub(super) fn render(
     let modal = app.modal.as_mut()?;
     let height = match modal {
         Modal::ExitConfirmation => 1,
+        Modal::SendRouteConfirmation(review) if review.shows_connections() => 4,
+        Modal::SendRouteConfirmation(_) => 3,
         Modal::Picker(picker) => match &picker.thinking {
             Some(thinking) if thinking.confirm.is_some() => 3,
             thinking => {
@@ -48,11 +50,46 @@ pub(super) fn render(
     };
     let height = height.min(editor.y.saturating_sub(frame.area().y));
     let area = Rect::new(editor.x, editor.y - height, editor.width, height);
-    let inner = render_panel(frame, area, text_x);
+    let max_width = match modal {
+        Modal::Picker(picker) if picker.kind == PickerKind::Models => area.width,
+        _ => MAX_WIDTH,
+    };
+    let inner = render_panel(frame, area, text_x, max_width);
     match modal {
         Modal::ExitConfirmation => {
             let line = Line::styled("Exit kuku? Y exit · Esc edit", emphasis(ACCENT));
             frame.render_widget(Paragraph::new(line), inner);
+        }
+        Modal::SendRouteConfirmation(review) => {
+            let width = usize::from(inner.width);
+            let show_connections = review.shows_connections();
+            let label_width = if show_connections {
+                width.saturating_sub(2)
+            } else {
+                width.saturating_sub(3) / 2
+            };
+            let [previous, next] = review.change_labels().map(|label| {
+                crate::text::shorten_middle(&crate::text::single_line(&label), label_width)
+            });
+            let mut lines = vec![Line::styled(
+                shorten(review.title(), width),
+                emphasis(crate::theme::WARNING),
+            )];
+            if show_connections {
+                review.labels_visible =
+                    inner.height >= 4 && review.has_distinct_labels() && previous != next;
+                if inner.height >= 4 {
+                    lines.push(Line::raw(format!("← {previous}")));
+                    lines.push(Line::raw(format!("→ {next}")));
+                }
+            } else if inner.height >= 3 {
+                lines.push(Line::raw(format!("{previous} → {next}")));
+            }
+            lines.push(Line::styled(
+                shorten(review.send_hint(), width),
+                Style::new().fg(MUTED),
+            ));
+            frame.render_widget(Paragraph::new(lines), inner);
         }
         Modal::Picker(picker) => {
             let confirmation = picker
@@ -125,7 +162,7 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
     inner
 }
 
-fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
+fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16, max_width: u16) -> Rect {
     let indent = text_x.saturating_sub(area.x).min(area.width);
     let mut padding = compact_padding(2, area.height >= 5);
     let mut block = Block::new().style(surface());
@@ -139,7 +176,7 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
     let block = block.padding(padding);
     frame.render_widget(Clear, area);
     let mut inner = block.inner(area);
-    inner.width = inner.width.min(MAX_WIDTH);
+    inner.width = inner.width.min(max_width);
     frame.render_widget(block, area);
     inner
 }
@@ -221,10 +258,20 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
     let count = usize::from(list.height).max(1);
     let range = picker.composer_rows(count, picker.visible_choices().len());
     let choices = picker.visible_choices();
+    let model_column = if picker.kind == PickerKind::Models {
+        choices
+            .iter()
+            .filter(|choice| matches!(choice.kind, ChoiceKind::ModelRoute { .. }))
+            .map(|choice| crate::text::single_line(&choice.label).width())
+            .max()
+            .map(|label_width| label_width.min(width / 3).max(1))
+    } else {
+        None
+    };
     let mut lines = Vec::new();
     for (index, choice) in choices.iter().enumerate().take(range.end).skip(range.start) {
         let active = index == picker.selected;
-        lines.push(choice_line(picker, choice, width, active));
+        lines.push(choice_line(picker, choice, width, active, model_column));
         if active && list.x > 0 {
             let cursor = Rect::new(list.x - 1, list.y + (index - range.start) as u16, 1, 1);
             frame.render_widget(
@@ -253,8 +300,16 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
         .is_some_and(|thinking| thinking.save.is_some())
     {
         SAVE_HELP
-    } else if picker.kind == PickerKind::Thinking {
+    } else if matches!(picker.kind, PickerKind::Thinking | PickerKind::CustomSpeed) {
         THINKING_HELP
+    } else if picker.kind == PickerKind::Speed {
+        "↑↓ Move · Tab Complete · Enter Apply · Type to add"
+    } else if picker.kind == PickerKind::Models {
+        if picker.search_focused {
+            "Enter Switch · Esc Back to list"
+        } else {
+            "Enter Switch · d Default + switch · e Edit · / Search"
+        }
     } else {
         MODEL_HELP
     };
@@ -295,13 +350,32 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, title: &str, picker: &mut Pi
     );
     frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
     if searchable && !field.is_empty() {
-        render_editor(frame, field, &mut picker.query, true, "Search models…");
+        let focused = picker.kind != PickerKind::Models || picker.search_focused;
+        let placeholder = if picker.kind == PickerKind::Speed {
+            "Tier name…"
+        } else {
+            "Search models…"
+        };
+        render_editor(frame, field, &mut picker.query, focused, placeholder);
     }
     usize::from(field.width).max(1)
 }
 
-fn choice_line(picker: &Picker, choice: &Choice, width: usize, active: bool) -> Line<'static> {
+fn choice_line(
+    picker: &Picker,
+    choice: &Choice,
+    width: usize,
+    active: bool,
+    model_column: Option<usize>,
+) -> Line<'static> {
+    let model_column =
+        model_column.filter(|_| matches!(choice.kind, ChoiceKind::ModelRoute { .. }));
     let mut label = crate::text::single_line(&choice.label);
+    if let Some(column) = model_column {
+        if label.width() > column {
+            label = crate::text::shorten_middle(&label, column);
+        }
+    }
     let mut detail = choice.detail.as_str();
     let inherited;
     if let (Some(thinking), ChoiceKind::Thinking(effort)) = (&picker.thinking, &choice.kind) {
@@ -324,15 +398,13 @@ fn choice_line(picker: &Picker, choice: &Choice, width: usize, active: bool) -> 
     if detail.is_empty() || label.width() + 3 >= width {
         return picker_line(&label, width, active, style);
     }
-    let aligned = match picker.kind {
-        PickerKind::Commands => Some(15),
-        PickerKind::Models | PickerKind::ModelActions => Some(30.min(width / 2)),
-        _ => None,
+    let separator = if let Some(column) = model_column {
+        format!("{} · ", " ".repeat(column.saturating_sub(label.width())))
+    } else if picker.kind == PickerKind::Commands {
+        " ".repeat(15usize.saturating_sub(label.width()).max(2))
+    } else {
+        " · ".to_owned()
     };
-    let separator = aligned.map_or_else(
-        || " · ".to_owned(),
-        |column| " ".repeat(column.saturating_sub(label.width()).max(2)),
-    );
     let info = format!("{separator}{}", crate::text::single_line(detail));
     let info = shorten(&info, width - label.width());
     let padding = " ".repeat(width - label.width() - info.width());

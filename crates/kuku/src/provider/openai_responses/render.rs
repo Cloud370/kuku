@@ -5,7 +5,7 @@ use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::execution::ModelImage;
 
 use super::super::replay::native_replay;
-use super::ProviderRequest;
+use super::super::types::ProviderRequest;
 
 fn convert_to_input_items(
     message: &CanonicalMessage,

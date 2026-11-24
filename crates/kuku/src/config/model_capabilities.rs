@@ -65,6 +65,17 @@ pub struct ProtocolCapabilityDeclaration {
     pub system_prompt_update: Option<String>,
 }
 
+/// Evidence recorded when a custom service tier was added.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomServiceTier {
+    /// The tier was supplied by the user without confirmation from the endpoint.
+    #[default]
+    Unverified,
+    /// An explicit probe reported the requested service tier.
+    Confirmed,
+}
+
 /// Separate manual and provider declarations for one connection/model pair.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -73,6 +84,9 @@ pub struct ModelCapabilityEntry {
     pub discovered: Option<ModelCapabilityDeclaration>,
     /// Explicit values supplied by the user and retained on refresh.
     pub manual: Option<ModelCapabilityDeclaration>,
+    /// Additional user-defined tiers, independent of the discovered list and manual overrides.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_service_tiers: BTreeMap<String, CustomServiceTier>,
     /// Thinking values tested through the configured generation endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_test: Option<ModelThinkingTest>,

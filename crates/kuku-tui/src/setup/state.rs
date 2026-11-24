@@ -1,6 +1,8 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kuku::adapter::ProbeBatch;
-use kuku::config::{ApiKey, ModelPricing, ProviderFormat, ProviderProxy, RequestedOutput};
+use kuku::config::{
+    ApiKey, ModelPricing, ProviderFormat, ProviderProxy, RequestedOutput, SubscriptionAccount,
+};
 
 use crate::editor::Editor;
 
@@ -9,14 +11,14 @@ use super::models::Models;
 use super::recovery::RepairDraft;
 use super::{ConnectionChoice, CredentialSource, Finish, SetupMode};
 
-const MAX_MODEL_BYTES: usize = 256;
-const MAX_KEY_BYTES: usize = 4096;
+pub(super) use super::editor::{edit_field, valid_env_name, valid_model_id, valid_stored_key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SetupStep {
     Consent,
     ManualConfig,
     Connection,
+    SubscriptionSignIn,
     Protocol,
     Address,
     AddressKind,
@@ -33,6 +35,7 @@ pub(super) enum SetupStep {
     DefaultModel,
     Model,
     Thinking,
+    Service,
     Output,
     Pricing,
     Rates,
@@ -69,8 +72,10 @@ pub(super) enum ReviewAction {
     Settings,
     ApiType,
     Thinking,
+    Service,
     Output,
     Advanced,
+    TestModel,
     TestTools,
     RepairCredential,
     TrialResults,
@@ -91,8 +96,10 @@ impl ReviewAction {
             Self::Settings => "Settings",
             Self::ApiType => "API type",
             Self::Thinking => "Thinking",
+            Self::Service => "Service tier",
             Self::Output => "Output",
             Self::Advanced => "Model capabilities",
+            Self::TestModel => "Test model",
             Self::TestTools => "Test tools",
             Self::RepairCredential => "Paste API key",
             Self::TrialResults => "Model tests",
@@ -135,6 +142,7 @@ pub(super) struct SetupState {
     pub(super) reasoning: Option<String>,
     pub(super) output: RequestedOutput,
     pub(super) reasoning_changed: bool,
+    pub(super) selected_service: Option<(String, Option<String>)>,
     pub(super) output_changed: bool,
     pub(super) step: SetupStep,
     pub(super) model: Editor,
@@ -142,12 +150,16 @@ pub(super) struct SetupState {
     pub(super) environment_detected: bool,
     pub(super) stored_key: Editor,
     pub(super) credential_source: CredentialSource,
+    pub(super) subscription: Option<SubscriptionAccount>,
+    pub(super) enrollment: Option<super::subscription::enrollment::Enrollment>,
+    pub(super) subscription_saved: bool,
     pub(super) review_selection: usize,
     pub(super) finish: Option<Finish>,
     pub(super) problem: Option<String>,
     pub(super) recovery_model: Option<String>,
     pub(super) repair: Option<RepairDraft>,
     saved_key_available: bool,
+    subscription_available: bool,
     can_store_key: bool,
 }
 
@@ -194,18 +206,23 @@ impl SetupState {
             reasoning: None,
             output: RequestedOutput::Text,
             reasoning_changed: false,
+            selected_service: None,
             output_changed: false,
             model: Editor::default(),
             environment: Editor::default(),
             environment_detected: false,
             stored_key: Editor::default(),
             credential_source: CredentialSource::Environment,
+            subscription: None,
+            enrollment: None,
+            subscription_saved: false,
             review_selection: 0,
             finish: None,
             problem: None,
             recovery_model: None,
             repair: None,
             saved_key_available: false,
+            subscription_available: false,
             can_store_key: settings.can_store_key(),
         };
         state.load_selection(settings);
@@ -250,6 +267,9 @@ impl SetupState {
     }
 
     pub(super) fn credential_ready(&self) -> bool {
+        if self.subscription.is_some() {
+            return self.subscription_available;
+        }
         match self.credential_source {
             CredentialSource::Environment => self.environment_set(),
             CredentialSource::StoredKey => self.stored_key_is_available(),
@@ -277,6 +297,10 @@ impl SetupState {
 
     pub(super) fn handle(&mut self, event: Event, settings: &Settings, mode: SetupMode) {
         if self.finish.is_some() {
+            return;
+        }
+        if self.step == SetupStep::SubscriptionSignIn {
+            self.subscription_input(event, settings);
             return;
         }
         let previous = self.step;
@@ -346,6 +370,12 @@ impl SetupState {
                 KeyCode::Enter => {
                     if self.models.cursor == 0 {
                         self.authorized = true;
+                        if matches!(self.intent, SetupIntent::Edit(_))
+                            && self.subscription.is_some()
+                        {
+                            self.start_discovery(settings);
+                            return;
+                        }
                         self.step = if matches!(self.intent, SetupIntent::Edit(_)) {
                             SetupStep::Address
                         } else {
@@ -369,6 +399,7 @@ impl SetupState {
                 KeyCode::Tab | KeyCode::Enter => self.advance(settings),
                 _ => {}
             },
+            SetupStep::SubscriptionSignIn => unreachable!("handled as private sign-in input"),
             SetupStep::Protocol => self.choose_protocol(key, settings),
             SetupStep::Address => self.edit_address(key, settings),
             SetupStep::AddressKind => self.choose_address_kind(key, settings),
@@ -389,6 +420,7 @@ impl SetupState {
             SetupStep::DefaultModel => self.choose_default(key, settings),
             SetupStep::Model => self.edit_model(key, settings),
             SetupStep::Thinking => self.choose_thinking(key, settings),
+            SetupStep::Service => self.choose_service(key, settings),
             SetupStep::Output => self.choose_output(key),
             SetupStep::Pricing => self.choose_pricing(key),
             SetupStep::Rates => self.edit_rates(key),
@@ -494,8 +526,11 @@ impl SetupState {
         match self.step {
             SetupStep::Connection => {
                 self.models.cursor = 0;
-                if self.intent == SetupIntent::Add
-                    && matches!(self.choice(), ConnectionChoice::Existing(_))
+                if let ConnectionChoice::Subscription(channel) = self.choice() {
+                    self.open_subscription(*channel);
+                } else if self.subscription.is_some()
+                    || (self.intent == SetupIntent::Add
+                        && matches!(self.choice(), ConnectionChoice::Existing(_)))
                 {
                     self.start_discovery(settings);
                 } else {
@@ -546,6 +581,7 @@ impl SetupState {
                 }
             }
             SetupStep::Consent
+            | SetupStep::SubscriptionSignIn
             | SetupStep::ManualConfig
             | SetupStep::Protocol
             | SetupStep::Address
@@ -562,6 +598,7 @@ impl SetupState {
             | SetupStep::RecoveryDefault
             | SetupStep::DefaultModel
             | SetupStep::Thinking
+            | SetupStep::Service
             | SetupStep::Output
             | SetupStep::Pricing
             | SetupStep::Rates
@@ -594,17 +631,30 @@ impl SetupState {
         self.step = match self.step {
             SetupStep::Consent => return,
             SetupStep::ManualConfig | SetupStep::Connection => SetupStep::Consent,
+            SetupStep::SubscriptionSignIn
+                if matches!(self.proxy, ProviderProxy::Explicit { .. }) =>
+            {
+                SetupStep::ProxyAddress
+            }
+            SetupStep::SubscriptionSignIn => SetupStep::Network,
             SetupStep::Protocol if self.protocol_picker_from_review => SetupStep::ReviewSettings,
             SetupStep::Protocol => SetupStep::CheckingApi,
             SetupStep::Address if matches!(self.intent, SetupIntent::Edit(_)) => SetupStep::Consent,
             SetupStep::Address => SetupStep::Connection,
+            SetupStep::Network if self.enrollment.take().is_some() => SetupStep::Connection,
             SetupStep::AddressKind | SetupStep::Network => SetupStep::Address,
             SetupStep::ProxyAddress => SetupStep::Network,
             SetupStep::CredentialSource => SetupStep::Network,
             SetupStep::Credential => SetupStep::CredentialSource,
             SetupStep::ModelSource => {
                 self.discovery.stop();
-                if self.intent == SetupIntent::Add
+                if self.subscription.is_some() {
+                    if matches!(self.intent, SetupIntent::Edit(_)) {
+                        SetupStep::Consent
+                    } else {
+                        SetupStep::Connection
+                    }
+                } else if self.intent == SetupIntent::Add
                     && matches!(self.choice(), ConnectionChoice::Existing(_))
                 {
                     SetupStep::Connection
@@ -639,9 +689,11 @@ impl SetupState {
                 self.model_review_from
             }
             SetupStep::DefaultModel => SetupStep::Discover,
-            SetupStep::Thinking | SetupStep::Output | SetupStep::Advanced | SetupStep::Pricing => {
-                SetupStep::ReviewSettings
-            }
+            SetupStep::Thinking
+            | SetupStep::Service
+            | SetupStep::Output
+            | SetupStep::Advanced
+            | SetupStep::Pricing => SetupStep::ReviewSettings,
             SetupStep::Rates => SetupStep::Pricing,
             SetupStep::Override => SetupStep::Advanced,
         };
@@ -705,7 +757,7 @@ impl SetupState {
             ConnectionChoice::Existing(name) => {
                 settings.resolved.providers[name].options.proxy.clone()
             }
-            ConnectionChoice::Preset(_) | ConnectionChoice::Custom => ProviderProxy::Environment,
+            _ => ProviderProxy::Environment,
         };
         self.model_pricing = match &choice {
             ConnectionChoice::Existing(name) => settings.resolved.providers[name]
@@ -736,8 +788,11 @@ impl SetupState {
         });
         self.output = initial_model.map_or(RequestedOutput::Text, |tier| tier.output);
         self.reasoning_changed = false;
+        self.selected_service = None;
         self.output_changed = false;
         self.environment.set_text(settings.environment_for(&choice));
+        self.subscription = settings.subscription_for(&choice).cloned();
+        self.subscription_available = settings.subscription_available(&choice);
         self.credential_source = if self.intent == SetupIntent::Add
             && matches!(settings.key_for(&choice), Some(ApiKey::Env(_)))
         {
@@ -821,14 +876,18 @@ impl SetupState {
 
     pub(super) fn review_choices(&self, mode: SetupMode) -> Vec<ReviewAction> {
         if self.step == SetupStep::ReviewSettings {
-            let mut choices = vec![
-                ReviewAction::Thinking,
-                ReviewAction::Output,
-                ReviewAction::Pricing,
-                ReviewAction::ApiType,
-                ReviewAction::Advanced,
-            ];
+            let mut choices = vec![ReviewAction::Thinking, ReviewAction::Output];
+            if self.subscription.is_none() {
+                choices.push(ReviewAction::Pricing);
+                choices.push(ReviewAction::ApiType);
+            } else {
+                choices.push(ReviewAction::Service);
+            }
+            choices.push(ReviewAction::Advanced);
             if self.authorized && self.credential_ready() && !self.trials.pending() {
+                if self.subscription.is_some() {
+                    choices.push(ReviewAction::TestModel);
+                }
                 choices.push(ReviewAction::TestTools);
             }
             if mode == SetupMode::FirstRun && self.credential_ready() && !self.trials.pending() {
@@ -841,7 +900,7 @@ impl SetupState {
             choices.push(ReviewAction::ViewRequests);
         } else {
             if mode == SetupMode::FirstRun && !self.credential_ready() {
-                choices.push(if self.can_store_key {
+                choices.push(if self.can_store_key && self.subscription.is_none() {
                     ReviewAction::RepairCredential
                 } else {
                     ReviewAction::Back
@@ -876,6 +935,7 @@ impl SetupState {
             return;
         };
         match action {
+            ReviewAction::TestModel => self.test_model(settings),
             ReviewAction::TestTools => self.test_tools(settings),
             ReviewAction::SaveAndContinue | ReviewAction::SaveAndExit | ReviewAction::Save => {
                 self.save(action);
@@ -891,10 +951,8 @@ impl SetupState {
             ReviewAction::ApiType => {
                 self.open_protocol_picker(true);
             }
-            ReviewAction::Thinking => {
-                self.models.cursor = 0;
-                self.step = SetupStep::Thinking;
-            }
+            ReviewAction::Thinking => self.open_thinking(settings),
+            ReviewAction::Service => self.open_service(settings),
             ReviewAction::Output => {
                 self.models.cursor = usize::from(self.output == RequestedOutput::Image);
                 self.step = SetupStep::Output;
@@ -932,69 +990,5 @@ impl SetupState {
             }
             ReviewAction::Back => self.previous(),
         }
-    }
-}
-
-pub(super) fn valid_model_id(input: &str) -> Result<String, String> {
-    let model = input.trim();
-    if model.is_empty() {
-        return Err("Enter a model ID.".into());
-    }
-    if model.len() > MAX_MODEL_BYTES
-        || model
-            .chars()
-            .any(|character| character.is_whitespace() || character.is_control())
-    {
-        return Err("Model IDs must be a single line of at most 256 bytes.".into());
-    }
-    if model.starts_with('$') {
-        return Err("Enter a literal model ID, not an environment-variable reference.".into());
-    }
-    Ok(model.to_owned())
-}
-
-pub(super) fn valid_env_name(input: &str) -> Result<String, String> {
-    let name = input.trim();
-    let mut characters = name.chars();
-    if !characters
-        .next()
-        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
-        || !characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
-    {
-        return Err("Use a portable environment-variable name, such as ANTHROPIC_API_KEY.".into());
-    }
-    Ok(name.to_owned())
-}
-
-pub(super) fn valid_stored_key(input: &str) -> Result<String, String> {
-    if input.chars().any(char::is_control) {
-        return Err("Keys must be a single line of at most 4096 bytes.".into());
-    }
-    let key = input.trim();
-    if key.is_empty() {
-        return Err("Enter a key or leave blank to keep the saved key.".into());
-    }
-    if key.len() > MAX_KEY_BYTES {
-        return Err("Keys must be a single line of at most 4096 bytes.".into());
-    }
-    Ok(key.to_owned())
-}
-
-pub(super) fn edit_field(editor: &mut Editor, key: KeyEvent) {
-    match key.code {
-        KeyCode::Left => editor.left(),
-        KeyCode::Right => editor.right(),
-        KeyCode::Home => editor.home(),
-        KeyCode::End => editor.end(),
-        KeyCode::Backspace => editor.backspace(),
-        KeyCode::Delete => editor.delete(),
-        KeyCode::Char(character)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-        {
-            editor.insert(&character.to_string());
-        }
-        _ => {}
     }
 }

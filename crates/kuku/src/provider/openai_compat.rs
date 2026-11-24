@@ -183,15 +183,6 @@ fn convert_assistant_message(message: &CanonicalMessage, has_tools: bool) -> Val
     msg
 }
 
-pub(crate) async fn stream(
-    config: &ResolvedProvider,
-    request: &ProviderRequest<'_>,
-    trace_metadata: Option<super::trace::ProviderTraceMetadata>,
-) -> Result<super::ProviderChunkStream, ProviderFailure> {
-    let prepared = super::prepare_provider_request(config, request, None)?;
-    super::stream_prepared_provider(config, &prepared, trace_metadata).await
-}
-
 pub(crate) async fn stream_prepared(
     config: &ResolvedProvider,
     prepared: &PreparedProviderRequest,

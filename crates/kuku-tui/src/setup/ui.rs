@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
-use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -11,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::editor::Editor;
+use crate::terminal::{AuthorizationLink, FrameBackend};
 use crate::text::{shorten_middle, single_line};
 use crate::theme::{compact_padding, emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
 
@@ -28,15 +28,21 @@ const MIN_HEIGHT: u16 = 20;
 const MAX_CONTENT_WIDTH: u16 = 88;
 
 pub(super) async fn run(
-    settings: &Settings,
+    settings: &mut Settings,
     state: &mut SetupState,
     mode: SetupMode,
 ) -> io::Result<Finish> {
     let _restore = TerminalRestore::new()?;
-    let backend = CrosstermBackend::new(io::stdout());
+    let backend = FrameBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     loop {
+        state.poll_subscription(settings);
         state.poll_probes(settings, mode);
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        terminal
+            .backend_mut()
+            .set_authorization_link(authorization_link(state, area));
         terminal.draw(|frame| render(frame, settings, state, mode))?;
         if let Some(finish) = state.finish {
             if finish == Finish::Cancel {
@@ -65,6 +71,13 @@ pub(super) async fn run(
     }
 }
 
+pub(super) fn authorization_link(state: &SetupState, outer: Rect) -> Option<AuthorizationLink> {
+    if state.step != SetupStep::SubscriptionSignIn || !usable(outer.width, outer.height) {
+        return None;
+    }
+    state.enrollment.as_ref()?.link(outer)
+}
+
 pub(super) fn usable(width: u16, height: u16) -> bool {
     width >= MIN_WIDTH && height >= MIN_HEIGHT
 }
@@ -84,7 +97,12 @@ fn is_cancel(event: &Event) -> bool {
 }
 
 pub(super) fn handle_small_terminal_event(state: &mut SetupState, event: &Event) -> bool {
-    if is_cancel(event) {
+    if is_cancel(event)
+        && !state
+            .enrollment
+            .as_ref()
+            .is_some_and(|flow| flow.verifying())
+    {
         state.finish = Some(Finish::Cancel);
         true
     } else {
@@ -99,6 +117,14 @@ pub(super) fn render(
     mode: SetupMode,
 ) {
     let area = frame.area();
+    if usable(area.width, area.height)
+        && state
+            .enrollment
+            .as_mut()
+            .is_some_and(|flow| flow.render_authorization(frame, state.problem.as_deref()))
+    {
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" kuku · model setup ")
@@ -124,6 +150,15 @@ pub(super) fn render(
     render_step(frame, chunks[0], settings, state, mode);
     let (escape, keys) = match state.step {
         SetupStep::Consent => ("Esc exit", " · ↑/↓ move · Enter choose"),
+        SetupStep::SubscriptionSignIn
+            if state
+                .enrollment
+                .as_ref()
+                .is_some_and(|flow| flow.verifying()) =>
+        {
+            ("", "")
+        }
+        SetupStep::SubscriptionSignIn => ("Esc previous step", " · Ctrl+C exit"),
         SetupStep::TrialResults => ("Esc previous step", " · ↑/↓ scroll · Enter returns"),
         _ => (
             "Esc previous step",
@@ -161,7 +196,6 @@ fn render_step(
     match state.step {
         SetupStep::Consent => {
             line(frame, area, &mut row, "Set up a model", ACCENT);
-            line(frame, area, &mut row, "Tests may cost money.", WARNING);
             for (index, name) in ["Find and test models", "Edit config file"]
                 .iter()
                 .enumerate()
@@ -215,6 +249,11 @@ fn render_step(
                 );
             }
         }
+        SetupStep::SubscriptionSignIn => {
+            if let Some(flow) = &mut state.enrollment {
+                flow.render(frame, area, &mut row);
+            }
+        }
         SetupStep::Model => {
             line(frame, area, &mut row, "Model ID", ACCENT);
             line(
@@ -236,6 +275,7 @@ fn render_step(
                 &format!("Connection: {}", state.connection_label(settings)),
                 MUTED,
             );
+            trial_usage(frame, area, &mut row, state);
         }
         SetupStep::CredentialSource => {
             line(frame, area, &mut row, "API key source", ACCENT);
@@ -342,6 +382,7 @@ fn render_step(
         | SetupStep::RecoveryDefault
         | SetupStep::DefaultModel
         | SetupStep::Thinking
+        | SetupStep::Service
         | SetupStep::Output
         | SetupStep::Pricing
         | SetupStep::Rates
@@ -350,6 +391,12 @@ fn render_step(
     }
     if let Some(problem) = &state.problem {
         line(frame, area, &mut row, problem, WARNING);
+    }
+}
+
+fn trial_usage(frame: &mut Frame<'_>, area: Rect, row: &mut u16, state: &SetupState) {
+    if state.authorized && state.subscription.is_none() {
+        line(frame, area, row, "Model tests may use API balance.", MUTED);
     }
 }
 
@@ -405,7 +452,16 @@ fn render_review(
     if models.len() > 1 && state.intent == SetupIntent::Default {
         summary_row(frame, area, row, "Default", &model, None);
     }
-    if let Ok(url) = state.request_url() {
+    if state.subscription.is_some() {
+        summary_row(
+            frame,
+            area,
+            row,
+            "Account",
+            &state.connection_label(settings),
+            None,
+        );
+    } else if let Ok(url) = state.request_url() {
         summary_row(
             frame,
             area,
@@ -508,22 +564,23 @@ fn render_review_settings(
 ) {
     render_line(frame, area, row, Line::styled("Settings", emphasis(ACCENT)));
     *row += 1;
-    let unchanged_model = state.route_name(settings).and_then(|route| settings.resolved.tier(route))
-        .zip(state.primary_model())
-        .is_some_and(|(route, model)| route.model == model &&
-            matches!(state.choice(), super::ConnectionChoice::Existing(name) if route.provider == *name));
-    let effort = (unchanged_model || state.reasoning_changed)
-        .then_some(state.reasoning.as_deref())
-        .flatten()
+    let effort = state.displayed_reasoning(settings);
+    let effort = effort
+        .as_deref()
         .filter(|effort| *effort != "provider-default");
     let output = match state.output {
         kuku::config::RequestedOutput::Text => "Text",
         kuku::config::RequestedOutput::Image => "Image requested",
     };
+    let service = crate::text::service_tier_label(state.displayed_service(settings));
     review_menu(frame, area, row, state, mode, |action| match action {
         ReviewAction::Thinking => Some(effort.unwrap_or("Provider default")),
+        ReviewAction::Service => Some(service.as_str()),
         ReviewAction::Output => Some(output),
         ReviewAction::Pricing => Some(state.pricing_label()),
+        ReviewAction::TestModel | ReviewAction::TestTools if state.subscription.is_some() => {
+            Some("Uses your ChatGPT plan")
+        }
         _ => None,
     });
 }
@@ -629,7 +686,7 @@ fn render_line(frame: &mut Frame<'_>, area: Rect, row: &mut u16, text: Line<'sta
     }
 }
 
-fn field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &mut Editor) {
+pub(super) fn field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &mut Editor) {
     let width = usize::from(area.width.saturating_sub(3));
     let view = editor.project(width, 1);
     let line = view.lines.first().cloned().unwrap_or_default();

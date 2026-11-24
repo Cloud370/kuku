@@ -42,12 +42,7 @@ pub(super) async fn dispatch_provider_step(
 ) -> Result<PendingStep> {
     run_model_pre_request_hooks(&mut pending).await?;
     let handoff_active = pending.handoff_triggered;
-    let correlation = ProviderCorrelation {
-        session_id: pending.session_id.clone(),
-        agent_address: pending.conversation.as_str().into(),
-        connection_name: resolved_config.connection_name.clone(),
-        workspace: pending.workspace.clone(),
-    };
+    let correlation = super::request_correlation(&pending, &resolved_config);
     let capacity = match &pending.query.model_capacity {
         Some(capacity) => Some(capacity.clone().acquire_owned().await.map_err(|_| {
             crate::Error::InvalidArgument("session model capacity is closed".into())
@@ -413,7 +408,19 @@ async fn dispatch_prepared(
     trace: Option<crate::provider::trace::ProviderTraceMetadata>,
     recover_context: bool,
 ) -> Result<DispatchOutcome> {
-    super::require_runtime_execution(pending)?;
+    if let Some(execution) = pending.query.runtime_execution {
+        super::runtime_session(pending, execution)?.commit_model_facts(
+            pending.conversation.as_str(),
+            execution,
+            [EventPayload::Unknown(serde_json::json!({
+                "kind": "runtime.model_dispatched",
+                "ts": now_timestamp()?,
+                "agent": pending.conversation.as_str(),
+                "turn": pending.turn,
+                "request_id": request_id,
+            }))],
+        )?;
+    }
     let mut failed_attempt = 1;
     let mut started = Instant::now();
     let mut result = crate::query::adapters::model_stream(

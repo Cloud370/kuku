@@ -8,8 +8,8 @@ use kuku::adapter::{
     ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, TrialSelection,
 };
 use kuku::config::{
-    resolve_request_url, ApiKey, ModelCapabilityDeclaration, ProviderConfig, ProviderFormat,
-    ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel,
+    resolve_request_url, ApiKey, CustomServiceTier, ModelCapabilityDeclaration, ProviderConfig,
+    ProviderFormat, ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel,
 };
 use kuku::session::AgentConfig;
 use kuku::ProviderCapabilities;
@@ -21,6 +21,9 @@ use super::state::{edit_field, SetupIntent, SetupState, SetupStep};
 use super::{ConnectionChoice, CredentialSource};
 
 mod capabilities;
+pub(super) use capabilities::{
+    automatic_reasoning, has_configured_reasoning, same_service_tier, CUSTOM_TIERS_ROW,
+};
 mod pricing;
 
 pub(super) const PROTOCOLS: [ProviderFormat; 3] = [
@@ -47,6 +50,7 @@ pub(super) struct Models {
     pub(super) default: Option<String>,
     pub(super) overrides: BTreeMap<String, ModelCapabilityDeclaration>,
     pub(super) override_value: Editor,
+    custom_services: BTreeMap<String, BTreeMap<String, CustomServiceTier>>,
     pub(super) discovered_from: Option<ProviderConfig>,
 }
 
@@ -92,6 +96,26 @@ impl Models {
 }
 
 impl SetupState {
+    pub(super) fn test_model(&mut self, settings: &Settings) {
+        let primary = self.primary_model();
+        let check = self.planned_trials(settings).into_iter().find(|probe| {
+            probe.model() == primary.as_deref()
+                && matches!(
+                    probe,
+                    Probe::Trial {
+                        check: ModelTrial::Text { .. },
+                        ..
+                    }
+                )
+        });
+        let Some(check) = check else {
+            self.problem = Some("Choose a model to test.".into());
+            return;
+        };
+        self.trials = ProbeBatch::start(vec![check]);
+        self.show_trial_requests();
+    }
+
     pub(super) fn test_tools(&mut self, settings: &Settings) {
         if self.text_only_route(settings) {
             self.problem = Some("For tools, choose API type → Responses.".into());
@@ -117,6 +141,10 @@ impl SetupState {
             })
             .collect();
         self.trials.append(checks);
+        self.show_trial_requests();
+    }
+
+    fn show_trial_requests(&mut self) {
         self.probe_repaint_at = Some(std::time::Instant::now());
         self.step = SetupStep::TrialResults;
         self.models.cursor = 0;
@@ -169,9 +197,7 @@ impl SetupState {
     pub(super) fn default_base_url(&self) -> &'static str {
         match self.choice() {
             ConnectionChoice::Preset(preset) => preset.base_url(self.protocol),
-            ConnectionChoice::Existing(_) | ConnectionChoice::Custom => {
-                self.protocol.default_base_url()
-            }
+            _ => self.protocol.default_base_url(),
         }
     }
 
@@ -202,7 +228,9 @@ impl SetupState {
                 profile: preset.profile(),
                 ..ProviderOptions::default()
             },
-            ConnectionChoice::Custom => ProviderOptions::default(),
+            ConnectionChoice::Subscription(_) | ConnectionChoice::Custom => {
+                ProviderOptions::default()
+            }
         };
         options.endpoint_url = self.address_parts().1;
         options.proxy = self.proxy.clone();
@@ -213,6 +241,14 @@ impl SetupState {
     }
 
     pub(super) fn connection(&self, settings: &Settings) -> Result<ProviderConfig, String> {
+        if self.subscription.is_some() {
+            return Ok(ProviderConfig {
+                format: self.protocol,
+                base_url: self.address_parts().0,
+                api_key: ApiKey::Plaintext(String::new()),
+                options: self.connection_options(settings),
+            });
+        }
         let api_key = match self.credential_source {
             CredentialSource::Environment => {
                 ApiKey::Env(super::state::valid_env_name(self.environment.text())?)
@@ -237,7 +273,14 @@ impl SetupState {
         self.step = SetupStep::ModelSource;
         self.models.cursor = 0;
         if !self.authorized || !self.credential_ready() {
-            self.problem = Some("Supply a credential to find models, or enter a model ID.".into());
+            self.problem = Some(match &self.subscription {
+                Some(account) => format!(
+                    "Sign in with kuku auth login {} {}, then reopen settings.",
+                    account.channel().as_str(),
+                    account.name().unwrap_or("ACCOUNT")
+                ),
+                None => "Supply a credential to find models, or enter a model ID.".into(),
+            });
             return;
         }
         let targets = self.connection(settings).and_then(|connection| {
@@ -352,7 +395,7 @@ impl SetupState {
             }
             return;
         }
-        let plan = if self.authorized && self.credential_ready() {
+        let plan = if self.subscription.is_none() && self.authorized && self.credential_ready() {
             self.planned_trials(settings)
         } else {
             Vec::new()
@@ -478,17 +521,26 @@ impl SetupState {
             Some((route, effort))
         });
         let primary = self.primary_model();
+        let subscription = connection.options.subscription.is_some();
         let models = self.model_ids().into_iter().flatten().map(|model| {
             let existing = original.as_ref().filter(|(route, _)| {
                 route.model == model
                     && matches!(self.choice(), ConnectionChoice::Existing(name) if &route.provider == name)
             });
-            let effort = if self.reasoning_changed && primary.as_ref() == Some(&model) {
-                self.reasoning.clone().filter(|effort| effort != ThinkLevel::ProviderDefault.as_str())
+            let inferred = subscription
+                && existing.is_none_or(|(route, _)| !has_configured_reasoning(route));
+            let effort = if primary.as_ref() == Some(&model) && (self.reasoning_changed || inferred) {
+                self.displayed_reasoning(settings)
+                    .filter(|effort| effort != ThinkLevel::ProviderDefault.as_str())
             } else {
                 existing.and_then(|(_, effort)| effort.clone())
             };
-            TrialSelection { model, effort, service_tier: existing.and_then(|(route, _)| route.service_tier.clone()) }
+            let service_tier = if primary.as_ref() == Some(&model) {
+                self.service_override(&model).map(|tier| tier.map(str::to_owned))
+            } else {
+                None
+            }.unwrap_or_else(|| existing.and_then(|(route, _)| route.service_tier.clone()));
+            TrialSelection { model, effort, service_tier }
         });
         plan_model_trials(Arc::new(connection), models)
     }
@@ -652,19 +704,28 @@ impl SetupState {
     pub(super) fn choose_network(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Enter {
             self.problem = None;
+            let next = self.after_network();
             self.step = match self.models.cursor {
                 0 => {
                     self.proxy = ProviderProxy::Environment;
-                    SetupStep::Credential
+                    next
                 }
                 1 => {
                     self.proxy = ProviderProxy::Direct;
-                    SetupStep::Credential
+                    next
                 }
                 _ => SetupStep::ProxyAddress,
             };
         } else {
             self.models.move_cursor(key.code, 3);
+        }
+    }
+
+    fn after_network(&self) -> SetupStep {
+        if self.enrollment.is_some() {
+            SetupStep::SubscriptionSignIn
+        } else {
+            SetupStep::Credential
         }
     }
 
@@ -676,10 +737,14 @@ impl SetupState {
                 _ => None,
             };
             let proxy = ProviderProxy::Explicit { url, auth };
-            match proxy.validate() {
+            let valid = match self.choice() {
+                ConnectionChoice::Subscription(channel) => channel.validate_proxy(&proxy),
+                _ => proxy.validate(),
+            };
+            match valid {
                 Ok(()) => {
                     self.proxy = proxy;
-                    self.step = SetupStep::Credential;
+                    self.step = self.after_network();
                     self.problem = None;
                 }
                 Err(error) => self.problem = Some(error.to_string()),
@@ -826,76 +891,6 @@ impl SetupState {
             self.step = SetupStep::ReviewSettings;
         } else {
             self.models.move_cursor(key.code, 2);
-        }
-    }
-
-    pub(super) fn choose_advanced(&mut self, key: KeyEvent, settings: &Settings) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-            let Some(id) = self.primary_model() else {
-                return;
-            };
-            let saved = self
-                .connection_options(settings)
-                .model_capabilities
-                .remove(&id)
-                .and_then(|entry| entry.manual);
-            let declaration = self
-                .models
-                .overrides
-                .entry(id)
-                .or_insert_with(|| saved.unwrap_or_default());
-            let value = match self.models.cursor {
-                0 => declaration
-                    .reasoning_efforts
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-                1 => declaration.reasoning_default.clone(),
-                2 => declaration
-                    .input_modalities
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-                3 => declaration
-                    .output_modalities
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-                _ => declaration
-                    .interfaces
-                    .as_ref()
-                    .map(|items| items.join(", ")),
-            };
-            self.models
-                .override_value
-                .set_text(value.unwrap_or_default());
-            self.step = SetupStep::Override;
-        } else {
-            self.models.move_cursor(key.code, 5);
-        }
-    }
-
-    pub(super) fn edit_override(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-            let Some(id) = self.primary_model() else {
-                return;
-            };
-            let declaration = self.models.overrides.entry(id).or_default();
-            let text = self.models.override_value.text().trim();
-            let list = (!text.is_empty()).then(|| {
-                text.split(',')
-                    .map(str::trim)
-                    .filter(|item| !item.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            });
-            match self.models.cursor {
-                0 => declaration.reasoning_efforts = list,
-                1 => declaration.reasoning_default = (!text.is_empty()).then(|| text.to_owned()),
-                2 => declaration.input_modalities = list,
-                3 => declaration.output_modalities = list,
-                _ => declaration.interfaces = list,
-            }
-            self.step = SetupStep::Advanced;
-        } else {
-            edit_field(&mut self.models.override_value, key);
         }
     }
 }

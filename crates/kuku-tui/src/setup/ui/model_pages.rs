@@ -2,10 +2,10 @@ use ratatui::{layout::Rect, Frame};
 
 use crate::theme::{ACCENT, MUTED, WARNING};
 
-use super::super::models::{protocol_label, PROTOCOLS};
+use super::super::models::{protocol_label, same_service_tier, CUSTOM_TIERS_ROW, PROTOCOLS};
 use super::super::recovery::text_problem;
 use super::super::state::{SetupState, SetupStep};
-use super::{field, line, option, Settings};
+use super::{field, line, option, trial_usage, Settings};
 
 pub(super) fn render_model_settings(
     frame: &mut Frame<'_>,
@@ -86,13 +86,15 @@ pub(super) fn render_model_settings(
             line(frame, area, row, "Proxy address", ACCENT);
             field(frame, area, row, &mut state.proxy_address);
             line(frame, area, row, "HTTP · http://127.0.0.1:7890", MUTED);
-            line(
-                frame,
-                area,
-                row,
-                "SOCKS5 · socks5://127.0.0.1:1080 · local DNS",
-                MUTED,
-            );
+            if state.enrollment.is_none() {
+                line(
+                    frame,
+                    area,
+                    row,
+                    "SOCKS5 · socks5://127.0.0.1:1080 · local DNS",
+                    MUTED,
+                );
+            }
             line(
                 frame,
                 area,
@@ -122,6 +124,7 @@ pub(super) fn render_model_settings(
         }
         SetupStep::Discover => {
             line(frame, area, row, "Choose models", ACCENT);
+            trial_usage(frame, area, row, state);
             if state.discovery.pending() {
                 let progress = super::super::probes::progress(&state.discovery);
                 line(
@@ -268,6 +271,42 @@ pub(super) fn render_model_settings(
                 option(frame, area, row, label, index == state.models.cursor);
             }
         }
+        SetupStep::Service => {
+            line(frame, area, row, "Service tier", ACCENT);
+            let subscription = state.subscription.is_some();
+            if subscription {
+                let account = crate::text::shorten_middle(
+                    &state.connection_label(settings),
+                    area.width.into(),
+                );
+                line(frame, area, row, &account, MUTED);
+            }
+            let primary = state.primary_model();
+            let listed_tiers = state
+                .models
+                .found
+                .iter()
+                .find(|model| Some(model.id.as_str()) == primary.as_deref())
+                .and_then(|model| model.capabilities.service_tiers.as_deref())
+                .unwrap_or_default();
+            for (index, tier) in state.service_choices(settings).iter().enumerate() {
+                let tier = tier.as_deref();
+                let mut label = tier.map_or_else(
+                    || "Provider default".to_owned(),
+                    |tier| crate::text::service_tier_label(Some(tier)),
+                );
+                let advertised = listed_tiers
+                    .iter()
+                    .any(|listed| same_service_tier(Some(listed), tier));
+                if subscription
+                    && !advertised
+                    && matches!(tier, Some("fast" | "priority" | "ultrafast"))
+                {
+                    label.push_str(" · Availability unconfirmed");
+                }
+                option(frame, area, row, &label, index == state.models.cursor);
+            }
+        }
         SetupStep::Output => {
             line(frame, area, row, "Agent requested output", ACCENT);
             option(frame, area, row, "Text", state.models.cursor == 0);
@@ -377,6 +416,20 @@ pub(super) fn render_model_settings(
                         .and_then(|caps| caps.output_modalities.as_ref()),
                 ),
                 media(caps.as_ref().and_then(|caps| caps.interfaces.as_ref())),
+                Some(
+                    caps.as_ref()
+                        .filter(|caps| !caps.custom_service_tiers.is_empty())
+                        .map_or_else(
+                            || "None".into(),
+                            |caps| {
+                                caps.custom_service_tiers
+                                    .keys()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            },
+                        ),
+                ),
             ];
             for (index, (label, value)) in ADVANCED_LABELS.iter().zip(values).enumerate() {
                 let value = value.as_deref().unwrap_or("unknown");
@@ -401,7 +454,11 @@ pub(super) fn render_model_settings(
                 frame,
                 area,
                 row,
-                "Manual values · comma-separated · blank uses declarations",
+                if state.models.cursor == CUSTOM_TIERS_ROW {
+                    "Tier names · comma-separated · blank removes custom tiers"
+                } else {
+                    "Manual values · comma-separated · blank uses declarations"
+                },
                 MUTED,
             );
             field(frame, area, row, &mut state.models.override_value);
@@ -409,6 +466,7 @@ pub(super) fn render_model_settings(
         SetupStep::Consent
         | SetupStep::ManualConfig
         | SetupStep::Connection
+        | SetupStep::SubscriptionSignIn
         | SetupStep::Model
         | SetupStep::CredentialSource
         | SetupStep::Credential
@@ -466,12 +524,13 @@ fn render_recovery(frame: &mut Frame<'_>, area: Rect, row: &mut u16, state: &Set
     }
 }
 
-const ADVANCED_LABELS: [&str; 5] = [
+const ADVANCED_LABELS: [&str; CUSTOM_TIERS_ROW + 1] = [
     "Native efforts",
     "Default effort",
     "Input modalities",
     "Output modalities",
     "Advertised interfaces",
+    "Custom service tiers",
 ];
 
 fn source_label(source: kuku::CapabilitySource) -> &'static str {

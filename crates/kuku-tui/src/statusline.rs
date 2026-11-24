@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{Activity, App, ServiceStatus, SubmissionStatus};
 use crate::text::{
     compact_token_count, effort_label, shorten, shorten_middle, single_line, single_line_path,
-    tail_start, with_suffix,
+    tail_start,
 };
 use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
 
@@ -288,40 +288,47 @@ impl Field {
             Self::Workspace => Segment::workspace(app.resolved_workspace()),
             Self::Model => {
                 let pane = app.pane();
-                let (id, route, effort, slot) = match pane.effective_model_identity() {
-                    Some((id, connection, effort)) => {
-                        let id = single_line(id);
-                        let effort = shorten(&effort_label(effort), MAX_EFFORT_WIDTH);
-                        let route = custom.then(|| {
-                            let connection = single_line(connection);
-                            format!("{id} ({connection} · {effort})")
+                if let Some((id, connection, effort)) = pane.effective_model_identity() {
+                    let effort = effort
+                        .filter(|value| {
+                            *value != kuku::config::ThinkLevel::ProviderDefault.as_str()
+                        })
+                        .unwrap_or("Default");
+                    let effort = shorten(&single_line(effort), MAX_EFFORT_WIDTH);
+                    let resolved = pane.effective_model_settings();
+                    let service_tier = resolved.and_then(|(settings, _)| {
+                        settings.service_tier.as_deref().map(|tier| {
+                            single_line(settings.requested_service_tier.as_deref().unwrap_or(tier))
+                        })
+                    });
+                    let slot = resolved
+                        .and_then(|(_, caps)| {
+                            caps.selectable_reasoning_efforts()
+                                .map(|level| single_line(level).width().min(MAX_EFFORT_WIDTH))
+                                .max()
+                        })
+                        .map_or(effort.width(), |width| {
+                            width.max(effort.width()).max("Default".width())
                         });
-                        let slot = pane
-                            .effective_reasoning()
-                            .and_then(|(_, caps)| {
-                                caps.selectable_reasoning_efforts()
-                                    .map(|level| {
-                                        effort_label(Some(level)).width().min(MAX_EFFORT_WIDTH)
-                                    })
-                                    .max()
-                            })
-                            .map_or(effort.width(), |width| {
-                                width.max(effort.width()).max("Default".width())
-                            });
-                        (id, route, Some(effort), slot)
-                    }
-                    None => {
-                        let label = pane.effective_model_label().unwrap_or_else(|| {
-                            if pane.model_problem.is_some() {
-                                "Model unavailable".into()
-                            } else {
-                                "Model pending".into()
-                            }
-                        });
-                        (single_line(&label), None, None, 0)
-                    }
-                };
-                Segment::model(id, route, effort, slot)
+                    let show_connection = custom
+                        && resolved.is_none_or(|(_, caps)| caps.subscription_channel.is_none());
+                    Segment::model(
+                        single_line(id),
+                        show_connection.then(|| single_line(connection)),
+                        Some(effort),
+                        service_tier,
+                        slot,
+                    )
+                } else {
+                    let label = pane.effective_model_label().unwrap_or_else(|| {
+                        if pane.model_problem.is_some() {
+                            "Model unavailable".into()
+                        } else {
+                            "Model pending".into()
+                        }
+                    });
+                    Segment::model(single_line(&label), None, None, None, 0)
+                }
             }
             Self::Context => context(app.pane().current_request_usage(), compact, custom),
             Self::InputTokens => tokens(
@@ -439,8 +446,9 @@ enum SegmentText {
     Workspace(String),
     Model {
         id: String,
-        route: Option<String>,
+        connection: Option<String>,
         effort: Option<String>,
+        service_tier: Option<String>,
         effort_slot: usize,
     },
 }
@@ -454,15 +462,17 @@ struct Segment {
 impl Segment {
     fn model(
         id: String,
-        route: Option<String>,
+        connection: Option<String>,
         effort: Option<String>,
+        service_tier: Option<String>,
         effort_slot: usize,
     ) -> Self {
         Self {
             text: SegmentText::Model {
                 id,
-                route,
+                connection,
                 effort,
+                service_tier,
                 effort_slot,
             },
             style: Style::default().fg(MODEL),
@@ -545,9 +555,7 @@ impl Segment {
                 effort_slot,
                 ..
             } => {
-                let effort_width = effort
-                    .as_ref()
-                    .map_or(0, |_| SEPARATOR.width() + effort_slot);
+                let effort_width = effort.as_ref().map_or(0, |_| 1 + effort_slot);
                 (id.width() + effort_width)
                     .min(COMPACT_MODEL_WIDTH)
                     .min((row_width / 3).max(effort_width + 1))
@@ -569,26 +577,41 @@ impl Segment {
             SegmentText::Details(text) => shorten_middle(text, width),
             SegmentText::Model {
                 id,
-                route,
+                connection,
                 effort,
+                service_tier,
                 effort_slot,
             } => {
+                let mut suffix = effort
+                    .as_ref()
+                    .map_or_else(String::new, |effort| format!(" {effort}"));
+                let service_tier = service_tier
+                    .as_ref()
+                    .filter(|tier| id.width() + suffix.width() + 1 + tier.width() <= width);
+                if let Some(tier) = service_tier {
+                    suffix.push(' ');
+                    suffix.push_str(tier);
+                }
+                let id_min = if service_tier.is_some() {
+                    id.width()
+                } else {
+                    1
+                };
                 let pad = effort.as_ref().map_or(0, |effort| {
                     effort_slot
                         .saturating_sub(effort.width())
-                        .min(width.saturating_sub(SEPARATOR.width() + effort.width() + 1))
+                        .min(width.saturating_sub(suffix.width() + id_min))
                 });
                 let available = width - pad;
-                let mut text = route
-                    .as_ref()
-                    .filter(|route| route.width() <= available)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        effort.as_ref().map_or_else(
-                            || shorten_middle(id, available),
-                            |effort| with_suffix(id, effort, available),
-                        )
-                    });
+                let mut text = if let Some(connection) = connection.as_ref().filter(|connection| {
+                    id.width() + suffix.width() + 3 + connection.width() <= available
+                }) {
+                    format!("{id}{suffix} ({connection})")
+                } else if available > suffix.width() {
+                    format!("{}{suffix}", shorten_middle(id, available - suffix.width()))
+                } else {
+                    shorten_middle(id, available)
+                };
                 text.push_str(&" ".repeat(pad));
                 text
             }

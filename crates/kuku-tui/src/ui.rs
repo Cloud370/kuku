@@ -677,7 +677,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             editor.render(frame, inner);
             inner
         }
-        Modal::ExitConfirmation => unreachable!("exit confirmation is anchored to the composer"),
+        Modal::ExitConfirmation | Modal::SendRouteConfirmation(_) => {
+            unreachable!("confirmation is anchored to the composer")
+        }
     })
 }
 

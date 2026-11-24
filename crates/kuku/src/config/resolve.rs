@@ -90,7 +90,10 @@ fn resolve_env_refs(
 }
 
 fn should_resolve_env_ref(path: &str, value: &str) -> bool {
-    value.starts_with('$') && !path.ends_with("api_key")
+    value.starts_with('$')
+        && !path.ends_with("api_key")
+        && !path.contains(".request.headers.")
+        && !path.contains(".request.body.")
 }
 
 fn display_path(path: &str) -> &str {
@@ -130,6 +133,7 @@ impl ConfigFile {
                     max_output_tokens: entry.max_output_tokens,
                     purpose: entry.purpose.clone().unwrap_or_else(|| name.clone()),
                     output: entry.output.unwrap_or_default(),
+                    request: entry.request.clone(),
                 },
             );
         }
@@ -223,6 +227,11 @@ impl ConfigFile {
 
     pub(crate) fn validate_tier_entries(&self) -> Result<()> {
         for (name, entry) in &self.model {
+            if let Some(request) = &entry.request {
+                request
+                    .validate()
+                    .map_err(|error| Error::ConfigLoad(format!("model '{name}': {error}")))?;
+            }
             if entry.provider.trim().is_empty() {
                 return Err(Error::ConfigLoad(format!(
                     "tier '{name}': provider is required"
@@ -260,6 +269,11 @@ impl ConfigFile {
 
     pub(crate) fn validate_provider_entries(&self) -> Result<()> {
         for (name, entry) in &self.provider {
+            if let Some(request) = &entry.options.request {
+                request
+                    .validate()
+                    .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
+            }
             if entry.base_url.trim().is_empty() && entry.options.endpoint_url.is_none() {
                 return Err(Error::ConfigLoad(format!(
                     "provider '{name}': base_url or endpoint_url is required"
@@ -275,6 +289,18 @@ impl ConfigFile {
                 super::resolve_models_url(entry.format, &entry.base_url, &entry.options)
                     .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
             }
+            if let Some(account) = &entry.options.subscription {
+                let validate = || -> Result<()> {
+                    if !entry.api_key.trim().is_empty() {
+                        return Err(Error::ConfigLoad(
+                            "a subscription connection cannot also use an API key".into(),
+                        ));
+                    }
+                    account.validate_connection(entry.format, &entry.base_url, &entry.options)
+                };
+                validate()
+                    .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
+            }
             entry
                 .options
                 .proxy
@@ -288,7 +314,7 @@ impl ConfigFile {
                 }
             }
             let api_key = entry.api_key.trim();
-            if api_key.is_empty() {
+            if api_key.is_empty() && entry.options.subscription.is_none() {
                 return Err(Error::ConfigLoad(format!(
                     "provider '{name}': api_key is required"
                 )));
@@ -381,5 +407,58 @@ extra_user_paths = ["$KUKU_HOME"]
             vec![PathBuf::from("service-data")],
             parsed.discovery.unwrap().extra_user_paths
         );
+    }
+
+    #[test]
+    fn request_fields_keep_header_references_and_reject_adapter_overrides() {
+        let raw = r#"
+[provider.router]
+format = "openai-responses"
+base_url = "https://openrouter.ai/api/v1"
+api_key = "$FIXTURE_KEY"
+[provider.router.request.headers]
+"X-Tenant" = "$FIXTURE_TENANT"
+[provider.router.request.body.provider]
+data_collection = "deny"
+zdr = true
+[model.default]
+provider = "router"
+model = "anthropic/claude-haiku-5.5"
+[model.default.request.body]
+cache_control = { type = "ephemeral", ttl = "1h" }
+"#;
+        let parse = |raw: &str| {
+            parse_config_text_with_env(raw, |_| panic!("config must keep credential references"))
+                .unwrap()
+                .resolve()
+        };
+        let config = parse(raw).unwrap();
+        let request = config
+            .provider("router")
+            .unwrap()
+            .options
+            .request
+            .as_ref()
+            .unwrap();
+        assert_eq!(request.headers["X-Tenant"], "$FIXTURE_TENANT");
+        assert_eq!(request.body["provider"]["zdr"], true);
+        assert_eq!(
+            config
+                .tier("default")
+                .unwrap()
+                .request
+                .as_ref()
+                .unwrap()
+                .body["cache_control"]["ttl"],
+            "1h"
+        );
+        assert!(parse(&raw.replace("X-Tenant", "aUtHoRiZaTiOn"))
+            .unwrap_err()
+            .to_string()
+            .contains("managed by the adapter"));
+        assert!(parse(&raw.replace("cache_control =", "messages ="))
+            .unwrap_err()
+            .to_string()
+            .contains("managed by the adapter"));
     }
 }

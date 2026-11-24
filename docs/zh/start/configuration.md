@@ -15,11 +15,17 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 - **Edit config file**：直接给出配置文件路径，不发任何模型请求。
 - **Find and test models**：拉取模型列表并做简短的文本、思考档位和可选图片试跑（单次上限 4,096 tokens、超时 30 秒，可能消耗 API 余额）。
 
-你可以选预设、复用已有连接，或填写自定义 URL、代理方式（跟随环境代理、直连、HTTP、SOCKS5、SOCKS5H）和 API Key。对于自定义 Base URL，选好模型后向导会自动探测协议（优先 `Responses`，其次 `Chat Completions`、`Messages`），结果不明确时再让你手动挑；如果目录不可读，也可以直接手填模型 ID。
+ChatGPT 设置读取所选账号的模型目录。可以在 **Settings** 里手动发起生成测试。
 
 在模型列表里可以直接打字搜索、按 `Space` 多选、`Enter` 确认。试跑结果可以在 **Model tests** 里逐项查看，也可以进 **Settings** 调整思考档位、输出上限、能力标记与费率。想确认工具调用是否正常，点 **Settings → Test tools** 测一次合成工具调用——能正常回文本不代表支持工具调用；如果某条 Chat 线路需要走 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测再保存。
 
+选择自定义连接、已有连接或预设。使用 API Key 时，填写供应商 URL、网络路径和密钥。自定义连接以 URL 的域名和非默认端口命名。同一域名和端口下的连接会用编号区分。已有连接和预设沿用其协议，标准请求 URL 可直接识别。选择模型后，新自定义 Base URL 会并发验证候选协议。优先使用 Responses，确认上游不支持时依次尝试采用 Chat Completions、Messages 的结果。无法确定时会显示 API 类型选项。网络可选择跟随代理环境变量、直连，或使用 HTTP、SOCKS5、SOCKS5H。裸域名有多个标准候选路径时，设置会并发查询，逐条显示进度和结果，找到可用目录就自动打开模型列表。目录无法读取时，可以直接填写已知的模型 ID。
+
 在 Session 里随时可以输入 `/model` 或按 `Ctrl+L` 添加/修改连接，选择 **Use in this Session** 切换当前 Agent 的线路，或 **Set as default** 存为新 Session 的默认线路。[终端控制](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
+
+保存没有配置思考档位的模型时，若支持 `medium`，设置优先选它。其余情况取已知顺序中间偏低的一档、唯一可用的档位，或在档位顺序未知时采用有效的上游声明默认值。能力信息不足时跟随供应商默认。手动设置优先。
+
+要管理添加过的服务档位，选中路由后按 `e`，再打开 **Settings → Model capabilities → Custom service tiers**。[模型和服务档位快捷键](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
 ## Provider 与凭据
 
@@ -31,6 +37,20 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 密钥推荐使用环境变量引用（`api_key = "$VARIABLE_NAME"`）或独立密钥文件（`api_key = "file:<绝对路径>"`）。在交互向导里粘贴的密钥会以仅所有者可读的明文文件存到 `$KUKU_HOME/credentials/`，TOML 里只写 `file:` 路径；文件未加密。[配置参考](../reference/config.md) · [文件布局](../reference/file-layout.md)
 
 环境变量由服务端进程读取，而不是终端客户端。如果本地服务启动后你才在终端里改了环境变量，等服务空闲后运行 `kuku server restart` 才会生效；连远程服务时请在服务端机器上配置密钥。`config.toml` 里其他字符串字段同样支持在加载时展开 `$ENV_VAR_NAME`（例如 `base_url = "$KUKU_ANTHROPIC_BASE_URL"`）。
+
+### 在无头主机登录订阅
+
+在 `kuku init` 或 `/model` 的 **Add model** 中选择 **Preset · ChatGPT subscription**。选择网络模式，可选填账号别名。在自己的浏览器打开 **Open authorization link**，或用 **Ctrl+Y** 复制分隔线之间的完整授权地址。授权后，把地址栏里的回调 URL 粘贴到 kuku。如果浏览器无法连接回调页面，从错误页的地址栏复制。回调输入提示会显示光标，粘贴的 URL 不回显。OpenAI 拒绝授权码时，请使用 kuku 显示的新授权链接。登录后账号会保存，设置界面随即查询该账号的模型。
+
+也可以在运行 kuku 的主机上执行 `kuku auth login chatgpt [名称]`。省略名称时，登录会保存 `chatgpt` 或 `chatgpt-2` 这样的短连接名。重新授权时可以使用已保存的连接名或账号别名。
+
+默认跟随环境代理设置，也可以选直连或手动代理。令牌交换、续期、模型发现和推理都沿用所选模式。手动代理失败时，请求停止。手动设置 SOCKS 代理请使用 `socks5h://`，由代理解析供应商地址。浏览器使用自身的网络设置。
+
+添加或编辑 ChatGPT 模型时，用所选账号的访问令牌刷新模型目录。设置界面会显示账号别名，并在可用时显示脱敏邮箱。同一个邮箱有多个工作区时，可以用不同别名区分。OpenAI 的公开登录 API 没有定义 Plus、Pro 等套餐名称字段。
+
+在模型编辑器中，**Settings → Service tier** 沿用 OpenAI 为该账号和模型列出的档位。目录未声明的档位标为待验证。选择 **Settings → Test model**，可以用当前模型、档位和思考设置发起文本试跑，使用你的 ChatGPT 订阅额度。**Model tests** 会显示 OpenAI 为试跑回报的实际档位，或者显示请求失败时返回的错误。
+
+ChatGPT 的方案和应用额度可在[管理用量](https://chatgpt.com/settings/usage)查看。kuku 可以显示 ChatGPT 返回的额度错误，以及已完成请求回报的 token 数。其他订阅渠道提供剩余额度接口时，可以显示该渠道实际回报的数值。
 
 ### 认证失败后的恢复
 

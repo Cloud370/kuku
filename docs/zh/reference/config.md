@@ -34,8 +34,11 @@ HTTP 服务默认读取数据目录下的 `config.toml`，也可通过 `--config
 | `max_output_tokens` | 正整数（可选） | 本档位生成上限（若 Provider 计入输出，也含思考 token） |
 | `purpose` | string | 展示给用户和子 Agent 的路由用途说明 |
 | `output` | `text`\|`image` | 期望输出类型，默认 `text` |
+| `request` | table | 模型路由的[请求头与请求体](#请求头与请求体)覆盖项 |
 
 可通过 `default_model` 指定默认档位；只有一个路由时也可省略。既有 `strong`、`balanced`、`light` 路由继续有效。TUI 的 **Set current model as default** 会复用匹配档位，或创建/更新普通 `user-default` 档位并通过 `default_model` 选中。
+
+添加更多路由时，设置向导使用模型名，重名时加数字后缀，例如 `gpt-6.1-terra-2`。Agent 通过这些名称选择路由。
 
 Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值；原生 Anthropic Messages 需要数值（内置 Sonnet/Haiku 预设已在 TOML 中填写，自定义 Messages 路由可从档位、Agent 或宿主获取）。单次响应仍受可用上下文余量约束。
 
@@ -50,14 +53,16 @@ Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值；原生 
 | `proxy` | table | 发现、探测与模型请求的网络代理设置 |
 | `model_pricing` | table | 按精确模型 ID 配置的美元计费规则 |
 | `model_price_catalogs` | table | 配置流程保存的 OpenRouter 公开报价 |
-| `model_capabilities` | table | 按精确模型 ID 配置的能力发现与手工覆盖 |
+| `model_capabilities` | table | 按模型 ID 记录列表声明、手工覆盖、试跑记录中的思考档位和自定义服务档位 |
 | `api_key` | string | `$ENV_VAR_NAME`、明文密钥或 `file:<绝对路径>` |
+| `subscription` | table | 订阅账号引用，包含 `channel` 和绝对路径 `credential_file` |
 | `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证头方式 |
 | `profile` | string | `auto`（默认）、`openai`、`anthropic`、`deepseek`、`openrouter` 或 `compatible` |
 | `reasoning_efforts` | string[] | 覆盖该连接声明的原生推理取值列表 |
 | `service_tiers` | string[] | 覆盖该连接声明的原生服务档位列表 |
 | `routing` | table | OpenRouter 上游路由选项 |
 | `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses Prompt 缓存键范围，默认 `workspace` |
+| `request` | table | 连接级[请求头与请求体](#请求头与请求体)配置 |
 
 ### 端点与代理
 
@@ -94,16 +99,64 @@ cache_read = 0.1
 
 ### 模型能力、Profile 与路由
 
+每个模型能力条目也可以包含 `custom_service_tiers` 表。键为原生档位名，值为 `unverified`（由用户声明）或 `confirmed`（探测回报了请求的档位）。这些值会补充模型目录或手动覆盖中的档位列表。例如 `provider.gateway.model_capabilities."example/model".custom_service_tiers.turbo = "unverified"` 为该连接和指定模型添加 `turbo`。
+
 - **能力声明**：`model_capabilities.<model>` 区分 `discovered` 与 `manual`（支持 `reasoning_efforts`、`reasoning_default`、`input_modalities`、`output_modalities`、`interfaces` 及协议级扩展如 `protocols.anthropic_messages.system_prompt_update`）。刷新发现时保留手工覆盖，未填字段保持未知。声明图像输入的路由可启用[图像检查工具](tools.md)；内置文本适配器会在派发前拒绝图像输出请求。[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter 模型列表](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
 - **Profile 与思考等级**：`profile = "auto"` 按已知主机名选择配置，自定义网关走 `compatible` 且原生选项需显式声明能力。连接严格按名称匹配，不会只凭 `format` 选第一个连接。`think` 在模型声明支持时映射并下发，否则交由上游默认（DeepSeek 直连将 `medium` 映射为 `high`）；`reasoning_effort` 按精确原生值下发，绝不静默改写，不支持时在派发前报错。
 - **厂商细节**：Messages 默认用 `x-api-key`；OpenRouter 对三种协议统一使用 Bearer 认证。DeepSeek Messages 发送 `thinking.type`（`enabled`/`disabled`），省略不支持的缓存控制并拒绝 service tier；DeepSeek Responses 保持无状态完整历史，不使用 `previous_response_id`。[DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/) · [DeepSeek Messages](https://api-docs.deepseek.com/guides/anthropic_api/) · [DeepSeek Responses](https://api-docs.deepseek.com/guides/responses_api/) · [OpenRouter Messages 认证](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message)
 - **OpenRouter 路由**：`routing.order` / `routing.only` 指定端点标签；`allow_fallbacks` 控制回退；`require_parameters` 默认 `true`；`routing.max_price.prompt` / `.completion` 限制百万 token 单价（非总花费上限）。OpenRouter 会收到按 Session、Agent 与连接名派生的稳定关联标识（亲和性不保证上游缓存留存）。[OpenRouter 路由](https://openrouter.ai/docs/guides/routing/provider-selection) · [Prompt 缓存](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
 
+### 请求头与请求体
+
+`request.headers` 将 HTTP 请求头名称映射到字符串。`request.body` 将顶层 JSON 字段映射到 TOML 值，支持数组和表。这些设置作用于内置推理请求，模型试探也使用连接级设置。
+
+内置 TOML 预设、连接配置和匹配的模型路由配置依次生效。请求头名称不区分大小写。请求体按顶层字段替换整个值，包括 OpenRouter 的 `provider` 这类嵌套对象。在任一级设置 `request.inherit = false`，可以从空的请求字段开始配置。
+
+```toml
+[provider.openrouter.request.headers]
+"X-Title" = "My workspace"
+
+[provider.openrouter.request.body.provider]
+order = ["anthropic"]
+allow_fallbacks = false
+require_parameters = true
+data_collection = "deny"
+zdr = true
+
+[model.haiku.request.body]
+cache_control = { type = "ephemeral", ttl = "1h" }
+```
+
+将这些表添加到已有的 OpenRouter 连接和模型路由。`request.body.provider` 优先于连接的 `routing` 表，原生路由和数据策略字段由 OpenRouter 定义。 [OpenRouter 路由文档](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+- `"{{session_id}}"` 展开为同一 Session、Agent 和连接内稳定的匿名标识。`"{{prompt_cache_key}}"` 使用 `prompt_cache_scope` 选定的键。无法取得值时省略对应字段。
+- `"{{request_id}}"` 仅用于请求头，每次 HTTP 请求尝试生成新值。占位符替换整段字符串，也可用于请求体对象内的字符串。
+- 请求头可以引用 `"$NAME"`。服务在准备请求时读取变量，Provider 请求 trace 会对配置的请求头值和自定义请求体字段脱敏。请求体字符串按字面值处理，支持上述占位符。
+- 凭据和 HTTP 帧相关请求头、模型和消息内容、工具定义、流式与有状态续接字段，以及已解析的思考、服务档位和输出上限由适配器管理。配置这些保留字段时会报错。
+- ChatGPT 登录会在发送前拒绝显式配置的预览版不支持字段，例如 `metadata`、`temperature` 和 `prompt_cache_retention`。 [订阅请求限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+
 ### Prompt 缓存与凭据
 
-- **`prompt_cache_scope`**（仅 Responses）：`workspace`（默认）对规范化工作区路径+连接+端点+模型做哈希，同工作区多 Session 可共享缓存键且不外泄路径；`session` 按 Session+Agent+连接+端点+模型隔离；`off` 不发 `prompt_cache_key`。不影响 OpenRouter `session_id`。
+| 渠道 | 请求默认值与缓存规则 |
+|---|---|
+| ChatGPT 订阅 | 实际请求发送稳定的 `session-id` 来帮助查找缓存，每次 HTTP 请求生成新的 `X-Client-Request-Id`。只有连接或模型路由显式添加时，请求才会带 `prompt_cache_key` 或 `x-session-id`。 [Codex 会话路由](https://github.com/openai/codex/pull/44862) |
+| OpenAI API Key Responses | 自动使用前缀缓存。GPT-5.6 之前的模型在缓存键可用时发送 `prompt_cache_key` 帮助路由。GPT-5.6 及更新模型可按需用它区分缓存用量。 [OpenAI Prompt 缓存](https://developers.openai.com/api/docs/guides/prompt-caching) |
+| OpenRouter | 请求体中的 `session_id` 有助于稳定选中的上游。缓存规则取决于实际上游和模型。Claude 路由还会收到顶层 `cache_control`。 [OpenRouter Prompt 缓存](https://openrouter.ai/docs/guides/best-practices/prompt-caching) |
+| 原生 Anthropic Messages | 顶层 `cache_control = { type = "ephemeral" }` 启用自动缓存，缓存断点随会话增长向后移动。 [Anthropic Prompt 缓存](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) |
+
+命中需要前缀匹配，且请求能找到有效缓存。续聊时保持模型、工具定义、系统提示和已有消息稳定，在末尾追加新输入。首次请求、缓存过期、前缀变化或服务路由变化都有可能返回零。即使 Session 和前缀相同，正常完成的续轮也可能偶尔读到零。 [OpenAI Prompt 缓存](https://developers.openai.com/api/docs/guides/prompt-caching) · [Codex 缓存复现](https://github.com/openai/codex/issues/44716)
+
+Responses 从 `usage.input_tokens_details.cached_tokens` 读取缓存用量，Chat Completions 使用 `usage.prompt_tokens_details.cached_tokens`，Anthropic Messages 使用 `usage.cache_read_input_tokens`。Messages 通过 `usage.cache_creation_input_tokens` 单独报告新写入的 token 数。上游省略用量字段时，读取量记为未知。
+
+Anthropic 默认缓存 5 分钟。Haiku 5.5 的 5 分钟缓存写入价为普通输入的 1.25 倍，1 小时为 2 倍。两档缓存读取价均为普通输入的 0.1 倍。 [Anthropic Prompt 缓存价格](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
+模型试探和网页摘要等一次性请求只在用户显式配置时发送 `cache_control`。输出截断后的恢复请求沿用原会话标识。无状态的 OpenAI Responses 由上游默认返回加密推理内容。 [OpenAI 无状态推理](https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses)
+
+- **`prompt_cache_scope`**（仅 Responses）控制 `{{prompt_cache_key}}` 占位符。`workspace`（默认）对规范化的工作区路径、连接、端点和模型做哈希。`session` 对 Session、Agent、连接、端点和模型做哈希。`off` 时省略引用该占位符的字段。
 - **`api_key`**：`$NAME` 仅读环境变量；`file:/绝对路径` 在请求时校验并读取文件（不接受相对路径、非 URL 语法、两类来源不互退）。交互式配置将明文密钥写入 `<data-dir>/credentials/`，`kuku config show` 只展示引用。[文件布局](file-layout.md)
-- 配置中其余以 `$` 开头的字符串值均会在校验前展开环境变量。
+- `$NAME` 的解析时机见[环境变量](environment-variables.md)。
+
+订阅连接通过账号引用读取凭据。ChatGPT 订阅使用 OpenAI 官方 Responses 和模型目录地址。账号认证也沿用该连接的网络模式。手动设置 SOCKS 代理时，使用 `socks5h://` 由代理解析地址。[订阅登录](../start/configuration.md#在无头主机登录订阅)
 
 ## `discovery`
 

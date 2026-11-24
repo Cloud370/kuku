@@ -34,6 +34,7 @@ For `kuku run`, place all options before the prompt — remaining words are trea
 | `kuku delete <session-id>` | Delete a Session |
 | `kuku config ...` | Show, validate, or edit config |
 | `kuku init` | Run local provider and credential setup |
+| `kuku auth ...` | Sign in to and manage model subscriptions on the service host |
 | `kuku prompts ...` | Inspect or export Prompt assets |
 | `kuku agents ...` | List or inspect Agent presets |
 | `kuku skills ...` | List or inspect Skills |
@@ -41,6 +42,18 @@ For `kuku run`, place all options before the prompt — remaining words are trea
 | `kuku server status` | Inspect service identity and activity |
 | `kuku server restart` | Restart the managed local service when idle |
 | `kuku web ...` | Open the browser UI for the selected service |
+
+## `kuku auth`
+
+| Command | Purpose |
+|---|---|
+| `kuku auth login chatgpt [name]` | Add an account or reauthorize a saved account |
+| `kuku auth list` | Show account names, masked emails, and sign-in status |
+| `kuku auth models chatgpt <name>` | List the account's available models |
+| `kuku auth proxy chatgpt <name> (--proxy URL \| --proxy-from-env \| --no-proxy)` | Change the saved account's network mode |
+| `kuku auth logout chatgpt <name>` | Clear that account's tokens and attempt remote revocation |
+
+Without a network flag, `login` uses the saved account setting or follows the environment for a new account. For proxy authentication, pass `--proxy-user` and either `--proxy-password-env` or `--proxy-password-file`. The password is read from the referenced source. [Headless sign-in](../start/configuration.md#sign-in-to-a-subscription-on-a-headless-host)
 
 ## Terminal interface
 
@@ -98,7 +111,8 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 | `/compact` | `/compress`, `/summarize` | Compact older context for the selected Agent once idle (also `/compact retry` and `/compact undo`). |
 | `/agents` | `/agent`, `/subagents` | Search Session Agents, switch recipients, or create an Agent. |
 | `/jobs` | `/job`, `/ps` | List background Jobs for the selected Agent, read live output, or cancel (`/jobs cancel <id>`). |
-| `/model` | `/models` | Pick, add, or edit model routes (`Ctrl+L` opens the same picker). |
+| `/model` | `/models` | Enter switches to the highlighted route. `d` saves it as the default and switches, `e` edits it, and `/` searches. Ctrl+L opens the same list. |
+| `/speed [tier]` | `/fast`, `/ultra`, `/ultrafast` | Choose the selected Agent's service tier above the conversation input. The shortcuts choose `fast` or `ultrafast`. Select **Follow model default** to clear the override. Type to filter the available tiers and press Tab to complete the selection. An unknown tier can be added with an optional short probe. |
 | `/thinking` | `/think`, `/effort` | Pick a thinking level for the current Agent, choose **Use default** to clear the override, or press `D` + `Enter` on a writable local route to save as the model default. |
 | `/statusline` | `/status-line` | Preview, toggle, reorder, and save status-line fields to `tui.toml`. |
 | `/save` | `/save-value` | Name pasted text or the current draft before sending. |
@@ -120,7 +134,9 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 
 ### Status and usage
 
-The default bottom status bar shows the active model and resolved thinking level (e.g. `gemini-4-neon · High`, with `Default` for provider-chosen), connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending model/thinking changes show under **Next model request**.
+The default bottom status bar shows the active model, resolved thinking level, and configured service tier, for example `gpt-6.2-sol xhigh ultrafast`, connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending settings show under **Next model request**.
+
+If the next message would use a different model route or effective service tier from this Agent’s last request, the composer shows the change and warns that the cached prefix may miss. Press Enter again to send using the original send timing. Esc closes the notice and keeps the draft.
 
 Above the composer, kuku displays the recipient (`To <agent>`), input delivery state (`Draft`, `Awaiting receipt`, `Input queued`, `Input accepted`), live elapsed Turn timer, and Agent execution state:
 

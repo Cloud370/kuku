@@ -12,10 +12,12 @@ mod openrouter_catalog;
 pub(crate) mod prepare;
 pub(crate) mod replay;
 pub(crate) mod report;
+mod request_fields;
 mod setup_api;
 mod setup_probes;
 mod setup_reasoning;
 pub(crate) mod sse;
+pub(crate) mod subscription;
 pub(crate) mod trace;
 pub(crate) mod transport;
 mod trial;
@@ -35,7 +37,9 @@ pub use setup_probes::{
     TrialSelection,
 };
 pub use setup_reasoning::{ReasoningCheck, ReasoningCheckResult};
-pub use trial::{trial_model, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS};
+pub use trial::{
+    trial_model, trial_model_with_route_request, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS,
+};
 pub use types::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,
     ProviderSettings, ProviderUsage,
@@ -46,10 +50,10 @@ use std::pin::Pin;
 use futures_core::Stream;
 
 pub(crate) use error::classify_stream_error;
-pub(crate) use prepare::prepare_provider_request;
 use trace::ProviderTraceMetadata;
 use types::{
-    PreparedProviderRequest, ProviderFailure, ProviderKind, ProviderRequest, ResolvedProvider,
+    PreparedProviderRequest, ProviderCorrelation, ProviderFailure, ProviderKind, ProviderRequest,
+    ResolvedProvider,
 };
 
 pub(crate) type ProviderChunkStream =
@@ -58,13 +62,14 @@ pub(crate) type ProviderChunkStream =
 pub(crate) async fn stream_provider(
     config: &ResolvedProvider,
     request: &ProviderRequest<'_>,
+    correlation: Option<&ProviderCorrelation>,
     trace: Option<ProviderTraceMetadata>,
 ) -> Result<ProviderChunkStream, ProviderFailure> {
-    match config.kind {
-        ProviderKind::Anthropic => anthropic::stream(config, request, trace).await,
-        ProviderKind::OpenAiCompatible => openai_compat::stream(config, request, trace).await,
-        ProviderKind::OpenAiResponses => openai_responses::stream(config, request, trace).await,
-    }
+    let prepared = match correlation {
+        Some(correlation) => prepare::prepare_provider_request(config, request, Some(correlation)),
+        None => prepare::prepare_single_request(config, request),
+    }?;
+    stream_prepared_provider(config, &prepared, trace).await
 }
 
 pub(crate) async fn stream_prepared_provider(
