@@ -57,7 +57,10 @@ fn finish_rewind_source(app: &mut App, event_id: u64, text: &str) {
         selection,
         ticket,
         event_id,
-        Ok(text.into()),
+        Ok(kuku_client::MessageDraft {
+            text: text.into(),
+            images: vec![],
+        }),
     ));
 }
 
@@ -397,7 +400,7 @@ fn deferred_queued_withdrawal_uses_the_refreshed_input_identity() {
     app.effects.clear();
     app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
     assert!(app.effects.iter().any(|job| matches!(job, Job::Save(command)
-        if matches!(&command.action, Action::Withdraw { input_command_id } if input_command_id == &id))));
+        if matches!(&command.action, Action::Withdraw { input_command_id, .. } if input_command_id == &id))));
 }
 
 #[test]
@@ -724,6 +727,7 @@ fn rewind_confirmation_commits_an_unsent_action_without_sending_the_draft() {
             target_event_id: 23,
             text,
             restore_files: true,
+            ..
         } if text == "restore me as a draft")));
 }
 
@@ -987,5 +991,64 @@ fn restart_requires_confirmation_and_preserves_draft_across_cancel_defer_and_suc
         assert_eq!("draft to keep", app.pane().draft.text());
         assert_eq!(selection, app.active);
         assert!(!app.restarting);
+    }
+}
+
+#[test]
+fn a_rewound_image_can_be_recalled_with_its_attachment_after_later_typing() {
+    let mut app = connected_app();
+    let mut draft = kuku_client::MessageDraft {
+        text: "Compare the label [Image #1] with this [Image #1]".into(),
+        images: vec![kuku_client::ImageAttachment {
+            marker: kuku_client::ImageMarker {
+                offset: "Compare the label [Image #1] with this ".len(),
+                label: "[Image #1]".into(),
+            },
+            data: "encoded-fixture".into(),
+            transparent: false,
+        }],
+    };
+    let marker = draft.images[0].marker.clone();
+    for changed_draft in [false, true] {
+        app.confirm_rewind_message(31, 8, draft.clone());
+        press(&mut app, KeyCode::Enter);
+        let Some(Job::Save(command)) = app.effects.last() else {
+            panic!("rewind command is durably saved");
+        };
+        let id = command.command_id.clone();
+        if changed_draft {
+            app.paste("draft typed before the rewind finished");
+        }
+        app.update(Update::Sent(
+            id.clone(),
+            Ok(Acknowledgement {
+                receipt: Receipt {
+                    command_id: id,
+                    event_id: 32,
+                    agent: "main".into(),
+                },
+                replayed: false,
+                status: None,
+                warnings: vec![],
+            }),
+        ));
+        if changed_draft {
+            assert_eq!(
+                app.pane().draft.text(),
+                "draft typed before the rewind finished"
+            );
+            app.pane_mut().recall_draft(-1);
+        }
+        assert_eq!(
+            app.pane().draft.atom_range(&marker.label),
+            marker.range_in(&draft.text)
+        );
+        assert_eq!(app.pane().attached_images().count(), 1);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.pane().attached_images().count(), 0);
+        assert!(app.pane().draft.text().contains("[Image #1]"));
+        app.pane_mut().draft.set_text(String::new());
+        // Use a distinct caption to prove the second rewind can be recalled independently.
+        draft.text.replace_range(..7, "Inspect");
     }
 }

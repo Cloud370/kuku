@@ -57,6 +57,7 @@ pub struct Query {
     pub(crate) turn_override: Option<u64>,
     pub(crate) events_path_override: Option<PathBuf>,
     pub(crate) skip_user_message: bool,
+    pub(crate) input_images: Vec<crate::execution::InputImage>,
     pub(crate) resume_input_turn: Option<u64>,
     pub(crate) model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
@@ -650,6 +651,7 @@ impl Query {
             turn_override: None,
             events_path_override: None,
             skip_user_message: false,
+            input_images: Vec::new(),
             resume_input_turn: None,
             model_request_budget: None,
         }

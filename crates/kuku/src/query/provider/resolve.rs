@@ -92,6 +92,7 @@ pub(in crate::query) fn ensure_resolved(pending: &mut PendingRun) -> Result<()> 
 
 pub(in crate::query) fn usable_model_routes(
     config: &crate::config::Config,
+    builtin_adapter: bool,
 ) -> Vec<crate::config::TierInfo> {
     config
         .tier_infos()
@@ -114,6 +115,15 @@ pub(in crate::query) fn usable_model_routes(
                 .selectable_reasoning_efforts()
                 .map(str::to_owned)
                 .collect();
+            info.image_input = selected.capabilities.image_input_support(builtin_adapter);
+            info.input_modalities = selected
+                .capabilities
+                .input_modalities
+                .map(|entry| entry.value);
+            info.output_modalities = selected
+                .capabilities
+                .output_modalities
+                .map(|entry| entry.value);
             info.service_tier = selected.settings.service_tier;
             info.service_choices = selected
                 .capabilities

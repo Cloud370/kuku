@@ -13,6 +13,7 @@ use super::{
 pub(super) struct TurnWork {
     pub(super) config: AgentConfig,
     pub(super) text: String,
+    pub(super) images: Vec<crate::execution::InputImage>,
     pub(super) skip_user_message: bool,
     pub(super) resume_input_turn: Option<u64>,
     pub(super) source: InputSource,
@@ -34,14 +35,31 @@ impl Session {
         address: &str,
         execution: u64,
         turn: u64,
+        first_step: bool,
     ) -> Result<StepBoundary> {
         let mut state = self.inner.state.lock().unwrap();
         let agent = self.executing_agent(&state, address, execution)?;
         if agent.snapshot.turn != Some(turn) {
             return Err(Error::ExecutionNotActive(execution));
         }
+        // Give the Turn's first image delivery its own request before admitting steering.
+        if first_step
+            && agent
+                .accepted
+                .iter()
+                .any(|entry| !entry.input.images.is_empty())
+        {
+            return Ok(StepBoundary {
+                source: None,
+                config: None,
+                skills: Vec::new(),
+            });
+        }
         let inputs = self.select_inputs(agent, Some(InputTiming::NextStep));
         let config = update_model_selection(&agent.snapshot);
+        if inputs.iter().any(|entry| !entry.input.images.is_empty()) {
+            self.validate_image_route(config.as_ref().unwrap_or(&agent.snapshot.config))?;
+        }
         let config = config
             .map(|config| -> Result<_> {
                 self.resolve_model(&config)?;
@@ -86,6 +104,7 @@ impl Session {
             text: source.message_text(input_text(inputs)),
             from: source.agent_address().map(str::to_owned),
             job_delivery: source.is_job_delivery(),
+            images: images_for_inputs(inputs),
         })?;
         Ok(Some(source))
     }
@@ -230,6 +249,18 @@ impl Session {
                 (input_text(&prompt_inputs), false, None, message_input_ids)
             }
         };
+        let images = if skip_user_message {
+            Vec::new()
+        } else {
+            let selected: Vec<_> = inputs
+                .iter()
+                .filter(|entry| message_input_ids.contains(&entry.input.command_id))
+                .collect();
+            if selected.iter().any(|entry| !entry.input.images.is_empty()) {
+                self.validate_image_route(&config)?;
+            }
+            images_for_inputs(selected)
+        };
         let turn = if reply.is_some() {
             turn.ok_or_else(|| {
                 Error::InvalidEventStream(format!(
@@ -242,6 +273,7 @@ impl Session {
         Ok(Some(TurnWork {
             config,
             text,
+            images,
             skip_user_message,
             resume_input_turn,
             source,
@@ -275,15 +307,21 @@ impl Session {
             .iter()
             .filter(|entry| timing.is_none_or(|timing| entry.input.timing == timing))
             .peekable();
-        let source = eligible.peek().map(|entry| &entry.input.source);
+        let first = eligible.peek().copied();
         let mut bytes = 0;
         eligible
-            .take_while(|entry| {
+            .enumerate()
+            .take_while(|(index, entry)| {
                 bytes += input_model_text(&entry.input.text, &entry.values).len() + 2;
-                Some(&entry.input.source) == source
+                (*index == 0
+                    || first.is_some_and(|first| {
+                        first.input.images.is_empty()
+                            && entry.input.images.is_empty()
+                            && entry.input.source == first.input.source
+                    }))
                     && bytes <= self.inner.options.limits.max_input_bytes + 2
             })
-            .cloned()
+            .map(|(_, entry)| entry.clone())
             .collect()
     }
 
@@ -342,10 +380,31 @@ fn update_model_selection(snapshot: &super::AgentSnapshot) -> Option<AgentConfig
     (config != *active).then_some(config)
 }
 
+fn images_for_inputs<'a>(
+    entries: impl IntoIterator<Item = &'a QueuedDelivery>,
+) -> Vec<crate::execution::InputImage> {
+    let mut images: Vec<_> = entries
+        .into_iter()
+        .flat_map(|entry| entry.input.images.iter().cloned())
+        .collect();
+    images.sort_by_key(|image| image.marker().map_or(usize::MAX, |marker| marker.offset));
+    images
+}
+
 fn input_text(entries: &[QueuedDelivery]) -> String {
     entries
         .iter()
-        .map(|entry| input_model_text(&entry.input.text, &entry.values))
+        .map(|entry| {
+            if entry.input.text.trim().is_empty() && !entry.input.images.is_empty() {
+                let markers = (1..=entry.input.images.len())
+                    .map(|index| format!("[Image #{index}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                Cow::Owned(input_model_text(&markers, &entry.values).into_owned())
+            } else {
+                input_model_text(&entry.input.text, &entry.values)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }

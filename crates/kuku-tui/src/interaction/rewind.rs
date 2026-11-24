@@ -7,12 +7,18 @@ use crate::keys::Shortcut;
 use crate::menu::{Prompt, PromptKind};
 
 impl App {
-    pub(crate) fn confirm_rewind_message(&mut self, event_id: u64, turn: u64, text: String) {
+    pub(crate) fn confirm_rewind_message(
+        &mut self,
+        event_id: u64,
+        turn: u64,
+        draft: kuku_client::MessageDraft,
+    ) {
         self.effects.push(Job::ClosePicker);
         self.modal = Some(Modal::Prompt(Box::new(Prompt {
             kind: PromptKind::RewindMessage {
                 event_id,
-                text,
+                text: draft.text,
+                images: draft.images,
                 restore_files: false,
             },
             title: format!("Edit past message · Turn {turn}"),

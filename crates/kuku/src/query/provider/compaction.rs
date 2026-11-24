@@ -35,6 +35,7 @@ pub(super) enum Outcome {
 #[derive(Clone, Copy)]
 pub(super) enum Trigger<'a> {
     Pressure,
+    RequestBytes,
     ProviderOverflow { rejected_request: &'a str },
     Manual { closed_turn: bool },
 }
@@ -65,7 +66,7 @@ pub(super) async fn compact(
     context: &mut ContextCommit,
     resolved: &ResolvedProvider,
     correlation: &ProviderCorrelation,
-    before_bytes: usize,
+    before_bytes: Option<usize>,
     trigger: Trigger<'_>,
 ) -> Result<Outcome> {
     let manual = matches!(trigger, Trigger::Manual { .. });
@@ -79,6 +80,7 @@ pub(super) async fn compact(
         .request_base
         .as_ref()
         .expect("prepared task request");
+    let can_admit_input = manual || !task.has_current_images();
     let headroom = task.context_headroom(resolved);
     let context_limit = headroom.total_budget();
     let budget = headroom.input_budget();
@@ -115,7 +117,7 @@ pub(super) async fn compact(
     if pressure && material_tokens < minimum_savings.max(COMPACTION_RELIEF_TOKENS) {
         return Ok(Outcome::Keep);
     }
-    let Some(instruction) = task.checkpoint_instruction().map(str::to_owned) else {
+    let Some(instruction) = task.checkpoint_instruction()? else {
         return Ok(Outcome::Keep);
     };
     let mut candidate = context.clone();
@@ -201,6 +203,7 @@ pub(super) async fn compact(
         "connection":prepared.connection_name, "model":prepared.model, "manual":manual,
         "trigger":match trigger {
             Trigger::Pressure => "token_budget",
+            Trigger::RequestBytes => "request_byte_budget",
             Trigger::ProviderOverflow { .. } => "provider_overflow",
             Trigger::Manual { .. } => "manual",
         },
@@ -221,7 +224,7 @@ pub(super) async fn compact(
             }
         } => true,
     };
-    let waiting_for_input = completed && session.has_step_input(&agent)?;
+    let waiting_for_input = completed && can_admit_input && session.has_step_input(&agent)?;
     pending.model_request_count += 1;
     let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let pricing = RequestPricing::new(
@@ -316,7 +319,7 @@ pub(super) async fn compact(
             pending.failed_compaction = Some(context.failed_compaction(material_tokens));
         }
         finish["continues_with_previous_context"] = (matches!(trigger, Trigger::Pressure)
-            && wire_limit.is_none_or(|limit| before_bytes <= limit))
+            && wire_limit.is_none_or(|limit| before_bytes.is_some_and(|bytes| bytes <= limit)))
         .into();
     }
     session.commit_compaction_accounting(&agent, execution, EventPayload::Unknown(finish))?;

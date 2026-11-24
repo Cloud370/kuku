@@ -41,6 +41,7 @@ async fn ledger_events_decode_known_and_unknown_payloads_from_the_server_envelop
                 ts:"2026-11-20T00:00:00Z".into(),conversation:"main".into(),turn:7,
                 text:"retained input".into(),from:None,
                 job_delivery: false,
+                images: Vec::new(),
             }},
             {"id":10,"payload":EventPayload::Unknown(json!({
                 "id":10,"kind":"runtime.step_prepared","agent":"main","turn":7,
@@ -248,6 +249,8 @@ fn shared_protocol_preserves_the_command_id_for_each_queue_transition() {
     let action = Action::ReplaceQueued {
         input_command_id: "send-example".into(),
         text: "Inspect the two modified files".into(),
+        image_markers: vec![],
+        draft_images: vec![],
     };
     assert_eq!(
         fixture["queued_replacement"],
@@ -291,6 +294,7 @@ fn message_rewind_protocol_preserves_exact_event_text_and_restore_opt_in() {
     let action = Action::RewindMessage {
         target_event_id: 41,
         text: "keep this as an unsent draft".into(),
+        draft_images: vec![],
         restore_files: false,
     };
     let encoded = serde_json::to_value(&action).unwrap();
@@ -322,6 +326,7 @@ async fn missing_acknowledgement_reopens_exact_command_and_checks_receipt_before
             text: "Inspect the workspace".into(),
             timing: Timing::Steer,
             values: Vec::new(),
+            images: Vec::new(),
             bootstrap_skill: None,
             create: Some(Box::default()),
             config_patch: None,
@@ -360,7 +365,9 @@ async fn missing_acknowledgement_reopens_exact_command_and_checks_receipt_before
 async fn rejected_queued_replacement_remains_recoverable_after_reopening_the_store() {
     let router = Router::new().route(
         "/sessions/{id}/commands",
-        post(|| async {
+        post(|Json(request): Json<Value>| async move {
+            assert!(request.get("draft_images").is_none());
+            assert_eq!(request["image_markers"][0]["label"], "[Image #1]");
             (
                 StatusCode::CONFLICT,
                 Json(json!({"ok":false,"code":"input_not_queued","message":"Input already admitted"})),
@@ -371,12 +378,23 @@ async fn rejected_queued_replacement_remains_recoverable_after_reopening_the_sto
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("pending");
     let store = PendingStore::open(&path).unwrap();
+    let text = "Keep this edited text\nincluding the second line [Image #1]";
+    let marker = kuku_client::ImageMarker {
+        offset: text.find("[Image #1]").unwrap(),
+        label: "[Image #1]".into(),
+    };
     let command = Command {
         target: target(),
         command_id: "edit-example".into(),
         action: Action::ReplaceQueued {
             input_command_id: "original-example".into(),
-            text: "Keep this edited text\nincluding the second line".into(),
+            text: text.into(),
+            image_markers: vec![marker.clone()],
+            draft_images: vec![kuku_client::ImageAttachment {
+                marker,
+                data: "saved image bytes".into(),
+                transparent: false,
+            }],
         },
     };
     let error = store.submit(&client, &command).await.unwrap_err();

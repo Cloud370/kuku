@@ -49,6 +49,7 @@ pub(crate) fn native_replay(
         | MessageBlock::Text(_)
         | MessageBlock::Thinking(_)
         | MessageBlock::ToolUse(_)
+        | MessageBlock::InputImage(_)
         | MessageBlock::ToolResult(_) => None,
     })
 }

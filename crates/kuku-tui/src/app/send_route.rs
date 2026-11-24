@@ -5,7 +5,7 @@ use crate::jobs::{Job, Selection};
 
 use super::{App, Modal, PendingStage};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RouteChange {
     previous: ModelRequestRoute,
     next: ModelRequestRoute,

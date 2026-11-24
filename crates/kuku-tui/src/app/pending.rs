@@ -13,6 +13,9 @@ impl App {
     }
 
     pub(super) fn send_with_route(&mut self, timing: Timing, confirmed: Option<&RouteChange>) {
+        if self.pane().clipboard_ticket.is_some() {
+            return;
+        }
         let empty =
             self.pane().draft.text().trim().is_empty() && self.pane().value_attachments.is_empty();
         if empty || !self.require_service() {
@@ -51,6 +54,9 @@ impl App {
             }
             return;
         }
+        if self.prepare_draft_images(timing, confirmed) {
+            return;
+        }
         if self.pane().creation_rejected && !self.pane().exists {
             self.renew_draft_identity();
         }
@@ -64,6 +70,8 @@ impl App {
             .map(str::to_owned);
         let create = (!pane.exists).then(|| Box::new(pane.initial_config.clone()));
         let values = pane.take_values();
+        let images = std::mem::take(&mut pane.encoded_images);
+        pane.clear_draft_images();
         pane.sending = true;
         self.issue(
             active,
@@ -71,6 +79,7 @@ impl App {
                 text,
                 timing,
                 values,
+                images,
                 create,
                 create_agent_if_missing: false,
                 config_patch: None,
@@ -196,6 +205,28 @@ mod tests {
             }))
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn loading_history_after_an_early_refresh_keeps_the_first_image() {
+        let mut app = connected();
+        let snapshot = state_snapshot(&app, 11, "idle", None);
+        let selection = app.selection();
+        app.update(Update::Refreshed(selection.clone(), Ok(snapshot.clone())));
+        app.update(Update::Loaded(
+            selection,
+            snapshot,
+            serde_json::from_value(json!({
+                "entries":[{"id":10,"agent":"main","type":"user","turn":5,
+                    "text":"[Image #1]","has_images":true}],
+                "rewind_groups":[],
+                "next_before":null,
+            }))
+            .unwrap(),
+        ));
+
+        app.pane_mut().recall_draft(-1);
+        assert_eq!(app.pane().draft.recalled_image_event(), Some(10));
     }
 
     #[test]
@@ -405,11 +436,22 @@ mod tests {
         let mut app = connected();
         app.pane_mut().exists = true;
         app.pane_mut().draft.insert("independent draft");
+        let marker = kuku_client::ImageMarker {
+            offset: "edited text\nwith a newline ".len(),
+            label: "[Image #1]".into(),
+        };
+        let image = kuku_client::ImageAttachment {
+            marker: marker.clone(),
+            data: "saved image bytes".into(),
+            transparent: false,
+        };
         app.issue(
             app.active.clone(),
             Action::ReplaceQueued {
                 input_command_id: "admitted".into(),
-                text: "edited text\nwith a newline".into(),
+                text: "edited text\nwith a newline [Image #1]".into(),
+                image_markers: vec![marker],
+                draft_images: vec![image],
             },
         );
         let Some(Job::Save(command)) = app.effects.pop() else {
@@ -427,9 +469,10 @@ mod tests {
         assert_eq!("independent draft", app.pane().draft.text());
         app.restore_rejected(&command.command_id);
         assert_eq!(
-            "independent draft\n\nedited text\nwith a newline",
+            "independent draft\n\nedited text\nwith a newline [Image #1]",
             app.pane().draft.text()
         );
+        assert_eq!(app.pane().attached_images().count(), 1);
         assert!(app.pending.contains_key(&command.command_id));
     }
 
@@ -581,16 +624,15 @@ impl App {
                 && !matches!(item.command.action, Action::ReplaceQueued { .. })
         }) {
             if let Some(item) = self.pending.remove(id) {
-                if let Action::Withdraw { input_command_id } = &item.command.action {
-                    self.withdrawal_drafts
-                        .remove(&(item.command.target.clone(), input_command_id.clone()));
-                }
                 if let Some(pane) = self
                     .panes
                     .get_mut(&Address::from_target(&item.command.target))
                 {
                     pane.deliveries.remove(id);
-                    if let Action::Withdraw { input_command_id } = &item.command.action {
+                    if let Action::Withdraw {
+                        input_command_id, ..
+                    } = &item.command.action
+                    {
                         pane.deliveries.withdrawal(input_command_id, None);
                     }
                 }
@@ -616,11 +658,15 @@ impl App {
 
     pub(crate) fn restore_rejected(&mut self, id: &str) {
         if let Some(item) = self.pending.get(id) {
-            if let Action::ReplaceQueued { text, .. } = &item.command.action {
+            if let Action::ReplaceQueued {
+                text, draft_images, ..
+            } = &item.command.action
+            {
                 let address = Address::from_target(&item.command.target);
                 let text = text.clone();
+                let images = draft_images.clone();
                 self.select(address, true, String::new());
-                self.append_to_draft(&text);
+                self.pane_mut().restore_draft_images(&text, images);
                 self.message(
                     "Copied replacement to draft · delivery recovery keeps the saved edit",
                 );
@@ -635,6 +681,7 @@ impl App {
             text,
             create,
             values,
+            images,
             ..
         } = item.command.action
         {
@@ -645,19 +692,9 @@ impl App {
                 pane.creation_rejected = true;
             }
             pane.restore_values(values);
-            self.append_to_draft(&text);
+            pane.restore_draft_images(&text, images);
             self.message("Restored rejected text to draft");
         }
-    }
-
-    fn append_to_draft(&mut self, text: &str) {
-        let editor = &mut self.pane_mut().draft;
-        let mut draft = editor.take_text();
-        if !draft.is_empty() {
-            draft.push_str("\n\n");
-        }
-        draft.push_str(text);
-        editor.set_text(draft);
     }
 
     pub(super) fn saved(&mut self, command: Command, result: Result<(), Error>) {
@@ -690,16 +727,15 @@ impl App {
         match result {
             Ok(()) => {
                 if let Some(item) = self.pending.remove(id) {
-                    if let Action::Withdraw { input_command_id } = &item.command.action {
-                        self.withdrawal_drafts
-                            .remove(&(item.command.target.clone(), input_command_id.clone()));
-                    }
                     if let Some(pane) = self
                         .panes
                         .get_mut(&Address::from_target(&item.command.target))
                     {
                         pane.deliveries.remove(id);
-                        if let Action::Withdraw { input_command_id } = &item.command.action {
+                        if let Action::Withdraw {
+                            input_command_id, ..
+                        } = &item.command.action
+                        {
                             pane.deliveries.withdrawal(input_command_id, None);
                         }
                         if matches!(item.command.action, Action::Send { .. }) {
@@ -810,13 +846,14 @@ impl App {
                 text,
                 create,
                 values,
+                images,
                 ..
             } = &item.command.action
             {
                 pane.sending = false;
                 pane.creation_rejected |= rejected && create.is_some();
                 if clear && pane.draft.text().is_empty() {
-                    pane.draft.set_text(text.clone());
+                    pane.restore_draft_images(text, images.clone());
                     pane.restore_values(values.clone());
                     restored = true;
                 }
@@ -859,7 +896,12 @@ impl App {
         let address = Address::from_target(&target);
         let active = address == self.active;
         match item.command.action {
-            Action::Send { text, timing, .. } => {
+            Action::Send {
+                text,
+                timing,
+                images,
+                ..
+            } => {
                 let pane = self.panes.entry(address).or_default();
                 let initial = !pane.exists;
                 pane.exists = true;
@@ -869,7 +911,10 @@ impl App {
                     SubmissionStatus::from_receipt(ack.status),
                 );
                 pane.deliveries.receipt(&ack, &text, timing, false);
-                pane.draft.remember(&text);
+                pane.cancel_image_recall();
+                if images.is_empty() {
+                    pane.draft.remember(&text);
+                }
                 if pane.title.is_empty() {
                     pane.title = crate::text::shorten(&crate::text::single_line(&text), 68);
                 }
@@ -908,17 +953,18 @@ impl App {
             Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
                 self.confirmation("Reply received")
             }
-            Action::Withdraw { input_command_id } => {
-                let restore_text = self
-                    .withdrawal_drafts
-                    .remove(&(target, input_command_id.clone()));
-                if ack.status == Some(InputStatus::Withdrawn) {
-                    if let Some(text) = restore_text {
-                        if let Some(pane) = self.panes.get_mut(&address) {
-                            if pane.draft.text().is_empty() {
-                                pane.draft.set_text(text);
-                            }
-                        }
+            Action::Withdraw {
+                input_command_id,
+                draft,
+            } => {
+                if ack.status == Some(InputStatus::Withdrawn)
+                    && let Some(draft) = draft
+                    && let Some(pane) = self.panes.get_mut(&address)
+                {
+                    if pane.draft.text().is_empty() && pane.value_attachments.is_empty() {
+                        pane.restore_draft_images(&draft.text, draft.images);
+                    } else {
+                        pane.draft.remember_draft(draft);
                     }
                 }
                 if ack.status.is_some() {
@@ -944,6 +990,7 @@ impl App {
             Action::ReplaceQueued {
                 input_command_id,
                 text,
+                ..
             } => {
                 let pane = self.panes.entry(address).or_default();
                 let timing = pane
@@ -964,17 +1011,22 @@ impl App {
                     Some(InputStatus::Queued) | None => "Queued input replaced",
                 });
             }
-            Action::RewindMessage { text, .. } => {
+            Action::RewindMessage {
+                text, draft_images, ..
+            } => {
                 let mut draft = self.rewind_drafts.remove(id).unwrap_or(RewindDraft {
                     address: address.clone(),
-                    text,
+                    draft: kuku_client::MessageDraft {
+                        text,
+                        images: draft_images,
+                    },
                     revision: 0,
                     restored: None,
                 });
                 let restored = self.restore_rewind_draft(&mut draft);
                 if ack.warnings.is_empty() {
                     self.confirmation(if restored {
-                        "Message rewound · original text restored as an unsent draft"
+                        "Message rewound · original message restored as an unsent draft"
                     } else {
                         "Message rewound · original text retained in Ctrl+Up history"
                     });

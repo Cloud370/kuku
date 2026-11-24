@@ -1,6 +1,5 @@
 use crate::error::Result;
 use crate::event::types::{ContextMessage, EventPayload, StoredEvent};
-use crate::prompt::{ProjectContextInput, render_project_context};
 
 use super::message::{CanonicalMessage, MessageBlock};
 use super::provenance::FileSource;
@@ -98,6 +97,7 @@ impl ContextAssembly {
                         MessageBlock::Thinking(t) => t.as_str(),
                         MessageBlock::ToolUse(_)
                         | MessageBlock::ToolResult(_)
+                        | MessageBlock::InputImage(_)
                         | MessageBlock::ProviderReplay { .. } => "",
                     })
                     .collect::<Vec<_>>()
@@ -139,91 +139,141 @@ pub fn assemble_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
 ) -> Result<ContextAssembly> {
-    assemble_context_inner(input, catalog, false).map(|(assembly, _)| assembly)
+    assemble_context_for_model(input, catalog, agent_prompt_facts(None, false))
 }
 
-fn render_project_policy(
+pub(crate) fn assemble_context_for_model(
+    input: ContextInput,
+    catalog: &crate::prompt::PromptCatalog,
+    agent: minijinja::Value,
+) -> Result<ContextAssembly> {
+    assemble_context_inner(input, catalog, false, agent).map(|(assembly, _)| assembly)
+}
+
+pub(crate) fn agent_prompt_facts(
+    resolved: Option<&crate::provider::types::ResolvedProvider>,
+    builtin_adapter: bool,
+) -> minijinja::Value {
+    use crate::config::ImageInputSupport;
+    let image_input = resolved.map_or(ImageInputSupport::Unconfirmed, |route| {
+        route.capabilities.image_input_support(builtin_adapter)
+    });
+    let declared_input = resolved
+        .and_then(|route| route.capabilities.input_modalities.as_ref())
+        .map(|entry| entry.value.as_slice());
+    let declared_output = resolved
+        .and_then(|route| route.capabilities.output_modalities.as_ref())
+        .map(|entry| entry.value.as_slice());
+    minijinja::context! {
+        model => minijinja::context! {
+            input_modalities => minijinja::value::Serde(declared_input),
+            output_modalities => minijinja::value::Serde(declared_output),
+        },
+        image_input => minijinja::context! {
+            supported => image_input == ImageInputSupport::Supported,
+            status => minijinja::value::Serde(image_input),
+        },
+        effective_input_modalities => minijinja::value::Serde(image_input.modalities()),
+        output => minijinja::value::Serde(resolved.map(|route| route.output).unwrap_or_default()),
+    }
+}
+
+pub(crate) fn render_modalities(modalities: Option<&[String]>) -> String {
+    modalities.map_or_else(
+        || "unknown".into(),
+        |values| serde_json::json!(values).to_string(),
+    )
+}
+
+#[derive(serde::Serialize)]
+struct PromptModel<'a> {
+    tier: &'a str,
+    #[serde(flatten)]
+    info: &'a crate::config::TierInfo,
+    effective_input_modalities: &'static [&'static str],
+    input_modalities_text: String,
+    output_modalities_text: String,
+    image_input_label: &'static str,
+}
+
+fn segment_facts(
     input: &ContextInput,
     catalog: &crate::prompt::PromptCatalog,
-) -> Result<String> {
-    let project_instructions_text = if input.project_instructions.is_empty() {
-        "No project instructions found.".to_string()
-    } else {
+    renderer: &crate::prompt::PromptRenderer,
+    agent: minijinja::Value,
+) -> Result<minijinja::Value> {
+    let tools: Vec<_> = input.tools.iter().map(|tool| tool.name.as_str()).collect();
+    let models = (tools.contains(&"create_agent") || tools.contains(&"fetch_web")).then(|| {
         input
-            .project_instructions
+            .model_tiers
             .iter()
-            .map(|s| s.content.as_str())
+            .map(|info| PromptModel {
+                tier: &info.name,
+                info,
+                effective_input_modalities: info.image_input.modalities(),
+                input_modalities_text: render_modalities(info.input_modalities.as_deref()),
+                output_modalities_text: render_modalities(info.output_modalities.as_deref()),
+                image_input_label: info.image_input.label(),
+            })
             .collect::<Vec<_>>()
-            .join("\n\n")
-    };
-
-    let can_select_model = input
-        .tools
+    });
+    let project_instructions: Vec<_> = input
+        .project_instructions
         .iter()
-        .any(|tool| matches!(tool.name.as_str(), "create_agent" | "fetch_web"));
-    let model_tiers_text = if !can_select_model {
-        None
-    } else if input.model_tiers.is_empty() {
-        Some("No model tiers configured.".to_string())
+        .map(|source| source.content.as_str())
+        .collect();
+    let model_tiers_rendered = if models.is_some()
+        && catalog
+            .blocks
+            .get("project-policy")
+            .is_some_and(|asset| asset.text.contains("model_tiers_rendered"))
+    {
+        renderer
+            .render(
+                "blocks/model-tiers.md",
+                minijinja::context! { models => minijinja::value::Serde(&models), agent => agent.clone(), tools => minijinja::value::Serde(&tools) },
+            )?
+            .trim_end()
+            .to_owned()
     } else {
-        Some(
-            input
-                .model_tiers
-                .iter()
-                .map(|info| {
-                    format!(
-                        "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, output text)",
-                        info.name,
-                        info.purpose,
-                        info.model,
-                        info.reasoning_effort.as_deref().unwrap_or("provider default"),
-                        if info.reasoning_choices.is_empty() {
-                            "use default".into()
-                        } else {
-                            info.reasoning_choices.join(", ")
-                        },
-                        info.service_tier.as_deref().unwrap_or("provider default"),
-                        match &info.service_choices {
-                            None => "unknown".into(),
-                            Some(choices) if choices.is_empty() => "none".into(),
-                            Some(choices) => choices.join(", "),
-                        },
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
+        String::new()
     };
-
-    // ---- Layer 2: project_policy ----
-    let project_policy = catalog.blocks.get("project-policy").ok_or_else(|| {
-        crate::error::Error::PromptRender("missing project-policy template".into())
-    })?;
-    render_project_context(
-        &project_policy.text,
-        &ProjectContextInput {
-            workspace_root: input.environment.workspace_path.clone(),
-            platform: input.environment.platform.clone(),
-            current_date: input.environment.current_date.clone(),
-            project_instructions_rendered: project_instructions_text,
-            model_tiers_rendered: model_tiers_text,
-        },
-    )
+    let project_instructions_rendered = if project_instructions.is_empty() {
+        "No project instructions found.".to_owned()
+    } else {
+        project_instructions.join("\n\n")
+    };
+    Ok(minijinja::context! {
+        agent => agent,
+        tools => minijinja::value::Serde(&tools),
+        models => minijinja::value::Serde(&models),
+        workspace_root => &input.environment.workspace_path,
+        platform => &input.environment.platform,
+        current_date => &input.environment.current_date,
+        project_instructions => minijinja::value::Serde(&project_instructions),
+        project_instructions_rendered => project_instructions_rendered,
+        model_tiers_rendered => model_tiers_rendered,
+        memory_enabled => input.enable_memory,
+    })
 }
 
 pub(crate) fn assemble_segment_context(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
+    agent: minijinja::Value,
 ) -> Result<(ContextAssembly, usize)> {
-    assemble_context_inner(input, catalog, true)
+    assemble_context_inner(input, catalog, true, agent)
 }
 
 fn assemble_context_inner(
     input: ContextInput,
     catalog: &crate::prompt::PromptCatalog,
     common_first: bool,
+    agent: minijinja::Value,
 ) -> Result<(ContextAssembly, usize)> {
-    let project_policy_text = render_project_policy(&input, catalog)?;
+    let renderer = catalog.renderer();
+    let facts = segment_facts(&input, catalog, &renderer, agent)?;
+    let project_policy_text = renderer.render("blocks/project-policy.md", facts.clone())?;
 
     // ---- Layer 3: agent identity ----
     let identity_text = input.agent_instructions.clone();
@@ -235,7 +285,7 @@ fn assemble_context_inner(
             "delegation",
             ["create_agent", "send_message", "list_agents"]
                 .iter()
-                .all(|name| has_tool(name)),
+                .any(|name| has_tool(name)),
         ),
         (
             "memory",
@@ -254,20 +304,24 @@ fn assemble_context_inner(
         .unwrap_or_else(|| "No project memory.".to_string());
 
     let global_rendered = if input.enable_memory {
-        catalog
-            .memory
-            .get("global")
-            .map(|a| a.text.replace("{{memory_content}}", &global_memory_text))
-            .unwrap_or_default()
+        renderer.render(
+            "memory/global.md",
+            minijinja::context! {
+                memory_content => global_memory_text,
+                ..facts.clone()
+            },
+        )?
     } else {
         String::new()
     };
     let project_rendered = if input.enable_memory {
-        catalog
-            .memory
-            .get("project")
-            .map(|a| a.text.replace("{{memory_content}}", &project_memory_text))
-            .unwrap_or_default()
+        renderer.render(
+            "memory/project.md",
+            minijinja::context! {
+                memory_content => project_memory_text,
+                ..facts.clone()
+            },
+        )?
     } else {
         String::new()
     };
@@ -291,42 +345,26 @@ fn assemble_context_inner(
     let runtime_context = runtime_blocks
         .filter(|blocks| !blocks.is_empty())
         .map(|blocks| {
-            let wrapper = catalog
-                .runtime
-                .get("context")
-                .map(|a| a.text.clone())
-                .unwrap_or_else(|| {
-                    "<kuku_runtime_context>\n{{runtime_blocks}}\n</kuku_runtime_context>"
-                        .to_string()
-                });
-            Ok::<_, crate::error::Error>(wrapper.replace("{{runtime_blocks}}", &blocks))
+            renderer.render(
+                "runtime/context.md",
+                minijinja::context! {
+                    runtime_blocks => blocks,
+                    ..facts.clone()
+                },
+            )
         })
         .transpose()?;
 
     // ---- Assemble prelude messages (snapshot layers 2-6) ----
     let mut prelude = Vec::new();
+    let mut rendered_guidance = Vec::new();
     for (key, _) in guidance.iter().filter(|(_, selected)| *selected) {
-        if let Some(asset) = catalog
-            .blocks
-            .get(*key)
-            .filter(|asset| !asset.text.is_empty())
-        {
-            let text = if *key == "tool-guidance" {
-                asset
-                    .text
-                    .split_inclusive('\n')
-                    .filter_map(|line| {
-                        let Some(rest) = line.strip_prefix("<!-- tools: ") else {
-                            return Some(line);
-                        };
-                        let (names, text) = rest.split_once(" -->")?;
-                        names.split_whitespace().all(has_tool).then_some(text)
-                    })
-                    .collect()
-            } else {
-                asset.text.clone()
-            };
-            prelude.push(CanonicalMessage::user_text(text));
+        if let Some(asset) = catalog.blocks.get(*key) {
+            let text = renderer.render(&format!("blocks/{key}.md"), facts.clone())?;
+            if !text.trim().is_empty() {
+                prelude.push(CanonicalMessage::user_text(text));
+                rendered_guidance.push(asset);
+            }
         }
     }
     let identity_slot = if common_first {
@@ -365,18 +403,16 @@ fn assemble_context_inner(
         path: catalog.system.path.clone(),
         hash: catalog.system.hash.clone(),
     }];
-    for key in std::iter::once("project-policy").chain(
-        guidance
-            .into_iter()
-            .filter(|(_, selected)| *selected)
-            .map(|(key, _)| key),
-    ) {
-        if let Some(a) = catalog.blocks.get(key) {
-            prompt_asset_sources.push(FileSource {
-                path: a.path.clone(),
-                hash: a.hash.clone(),
-            });
-        }
+    for asset in catalog
+        .blocks
+        .get("project-policy")
+        .into_iter()
+        .chain(rendered_guidance)
+    {
+        prompt_asset_sources.push(FileSource {
+            path: asset.path.clone(),
+            hash: asset.hash.clone(),
+        });
     }
 
     let mut memory_sources = Vec::new();
@@ -389,7 +425,7 @@ fn assemble_context_inner(
 
     Ok((
         ContextAssembly {
-            system_prompt: catalog.system.text.clone(),
+            system_prompt: renderer.render("system.md", facts)?,
             prelude_messages: prelude,
             history: input.history,
             tools: input.tools,

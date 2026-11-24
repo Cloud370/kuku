@@ -16,7 +16,7 @@ use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, Re
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before [DONE]";
 
-pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
+pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result<Value> {
     let has_tools = !request.assembly.tools.is_empty();
     let mut messages = vec![json!({
         "role": "system",
@@ -25,9 +25,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
     for message in &request.assembly.prelude_messages {
         messages.extend(convert_user_message(message));
     }
-    if let Some(summary) = &request.assembly.handoff_summary {
-        let template = &request.catalog.runtime["handoff-context"].text;
-        let content = template.replace("{{handoff_summary}}", summary);
+    if let Some(content) = request.render_handoff()? {
         messages.push(json!({
             "role": "user",
             "content": content,
@@ -96,7 +94,7 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         );
     }
 
-    body
+    Ok(body)
 }
 
 fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
@@ -119,6 +117,7 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
             }
             MessageBlock::ToolUse(_)
             | MessageBlock::Thinking(_)
+            | MessageBlock::InputImage(_)
             | MessageBlock::ProviderReplay { .. } => {}
         }
     }
@@ -139,6 +138,7 @@ fn convert_assistant_message(message: &CanonicalMessage, has_tools: bool) -> Val
             MessageBlock::ToolUse(_)
             | MessageBlock::ToolResult(_)
             | MessageBlock::Thinking(_)
+            | MessageBlock::InputImage(_)
             | MessageBlock::ProviderReplay { .. } => None,
         })
         .collect::<Vec<_>>()
@@ -160,6 +160,7 @@ fn convert_assistant_message(message: &CanonicalMessage, has_tools: bool) -> Val
             MessageBlock::Text(_)
             | MessageBlock::ToolResult(_)
             | MessageBlock::Thinking(_)
+            | MessageBlock::InputImage(_)
             | MessageBlock::ProviderReplay { .. } => None,
         })
         .collect::<Vec<_>>();

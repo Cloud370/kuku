@@ -42,6 +42,38 @@ pub enum Timing {
     NextTurn,
 }
 
+/// An image paired with its display label in a submitted draft.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAttachment {
+    /// Marker identifying the attachment's location in the draft.
+    #[serde(flatten)]
+    pub marker: crate::ImageMarker,
+    /// Base64-encoded PNG or JPEG.
+    pub data: String,
+    /// Whether the source includes visible transparency.
+    #[serde(default)]
+    pub transparent: bool,
+}
+
+impl std::fmt::Debug for ImageAttachment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ImageAttachment")
+            .field("marker", &self.marker)
+            .field("encoded_len", &self.data.len())
+            .finish()
+    }
+}
+
+/// The original contents of a committed user message, ready to restore to a composer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageDraft {
+    /// Exact recorded message text.
+    pub text: String,
+    /// Encoded images and their markers.
+    pub images: Vec<ImageAttachment>,
+}
+
 /// A durable mutation the service can associate with a caller command ID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -55,6 +87,9 @@ pub enum Action {
         /// Exact saved output references attached to the input.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         values: Vec<OutputReference>,
+        /// Base64-encoded PNG or JPEG attachments.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageAttachment>,
         /// Optional Skill instructions selected for this input's acceptance boundary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bootstrap_skill: Option<String>,
@@ -99,6 +134,9 @@ pub enum Action {
     Withdraw {
         /// The input's original command identity.
         input_command_id: String,
+        /// The user's saved draft for local recovery after a successful withdrawal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draft: Option<MessageDraft>,
     },
     /// Replace the text of one input before it is admitted, preserving its queue position.
     ReplaceQueued {
@@ -106,6 +144,12 @@ pub enum Action {
         input_command_id: String,
         /// The text delivered under this replacement command's identity.
         text: String,
+        /// Original attachments explicitly retained at their new positions.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        image_markers: Vec<crate::ImageMarker>,
+        /// Attachment bytes saved locally with the edit for recovery after rejection.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        draft_images: Vec<ImageAttachment>,
     },
     /// Rewind one committed user message and later history for the selected Agent.
     RewindMessage {
@@ -113,6 +157,9 @@ pub enum Action {
         target_event_id: u64,
         /// Original text shown by the client, validated against the durable target.
         text: String,
+        /// Images retained in the durable client command for draft recovery.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        draft_images: Vec<ImageAttachment>,
         /// Explicit opt-in to restore supported recorded file changes.
         restore_files: bool,
     },

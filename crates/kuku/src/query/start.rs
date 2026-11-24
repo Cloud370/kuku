@@ -235,6 +235,7 @@ impl Query {
                     &self.prompt,
                     self.input_source.agent_address(),
                     &self.input_source,
+                    std::mem::take(&mut self.input_images),
                 )?;
             }
 

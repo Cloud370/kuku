@@ -597,6 +597,7 @@ mod tests {
                 text: "Read the start of the file".into(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
         };
         let head = page(1, 4);

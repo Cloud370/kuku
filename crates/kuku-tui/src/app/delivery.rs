@@ -373,22 +373,52 @@ impl App {
         let text = self
             .queued_for_edit()
             .find(|entry| entry.receipt.command_id == input_command_id)
-            .map(|entry| entry.input.text.clone());
-        let Some(text) = text else {
+            .map(|entry| entry.input.clone());
+        let Some(input) = text else {
             self.problem("Input has already left the queue");
             return;
         };
-        self.prompt(
-            PromptKind::QueuedInput { input_command_id },
-            "Edit queued input",
-            "Enter replaces the queued text · Shift+Enter adds a line · Esc keeps the queued input",
-        );
-        if let Some(Modal::Prompt(prompt)) = &mut self.modal {
-            prompt.editor.set_text(text);
+        if input.images.is_empty() {
+            self.open_queued_editor(
+                input_command_id,
+                kuku_client::MessageDraft {
+                    text: input.text,
+                    images: Vec::new(),
+                },
+            );
+        } else if self.require_service() {
+            self.read_queued_draft(input_command_id, QueueAction::Edit);
         }
     }
 
-    pub(crate) fn replace_queued(&mut self, input_command_id: String, text: String) -> bool {
+    pub(crate) fn open_queued_editor(
+        &mut self,
+        input_command_id: String,
+        draft: kuku_client::MessageDraft,
+    ) {
+        self.prompt(
+            PromptKind::QueuedInput {
+                input_command_id,
+                images: draft.images,
+            },
+            "Edit queued input",
+            "Enter replaces the queued text · Shift+Enter adds a line · Esc keeps the queued input",
+        );
+        if let Some(Modal::Prompt(prompt)) = &mut self.modal
+            && let PromptKind::QueuedInput { images, .. } = &prompt.kind
+        {
+            prompt
+                .editor
+                .set_image_markers(&draft.text, images.iter().map(|image| &image.marker));
+        }
+    }
+
+    pub(crate) fn replace_queued(
+        &mut self,
+        input_command_id: String,
+        text: String,
+        draft_images: Vec<kuku_client::ImageAttachment>,
+    ) -> bool {
         if !self
             .queued_for_edit()
             .any(|entry| entry.receipt.command_id == input_command_id)
@@ -407,7 +437,7 @@ impl App {
         let target = self.target(&address);
         if self.pending.values().any(|item| {
             item.command.target == target && matches!(&item.command.action,
-                Action::ReplaceQueued { input_command_id: pending, .. } | Action::Withdraw { input_command_id: pending }
+                Action::ReplaceQueued { input_command_id: pending, .. } | Action::Withdraw { input_command_id: pending, .. }
                     if pending == &input_command_id)
                 && !matches!(item.stage, PendingStage::Rejected(_))
         }) {
@@ -419,6 +449,11 @@ impl App {
             Action::ReplaceQueued {
                 input_command_id,
                 text,
+                image_markers: draft_images
+                    .iter()
+                    .map(|image| image.marker.clone())
+                    .collect(),
+                draft_images,
             },
         );
         let pane = self.pane_mut();
@@ -431,7 +466,10 @@ impl App {
         let Some(item) = self.pending.get(id) else {
             return;
         };
-        if let Action::Withdraw { input_command_id } = &item.command.action {
+        if let Action::Withdraw {
+            input_command_id, ..
+        } = &item.command.action
+        {
             let address = Address::from_target(&item.command.target);
             if let Some(pane) = self.panes.get_mut(&address) {
                 pane.deliveries.withdrawal(
@@ -454,6 +492,7 @@ impl App {
             Action::ReplaceQueued {
                 input_command_id,
                 text,
+                ..
             } => {
                 let timing = pane
                     .deliveries

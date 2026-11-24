@@ -486,6 +486,29 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     }
     let pane = app.pane();
     let mut lines = Vec::new();
+    let images = pane.attached_images().count();
+    if images > 0 {
+        let label = if images == 1 {
+            "1 image".to_owned()
+        } else {
+            format!("{images} images")
+        };
+        let transparency = if pane.has_transparent_images() {
+            " · Transparency kept (PNG)"
+        } else {
+            ""
+        };
+        lines.push(Line::styled(
+            shorten(&format!("{label} attached{transparency}"), width),
+            Style::new().fg(ACCENT),
+        ));
+    }
+    if let Some(activity) = pane.image_activity() {
+        lines.push(Line::styled(
+            shorten(activity, width),
+            Style::new().fg(MUTED),
+        ));
+    }
     let stopped_retry = pane
         .retry_metadata()
         .is_some_and(|retry| crate::retry_notice::decision(retry) == Some(false));
@@ -978,6 +1001,17 @@ fn render_editor_view(
             Paragraph::new(view.lines.into_iter().map(Line::raw).collect::<Vec<_>>()),
             area,
         );
+        for (row, columns) in view.atoms {
+            frame.buffer_mut().set_style(
+                Rect::new(
+                    area.x + columns.start as u16,
+                    area.y + row as u16,
+                    columns.len() as u16,
+                    1,
+                ),
+                emphasis(ACCENT),
+            );
+        }
     }
     if focused {
         frame.set_cursor_position((area.x + view.cursor.0 as u16, area.y + view.cursor.1 as u16));

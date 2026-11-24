@@ -12,11 +12,12 @@ publish = false
 workspace = true
 
 [dependencies]
-arboard = { version = "3.6", default-features = false }
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }
 base64 = "0.22"
 crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = "0.3"
 fslock = "0.2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 kuku = { workspace = true }
 kuku-client = { path = "../kuku-client" }
 open = "5"

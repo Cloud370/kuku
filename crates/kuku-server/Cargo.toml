@@ -20,6 +20,7 @@ path = "src/bin/kuku-server.rs"
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 kuku = { workspace = true }
 kuku-client = { path = "../kuku-client" }
 axum = { workspace = true }

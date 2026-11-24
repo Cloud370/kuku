@@ -30,7 +30,7 @@
 
 工具指引按 Agent 实际可用的能力组装。只回复的 Agent 不加载工具流程。委派和记忆写入指引只发给具备相应工具的 Agent。编辑和写入中的 `brief` 是可选的显示标签。
 
-Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模型提供 `view_image`。它读取工作区中最大 1 MiB 的 PNG 或 JPEG，沿用文件读取的路径授权。模型请求按时间从近到远附带最多四张不同图像，以剩余请求字节预算为限。省略图像时，工具结果仍显示对应快照。 [DeepSeek Responses 图像输入](https://api-docs.deepseek.com/zh-cn/guides/responses_api/#image-input)
+Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模型提供 `view_image`。它读取工作区中最大 1 MiB 的 PNG 或 JPEG，沿用文件读取的路径授权。模型请求按时间从近到远附带最多四张不同图像，以剩余请求字节预算为限。任务需要判断视觉细节时，优先直接查看已有图像。省略图像时，工具结果仍保留快照的文件信息。纯文本 Agent 会被明确告知自己看不到任何图像，不能猜测画面内容。每个 Agent 的提示会说明当前输入和输出模态，以及能否使用 `view_image`。无法发送图像的路线只发送文本，并明确说明是模型不支持、图像能力尚未确认，还是当前路线缺少图像适配。 [DeepSeek Responses 图像输入](https://api-docs.deepseek.com/zh-cn/guides/responses_api/#image-input)
 
 条件 Skill 工具：
 
@@ -51,7 +51,7 @@ Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模�
 
 `create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。已结束的回复可以附带 `last_request`，其中包含请求所用的模型、请求指定的服务档位和供应商回报的服务档位。缺少依据的字段省略。
 
-模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。通过此工具创建的子 Agent 会在显式选择或预设工具之外获得 `send_message` 和 `list_agents`。传入空的 `tools` 数组时只提供这两个工具。创建回执会报告实际工具列表。宿主通过 SDK 指定精确的工具列表与供应商参数。
+模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。通过此工具创建的子 Agent 会在显式选择或预设工具之外获得 `send_message` 和 `list_agents`。传入空的 `tools` 数组时只提供这两个工具。候选模型路线会注明配置里的 `input_modalities` 和 `output_modalities`，以及路线实际可用的模态。创建回执会列出实际可用的工具、子 Agent 的输入和输出模态以及图像输入能力。宿主通过 SDK 指定精确的工具列表与供应商参数。
 
 `ask_user` 持久化问题，并在当前工具批次边界让出执行。宿主通过 SDK、CLI `reply` 或 server 回复端点，使用精确请求标识作答。问题和授权的等待语义见 [Session](../how-it-works/sessions.md#等待与回复)。
 

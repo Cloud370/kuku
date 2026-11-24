@@ -27,6 +27,7 @@ wreq-util = { version = "3.0.0-rc.11", features = ["emulation"] }
 httpdate = "1"
 sha2 = "0.10"
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 getrandom = "0.4"
 hmac = "0.12"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
@@ -48,6 +49,7 @@ toml_edit = { workspace = true }
 tempfile = "3"
 fslock = "0.2"
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+minijinja = { version = "3.1", features = ["fuel", "serde"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

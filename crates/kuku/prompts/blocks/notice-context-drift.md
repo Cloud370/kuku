@@ -10,4 +10,4 @@ Use the context loaded in this turn as the current source of truth.
 If the task depends on the details of a changed file that is not fully included in the current prompt, read that file again before relying on it.
 
 Changed tracked files:
-{{entries}}
+{{ entries }}

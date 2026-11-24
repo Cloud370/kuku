@@ -2,9 +2,11 @@
 
 use std::path::PathBuf;
 
+use base64::Engine;
 use kuku::UiEvent;
 use kuku::event::{EventPayload, StoredEvent};
 use kuku::execution::OutputReference;
+use kuku::execution::{ImageMarker, MAX_INPUT_IMAGES, MAX_MODEL_IMAGE_BYTES};
 use kuku::session::{
     AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt, ReplyPreview,
 };
@@ -32,6 +34,8 @@ pub(crate) enum Command {
         timing: SendTiming,
         #[serde(default)]
         values: Vec<OutputReference>,
+        #[serde(default)]
+        images: Vec<SendImage>,
         bootstrap_skill: Option<String>,
         create: Option<Box<AgentConfig>>,
         config_patch: Option<Box<AgentConfig>>,
@@ -60,6 +64,8 @@ pub(crate) enum Command {
     ReplaceQueued {
         input_command_id: String,
         text: String,
+        #[serde(default)]
+        image_markers: Vec<ImageMarker>,
     },
     RewindMessage {
         target_event_id: u64,
@@ -79,6 +85,13 @@ pub(crate) enum Command {
     },
 }
 
+#[derive(Deserialize)]
+pub(crate) struct SendImage {
+    #[serde(flatten)]
+    marker: ImageMarker,
+    data: String,
+}
+
 impl Command {
     pub(crate) fn creation(&self) -> Option<&AgentConfig> {
         if let Self::Send { create, .. } = self {
@@ -94,6 +107,34 @@ impl Command {
         } else {
             &[]
         }
+    }
+
+    pub(crate) fn decode_images(&self) -> kuku::Result<Vec<(&ImageMarker, Vec<u8>)>> {
+        let Self::Send { images, text, .. } = self else {
+            return Ok(Vec::new());
+        };
+        if images.len() > MAX_INPUT_IMAGES {
+            return Err(kuku::Error::InvalidArgument(format!(
+                "attach up to {MAX_INPUT_IMAGES} images"
+            )));
+        }
+        ImageMarker::validate_all(text, images.iter().map(|image| &image.marker))?;
+        let mut ordered: Vec<_> = images.iter().collect();
+        ordered.sort_unstable_by_key(|image| image.marker.offset);
+        ordered
+            .into_iter()
+            .map(|image| {
+                if image.data.len() > MAX_MODEL_IMAGE_BYTES.div_ceil(3) * 4 {
+                    return Err(kuku::Error::InvalidArgument(
+                        "each encoded image must be at most 1 MiB before base64".into(),
+                    ));
+                }
+                base64::engine::general_purpose::STANDARD
+                    .decode(&image.data)
+                    .map(|bytes| (&image.marker, bytes))
+                    .map_err(|_| kuku::Error::InvalidArgument("invalid base64 image".into()))
+            })
+            .collect()
     }
 
     pub(crate) fn input(&self, command_id: &str, address: &str) -> kuku::Result<Option<Input>> {
@@ -208,9 +249,14 @@ pub(crate) fn history_entry_for_agent(
             text,
             from,
             job_delivery: false,
+            images,
             ..
         } => {
-            json!({"ts":ts,"type":"user","turn":turn,"text":text,"from":from})
+            let mut entry = json!({"ts":ts,"type":"user","turn":turn,"text":text,"from":from});
+            if !images.is_empty() {
+                entry["has_images"] = json!(true);
+            }
+            entry
         }
         EventPayload::ModelResponse {
             turn,
@@ -704,6 +750,23 @@ mod retry_tests {
     use super::{TurnLookup, history_entry, retry_metadata};
 
     #[test]
+    fn send_rejects_duplicate_image_markers_before_decoding() {
+        let marker = json!({"offset": 0, "label": "[Image #1]", "data": "AA=="});
+        let command: super::Command = serde_json::from_value(json!({
+            "type": "send",
+            "text": "[Image #1]",
+            "timing": "steer",
+            "create": {},
+            "images": [marker.clone(), marker],
+        }))
+        .unwrap();
+        assert!(matches!(
+            command.decode_images(),
+            Err(kuku::Error::InvalidArgument(error)) if error == "image markers must be distinct"
+        ));
+    }
+
+    #[test]
     fn history_projects_human_input_and_omits_internal_job_wakes() {
         let turns = TurnLookup::Closed(Arc::default());
         let message = |job_delivery| StoredEvent {
@@ -715,6 +778,7 @@ mod retry_tests {
                 text: "Input to the model".into(),
                 from: None,
                 job_delivery,
+                images: Vec::new(),
             },
         };
         let entry = history_entry(&message(false), &turns).unwrap();

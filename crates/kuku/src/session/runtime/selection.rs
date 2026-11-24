@@ -75,14 +75,21 @@ pub(crate) fn resolve_agent_model(
     })
 }
 
-pub(super) fn validate_initial_model(options: &SessionOptions, config: &AgentConfig) -> Result<()> {
+pub(super) fn validate_initial_model(
+    options: &SessionOptions,
+    config: &AgentConfig,
+    has_images: bool,
+) -> Result<()> {
     let config = resolve_defaults(options, config.clone(), || Ok(None))?;
-    resolve_agent_model(
-        &options.config,
+    let resolved = resolve_agent_model(
+        &options.model_config(),
         &config,
         options.limits.max_output_tokens_per_request,
-    )
-    .map(|_| ())
+    )?;
+    if has_images {
+        super::media::require_image_input(&resolved, options.model_adapter.is_none())?;
+    }
+    Ok(())
 }
 
 impl Session {
@@ -117,6 +124,9 @@ impl Session {
             context_window_tokens: resolved.max_context_tokens,
             max_output_tokens: resolved.max_output_tokens,
             settings: resolved.settings,
+            image_input: resolved
+                .capabilities
+                .image_input_support(self.inner.options.model_adapter.is_none()),
             capabilities: resolved.capabilities,
             output: resolved.output,
             tools,
@@ -289,9 +299,6 @@ fn resolve_defaults(
         };
         Error::InvalidArgument(format!("preset '{preset}' was not found. {guidance}"))
     })?;
-    config
-        .instructions
-        .get_or_insert_with(|| definition.instructions.clone());
     if config.tier.is_none() && options.model_config().tier(&definition.tier).is_some() {
         config.tier = Some(definition.tier.clone());
     }
@@ -311,5 +318,20 @@ fn resolve_defaults(
             .filter(|name| name != "fetch_web")
             .collect()
     });
+    if config.instructions.is_none() {
+        let instructions = if definition.source
+            == crate::agent::definition::DefinitionSource::Builtin
+        {
+            let rendered = catalog.render(&format!("agents/{preset}.md"), minijinja::context! {
+                agent => minijinja::context! { preset => preset, tier => config.tier.as_deref() },
+                configured_tools => minijinja::value::Serde(config.tools.as_deref()),
+                workspace_root => config.workspace.as_ref().unwrap_or(&options.workspace).to_string_lossy().as_ref(),
+            })?;
+            crate::agent::loader::split_frontmatter(&rendered).1
+        } else {
+            definition.instructions.clone()
+        };
+        config.instructions = Some(instructions);
+    }
     Ok(config)
 }

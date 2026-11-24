@@ -37,9 +37,25 @@ impl App {
             self.credential_repair_input(event);
             return;
         }
+        if matches!(&event,
+            Event::Key(key) if key.kind != KeyEventKind::Release)
+            || matches!(
+                &event,
+                Event::Paste(_)
+                    | Event::FocusLost
+                    | Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::Down(_)
+                            | MouseEventKind::ScrollUp
+                            | MouseEventKind::ScrollDown,
+                        ..
+                    })
+            )
+        {
+            self.cancel_image_countdown();
+        }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.key(key),
-            Event::Paste(text) => self.paste(&text),
+            Event::Paste(text) => self.paste_transfer(text),
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::ScrollUp,
                 ..
@@ -177,10 +193,18 @@ impl App {
         }
         let editing = self.composer_focused();
         match key {
+            key if Shortcut::clipboard_paste(key) => {
+                self.paste_clipboard();
+            }
             key if Shortcut::CLEAR.matches(key) => {
                 let pane = self.pane_mut();
-                let empty = pane.draft.take_text().is_empty() && pane.value_attachments.is_empty();
+                let recalling_images = pane.draft.recalled_image_event().is_some();
+                let empty = pane.draft.take_text().is_empty()
+                    && !recalling_images
+                    && pane.value_attachments.is_empty()
+                    && pane.clipboard_ticket.is_none();
                 pane.value_attachments.clear();
+                pane.clear_draft_images();
                 if empty && key.kind == KeyEventKind::Press {
                     self.exit();
                 }
@@ -200,8 +224,11 @@ impl App {
             key if Shortcut::PREVIOUS_PROMPT.matches(key) || Shortcut::NEXT_PROMPT.matches(key) => {
                 self.focus_composer();
                 self.pane_mut()
-                    .draft
-                    .recall(if key.code == KeyCode::Up { -1 } else { 1 });
+                    .recall_draft(if key.code == KeyCode::Up { -1 } else { 1 });
+                if let Some(event_id) = self.pane().draft.recalled_image_event() {
+                    self.effects
+                        .push(Job::RecallImageDraft(self.selection(), event_id));
+                }
             }
             key if Shortcut::UP.matches(key) || Shortcut::DOWN.matches(key) => {
                 let direction = if key.code == KeyCode::Up { -1 } else { 1 };
@@ -271,14 +298,18 @@ impl App {
             if let PromptKind::RewindMessage {
                 event_id,
                 text,
+                images,
                 restore_files,
             } = &prompt.kind
             {
                 let event_id = *event_id;
-                let text = text.clone();
+                let draft = kuku_client::MessageDraft {
+                    text: text.clone(),
+                    images: images.clone(),
+                };
                 let restore_files = *restore_files;
                 self.modal = None;
-                self.rewind_message(event_id, text, restore_files);
+                self.rewind_message(event_id, draft, restore_files);
                 return;
             }
             let empty = if matches!(prompt.kind, PromptKind::SavePaste) {
@@ -297,10 +328,27 @@ impl App {
                 }
                 return;
             }
-            if let PromptKind::QueuedInput { input_command_id } = &prompt.kind {
+            if let PromptKind::QueuedInput {
+                input_command_id,
+                images,
+            } = &prompt.kind
+            {
                 let id = input_command_id.clone();
                 let text = prompt.editor.text().to_owned();
-                if self.replace_queued(id, text) {
+                let draft_images = prompt
+                    .editor
+                    .image_markers()
+                    .into_iter()
+                    .filter_map(|marker| {
+                        let mut image = images
+                            .iter()
+                            .find(|image| image.marker.label == marker.label)?
+                            .clone();
+                        image.marker = marker;
+                        Some(image)
+                    })
+                    .collect();
+                if self.replace_queued(id, text, draft_images) {
                     self.modal = None;
                 }
                 return;
@@ -444,7 +492,7 @@ impl App {
         })));
     }
 
-    fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
+    pub(crate) fn choose(&mut self, picker: PickerKind, choice: ChoiceKind, ticket: u64) {
         if matches!(picker, PickerKind::Rewind | PickerKind::HistoryJump)
             && !self.rewind_picker_current(ticket)
         {
@@ -549,6 +597,13 @@ impl App {
             ChoiceKind::Value(value) => self.open_value(value),
             ChoiceKind::AttachValue(value) => self.attach_value(value),
             ChoiceKind::ReadValue(value) => self.read_value(value),
+            ChoiceKind::SendImages {
+                original,
+                timing,
+                route,
+            } => {
+                self.encode_draft_images(original, timing, route.map(|route| *route));
+            }
             ChoiceKind::ClearValues => self.clear_values(),
             ChoiceKind::ConfirmRestart(identity) => self.confirm_restart(*identity),
         }

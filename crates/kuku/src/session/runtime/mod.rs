@@ -145,7 +145,7 @@ impl Session {
 
     async fn open_in_background(
         options: SessionOptions,
-        creation: Option<(Command, AgentConfig)>,
+        creation: Option<(Command, AgentConfig, bool)>,
     ) -> Result<Self> {
         tokio::task::spawn_blocking(move || Self::open_runtime(options, creation))
             .await
@@ -154,7 +154,7 @@ impl Session {
 
     fn open_runtime(
         mut options: SessionOptions,
-        creation: Option<(Command, AgentConfig)>,
+        creation: Option<(Command, AgentConfig, bool)>,
     ) -> Result<Self> {
         options.limits.validate()?;
         let tool_adapters = Arc::new(selection::register_tools(&options)?);
@@ -168,9 +168,9 @@ impl Session {
             .unwrap_or_else(super::new_session_id);
         super::validate_session_id(&id)?;
         let events_path = super::session_events_path(&options.data_dir, &options.workspace, &id)?;
-        if let Some((_, config)) = &creation {
+        if let Some((_, config, has_images)) = &creation {
             if EventStore::read_head(&events_path)? == 0 {
-                selection::validate_initial_model(&options, config)?;
+                selection::validate_initial_model(&options, config, *has_images)?;
             }
         }
         let lease = SessionLease::acquire(events_path.clone())?;
@@ -188,7 +188,7 @@ impl Session {
             &mut writer,
             &mut state,
             &id,
-            creation.map(|(command, _)| command),
+            creation.map(|(command, _, _)| command),
             options.prompts_dir.as_deref(),
         )?;
         if let Some(claim) = &state.creation {
@@ -349,6 +349,7 @@ impl Session {
         state.agent_mut(address)?;
         let config = self.resolve_defaults(address, config)?;
         self.validate_config(&config)?;
+        self.validate_queued_image_route(state.agent(address)?, &config)?;
         self.commit(
             &mut state,
             Record::AgentConfigured {
@@ -437,6 +438,7 @@ impl Session {
                     config.tier = Some(self.inner.options.config.default_tier.clone());
                 }
                 self.validate_config(&config)?;
+                self.validate_queued_image_route(state.agent(&target)?, &config)?;
                 Ok::<_, Error>(config)
             })
             .transpose()?;
@@ -450,6 +452,13 @@ impl Session {
                 "skills are disabled for agent '{target}'"
             )));
         }
+        self.validate_input_images(
+            &state,
+            &input,
+            config
+                .as_ref()
+                .unwrap_or(&state.agent(&target)?.snapshot.config),
+        )?;
         let key = input.command_id.clone();
         self.commit(
             &mut state,

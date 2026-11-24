@@ -242,11 +242,35 @@ pub struct AgentSelection {
     pub settings: ProviderSettings,
     /// Declared provider capabilities.
     pub capabilities: ProviderCapabilities,
+    /// Whether this Agent's route can send images. The tool list reflects file inspection access.
+    #[serde(default)]
+    pub image_input: crate::config::ImageInputSupport,
     /// Media requested by the Agent or inherited from the route.
     #[serde(default)]
     pub output: RequestedOutput,
     /// Final tool selection after preset and explicit overrides.
     pub tools: Vec<crate::context::ToolSchema>,
+}
+
+impl ProviderCapabilities {
+    /// Image input available through the selected runtime adapter.
+    pub fn image_input_support(&self, builtin_adapter: bool) -> crate::config::ImageInputSupport {
+        use crate::config::ImageInputSupport;
+
+        let Some(modalities) = &self.input_modalities else {
+            return ImageInputSupport::Unconfirmed;
+        };
+        if !modalities.value.iter().any(|modality| modality == "image") {
+            return ImageInputSupport::UnsupportedByModel;
+        }
+        if builtin_adapter
+            && self.media_adapter == crate::config::MediaAdapterSupport::ResponsesImageToolResults
+        {
+            ImageInputSupport::Supported
+        } else {
+            ImageInputSupport::UnsupportedOnRoute
+        }
+    }
 }
 
 /// Effective model settings available to a host before creating an Agent.

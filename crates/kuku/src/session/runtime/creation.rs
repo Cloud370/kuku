@@ -18,8 +18,19 @@ impl Session {
                 "a creation claim requires an explicit session identity".into(),
             ));
         }
+        crate::execution::ImageMarker::validate_all(
+            &input.text,
+            input
+                .images
+                .iter()
+                .filter_map(crate::execution::InputImage::marker),
+        )?;
         let command = creation_command(input, config, options.prompts_dir.as_deref())?;
-        Self::open_in_background(options, Some((command, config.clone()))).await
+        Self::open_in_background(
+            options,
+            Some((command, config.clone(), !input.images.is_empty())),
+        )
+        .await
     }
 
     /// Verify a replay of the original creation intent against an open session.

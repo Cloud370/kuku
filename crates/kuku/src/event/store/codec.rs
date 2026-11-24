@@ -182,7 +182,8 @@ fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_jso
             turn,
             text,
             from,
-            job_delivery
+            job_delivery,
+            images
         },
         MessageAssistant {
             ts,

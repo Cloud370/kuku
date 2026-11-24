@@ -19,6 +19,7 @@ impl RunManager {
             command_id,
             command,
             input,
+            images,
             replay_only,
         } = request;
         let replayed = open.session.receipt(command_id)?.is_some();
@@ -57,15 +58,18 @@ impl RunManager {
                 create_agent_if_missing,
                 values,
                 ..
-            } => send(
-                &open.session,
-                input.expect("send has input"),
-                create.as_deref(),
-                config_patch.as_deref(),
-                create_agent_if_missing,
-                replayed,
-                &values,
-            ),
+            } => {
+                send(
+                    &open.session,
+                    input.expect("send has input"),
+                    create.as_deref(),
+                    config_patch.as_deref(),
+                    create_agent_if_missing,
+                    replayed,
+                    (&values, &images),
+                )
+                .await
+            }
             Command::CreateAgent { config } => {
                 open.session.create_agent(command_id, address, *config)
             }
@@ -93,12 +97,14 @@ impl RunManager {
             Command::ReplaceQueued {
                 input_command_id,
                 text,
-            } => open.session.replace_queued(
+                image_markers,
+            } => open.session.replace_queued_with_images(
                 command_id,
                 address,
                 &input_command_id,
                 &text,
                 &http_input_source(),
+                &image_markers,
             ),
             Command::RewindMessage {
                 target_event_id,
@@ -186,15 +192,16 @@ fn activating(command: &Command, session: &Session, address: &str) -> bool {
     }
 }
 
-fn send(
+async fn send(
     session: &Session,
     input: Input,
     create: Option<&AgentConfig>,
     patch: Option<&AgentConfig>,
     create_agent_if_missing: bool,
     replayed: bool,
-    values: &[OutputReference],
+    attachments: (&[OutputReference], &[Vec<u8>]),
 ) -> kuku::Result<Receipt> {
+    let (values, images) = attachments;
     if replayed {
         return session.send_with_values(input, values);
     }
@@ -211,12 +218,21 @@ fn send(
         session.create_agent(&internal_id, &address, config)?;
     }
     let current = session.agent(&address)?;
-    match patch.filter(|_| create.is_none()) {
-        Some(patch) => session.send_configured_with_values(
-            input,
-            merge_config(current.config, patch.clone()),
-            values,
-        ),
+    let update = patch
+        .filter(|_| create.is_none())
+        .map(|patch| merge_config(current.config.clone(), patch.clone()));
+    if !images.is_empty() {
+        let selection = session
+            .selection_for_config(&address, update.as_ref().unwrap_or(&current.config).clone())?;
+        if !selection.image_input.modalities().contains(&"image") {
+            return Err(kuku::Error::InvalidArgument("The selected model cannot receive images. Switch to a model with image input or remove the attachments.".into()));
+        }
+        for bytes in images {
+            session.save_input_image(&address, bytes).await?;
+        }
+    }
+    match update {
+        Some(config) => session.send_configured_with_values(input, config, values),
         None => session.send_with_values(input, values),
     }
 }

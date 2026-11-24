@@ -242,6 +242,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
                 text: "hello".to_string(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             })
             .unwrap();
         store

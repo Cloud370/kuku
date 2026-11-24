@@ -11,8 +11,8 @@ use crate::local::{LocalError, LocalService, SESSION_PROTOCOL_VERSION};
 use crate::subscription::SubscriptionScope;
 use crate::{
     Acknowledgement, AgentConfig, AgentSummary, ApiError, Command, EventPage, HistoryDestinations,
-    HistoryPage, JobSnapshot, ModelDefaultPlan, NamedValue, NamedValueSource, OutputChunk,
-    RewindGroupPage, SessionSummary, Snapshot, Subscription, Target,
+    HistoryPage, JobSnapshot, MessageDraft, ModelDefaultPlan, NamedValue, NamedValueSource,
+    OutputChunk, RewindGroupPage, SessionSummary, Snapshot, Subscription, Target,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -443,6 +443,54 @@ impl Client {
         .await
     }
 
+    /// Read the original text and images of an exact committed user message.
+    pub async fn message_draft(
+        &self,
+        target: &Target,
+        event_id: u64,
+    ) -> Result<MessageDraft, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+        }
+        self.get(
+            [
+                "sessions",
+                &target.session_id,
+                "events",
+                &event_id.to_string(),
+                "draft",
+            ],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
+            },
+        )
+        .await
+    }
+
+    /// Read the original text and images of an input still in the Agent's queue.
+    pub async fn queued_draft(
+        &self,
+        target: &Target,
+        input_id: &str,
+    ) -> Result<MessageDraft, Error> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            workspace: &'a Path,
+            agent: &'a str,
+        }
+        self.get(
+            ["sessions", &target.session_id, "queued", input_id, "draft"],
+            &Query {
+                workspace: &target.workspace,
+                agent: &target.agent,
+            },
+        )
+        .await
+    }
+
     /// Read a raw ledger page up to an exclusive event cursor.
     pub async fn events_before(
         &self,
@@ -852,11 +900,33 @@ impl Client {
         if replay_only {
             request = request.query(&[("replay_only", true)]);
         }
+        let action = match &command.action {
+            crate::Action::Withdraw {
+                input_command_id, ..
+            } => std::borrow::Cow::Owned(crate::Action::Withdraw {
+                input_command_id: input_command_id.clone(),
+                draft: None,
+            }),
+            crate::Action::ReplaceQueued {
+                input_command_id,
+                text,
+                image_markers,
+                draft_images,
+            } if !draft_images.is_empty() => {
+                std::borrow::Cow::Owned(crate::Action::ReplaceQueued {
+                    input_command_id: input_command_id.clone(),
+                    text: text.clone(),
+                    image_markers: image_markers.clone(),
+                    draft_images: Vec::new(),
+                })
+            }
+            action => std::borrow::Cow::Borrowed(action),
+        };
         let acknowledgement: Acknowledgement = self
             .json(request.json(&Envelope {
                 target: TargetQuery::new(&command.target),
                 command_id: &command.command_id,
-                action: &command.action,
+                action: &action,
             }))
             .await?;
         if acknowledgement.receipt.command_id != command.command_id

@@ -61,7 +61,7 @@ fn rendered_provider_body(
         think_level: crate::config::ThinkLevel::Off,
         thinking: Default::default(),
     };
-    crate::provider::openai_compat::render_body(&request)
+    crate::provider::openai_compat::render_body(&request).unwrap()
 }
 
 #[test]
@@ -92,9 +92,9 @@ fn tool_result_projection_keeps_the_wire_view_in_every_protocol() {
             thinking: Default::default(),
         };
         [
-            crate::provider::openai_compat::render_body(&request),
-            crate::provider::anthropic::render_body(&request),
-            crate::provider::openai_responses::render_body(&request),
+            crate::provider::openai_compat::render_body(&request).unwrap(),
+            crate::provider::anthropic::render_body(&request).unwrap(),
+            crate::provider::openai_responses::render_body(&request).unwrap(),
         ]
     };
     for status in ["ok", "error", "cancelled"] {
@@ -247,6 +247,7 @@ fn rewind_prunes_persisted_admissions_by_canonical_replay_provenance_after_reope
             text: "steering input".into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap()
         .id;
@@ -478,6 +479,7 @@ fn reopened_cursor_preserves_handoff_summary_before_rewind_target() {
             text: "rewound second-turn input".into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap()
         .id;
@@ -626,6 +628,7 @@ fn active_cursor_selects_one_prepared_segment_and_incrementally_reads_new_facts(
             text: "input".into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     let first = writer

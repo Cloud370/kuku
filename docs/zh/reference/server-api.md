@@ -6,7 +6,7 @@
 
 客户端访问接口时发送 `Authorization: Bearer TOKEN`，回环连接也需要认证。`kuku web` 打开受管本地服务的内嵌界面时，通过 URL 片段传递短时一次性票据。页面清除片段，将票据交换成独立的浏览器令牌，并保存在该标签页的 `sessionStorage`。刷新同一标签页时可继续用该令牌连接同一服务实例。显式启动的服务使用其配置的访问令牌。服务的默认工具策略信任已认证的用户，允许文件和命令工具。
 
-公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。`protocol_version` 描述 Session API。升级受管服务时，即使 Session API 版本不同，仍可以查看服务状态和请求正常重启。缺少令牌或令牌无效时，返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求携带的浏览器来源。
+公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。Session HTTP API 的首版是 v1，以 `protocol_version: 1` 报告。受管服务的状态和重启接口使用 `management_version`。缺少令牌或令牌无效时，返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求携带的浏览器来源。
 
 ## 接口一览
 
@@ -53,6 +53,8 @@
 
 首次发送前选定唯一的 Session ID 和命令 ID。请求体包含服务端工作区的绝对路径、目标 Agent 地址和命令标识。向新 Session 发送时，在 `create` 中写入 Agent 初始配置。
 
+`send` 可携带 `images` 数组。每个元素包含 `label`、`offset` 和 `data`。`label` 必须出现在 `text` 的指定 UTF-8 字节偏移处，`data` 是 PNG 或 JPEG 的 Base64 数据。每条消息最多四张，编码前每张最多 1 MiB。图片保存在 Session 下，归接收 Agent 所有，只允许有图像输入能力的路由接纳。命令身份校验同时覆盖文本和图片内容。
+
 ```json
 {
   "workspace": "/code/my-project",
@@ -75,7 +77,7 @@
 | `reply_question` | `request_id`、`text` | 回答精确的待决问题。 |
 | `reply_permission` | `request_id`、`allow` | 决定精确的待决授权。 |
 | `withdraw` | `input_command_id` | 撤回排队输入或返回其当前状态。 |
-| `replace_queued` | `input_command_id`、`text` | 在接纳前替换文本，保留队列位置和投递时机。 |
+| `replace_queued` | `input_command_id`、`text`、可选 `image_markers` | 替换排队消息的文本和附件，保留队列位置和投递时机。 |
 | `history_jump` | `target_event_id`，可选 `file_restore` | 从该结算游标对应的已结束 Turn 续接所选 Agent 的对话。 |
 | `compact` | | 压缩所选空闲或已中断的 Agent 的较早上下文。通过 `compaction` 历史条目观察进度和结果。重试失败的压缩时使用新的命令 ID。 |
 | `restore_context` | | 撤销所选 Agent 最近一次仍生效的压缩，保留可见消息。 |
@@ -87,6 +89,8 @@
 在给已有 Agent 发送输入的同时修改模型选择时，传入 `config_patch`。若脚本需要在已有 Session 中创建缺失的 Agent，还要传入 `create_agent_if_missing: true`。新 Session 使用 `create` 设置初始 Agent，也可以用 `prompts_dir` 指定服务端自定义 Prompt 资源的绝对路径。
 
 通过 `send` 的 `bootstrap_skill` 为该条输入指定 Skill，在接纳时应用。
+
+`image_markers` 中的每个元素使用原附件的 `label` 和编辑后的 UTF-8 字节偏移 `offset`。替换时会移除未列出的附件。
 
 `replace_queued` 在同一次提交中记录新回执，并将原输入标为已撤回。若原输入已经接纳或因其他原因离开队列，命令返回 `409` 和 `input_not_queued`。
 
@@ -102,7 +106,7 @@
 
 向较新的历史翻页时，传入排他游标 `after`，用返回的 `next_after` 继续。扫描触及上限时，响应可能没有条目但仍包含续页游标。轮次的首次接纳时间可用时，历史条目包含 `turn_started_at_ms`，客户端可在任意页显示本轮累计用时。
 
-活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。读取完整原文时使用普通历史接口。
+活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。用 `GET /sessions/{id}/events/{event_id}/draft?workspace=...&agent=...` 读取原始用户文本及附件。响应包含 `text` 和 `images`。对于仍在队列中的输入，`GET /sessions/{id}/queued/{input_command_id}/draft?workspace=...&agent=...` 返回同样的结构。带附件的历史条目会携带 `has_images: true`，客户端可按需读取图片。
 4. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
 观察流接入时记录日志头。之后提交的事件会标记 `live_commit`，客户端可用它区分新事件和追赶回放，再决定是否提醒。
@@ -115,7 +119,7 @@
 
 `committed` 行包含 `id` 和 `kind`，适用时还包含 Agent 地址、对话条目或状态变更标记。`live` 行包含 `agent`、`execution_id`、`turn`、`cursor` 和临时 `event`。核对它们与当前视图的标识，收到正式结果后替换临时预览。`lagged` 行包含跳过的临时观察数 `skipped`。观察流还可以发送 `heartbeat` 或 `error` 行。观察落后后仍可读取持久状态。
 
-`GET /sessions/{id}/history/destinations` 接受 `workspace`、`agent` 和可选的 `before`、`limit`。响应包含从新到旧排序的 `points` 和排他的 `next_before` 游标。每个位置包含 `event_id`、持久 `turn`、显示轮次 `number`、可用的输入 `preview` 以及 `current_branch`。`can_continue` 为真时，可用 `event_id` 作为 `history_jump` 的目标。可用时，`prompt_event_id` 指向原始用户消息。可通过原始事件接口读取完整文本，包括已保存轮次中的原文。执行 `history_jump` 时，Agent 必须已结算且没有待处理输入。
+`GET /sessions/{id}/history/destinations` 接受 `workspace`、`agent` 和可选的 `before`、`limit`。响应包含从新到旧排序的 `points` 和排他的 `next_before` 游标。每个位置包含 `event_id`、持久 `turn`、显示轮次 `number`、可用的输入 `preview` 以及 `current_branch`。`can_continue` 为真时，可用 `event_id` 作为 `history_jump` 的目标。可用时，`prompt_event_id` 指向原始用户消息。用该事件 ID 调用草稿接口，可读取完整文本和图片，包括已保存的轮次。执行 `history_jump` 时，Agent 必须已结算且没有待处理输入。
 
 `GET /sessions/{id}/history/destinations/{event_id}/files` 接受 `workspace` 和 `agent`，返回 `changes`、`skipped` 和方案 `fingerprint`。每项改动包含 `path`、`remove` 和 `lines`（增加、删除的行数，或 null）。将确认过的指纹传给 `history_jump.file_restore` 即可应用预览，省略该字段则保留文件。
 

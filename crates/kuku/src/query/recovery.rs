@@ -67,7 +67,7 @@ pub(super) async fn schedule(
         retry_max_output_tokens: base.max_output_tokens(),
         output_tokens_total: failed_output_tokens,
         discarded_tool_calls,
-        notice: asset.text,
+        notice: base.recovery_notice().to_owned(),
         prompt_path: asset.path,
         prompt_hash: asset.hash,
     })?;
@@ -96,7 +96,7 @@ fn preflight_context(
         base.max_output_tokens(),
         Some(estimated_input),
     );
-    let suffix_tokens = conservative_suffix_tokens(base.recovery_asset().text.len())?;
+    let suffix_tokens = conservative_suffix_tokens(base.recovery_notice().len())?;
     if headroom
         .remaining_input_tokens
         .is_some_and(|remaining| remaining < suffix_tokens)

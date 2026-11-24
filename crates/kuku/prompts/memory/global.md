@@ -1,3 +1,3 @@
 <kuku_global_memory>
-{{memory_content}}
+{{ memory_content }}
 </kuku_global_memory>

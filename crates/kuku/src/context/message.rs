@@ -44,6 +44,7 @@ impl CanonicalMessage {
 /// A single content block within a conversation message.
 pub enum MessageBlock {
     Text(String),
+    InputImage(crate::execution::InputImage),
     Thinking(String),
     ToolUse(ToolUse),
     ToolResult(ToolResult),

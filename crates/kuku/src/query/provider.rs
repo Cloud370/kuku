@@ -14,8 +14,7 @@ pub(super) use retry::{
 use crate::context::{
     CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock, PluginRegistryProvenance,
     PromptCapabilityMetadata, PromptRendererIdentity, Role, SkillRegistryProvenance,
-    ToolRegistryProvenance, assemble_context, rebuild_history_for_provider,
-    restore_prompt_snapshot,
+    ToolRegistryProvenance, rebuild_history_for_provider, restore_prompt_snapshot,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
@@ -24,7 +23,6 @@ use crate::notice::{
     NoticeAssemblyInput, build_runtime_notices, compute_context_headroom, render_notice_body,
     types::ContextHeadroom,
 };
-use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
 use crate::tool;
 
 use super::helpers::{
@@ -57,7 +55,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         load_memory_sources(&pending.kuku_home, &pending.workspace, max_bytes)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
-    let model_tiers = resolve::usable_model_routes(&pending.config);
+    let model_tiers = resolve::usable_model_routes(&pending.config, false);
 
     let catalog = if let Some(dir) = &pending.prompts_dir {
         crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
@@ -70,7 +68,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         crate::prompt::builtin_prompt_catalog()
     };
 
-    let tools = tool::to_tool_schemas(&registry);
+    let mut tools = tool::to_tool_schemas(&registry);
+    render_tool_descriptions(&mut tools, &catalog)?;
+    let behavior = render_agent_behavior(&pending, &tools, &catalog, &resolved_config)?;
     let (skills_text, runtime_blocks) = build_runtime_blocks(
         &pending.workspace,
         pending.conversation.as_str(),
@@ -91,12 +91,12 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     "Plugins loaded: {pkg_names}. \
                      If not relevant to your current task, ignore."
                 );
-                let wrapper_tmpl = catalog
-                    .blocks
-                    .get("system-notice")
-                    .map(|a| a.text.as_str())
-                    .unwrap_or("<kuku_system_notice>\n{{notice_body}}\n</kuku_system_notice>");
-                let wrapped = wrapper_tmpl.replace("{{notice_body}}", &notice);
+                let wrapped = catalog.render(
+                    "blocks/system-notice.md",
+                    minijinja::context! {
+                        notice_body => notice,
+                    },
+                )?;
                 Some(match runtime_blocks {
                     Some(existing) => format!("{existing}\n\n{wrapped}"),
                     None => wrapped,
@@ -111,7 +111,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         runtime_blocks
     };
 
-    let mut assembly = match assemble_context(
+    let mut assembly = match crate::context::assembly::assemble_context_for_model(
         ContextInput {
             environment: EnvironmentSource {
                 workspace_path: pending.workspace.display().to_string(),
@@ -126,15 +126,11 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             model_tiers,
             runtime_blocks,
             enable_memory: true,
-            agent_instructions: pending
-                .query
-                .agent_instructions
-                .clone()
-                .or_else(|| catalog.agents.get("main").map(|a| a.text.clone()))
-                .unwrap_or_default(),
+            agent_instructions: behavior,
             response_contract: pending.query.response_contract.clone(),
         },
         &catalog,
+        crate::context::assembly::agent_prompt_facts(Some(&resolved_config), false),
     ) {
         Ok(assembly) => assembly,
         Err(error) => {
@@ -183,6 +179,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             ));
     }
 
+    set_model_modalities(
+        &mut assembly.prelude_messages,
+        &assembly.tools,
+        &resolved_config,
+        false,
+        &catalog,
+    )?;
     assembly.handoff_summary = handoff_summary;
 
     let estimated_input = last_input_tokens(
@@ -207,12 +210,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         {
             pending.handoff_triggered = true;
             pending.handoff_keep_turns = handoff_config.keep_turns;
-            Some(if let Some(dir) = &pending.prompts_dir {
-                load_prompt_template(dir, "runtime/handoff-instruction")
-                    .unwrap_or_else(|_| builtin_handoff_instruction().to_string())
-            } else {
-                builtin_handoff_instruction().to_string()
-            })
+            Some(catalog.render("runtime/handoff-instruction.md", minijinja::context! {})?)
         } else {
             None
         }
@@ -235,13 +233,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .map(|skill| skill.body.as_str()),
         runtime_date.as_deref(),
         &catalog,
-    );
+    )?;
     let mut current_turn_prefix = pending
         .frozen_turn_prefix
         .freeze_or_reuse(dynamic_turn_prefix);
     if let Some(instruction) = handoff_instruction {
         current_turn_prefix =
-            append_handoff_instruction(current_turn_prefix, &instruction, &catalog);
+            append_handoff_instruction(current_turn_prefix, &instruction, &catalog)?;
         pending
             .frozen_turn_prefix
             .replace(current_turn_prefix.clone());
@@ -267,15 +265,9 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             .rev()
             .find(|m| m.role == crate::context::Role::User)
         {
-            let hook_tmpl = catalog
-                .blocks
-                .get("hook-context")
-                .map(|a| a.text.as_str())
-                .unwrap_or("<kuku_hook_context>\n{{hook_text}}\n</kuku_hook_context>");
-            insert_current_turn_metadata_block(
-                last_user,
-                hook_tmpl.replace("{{hook_text}}", &hook_text),
-            );
+            let text =
+                catalog.render("blocks/hook-context.md", minijinja::context! { hook_text })?;
+            insert_current_turn_metadata_block(last_user, text);
         }
     }
 
@@ -465,7 +457,15 @@ pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) 
     };
     let mut context = super::frozen::prepare(&mut pending, true)?;
     let correlation = request_correlation(&pending, &resolved);
-    let before = dispatch::prepare_request(&pending, &resolved, &correlation, &context.request)?;
+    let before_bytes =
+        match dispatch::prepare_request(&pending, &resolved, &correlation, &context.request) {
+            Ok(request) => Some(request.body.as_bytes().len()),
+            Err(crate::Error::Provider {
+                kind: crate::provider::types::ProviderFailureKind::ContextTooLarge,
+                ..
+            }) => None,
+            Err(error) => return Err(error),
+        };
     pending.request_base = Some(context.request);
     if matches!(
         Box::pin(compaction::compact(
@@ -473,7 +473,7 @@ pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) 
             &mut context.commit,
             &resolved,
             &correlation,
-            before.body.as_bytes().len(),
+            before_bytes,
             compaction::Trigger::Manual { closed_turn }
         ))
         .await?,
@@ -499,8 +499,12 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
         return Ok(());
     };
     let session = runtime_session(pending, execution)?;
-    let boundary =
-        session.prepare_step_boundary(pending.conversation.as_str(), execution, pending.turn)?;
+    let boundary = session.prepare_step_boundary(
+        pending.conversation.as_str(),
+        execution,
+        pending.turn,
+        pending.request_num == 1,
+    )?;
     pending.query.input_skills.extend(boundary.skills);
     if let Some(source) = boundary.source {
         pending.query.input_source = source;
@@ -632,7 +636,7 @@ fn build_runtime_blocks(
             conversation: &conversation,
         });
         for notice in &notices {
-            if let Some(body) = render_notice_body(notice, catalog) {
+            if let Some(body) = render_notice_body(notice, catalog)? {
                 notice_bodies.push(body);
             }
         }
@@ -640,12 +644,12 @@ fn build_runtime_blocks(
             .as_ref()
             .and_then(crate::skill::catalog::render_skill_change_notice);
         if let Some(change_line) = skill_change_line {
-            let template = catalog
-                .blocks
-                .get("notice-skill-changes")
-                .map(|asset| asset.text.as_str())
-                .unwrap_or("<kuku_system_notice>\n{{skill_changes}}\n</kuku_system_notice>");
-            notice_bodies.push(template.replace("{{skill_changes}}", &change_line));
+            notice_bodies.push(catalog.render(
+                "blocks/notice-skill-changes.md",
+                minijinja::context! {
+                    skill_changes => change_line,
+                },
+            )?);
         }
     }
 
@@ -665,32 +669,136 @@ fn assembly_runtime_prefix(
     skill_body: Option<&str>,
     runtime_date: Option<&str>,
     catalog: &crate::prompt::PromptCatalog,
-) -> Option<String> {
+) -> Result<Option<String>> {
+    let renderer = catalog.renderer();
     let mut parts = Vec::new();
     if let Some(runtime_context) = runtime_context.filter(|value| !value.is_empty()) {
-        let tmpl = catalog
-            .blocks
-            .get("runtime-notices")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
-        parts.push(tmpl.replace("{{runtime_notices_content}}", runtime_context));
+        parts.push(renderer.render(
+            "blocks/runtime-notices.md",
+            minijinja::context! {
+                runtime_notices_content => runtime_context
+            },
+        )?);
     }
     if let Some(runtime_date) = runtime_date.filter(|value| !value.is_empty()) {
         parts.push(runtime_date.to_string());
     }
     if let Some(skill_body) = skill_body.filter(|value| !value.is_empty()) {
-        let tmpl = catalog
-            .blocks
-            .get("skill-input")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_skill_input>{{skill_input_content}}</kuku_skill_input>");
-        parts.push(tmpl.replace("{{skill_input_content}}", skill_body));
+        parts.push(renderer.render(
+            "blocks/skill-input.md",
+            minijinja::context! {
+                skill_input_content => skill_body
+            },
+        )?);
     }
-    if parts.is_empty() {
-        None
+    Ok((!parts.is_empty()).then(|| parts.join("\n")))
+}
+
+pub(super) fn render_tool_descriptions(
+    tools: &mut [crate::context::ToolSchema],
+    catalog: &crate::prompt::PromptCatalog,
+) -> Result<()> {
+    if let Some(index) = tools.iter().position(|tool| tool.name == "run_js") {
+        let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        let description = catalog.render(
+            "tools/run-js.md",
+            minijinja::context! {
+                tools => minijinja::value::Serde(&names),
+            },
+        )?;
+        let description = description.trim();
+        let original = &mut tools[index].description;
+        if let Some(suffix) = original
+            .strip_prefix(crate::tool::run_js::SCRIPT_DESCRIPTION)
+            .filter(|suffix| !suffix.is_empty())
+        {
+            *original = format!("{description}\n{suffix}");
+        } else {
+            *original = description.to_owned();
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn render_agent_behavior(
+    pending: &PendingRun,
+    tools: &[crate::context::ToolSchema],
+    catalog: &crate::prompt::PromptCatalog,
+    resolved: &crate::provider::types::ResolvedProvider,
+) -> Result<String> {
+    if let Some(instructions) = &pending.query.agent_instructions {
+        return Ok(instructions.clone());
+    }
+    let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    let agent = crate::context::assembly::agent_prompt_facts(
+        Some(resolved),
+        pending.query.runtime.is_some() && pending.query.model_adapter.is_none(),
+    );
+    catalog.render(
+        "agents/main.md",
+        minijinja::context! {
+            agent => minijinja::context! { address => pending.conversation.as_str(), ..agent },
+            tools => minijinja::value::Serde(&names),
+            workspace_root => pending.workspace.to_string_lossy().as_ref(),
+        },
+    )
+}
+
+const MODEL_MODALITIES_TAG: &str = "<kuku_model_modalities>";
+
+pub(super) fn model_modalities_slot(prelude: &[CanonicalMessage]) -> Option<usize> {
+    prelude.iter().position(|message| {
+        matches!(message.blocks.as_slice(), [MessageBlock::Text(text)] if text.starts_with(MODEL_MODALITIES_TAG))
+    })
+}
+
+pub(super) fn set_model_modalities(
+    prelude: &mut Vec<CanonicalMessage>,
+    tools: &[crate::context::ToolSchema],
+    resolved: &crate::provider::types::ResolvedProvider,
+    builtin_adapter: bool,
+    catalog: &crate::prompt::PromptCatalog,
+) -> Result<()> {
+    use crate::config::{ImageInputSupport, RequestedOutput};
+    use crate::context::assembly::render_modalities;
+
+    let capabilities = &resolved.capabilities;
+    let image_input = capabilities.image_input_support(builtin_adapter);
+    let supported = image_input == ImageInputSupport::Supported;
+    let declared_input = capabilities
+        .input_modalities
+        .as_ref()
+        .map(|entry| entry.value.as_slice());
+    let declared_output = capabilities
+        .output_modalities
+        .as_ref()
+        .map(|entry| entry.value.as_slice());
+    let tools: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    let text = catalog.renderer().render("runtime/model-modalities.md", minijinja::context! {
+        agent => crate::context::assembly::agent_prompt_facts(Some(resolved), builtin_adapter),
+        tools => minijinja::value::Serde(&tools),
+        // These values also support previously recorded catalog assets.
+        input_modalities => render_modalities(declared_input),
+        output_modalities => render_modalities(declared_output),
+        route_input => image_input.modalities().join(", "),
+        output_modality => match resolved.output {
+            RequestedOutput::Text => "text",
+            RequestedOutput::Image => "image",
+        },
+        image_input => image_input.label(),
+        image_visibility => if supported { "can see image attachments" } else { "cannot see any images" },
+        view_image => if tools.contains(&"view_image") { "available" } else { "unavailable" },
+    })?;
+    let message = CanonicalMessage::user_text(format!(
+        "{MODEL_MODALITIES_TAG}\n{}\n</kuku_model_modalities>",
+        text.trim_end(),
+    ));
+    if let Some(index) = model_modalities_slot(prelude) {
+        prelude[index] = message;
     } else {
-        Some(parts.join("\n"))
+        prelude.push(message);
     }
+    Ok(())
 }
 
 fn contains_current_date(assembly: &crate::context::ContextAssembly, runtime_date: &str) -> bool {
@@ -723,31 +831,32 @@ pub(super) fn append_handoff_instruction(
     prefix: Option<String>,
     instruction: &str,
     catalog: &crate::prompt::PromptCatalog,
-) -> Option<String> {
+) -> Result<Option<String>> {
     let Some(prefix) = prefix else {
-        let notices_tmpl = catalog
-            .blocks
-            .get("runtime-notices")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_runtime_notices>{{runtime_notices_content}}</kuku_runtime_notices>");
-        let inbox_tmpl = catalog
-            .blocks
-            .get("skill-input")
-            .map(|a| a.text.as_str())
-            .unwrap_or("<kuku_skill_input>{{skill_input_content}}</kuku_skill_input>");
-        return Some(format!(
-            "{}\n{}",
-            notices_tmpl.replace("{{runtime_notices_content}}", instruction),
-            inbox_tmpl.replace("{{skill_input_content}}", ""),
-        ));
+        let renderer = catalog.renderer();
+        let notices = renderer.render(
+            "blocks/runtime-notices.md",
+            minijinja::context! {
+                runtime_notices_content => instruction,
+            },
+        )?;
+        let inbox = renderer.render(
+            "blocks/skill-input.md",
+            minijinja::context! {
+                skill_input_content => "",
+            },
+        )?;
+        return Ok(Some(format!("{notices}\n{inbox}")));
     };
 
-    if let Some(index) = prefix.rfind("</kuku_runtime_notices>") {
-        let (before, after) = prefix.split_at(index);
-        Some(format!("{before}\n\n{instruction}{after}"))
-    } else {
-        Some(format!("{prefix}\n{instruction}"))
-    }
+    Ok(Some(
+        if let Some(index) = prefix.rfind("</kuku_runtime_notices>") {
+            let (before, after) = prefix.split_at(index);
+            format!("{before}\n\n{instruction}{after}")
+        } else {
+            format!("{prefix}\n{instruction}")
+        },
+    ))
 }
 
 fn build_current_user_message(
@@ -765,16 +874,21 @@ fn build_current_user_message(
 fn replace_latest_user_message(
     history: &mut [CanonicalMessage],
     prompt: &str,
-    replacement: CanonicalMessage,
+    mut replacement: CanonicalMessage,
 ) -> Option<usize> {
     for (index, message) in history.iter_mut().enumerate().rev() {
-        if message.role != Role::User || message.blocks.len() != 1 {
+        if message.role != Role::User {
             continue;
         }
-        let MessageBlock::Text(text) = &message.blocks[0] else {
+        let Some((MessageBlock::Text(text), attachments)) = message.blocks.split_first() else {
             continue;
         };
-        if text == prompt {
+        if text == prompt
+            && attachments
+                .iter()
+                .all(|block| matches!(block, MessageBlock::InputImage(_)))
+        {
+            replacement.blocks.extend_from_slice(attachments);
             *message = replacement;
             return Some(index);
         }
@@ -783,7 +897,11 @@ fn replace_latest_user_message(
 }
 
 fn insert_current_turn_metadata_block(message: &mut CanonicalMessage, text: String) {
-    let insert_at = message.blocks.len().saturating_sub(1);
+    let insert_at = message
+        .blocks
+        .iter()
+        .rposition(|block| matches!(block, MessageBlock::Text(_)))
+        .unwrap_or(0);
     message
         .blocks
         .insert(insert_at, crate::context::MessageBlock::Text(text));

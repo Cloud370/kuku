@@ -710,6 +710,7 @@ impl Session {
             correlation: Some(job.id.clone()),
             timing: InputTiming::NextStep,
             bootstrap_skill: None,
+            images: Vec::new(),
         }
     }
 

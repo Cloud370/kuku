@@ -14,8 +14,9 @@ pub use kuku::adapter::ModelSelection;
 pub use kuku::event::StoredEvent;
 pub use kuku::execution::{
     CommandExecutionFacts, CommandInvocation, CommandResultKind, CommandShell, CommandStdin,
-    CommandTermination, FileCommitState, FileMutationFacts, FileMutationKind, OutputReference,
-    ReportedTests, TestReportFormat,
+    CommandTermination, FileCommitState, FileMutationFacts, FileMutationKind, ImageMarker,
+    InputImage, MAX_INPUT_IMAGES, MAX_MODEL_IMAGE_BYTES, OutputReference, ReportedTests,
+    TestReportFormat,
 };
 pub use kuku::permission::PermissionMode;
 pub use kuku::query::ModelPhase;
@@ -34,9 +35,9 @@ pub use subscription::{InputDelivery, Observation, Subscription, SubscriptionUpd
 pub use types::{
     Acknowledgement, Action, AgentProgress, AgentSettlement, AgentSummary, ApiError, Command,
     EventPage, ForwardHistoryPage, HistoryDestination, HistoryDestinations, HistoryEntry,
-    HistoryKind, HistoryPage, ModelDefaultPlan, ReplyPreview, RetryFailureKind, RetryMetadata,
-    RetryPhase, RetrySource, RetryStopReason, RewindGroup, RewindGroupPage, SessionStatus,
-    SessionSummary, Snapshot, Target, Timing,
+    HistoryKind, HistoryPage, ImageAttachment, MessageDraft, ModelDefaultPlan, ReplyPreview,
+    RetryFailureKind, RetryMetadata, RetryPhase, RetrySource, RetryStopReason, RewindGroup,
+    RewindGroupPage, SessionStatus, SessionSummary, Snapshot, Target, Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
 

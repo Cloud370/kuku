@@ -234,8 +234,11 @@ def targeted_delegation(client):
         child.expect(task)
         child_tools = sorted(tool["name"] for tool in child.request.get("tools", []))
         assert child_tools == ["list_agents", "send_message"], child_tools
-        assert "<kuku_delegation>" not in json.dumps(child.request["messages"])
-        assert "<kuku_memory_guidance>" not in json.dumps(child.request["messages"])
+        child_context = json.dumps(child.request["messages"])
+        assert "When sharing a saved value" in child_context
+        assert "collect its reply with list_agents" in child_context
+        assert "Create an idle Agent" not in child_context
+        assert "<kuku_memory_guidance>" not in child_context
         parent.tool("list_agents", "collect", wait_for="writer")
         waiting = terminal.expect("Agent check · writer · Waiting", also=("Agent writer", "Timeline", "Thinking · None"),
                                   absent=("· Fast", "· Ultra Fast"))["screen"]

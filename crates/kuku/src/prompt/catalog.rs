@@ -2,14 +2,14 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PromptAsset {
     pub path: String,
     pub text: String,
     pub hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PromptCatalog {
     pub system: PromptAsset,
     /// block templates: "project-policy", "tool-guidance", "memory",
@@ -27,6 +27,22 @@ pub struct PromptCatalog {
 }
 
 impl PromptCatalog {
+    pub(super) fn template_asset(&self, name: &str) -> Option<&PromptAsset> {
+        if name == "system.md" {
+            return Some(&self.system);
+        }
+        let (group, file) = name.split_once('/')?;
+        let assets = match group {
+            "blocks" => &self.blocks,
+            "agents" => &self.agents,
+            "memory" => &self.memory,
+            "runtime" => &self.runtime,
+            "tools" => &self.tools,
+            _ => return None,
+        };
+        assets.get(file.strip_suffix(".md")?)
+    }
+
     /// Load prompt catalog from a directory, falling back to embedded for missing files.
     pub fn load_from_dir(dir: &Path) -> crate::error::Result<PromptCatalog> {
         let builtin = builtin_prompt_catalog();
@@ -82,6 +98,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
         blocks: {
             let mut m = BTreeMap::new();
             m.insert("project-policy".into(), p!("blocks", "project-policy"));
+            m.insert("model-tiers".into(), p!("blocks", "model-tiers"));
             m.insert("delegation".into(), p!("blocks", "delegation"));
             m.insert("tool-guidance".into(), p!("blocks", "tool-guidance"));
             m.insert("memory".into(), p!("blocks", "memory"));
@@ -121,6 +138,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
             m.insert("context".into(), p!("runtime", "context"));
             m.insert("current-date".into(), p!("runtime", "current-date"));
             m.insert("permission-mode".into(), p!("runtime", "permission-mode"));
+            m.insert("model-modalities".into(), p!("runtime", "model-modalities"));
             m.insert("handoff-context".into(), p!("runtime", "handoff-context"));
             m.insert(
                 "compaction-context".into(),
@@ -144,6 +162,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
         tools: {
             let mut m = BTreeMap::new();
             m.insert("fetch-web".into(), p!("tools", "fetch-web"));
+            m.insert("run-js".into(), p!("tools", "run-js"));
             m
         },
     }
@@ -251,7 +270,7 @@ mod tests {
         assert!(
             catalog.runtime["handoff-context"]
                 .text
-                .contains("{{handoff_summary}}")
+                .contains("{{ handoff_summary }}")
         );
         assert!(
             catalog.runtime["recovery"]

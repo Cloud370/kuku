@@ -4,7 +4,9 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
-use crate::execution::{MAX_MODEL_IMAGE_BYTES, ModelImage};
+use crate::execution::{InputImage, MAX_MODEL_IMAGE_BYTES, ModelImage};
+use crate::provider::prepare::invalid_request;
+use crate::provider::types::{ProviderFailure, ProviderFailureKind};
 
 const MAX_IMAGES_PER_REQUEST: usize = 4;
 
@@ -53,15 +55,74 @@ pub(crate) fn attach_tool_images(
     }
 }
 
-pub(crate) fn redact_tool_images(body: &mut Value) {
+pub(crate) fn attach_user_images(
+    body: &mut Value,
+    images: Vec<(usize, InputImage)>,
+    current_offset: Option<usize>,
+    limit: usize,
+    load: &mut dyn FnMut(&InputImage) -> crate::error::Result<Vec<u8>>,
+) -> Result<(), ProviderFailure> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    let mut available = limit.saturating_sub(json_bytes(body));
+    for batch in images.chunk_by(|(left, _), (right, _)| left == right).rev() {
+        let index = batch[0].0;
+        let required = current_offset.is_some_and(|offset| index >= offset);
+        let additional: usize = batch
+            .iter()
+            .map(|(_, image)| {
+                let url = format!("data:{};base64,", image.media_type());
+                json_bytes(&json!({"type": "input_image", "image_url": url}))
+                    + image.byte_len().div_ceil(3) * 4
+                    + 1
+            })
+            .sum();
+        if additional > available {
+            if required {
+                return Err(ProviderFailure {
+                    kind: ProviderFailureKind::ContextTooLarge,
+                    ..invalid_request("image attachments exceed the remaining request byte limit")
+                });
+            }
+            continue;
+        }
+        let parts = batch
+            .iter()
+            .map(|(_, image)| {
+                let bytes = load(image)?;
+                let mut url = format!("data:{};base64,", image.media_type());
+                STANDARD.encode_string(bytes, &mut url);
+                Ok(json!({"type": "input_image", "image_url": url}))
+            })
+            .collect::<crate::Result<Vec<_>>>();
+        let parts = match parts {
+            Ok(parts) => parts,
+            Err(error) if required => {
+                return Err(invalid_request(&error.to_string()));
+            }
+            Err(_) => continue,
+        };
+        body["input"][index]["content"]
+            .as_array_mut()
+            .expect("user content array")
+            .extend(parts);
+        available -= additional;
+    }
+    Ok(())
+}
+
+pub(crate) fn redact_images(body: &mut Value) {
     let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) else {
         return;
     };
     for item in input {
-        if item["type"] != "function_call_output" {
-            continue;
-        }
-        if let Some(parts) = item["output"].as_array_mut() {
+        let field = match item["type"].as_str() {
+            Some("function_call_output") => "output",
+            Some("message") => "content",
+            _ => continue,
+        };
+        if let Some(parts) = item[field].as_array_mut() {
             for part in parts
                 .iter_mut()
                 .filter(|part| part["type"] == "input_image")
@@ -85,7 +146,7 @@ fn json_bytes(value: &Value) -> usize {
 mod tests {
     use serde_json::json;
 
-    use super::{attach_tool_images, json_bytes, redact_tool_images};
+    use super::{attach_tool_images, json_bytes, redact_images};
     use crate::execution::{ImageMime, ModelImage, OutputReference};
 
     #[test]
@@ -119,7 +180,7 @@ mod tests {
             Ok(vec![0; 4])
         });
         assert_eq!(limited, preview);
-        redact_tool_images(&mut limited);
+        redact_images(&mut limited);
         assert!(!limited.to_string().contains("data:image/png"));
         assert_eq!(limited["input"][1]["output"][1]["type"], "input_image");
 

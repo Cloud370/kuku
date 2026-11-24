@@ -23,6 +23,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
             text: "main message".into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     store
@@ -33,6 +34,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
             text: "review message".into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     store
@@ -212,6 +214,7 @@ async fn history_pages_are_bounded_by_the_requested_snapshot_cursor() {
             text: "message after the saved cursor".into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
 
@@ -344,6 +347,7 @@ fn append_group_user(store: &mut EventStore, agent: &str, turn: u64, text: &str)
             text: text.into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         })
         .unwrap();
     id

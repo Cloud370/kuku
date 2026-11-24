@@ -33,6 +33,7 @@ fn ui(id: u64, turn: u64, text: &str) -> StoredEvent {
             text: text.into(),
             from: None,
             job_delivery: false,
+            images: Vec::new(),
         },
     }
 }

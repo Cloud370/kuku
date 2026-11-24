@@ -82,9 +82,13 @@ pub(super) enum Record {
     },
     ModelImageSaved {
         agent: String,
-        turn: u64,
+        turn: Option<u64>,
         digest: String,
         image: ModelImage,
+    },
+    InputImageRestaged {
+        id: String,
+        at: std::time::SystemTime,
     },
     OutputsPinned {
         agent: String,
@@ -102,6 +106,8 @@ pub(super) enum Record {
         address: String,
         input_command_id: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<crate::execution::InputImage>,
     },
     MessageRewind {
         command: Command,
@@ -488,8 +494,16 @@ impl State {
                         turn,
                         digest,
                         image,
+                        referenced: false,
+                        staged: turn.is_none(),
                     },
                 );
+            }
+            Record::InputImageRestaged { id, at } => {
+                if let Some(image) = self.model_images.get_mut(&id) {
+                    image.staged = true;
+                    self.outputs.refresh_retention(&id, at);
+                }
             }
             Record::OutputsPinned { agent, turn, ids } => {
                 self.pin_current_turn(agent, turn, ids)?;
@@ -517,6 +531,7 @@ impl State {
                 address,
                 input_command_id,
                 text,
+                images,
             } => {
                 let position = self
                     .agent(&address)?
@@ -538,6 +553,7 @@ impl State {
                 entry.receipt = receipt;
                 entry.input.command_id = command_id;
                 entry.input.text = text;
+                entry.input.images = images;
                 agent.update_inbox();
             }
             Record::MessageRewind {
@@ -676,7 +692,20 @@ impl State {
                         }
                     }
                     let receipt_id = input.receipt.event_id;
+                    let image_keys: Vec<_> = input
+                        .input
+                        .images
+                        .iter()
+                        .map(|image| image.key(&address))
+                        .collect();
                     agent.accepted.push(input);
+                    for key in image_keys {
+                        if let Some(id) = self.model_image_ids.get(&key)
+                            && let Some(retained) = self.model_images.get_mut(id)
+                        {
+                            retained.referenced = true;
+                        }
+                    }
                     if let Some(delivery) = self.delegated_deliveries.get_mut(&receipt_id) {
                         delivery.turn.get_or_insert(admitted_turn);
                     }
@@ -1030,6 +1059,13 @@ impl State {
                     turn: None,
                 },
             );
+        }
+        for image in &input.images {
+            if let Some(id) = self.model_image_ids.get(&image.key(&input.target))
+                && let Some(retained) = self.model_images.get_mut(id)
+            {
+                retained.staged = false;
+            }
         }
         self.values.grant(&input.target, &values);
         let agent = self.agent_mut(&input.target)?;

@@ -19,7 +19,8 @@ fn render_responses_body_includes_prior_assistant_function_call() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     let input = body["input"].as_array().unwrap();
 
@@ -49,7 +50,8 @@ fn render_responses_body_maps_current_user_blocks_to_content_parts() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     let input = body["input"].as_array().unwrap();
     let current = input.last().unwrap();
@@ -86,6 +88,7 @@ fn responses_recovery_keeps_original_request_as_exact_prefix() {
             think_level: kuku::config::ThinkLevel::Off,
             thinking: ResolvedThinking::default(),
         })
+        .unwrap()
     };
     let original = render(assembly_with_multiblock_current_user());
     let recovered = render(assembly_with_recovery_notice());
@@ -126,7 +129,7 @@ fn render_responses_body_basic_text() {
         thinking: ResolvedThinking::default(),
     };
 
-    let body = render_responses_body(&request);
+    let body = render_responses_body(&request).unwrap();
 
     assert_eq!("gpt-5.4", body["model"].as_str().unwrap());
     assert_eq!("developer", body["input"][0]["role"]);
@@ -156,7 +159,7 @@ fn render_responses_body_with_tools() {
         thinking: ResolvedThinking::default(),
     };
 
-    let body = render_responses_body(&request);
+    let body = render_responses_body(&request).unwrap();
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(1, tools.len());
     let tool = &tools[0];
@@ -182,7 +185,7 @@ fn render_responses_body_with_reasoning() {
         thinking: ResolvedThinking::default(),
     };
 
-    let body = render_responses_body(&request);
+    let body = render_responses_body(&request).unwrap();
     let reasoning = body["reasoning"].as_object().unwrap();
     assert_eq!("xhigh", reasoning["effort"].as_str().unwrap());
 }

@@ -12,9 +12,13 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
+use base64::Engine;
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::{Observation, OutputRead, Session, SessionHistory};
-use kuku_client::{HistoryDestination, HistoryDestinations, RewindGroup};
+use kuku_client::{
+    HistoryDestination, HistoryDestinations, ImageAttachment, ImageMarker, MessageDraft,
+    RewindGroup,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
@@ -124,6 +128,128 @@ pub(super) async fn events(
     .await
 }
 
+#[derive(Deserialize)]
+pub(super) struct MessageDraftQuery {
+    workspace: PathBuf,
+    agent: String,
+}
+
+pub(super) async fn message_draft(
+    State(state): State<Arc<AppState>>,
+    Path((id, event_id)): Path<(String, u64)>,
+    Params(query): Params<MessageDraftQuery>,
+) -> Result<Json<MessageDraft>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let manager = manager(&state).await;
+    let session = manager.open_session(&target.path);
+    let agent = query.agent;
+    journal_task(move || {
+        let event = EventStore::read_page(&target.path, event_id.saturating_sub(1), 1)?
+            .into_iter()
+            .find(|event| event.id == event_id)
+            .ok_or_else(|| ApiError::invalid("the selected original message is missing"))?;
+        let EventPayload::MessageUser {
+            conversation,
+            text,
+            images,
+            job_delivery: false,
+            ..
+        } = event.payload
+        else {
+            return Err(ApiError::invalid(
+                "the selected event is not a user message",
+            ));
+        };
+        if conversation != agent {
+            return Err(ApiError::invalid(
+                "the selected message belongs to another Agent",
+            ));
+        }
+        encode_draft(&target.path, &agent, session.as_ref(), text, &images).map(Json)
+    })
+    .await
+}
+
+pub(super) async fn queued_draft(
+    State(state): State<Arc<AppState>>,
+    Path((id, input_id)): Path<(String, String)>,
+    Params(query): Params<MessageDraftQuery>,
+) -> Result<Json<MessageDraft>> {
+    let target = SessionTarget::new(&state, &query.workspace, &id)?;
+    target.require_exists()?;
+    let session = manager(&state).await.open_session(&target.path);
+    let agent = query.agent;
+    journal_task(move || {
+        let pending = match &session {
+            Some(session) => session.pending_inputs(&agent)?,
+            None => Session::read_view(&target.path, &agent)?.pending_inputs,
+        };
+        let input = pending
+            .into_iter()
+            .find(|entry| {
+                entry.input.command_id == input_id
+                    && entry.input.source == crate::wire::http_input_source()
+            })
+            .ok_or(kuku::Error::InputNotQueued(input_id))?
+            .input;
+        encode_draft(
+            &target.path,
+            &agent,
+            session.as_ref(),
+            input.text,
+            &input.images,
+        )
+        .map(Json)
+    })
+    .await
+}
+
+fn encode_draft(
+    events_path: &FsPath,
+    agent: &str,
+    session: Option<&Session>,
+    text: String,
+    images: &[kuku::execution::InputImage],
+) -> Result<MessageDraft> {
+    let bytes = if images.is_empty() {
+        Vec::new()
+    } else if let Some(session) = session {
+        images
+            .iter()
+            .map(|image| session.read_input_image(agent, image))
+            .collect::<kuku::Result<Vec<_>>>()?
+    } else {
+        Session::read_saved_input_images(events_path, agent, images)?
+    };
+    let mut next_label = 0;
+    let images = images
+        .iter()
+        .zip(bytes)
+        .map(|(image, bytes)| {
+            let marker = image.marker().cloned().unwrap_or_else(|| {
+                let label = loop {
+                    next_label += 1;
+                    let label = format!("[Image #{next_label}]");
+                    if !text.contains(&label) {
+                        break label;
+                    }
+                };
+                ImageMarker {
+                    offset: text.len(),
+                    label,
+                }
+            });
+            ImageAttachment {
+                marker,
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                transparent: image.is_transparent(),
+            }
+        })
+        .collect();
+    Ok(MessageDraft { text, images })
+}
+
 pub(super) async fn history(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -159,17 +285,21 @@ pub(super) async fn history(
             let entries: Vec<_> = messages
                 .into_iter()
                 .filter_map(|event| {
-                    let EventPayload::MessageUser { turn, text, .. } = event.payload else {
+                    let EventPayload::MessageUser { turn, text, images, .. } = event.payload else {
                         return None;
                     };
                     let preview = text
                         .char_indices()
                         .nth(512)
                         .map_or(text.as_str(), |(end, _)| &text[..end]);
-                    Some(
-                        json!({"type":"user","id":event.id,"agent":agent,"turn":turn,
-                    "turn_number":turns.number(agent, turn),"text":preview}),
-                    )
+                    let mut entry = json!({
+                        "type":"user","id":event.id,"agent":agent,"turn":turn,
+                        "turn_number":turns.number(agent, turn),"text":preview
+                    });
+                    if !images.is_empty() {
+                        entry["has_images"] = json!(true);
+                    }
+                    Some(entry)
                 })
                 .collect();
             let response =
@@ -786,6 +916,7 @@ mod tests {
                 text: text.into(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
         }
     }

@@ -43,6 +43,12 @@ impl Shortcut {
     pub(crate) const NEW_LINE: Self = Self::new(KeyCode::Enter, KeyModifiers::SHIFT, "Shift+Enter");
     pub(crate) const CONTROL_NEW_LINE: Self = Self::control('j', "Ctrl+J");
     pub(crate) const NEXT_TURN: Self = Self::new(KeyCode::Enter, KeyModifiers::ALT, "Alt+Enter");
+    pub(crate) const PASTE: Self = Self::control('v', "Ctrl+V");
+    pub(crate) const PASTE_IMAGE_ALIAS: Self = Self::new(
+        KeyCode::Char('v'),
+        KeyModifiers::CONTROL.union(KeyModifiers::ALT),
+        "Ctrl+Alt+V",
+    );
     pub(crate) const CLEAR: Self = Self::control('c', "Ctrl+C");
     pub(crate) const RECONNECT: Self = Self::control('r', "Ctrl+R");
     pub(crate) const REWIND: Self = Self::control('g', "Ctrl+G");
@@ -51,6 +57,13 @@ impl Shortcut {
     pub(crate) const DETAILS: Self = Self::control('o', "Ctrl+O");
     pub(crate) const LATEST: Self = Self::new(KeyCode::End, KeyModifiers::CONTROL, "Ctrl+End");
     pub(crate) const READING_BACK: Self = Self::new(KeyCode::Up, KeyModifiers::ALT, "Alt+↑");
+
+    pub(crate) fn clipboard_paste(key: KeyEvent) -> bool {
+        Self::PASTE.matches(key)
+            || Self::PASTE_IMAGE_ALIAS.matches(key)
+            || (matches!(key.code, KeyCode::Char('v' | 'V'))
+                && key.modifiers == KeyModifiers::CONTROL.union(KeyModifiers::SHIFT))
+    }
 
     pub(crate) fn matches(self, key: KeyEvent) -> bool {
         key.code == self.code && key.modifiers == self.modifiers

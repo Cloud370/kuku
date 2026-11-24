@@ -44,6 +44,7 @@ fn snapshot() -> Snapshot {
         context_window_tokens: 16_000,
         max_output_tokens: None,
         settings: Default::default(),
+        image_input: Default::default(),
         output: Default::default(),
         request_url: "https://example.test/v1/messages".into(),
         capabilities: Default::default(),

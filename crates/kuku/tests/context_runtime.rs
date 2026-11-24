@@ -710,6 +710,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
                 text: "retry-input".into(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             })
             .unwrap()
             .id;

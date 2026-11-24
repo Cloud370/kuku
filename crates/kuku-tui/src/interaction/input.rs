@@ -112,6 +112,7 @@ impl App {
         }
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
+        let atoms = self.pane().draft.atom_count();
         match self.modal {
             Some(Modal::Help) if key.code == KeyCode::Char('/') && super::is_text(key) => {
                 self.command_menu()
@@ -134,13 +135,13 @@ impl App {
             None => self.composer_key(key),
         }
         if let Some(pane) = self.panes.get_mut(&address) {
-            if pane.draft.text() != draft {
-                pane.draft_revision = pane.draft_revision.wrapping_add(1);
+            if pane.draft.text() != draft || pane.draft.atom_count() != atoms {
+                pane.draft_changed();
             }
         }
     }
 
-    pub(super) fn paste(&mut self, text: &str) {
+    pub(crate) fn paste(&mut self, text: &str) {
         self.dismiss_confirmation();
         if matches!(self.modal, Some(Modal::SendRouteConfirmation(_))) {
             self.close_picker();
@@ -156,6 +157,7 @@ impl App {
         }
         let address = self.active.clone();
         let draft = self.pane().draft.text().to_owned();
+        let atoms = self.pane().draft.atom_count();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
             if picker.kind.searchable()
                 && (picker.kind != PickerKind::Models || picker.search_focused)
@@ -175,8 +177,8 @@ impl App {
             self.pane_mut().draft.insert(text);
         }
         if let Some(pane) = self.panes.get_mut(&address) {
-            if pane.draft.text() != draft {
-                pane.draft_revision = pane.draft_revision.wrapping_add(1);
+            if pane.draft.text() != draft || pane.draft.atom_count() != atoms {
+                pane.draft_changed();
             }
         }
     }

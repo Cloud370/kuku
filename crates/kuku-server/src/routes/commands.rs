@@ -90,6 +90,7 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
         Command::Send {
             text,
             values,
+            images,
             create,
             config_patch,
             create_agent_if_missing,
@@ -102,7 +103,7 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
                     .as_ref()
                     .or(config_patch.as_ref())
                     .is_some_and(|config| config.bootstrap_skill.is_some());
-            if (text.trim().is_empty() && !bootstrap && values.is_empty())
+            if (text.trim().is_empty() && !bootstrap && values.is_empty() && images.is_empty())
                 || text.len() > kuku::RuntimeLimits::default().max_input_bytes
             {
                 return Err(ApiError::invalid(
@@ -135,8 +136,12 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
         Command::ReplaceQueued {
             input_command_id,
             text,
+            image_markers,
         } => {
             validate_command_id(input_command_id)?;
+            if image_markers.len() > kuku::execution::MAX_INPUT_IMAGES {
+                return Err(ApiError::invalid("too many retained image markers"));
+            }
             if text.trim().is_empty() || text.len() > kuku::RuntimeLimits::default().max_input_bytes
             {
                 return Err(ApiError::invalid(

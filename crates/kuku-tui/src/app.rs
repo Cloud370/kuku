@@ -29,6 +29,7 @@ mod contextual;
 mod delivery;
 mod history;
 pub(crate) mod history_jump;
+pub(crate) mod images;
 mod model_default;
 mod model_editor;
 mod navigation;
@@ -134,6 +135,12 @@ pub(crate) struct Pane {
     pub(crate) model_problem: Option<String>,
     pub(crate) opening: bool,
     pub(crate) sending: bool,
+    pub(crate) draft_images: Vec<images::DraftImage>,
+    recall_images: Option<Vec<images::DraftImage>>,
+    pub(crate) encoded_images: Vec<kuku_client::ImageAttachment>,
+    pub(crate) clipboard_ticket: Option<u64>,
+    image_send: Option<images::ImageSend>,
+    next_image: usize,
     pub(crate) value_attachments: Vec<(String, OutputReference)>,
     pub(crate) value_saving: bool,
     creation_rejected: bool,
@@ -366,7 +373,7 @@ pub(crate) struct App {
     pub(crate) text_selection: TextSelection,
     pub(crate) modal_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
-    pub(crate) withdrawal_drafts: HashMap<(Target, String), String>,
+    pub(crate) queued_draft_reads: HashSet<(Target, String)>,
     pub(crate) rewind_drafts: HashMap<String, RewindDraft>,
     pub(crate) editor_width: usize,
     pub(crate) transcript_area: (usize, usize),
@@ -411,7 +418,7 @@ pub(crate) enum StartupSkills {
 #[derive(Debug, Clone)]
 pub(crate) struct RewindDraft {
     pub(crate) address: Address,
-    pub(crate) text: String,
+    pub(crate) draft: kuku_client::MessageDraft,
     pub(crate) revision: u64,
     pub(crate) restored: Option<bool>,
 }
@@ -453,7 +460,7 @@ impl App {
             text_selection: TextSelection::default(),
             modal_selection: TextSelection::default(),
             pending: HashMap::new(),
-            withdrawal_drafts: HashMap::new(),
+            queued_draft_reads: HashSet::new(),
             rewind_drafts: HashMap::new(),
             editor_width: 80,
             transcript_area: (80, 16),
@@ -626,6 +633,7 @@ impl App {
             .into_iter()
             .chain(self.alias_hint.as_ref().and_then(Notice::deadline))
             .chain(self.pane().cleanup_at)
+            .chain(self.image_countdown_deadline(Instant::now()))
             .chain(
                 self.model_editor
                     .as_ref()
@@ -650,11 +658,17 @@ impl App {
             .model_editor
             .as_mut()
             .is_some_and(|editor| editor.poll_probes());
-        expired || alias_expired || probes
+        self.tick_image_countdown(now) || expired || alias_expired || probes
     }
 
     pub(crate) fn update(&mut self, update: Update) {
         match update {
+            Update::ClipboardPasted(selection, ticket, result) => {
+                self.clipboard_pasted(selection, ticket, result);
+            }
+            Update::ImagesEncoded(selection, ticket, result) => {
+                self.images_encoded(selection, ticket, result);
+            }
             Update::SetupRequired => self.need_model_setup(),
             Update::Connected {
                 endpoint,
@@ -735,6 +749,12 @@ impl App {
             }
             Update::RewindHistory(selection, ticket, before, result) => {
                 self.apply_rewind_history_update(selection, ticket, before, result);
+            }
+            Update::RecallImageDraft(selection, event_id, result) => {
+                self.recalled_image_draft(selection, event_id, result);
+            }
+            Update::QueuedDraft(selection, input_id, action, result) => {
+                self.queued_draft_loaded(selection, input_id, action, result);
             }
             Update::RewindSource(selection, ticket, event_id, result) => {
                 self.apply_rewind_source_update(selection, ticket, event_id, result);
@@ -948,19 +968,19 @@ impl App {
         pane.exists = true;
         pane.opening = false;
         let progress = ExecutionProgress::from_snapshot(snapshot.progress.as_ref());
+        let previous_cursor = pane.last_event;
         pane.last_event = snapshot.cursor;
         pane.live_floor = snapshot.cursor;
         pane.latest_reply_cursor = 0;
         pane.retired_execution_floor = snapshot
             .execution_id()
             .map_or(snapshot.cursor, |execution| execution.saturating_sub(1));
-        if pane.snapshot.is_none() {
-            for entry in &page.entries {
-                if entry.kind == HistoryKind::User {
-                    if let Some(text) = &entry.text {
-                        pane.draft.remember(text);
-                    }
-                }
+        for entry in &page.entries {
+            if entry.id > previous_cursor
+                && entry.kind == HistoryKind::User
+                && entry.agent == active.agent
+            {
+                pane.remember_history_entry(entry);
             }
         }
         if let Some(entry) =

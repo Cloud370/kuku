@@ -94,6 +94,8 @@ pub(crate) enum Job {
     History(Selection, HistoryRequest),
     RewindHistory(Selection, Ticket, u64),
     RewindSource(Selection, Ticket, u64),
+    QueuedDraft(Selection, String, crate::app::QueueAction),
+    RecallImageDraft(Selection, u64),
     HistoryJump(Selection, Ticket, Option<u64>),
     HistoryJumpDraft(Selection, u64, u64),
     FileRewindPreview(Selection, u64, u64),
@@ -133,9 +135,17 @@ pub(crate) enum Job {
     Web(Option<Target>),
     ReplySource(Selection, u64),
     Copy(String),
+    PasteClipboard(Selection, u64, crate::clipboard::PasteSource),
+    EncodeImages(Selection, crate::app::images::PrepareImages),
 }
 
 pub(crate) enum Update {
+    ClipboardPasted(Selection, u64, Result<crate::clipboard::Pasted, String>),
+    ImagesEncoded(
+        Selection,
+        u64,
+        Result<Vec<kuku_client::ImageAttachment>, String>,
+    ),
     SetupRequired,
     ModelEditorOpened(u64, Result<Box<crate::setup::ModelEditor>, String>),
     ModelEditorSaved(u64, Box<crate::setup::ModelEditor>, Result<bool, String>),
@@ -166,14 +176,26 @@ pub(crate) enum Update {
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<LoadedHistory, Error>),
     RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
-    RewindSource(Selection, Ticket, u64, Result<String, Error>),
+    QueuedDraft(
+        Selection,
+        String,
+        crate::app::QueueAction,
+        Result<kuku_client::MessageDraft, Error>,
+    ),
+    RecallImageDraft(Selection, u64, Result<kuku_client::MessageDraft, Error>),
+    RewindSource(
+        Selection,
+        Ticket,
+        u64,
+        Result<kuku_client::MessageDraft, Error>,
+    ),
     HistoryJump(
         Selection,
         Ticket,
         Option<u64>,
         Result<HistoryDestinations, Error>,
     ),
-    HistoryJumpDraft(Selection, u64, Result<String, Error>),
+    HistoryJumpDraft(Selection, u64, Result<kuku_client::MessageDraft, Error>),
     FileRewindPreview(
         Selection,
         u64,
@@ -491,6 +513,24 @@ impl Jobs {
                 let options = self.options.clone();
                 self.spawn(async move { Update::Restarted(restart(&options, &identity).await) });
             }
+            Job::PasteClipboard(selection, ticket, source) => {
+                self.spawn(async move {
+                    let workspace = selection.target.workspace.clone();
+                    let result = tokio::task::spawn_blocking(move || source.read(&workspace))
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()));
+                    Update::ClipboardPasted(selection, ticket, result)
+                });
+            }
+            Job::EncodeImages(selection, preparation) => {
+                self.spawn(async move {
+                    let ticket = preparation.ticket;
+                    let result = tokio::task::spawn_blocking(move || preparation.encode())
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()));
+                    Update::ImagesEncoded(selection, ticket, result)
+                });
+            }
             Job::Copy(_) => unreachable!("clipboard belongs to the terminal"),
             connected => {
                 if let Some(connection) = self.connection.clone() {
@@ -582,8 +622,16 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
                 .await;
             Update::RewindHistory(selection, ticket, before, result)
         }
+        Job::RecallImageDraft(selection, event_id) => {
+            let result = client.message_draft(&selection.target, event_id).await;
+            Update::RecallImageDraft(selection, event_id, result)
+        }
+        Job::QueuedDraft(selection, input_id, action) => {
+            let result = client.queued_draft(&selection.target, &input_id).await;
+            Update::QueuedDraft(selection, input_id, action, result)
+        }
         Job::RewindSource(selection, ticket, event_id) => {
-            let result = history_text(client, &selection.target, event_id, HistoryKind::User).await;
+            let result = client.message_draft(&selection.target, event_id).await;
             Update::RewindSource(selection, ticket, event_id, result)
         }
         Job::HistoryJump(selection, ticket, before) => {
@@ -593,7 +641,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             Update::HistoryJump(selection, ticket, before, result)
         }
         Job::HistoryJumpDraft(selection, ticket, event_id) => {
-            let result = original_user_message(client, &selection.target, event_id).await;
+            let result = client.message_draft(&selection.target, event_id).await;
             Update::HistoryJumpDraft(selection, ticket, result)
         }
         Job::FileRewindPreview(selection, ticket, event_id) => {
@@ -706,33 +754,10 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::ClosePicker
         | Job::PrepareRestart(_)
         | Job::Restart(_)
+        | Job::PasteClipboard(..)
+        | Job::EncodeImages(..)
         | Job::Copy(_) => unreachable!("job requires service options or terminal"),
     }
-}
-
-async fn original_user_message(client: &Client, target: &Target, id: u64) -> Result<String, Error> {
-    use kuku::event::EventPayload;
-
-    let page = client
-        .events_before(
-            &target.workspace,
-            &target.session_id,
-            Some(id.saturating_add(1)),
-            1,
-        )
-        .await?;
-    page.events
-        .into_iter()
-        .find_map(|event| match event.payload {
-            EventPayload::MessageUser {
-                conversation,
-                text,
-                job_delivery: false,
-                ..
-            } if event.id == id && conversation == target.agent => Some(text),
-            _ => None,
-        })
-        .ok_or_else(|| Error::Protocol("the selected original message is missing".into()))
 }
 
 async fn history_text(

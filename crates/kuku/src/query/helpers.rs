@@ -206,6 +206,7 @@ pub(super) fn append_message_user_with_sender(
     text: &str,
     from: Option<&str>,
     source: &crate::session::InputSource,
+    images: Vec<crate::execution::InputImage>,
 ) -> Result<()> {
     append_event(
         events_path,
@@ -216,6 +217,7 @@ pub(super) fn append_message_user_with_sender(
             text: source.message_text(text.to_owned()),
             from: from.map(str::to_owned),
             job_delivery: source.is_job_delivery(),
+            images,
         },
     )
 }

@@ -76,6 +76,11 @@ pub(crate) enum ChoiceKind {
     AttachValue(NamedValue),
     ReadValue(NamedValue),
     ClearValues,
+    SendImages {
+        original: bool,
+        timing: kuku_client::Timing,
+        route: Option<Box<crate::app::send_route::RouteChange>>,
+    },
     ConfirmRestart(Box<kuku_client::local::ServiceIdentity>),
 }
 
@@ -212,6 +217,7 @@ pub(crate) enum PickerKind {
     JobActions,
     Values,
     ValueActions,
+    Images,
     Server,
     Rewind,
     HistoryJump,
@@ -240,6 +246,7 @@ impl PickerKind {
             Self::Jobs => "Background jobs",
             Self::JobActions => "Background job",
             Self::Values => "Saved values",
+            Self::Images => "Image quality",
             Self::ValueActions => "Saved value",
             Self::Server => "Service status",
             Self::Rewind => "Rewind to message",
@@ -276,6 +283,7 @@ impl PickerKind {
                 | Self::Thinking
                 | Self::Models
                 | Self::ModelActions
+                | Self::Images
                 | Self::Speed
                 | Self::CustomSpeed
         )
@@ -305,6 +313,7 @@ struct PickerRows {
 #[derive(Debug)]
 pub(crate) struct Picker {
     pub(crate) kind: PickerKind,
+    pub(crate) image_auto_send: Option<crate::app::images::ImageAutoSend>,
     pub(crate) query: Editor,
     pub(crate) header: String,
     pub(crate) loading: bool,
@@ -328,6 +337,7 @@ impl Picker {
     pub(crate) fn new(kind: PickerKind, id: u64, local: Vec<Choice>) -> Self {
         Self {
             kind,
+            image_auto_send: None,
             query: Editor::default(),
             header: String::new(),
             loading: false,
@@ -595,10 +605,12 @@ pub(crate) enum PromptKind {
     },
     QueuedInput {
         input_command_id: String,
+        images: Vec<kuku_client::ImageAttachment>,
     },
     RewindMessage {
         event_id: u64,
         text: String,
+        images: Vec<kuku_client::ImageAttachment>,
         restore_files: bool,
     },
     HistoryJump(Box<crate::app::history_jump::HistoryJumpPrompt>),

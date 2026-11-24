@@ -315,6 +315,7 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
                 text: "review message".into(),
                 from: None,
                 job_delivery: false,
+                images: Vec::new(),
             },
         },
         kuku::event::StoredEvent {

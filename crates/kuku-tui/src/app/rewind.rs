@@ -1,4 +1,4 @@
-use kuku_client::{Action, Command, Error, new_id};
+use kuku_client::{Action, Command, Error, MessageDraft, new_id};
 
 use super::{App, PendingItem, PendingStage, RewindDraft};
 use crate::jobs::{Job, Selection};
@@ -138,7 +138,7 @@ impl App {
         selection: Selection,
         ticket: Ticket,
         event_id: u64,
-        result: Result<String, Error>,
+        result: Result<MessageDraft, Error>,
     ) {
         if selection != self.selection() {
             return;
@@ -165,7 +165,7 @@ impl App {
         history.load = RewindLoad::Idle;
         picker.loading = false;
         match result {
-            Ok(text) => self.confirm_rewind_message(event_id, turn, text),
+            Ok(draft) => self.confirm_rewind_message(event_id, turn, draft),
             Err(error) => {
                 picker.header = rewind_history_header(
                     &picker.kind,
@@ -210,13 +210,21 @@ impl App {
             {
                 return false;
             }
-            pane.draft.set_text(draft.text.clone());
-            pane.draft_revision = pane.draft_revision.wrapping_add(1);
+            pane.restore_draft_images(&draft.draft.text, draft.draft.images.clone());
+            if self.active == draft.address {
+                self.deactivate_context_focus();
+                self.focus_composer();
+            }
             true
         })
     }
 
-    pub(crate) fn rewind_message(&mut self, event_id: u64, text: String, restore_files: bool) {
+    pub(crate) fn rewind_message(
+        &mut self,
+        event_id: u64,
+        draft: MessageDraft,
+        restore_files: bool,
+    ) {
         if !self.pane().draft.text().is_empty() || !self.pane().value_attachments.is_empty() {
             self.problem("Clear the draft before editing a past message");
             return;
@@ -224,14 +232,15 @@ impl App {
         self.issue_history_change(
             Action::RewindMessage {
                 target_event_id: event_id,
-                text: text.clone(),
+                text: draft.text.clone(),
+                draft_images: draft.images.clone(),
                 restore_files,
             },
-            Some(text),
+            Some(draft),
         );
     }
 
-    pub(super) fn issue_history_change(&mut self, action: Action, draft: Option<String>) {
+    pub(super) fn issue_history_change(&mut self, action: Action, draft: Option<MessageDraft>) {
         if !self.require_service() {
             return;
         }
@@ -242,8 +251,8 @@ impl App {
             action,
         };
         let id = command.command_id.clone();
-        if let Some(text) = draft {
-            self.pane_mut().draft.remember(&text);
+        if let Some(draft) = draft {
+            self.pane_mut().draft.remember_draft(draft.clone());
             if self.rewind_drafts.len() >= super::pending::MAX_REWIND_DRAFTS {
                 if let Some(oldest) = self.rewind_drafts.keys().next().cloned() {
                     self.rewind_drafts.remove(&oldest);
@@ -253,7 +262,7 @@ impl App {
                 id.clone(),
                 RewindDraft {
                     address,
-                    text,
+                    draft,
                     revision: self.pane().draft_revision,
                     restored: None,
                 },

@@ -18,7 +18,7 @@ interface ServiceStatus {
   draining: boolean;
 }
 
-const supportedProtocol = 2;
+const supportedProtocol = 1;
 
 export function useHealth() {
   return useQuery({

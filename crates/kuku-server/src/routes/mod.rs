@@ -47,6 +47,14 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
         )
         .route("/sessions/{id}/observe", get(events::observe))
         .route("/sessions/{id}/events", get(events::events))
+        .route(
+            "/sessions/{id}/events/{event_id}/draft",
+            get(events::message_draft),
+        )
+        .route(
+            "/sessions/{id}/queued/{input_id}/draft",
+            get(events::queued_draft),
+        )
         .route("/sessions/{id}/outputs/{output_id}", get(events::output))
         .route("/sessions/{id}/jobs", get(jobs::list))
         .route(
@@ -58,7 +66,15 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
             "/sessions/{id}/values/{name}",
             put(values::save).layer(DefaultBodyLimit::disable()),
         )
-        .route("/sessions/{id}/commands", post(commands::submit))
+        .route(
+            "/sessions/{id}/commands",
+            post(commands::submit).layer(DefaultBodyLimit::max(
+                2 * 1024 * 1024
+                    + kuku::execution::MAX_INPUT_IMAGES
+                        * kuku::execution::MAX_MODEL_IMAGE_BYTES.div_ceil(3)
+                        * 4,
+            )),
+        )
         .route(
             "/sessions/{id}/receipts/{command_id}",
             get(commands::receipt),

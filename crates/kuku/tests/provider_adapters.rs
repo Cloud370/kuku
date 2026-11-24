@@ -37,7 +37,7 @@ mod event {
 }
 
 mod execution {
-    pub use kuku::execution::OutputReference;
+    pub use kuku::execution::{InputImage, OutputReference};
 
     #[allow(
         dead_code,
@@ -479,7 +479,8 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
         temperature: Some(0.2),
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][1]["role"], "user");
@@ -517,7 +518,8 @@ fn anthropic_render_body_preserves_layer_order() {
         temperature: Some(0.2),
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(body["model"], "claude-sonnet-4-6");
     assert_eq!(body["stream"], false);
@@ -558,7 +560,8 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(tool_body["tools"][0]["name"], "find_files");
     assert_eq!(tool_body["tools"][0]["input_schema"]["type"], "object");
@@ -574,7 +577,8 @@ fn anthropic_render_body_includes_tools_and_native_tool_results() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(
         history_body["messages"][2]["content"][1]["type"],
@@ -603,7 +607,8 @@ fn anthropic_render_body_keeps_current_user_as_multiple_text_blocks() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     let messages = body["messages"].as_array().unwrap();
     let current = messages.last().unwrap()["content"].as_array().unwrap();
@@ -643,6 +648,7 @@ fn anthropic_recovery_keeps_original_request_as_exact_prefix() {
             think_level: kuku::config::ThinkLevel::Off,
             thinking: ResolvedThinking::default(),
         })
+        .unwrap()
     };
     let original = render(assembly_with_multiblock_current_user());
     let recovered = render(assembly_with_recovery_notice());
@@ -762,7 +768,8 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
         temperature: Some(0.7),
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][1]["role"], "user");
@@ -801,7 +808,8 @@ fn openai_render_body_preserves_layer_order() {
         temperature: Some(0.7),
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(body["model"], "gpt-5.4-mini");
     assert_eq!(body["stream"], false);
@@ -831,7 +839,8 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(tool_body["tools"][0]["type"], "function");
     assert_eq!(tool_body["tools"][0]["function"]["name"], "find_files");
@@ -850,7 +859,8 @@ fn openai_render_body_includes_tools_and_role_tool_messages() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     assert_eq!(
         history_body["messages"][3]["tool_calls"][0]["id"],
@@ -874,7 +884,8 @@ fn openai_chat_render_body_joins_current_user_blocks_in_order() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    })
+    .unwrap();
 
     let messages = body["messages"].as_array().unwrap();
     let current = messages.last().unwrap();
@@ -901,6 +912,7 @@ fn openai_chat_recovery_keeps_original_request_as_exact_prefix() {
             think_level: kuku::config::ThinkLevel::Off,
             thinking: ResolvedThinking::default(),
         })
+        .unwrap()
     };
     let original = render(assembly_with_multiblock_current_user());
     let recovered = render(assembly_with_recovery_notice());
