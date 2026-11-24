@@ -96,9 +96,6 @@ impl App {
         let Some(snapshot) = &self.pane().snapshot else {
             return false;
         };
-        if snapshot.agent.last_model_route.is_none() {
-            return false;
-        }
         let settings_changed = |config: &AgentConfig| {
             let observed = &snapshot.agent.config;
             config.tier != observed.tier
@@ -329,6 +326,29 @@ mod tests {
         app.send(Timing::Steer);
         assert!(app.modal.is_none());
         assert_eq!(sent(&app), [Timing::Steer]);
+    }
+
+    #[test]
+    fn the_first_request_waits_for_the_selected_tier_to_apply() {
+        let selection = model("gateway", "same");
+        let mut app = ready(&selection, selection.clone());
+        let mut snapshot = app.pane().snapshot.clone().unwrap();
+        snapshot.cursor += 1;
+        snapshot.agent.last_model_route = None;
+        app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
+
+        let mut config = app.pane().config().clone();
+        config.service_tier = Some("fast".into());
+        app.configure(config);
+        app.send(Timing::Steer);
+
+        assert!(sent(&app).is_empty());
+        assert!(app.modal.is_none());
+        assert_eq!("Keep this draft", app.pane().draft.text());
+        assert!(app
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.text == "Wait for model settings · draft kept"));
     }
 
     #[test]

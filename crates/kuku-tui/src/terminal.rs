@@ -668,7 +668,8 @@ mod tests {
     use ratatui::layout::{Position, Rect};
 
     use super::{
-        strip_cell_colors, AuthorizationLink, Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL,
+        strip_cell_colors, AuthorizationLink, Duration, FrameBackend, Instant, PaintSchedule,
+        FRAME_INTERVAL,
     };
 
     #[test]

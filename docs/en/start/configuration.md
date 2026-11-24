@@ -15,9 +15,7 @@ From setup, choose either:
 - **Edit config file** — opens the config path without sending any provider requests.
 - **Find and test models** — discovers models from the provider and runs short text, thinking, and optional image checks (4,096-token output cap, 30 s timeout per test; may use API balance).
 
-The wizard lets you pick a preset, reuse a saved connection, or enter a custom URL, network mode (system proxy env, direct, HTTP, SOCKS5, or SOCKS5H), and API key. For a custom base URL, setup probes eligible protocols (`Responses` → `Chat Completions` → `Messages`) after you select a model, and asks you to choose if results are ambiguous. If the model catalog cannot be read, you can still type a known model ID directly.
-
-Choose **Find and test models** once to allow model discovery and short text or image tests during setup. API key trials may use your API balance and request a 4096-token output limit. For ChatGPT subscriptions, setup reads your account catalog and generation tests are opt-in. Each trial has a 30-second timeout. **Edit config file** opens the config path with zero provider requests.
+ChatGPT setup reads your account catalog. You can opt in to generation tests from **Settings**.
 
 Use the model picker to search and select one or more models (`Space` to multi-select, `Enter` to confirm), then review test outcomes in **Model tests** or adjust thinking, output limits, capabilities, and pricing under **Settings**. Run **Settings → Test tools** to verify synthetic tool calls on the route — a working text reply alone does not confirm tool support. If a Chat route requires Responses for tools, switch under **Settings → API type → Responses** and re-test before saving.
 

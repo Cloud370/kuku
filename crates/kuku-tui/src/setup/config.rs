@@ -117,11 +117,9 @@ impl Settings {
     }
 
     pub(super) fn reload(&self) -> io::Result<Self> {
-        Self::at_paths(
-            self.config_path.clone(),
-            self.data_dir.clone(),
-            &|name| std::env::var(name),
-        )
+        Self::at_paths(self.config_path.clone(), self.data_dir.clone(), &|name| {
+            std::env::var(name)
+        })
     }
 
     fn at_paths(

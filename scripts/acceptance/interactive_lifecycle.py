@@ -129,6 +129,8 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("Choose a provider")
             terminal.press("\x1b[A")
+            terminal.expect("› Preset · ChatGPT subscription")
+            terminal.press("\x1b[A")
             terminal.expect("› Preset · OpenRouter")
             terminal.press("\r\r\r")
             terminal.expect("Paste your API key")

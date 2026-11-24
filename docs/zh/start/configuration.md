@@ -15,9 +15,7 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 - **Edit config file**：直接给出配置文件路径，不发任何模型请求。
 - **Find and test models**：拉取模型列表并做简短的文本、思考档位和可选图片试跑（单次上限 4,096 tokens、超时 30 秒，可能消耗 API 余额）。
 
-你可以选预设、复用已有连接，或填写自定义 URL、代理方式（跟随环境代理、直连、HTTP、SOCKS5、SOCKS5H）和 API Key。对于自定义 Base URL，选好模型后向导会自动探测协议（优先 `Responses`，其次 `Chat Completions`、`Messages`），结果不明确时再让你手动挑；如果目录不可读，也可以直接手填模型 ID。
-
-选择一次 **Find and test models**，即可允许本次设置查询模型目录并发送简短的文本或图片试跑。API Key 试跑可能消耗 API 余额，请求输出上限为 4096 token。ChatGPT 订阅设置会读取账号目录，由你手动发起生成测试。每次试跑的超时为 30 秒。选择 **Edit config file** 会显示配置路径，供应商请求数为零。
+ChatGPT 设置读取所选账号的模型目录。可以在 **Settings** 里手动发起生成测试。
 
 在模型列表里可以直接打字搜索、按 `Space` 多选、`Enter` 确认。试跑结果可以在 **Model tests** 里逐项查看，也可以进 **Settings** 调整思考档位、输出上限、能力标记与费率。想确认工具调用是否正常，点 **Settings → Test tools** 测一次合成工具调用——能正常回文本不代表支持工具调用；如果某条 Chat 线路需要走 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测再保存。
 
@@ -27,11 +25,11 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 保存没有配置思考档位的模型时，若支持 `medium`，设置优先选它。其余情况取已知顺序中间偏低的一档、唯一可用的档位，或在档位顺序未知时采用有效的上游声明默认值。能力信息不足时跟随供应商默认。手动设置优先。
 
+要管理添加过的服务档位，选中路由后按 `e`，再打开 **Settings → Model capabilities → Custom service tiers**。[模型和服务档位快捷键](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
+
 ## Provider 与凭据
 
 默认配置包含两个 Provider：
-
-要管理添加过的服务档位，选中路由后按 `e`，再打开 **Settings → Model capabilities → Custom service tiers**。[模型和服务档位快捷键](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
 - `provider.anthropic`：`api_key = "$ANTHROPIC_API_KEY"`
 - `provider.openai`：`api_key = "$OPENAI_API_KEY"`
