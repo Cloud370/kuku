@@ -156,6 +156,8 @@ fn workspace_path(workspace: &Path, path: &str) -> Result<(PathBuf, PathBuf), To
     let lexical = normalize_existing_components(joined.clone());
     if let Ok(relative) = lexical.strip_prefix(&workspace) {
         guard_relative(&relative.to_string_lossy())?;
+    } else if Path::new(path).is_absolute() {
+        guard_relative(path)?;
     }
     Ok((workspace, joined))
 }
@@ -194,6 +196,7 @@ fn checked_resolved_path(
         if !Path::new(requested).is_absolute() {
             return Err(outside_workspace(requested));
         }
+        guard_relative(&resolved.to_string_lossy())?;
         // Anchor operations at an existing directory so relative opens stay pinned.
         workspace = resolved
             .ancestors()

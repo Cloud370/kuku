@@ -25,7 +25,9 @@ async fn command_slot_preserves_timeout_truncation() {
         "tool_timeout".to_string(),
         None,
         serde_json::json!({
-            "shell":if cfg!(windows) {"cmd"} else {"sh"},"cwd":".","command": noisy_timeout_command(dir.path()),
+            "shell": if cfg!(windows) { "cmd" } else { "sh" },
+            "cwd": dir.path().canonicalize().unwrap(),
+            "command": noisy_timeout_command(dir.path()),
             "timeout": 1,
             "brief": "produce bounded timeout output",
         }),

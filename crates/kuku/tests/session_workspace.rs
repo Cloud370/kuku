@@ -354,6 +354,43 @@ fn completed_prefix_writes(session: &Session) -> usize {
         .count()
 }
 
+#[tokio::test]
+async fn stopped_execution_rejects_approval_before_its_worker_observes_cancellation() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("approval.txt"), "before").unwrap();
+    let session = start(options(
+        &work,
+        &data,
+        r#"
+await tools.read_file({path:"approval.txt"});
+await tools.edit_file({path:"approval.txt",old_text:"before",new_text:"changed"});
+"#,
+    ))
+    .await;
+    let request = until(|| session.pending_permissions().pop()).await;
+    let mut stop = std::pin::pin!(session.cancel("main"));
+    poll_fn(|context| {
+        assert!(stop.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
+    assert!(matches!(
+        session.reply_permission("approve-after-stop", "main", &request.id, true),
+        Err(kuku::Error::PermissionRequestNotPending(_))
+    ));
+    stop.await.unwrap();
+    assert_eq!(
+        "before",
+        std::fs::read_to_string(work.path().join("approval.txt")).unwrap()
+    );
+    session.close().await.unwrap();
+}
+
 #[derive(Debug)]
 struct SteerGate {
     reached: std::sync::atomic::AtomicBool,

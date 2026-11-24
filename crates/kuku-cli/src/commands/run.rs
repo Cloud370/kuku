@@ -68,21 +68,15 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
     let connection = options.connect().await?;
     let has_explicit_id = args.command_id.is_some();
     let target = connection.target(args.session_id, args.agent);
-    let (action, permission_reply) = match args.answer {
-        Some(text) => (
-            Action::ReplyQuestion {
-                request_id: args.request_id,
-                text,
-            },
-            false,
-        ),
-        None => (
-            Action::ReplyPermission {
-                request_id: args.request_id,
-                allow: args.allow,
-            },
-            true,
-        ),
+    let action = match args.answer {
+        Some(text) => Action::ReplyQuestion {
+            request_id: args.request_id,
+            text,
+        },
+        None => Action::ReplyPermission {
+            request_id: args.request_id,
+            allow: args.allow,
+        },
     };
     let command = Command {
         target,
@@ -99,13 +93,16 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
                 .await;
         }
     }
-    let request = if permission_reply {
+    let request = if let Action::ReplyPermission { request_id, .. } = &command.action {
         connection
             .client
-            .snapshot(&command.target)
+            .pending_approvals(&command.target)
             .await?
-            .agent
-            .permission
+            .into_iter()
+            .map(|approval| approval.request)
+            .find(|request| {
+                request.id == *request_id && request.conversation.as_str() == command.target.agent
+            })
     } else {
         None
     };
@@ -321,6 +318,9 @@ async fn settle(
         .client
         .subscribe_session(target, receipt_cursor.saturating_sub(1));
     let mut settled = connection.client.snapshot(target).await?;
+    if let Some(agent) = paused_script_agent(connection, target, &settled).await? {
+        return Ok(agent);
+    }
     while !is_settled(&settled, receipt_cursor)
         || (stream_json && observer.cursor() < settled.cursor)
     {
@@ -340,6 +340,7 @@ async fn settle(
                 id,
                 entry,
                 state_changed,
+                operation,
                 ..
             } => {
                 if let (Some(renderer), Some(entry)) = (&mut renderer, entry) {
@@ -349,6 +350,11 @@ async fn settle(
                 }
                 if state_changed && id > settled.cursor {
                     settled = connection.client.snapshot(target).await?;
+                }
+                if operation.as_deref() == Some("script_permission_waiting") {
+                    if let Some(agent) = paused_script_agent(connection, target, &settled).await? {
+                        return Ok(agent);
+                    }
                 }
             }
             Observation::Live { agent, event, .. } if agent == target.agent => {
@@ -361,6 +367,9 @@ async fn settle(
                     write_json(&json!({"type":"lagged","skipped":skipped}))?;
                 }
                 settled = connection.client.snapshot(target).await?;
+                if let Some(agent) = paused_script_agent(connection, target, &settled).await? {
+                    return Ok(agent);
+                }
             }
             Observation::Live { .. } | Observation::Heartbeat => {}
         }
@@ -383,6 +392,32 @@ async fn settle(
         }
     }
     Ok(settled.agent)
+}
+
+async fn paused_script_agent(
+    connection: &Connection,
+    target: &Target,
+    snapshot: &Snapshot,
+) -> Result<Option<AgentSnapshot>, Error> {
+    let pending = connection.client.pending_approvals(target).await?;
+    let Some(request) = pending
+        .into_iter()
+        .map(|approval| approval.request)
+        .find(|request| request.id.starts_with("script:"))
+    else {
+        return Ok(None);
+    };
+    let mut agent = if request.conversation.as_str() == target.agent {
+        snapshot.agent.clone()
+    } else {
+        let owner = Target {
+            agent: request.conversation.as_str().to_owned(),
+            ..target.clone()
+        };
+        connection.client.snapshot(&owner).await?.agent
+    };
+    agent.permission = Some(request);
+    Ok(Some(agent))
 }
 
 fn is_settled(snapshot: &Snapshot, receipt_cursor: u64) -> bool {

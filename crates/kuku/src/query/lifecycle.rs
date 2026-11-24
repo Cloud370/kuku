@@ -119,6 +119,7 @@ pub(super) fn reduce_lifecycle(events: &[StoredEvent]) -> LifecycleState {
                         candidate: candidate.clone(),
                         source: source.clone(),
                         workspace: workspace.clone(),
+                        arguments: None,
                     });
                     lifecycle.turn = *turn;
                 }

@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kuku_client::{Action, Error, PendingApproval, PermissionMode};
 use ratatui::Frame;
@@ -48,9 +50,7 @@ impl PermissionEditor {
     }
 
     pub(crate) fn render(&self, frame: &mut Frame<'_>, area: Rect, saved: Option<PermissionMode>) {
-        let mut lines = vec![Line::raw(
-            "This mode applies to every Agent in the Session.",
-        )];
+        let mut lines = vec![Line::raw("Applies to every Session in this workspace.")];
         for (index, mode) in MODES.into_iter().enumerate() {
             let cursor = if index == self.selected { "›" } else { " " };
             let current = if saved == Some(mode) {
@@ -179,6 +179,7 @@ const APPROVAL_CHOICES: [ApprovalChoice; 3] = [
 pub(crate) struct ApprovalEditor {
     request_id: String,
     selected: usize,
+    detail_offset: Cell<usize>,
 }
 
 impl ApprovalEditor {
@@ -216,26 +217,20 @@ impl ApprovalEditor {
         if let Some(job) = &approval.job_id {
             lines.extend(render_literal(&format!("Job {job}"), emphasis(MUTED)));
         }
+        let mut details = format!("{} · {}", request.tool, request.summary);
         if let Some(workspace) = &request.workspace {
-            lines.extend(wrap_bounded(
-                render_literal(
-                    &format!("Directory {}", workspace.display()),
-                    emphasis(MUTED),
-                ),
-                usize::from(area.width),
-                2,
-            ));
+            details.push_str(&format!("\nDirectory {}", workspace.display()));
         }
-        lines.extend(wrap_bounded(
-            render_literal(&request.summary, emphasis(ACCENT)),
-            usize::from(area.width),
-            2,
-        ));
-        lines.extend(wrap_bounded(
-            render_literal(&request.candidate, emphasis(MUTED)),
-            usize::from(area.width),
-            3,
-        ));
+        if !request.candidate.is_empty() {
+            details.push('\n');
+            details.push_str(&request.candidate);
+        }
+        if let Some(arguments) = &request.arguments {
+            if let Ok(arguments) = serde_json::to_string_pretty(arguments) {
+                details.push('\n');
+                details.push_str(&arguments);
+            }
+        }
         let labels = [
             "y  Allow once",
             "n  Deny",
@@ -246,6 +241,25 @@ impl ApprovalEditor {
         } else {
             2
         };
+        let rows = usize::from(area.height)
+            .saturating_sub(lines.len() + count + 2)
+            .max(1);
+        let offset = self.detail_offset.get();
+        let detail_lines = wrap_bounded(
+            render_literal(&details, emphasis(MUTED)),
+            usize::from(area.width),
+            offset.saturating_add(rows + 1),
+        );
+        let offset = offset.min(detail_lines.len().saturating_sub(rows));
+        self.detail_offset.set(offset);
+        let scrollable = detail_lines.len() > rows;
+        lines.extend(detail_lines.into_iter().skip(offset).take(rows));
+        if scrollable {
+            lines.push(Line::styled(
+                "PgUp / PgDn · Scroll operation details",
+                emphasis(MUTED),
+            ));
+        }
         for (index, label) in labels.into_iter().take(count).enumerate() {
             let active = self.selected.min(count - 1) == index;
             let cursor = if active { "›" } else { " " };
@@ -317,6 +331,7 @@ impl App {
         self.modal = Some(Modal::Approvals(ApprovalEditor {
             request_id: item.request.id.clone(),
             selected: 0,
+            detail_offset: Cell::default(),
         }));
         true
     }
@@ -332,6 +347,7 @@ impl App {
         self.modal = Some(Modal::Approvals(ApprovalEditor {
             request_id: request_id.into(),
             selected: 0,
+            detail_offset: Cell::default(),
         }));
         true
     }
@@ -370,6 +386,14 @@ impl App {
             KeyCode::Tab => {
                 editor.request_id = approvals[(index + 1) % approvals.len()].request.id.clone();
                 editor.selected = 0;
+                editor.detail_offset.set(0);
+                None
+            }
+            KeyCode::PageUp | KeyCode::PageDown => {
+                let amount = if key.code == KeyCode::PageUp { -5 } else { 5 };
+                editor
+                    .detail_offset
+                    .set(editor.detail_offset.get().saturating_add_signed(amount));
                 None
             }
             KeyCode::Enter if key.kind == KeyEventKind::Press => {

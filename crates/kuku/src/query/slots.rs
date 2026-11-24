@@ -84,6 +84,11 @@ pub(crate) fn spawn_simple_slot(
                             &cancelled,
                         );
                     }
+                    if let Some(blocked) = crate::tool::builtin::common::changed_file_target(
+                        &tool_name, &args, &workspace,
+                    ) {
+                        return blocked;
+                    }
                     crate::tool::dispatch::dispatch_workspace_file(
                         &tool_name,
                         &args,
@@ -164,6 +169,11 @@ pub(super) fn spawn_command_slot(
                 _=cancel_cmd.notified()=>return cancelled_slot("command cancelled before dispatch"),
                 permit=operations.acquire_owned()=>permit.expect("host capacity remains open"),
             };
+            if let Some(blocked) =
+                crate::tool::builtin::run_command::changed_command_directory(&args)
+            {
+                return SlotEvent::Done(blocked);
+            }
             let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
 
             let fwd_tc_id = tc_id.clone();

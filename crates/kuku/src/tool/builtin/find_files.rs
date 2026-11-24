@@ -356,6 +356,10 @@ mod tests {
         let absolute = find_files(&serde_json::json!({"path": outside.path()}), dir.path());
         assert_eq!(absolute.status, "ok");
         assert!(absolute.model_content.contains("notes.txt"));
+        let protected = outside.path().join(".ssh").join("nested");
+        std::fs::create_dir_all(&protected).unwrap();
+        let protected = find_files(&serde_json::json!({"path": protected}), dir.path());
+        assert_eq!(protected.status, "blocked");
         let blocked = find_files(&serde_json::json!({"path": ".."}), dir.path());
         assert_eq!(blocked.status, "blocked");
     }

@@ -115,6 +115,7 @@ pub(super) async fn advance(
                 candidate,
                 source: source.into(),
                 workspace: Some(action.workspace),
+                arguments: Some(action.args),
             };
             append_permission_request(
                 &pending.events_path,

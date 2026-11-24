@@ -22,7 +22,9 @@ def workspace_permissions(client):
     )
     with tempfile.TemporaryDirectory() as outside:
         exercise_permissions(client, workspace, Path(outside).resolve())
-    restart_pending_script(client, workspace)
+    restart_pending_script(client, workspace, approved=False)
+    restart_pending_script(client, workspace, approved=True)
+    cli_script_permission(client, workspace)
 
 
 def exercise_permissions(client, workspace, outside):
@@ -147,55 +149,88 @@ def exercise_permissions(client, workspace, outside):
     print("Applied workspace modes and verified native tool and Agent directories, background approval, and terminal sound settings.")
 
 
-def restart_pending_script(client, workspace):
-    title = "Recover facts after a service interruption"
+def restart_pending_script(client, workspace, *, approved):
+    stage = "after approval" if approved else "before approval"
+    title = f"Recover facts {stage}"
+    prefix = f"prefix-{approved}.txt"
+    pending_file = f"pending-{approved}.txt"
+    sibling = f"sibling-{approved}.txt"
+    code = f'await tools.write_file({{path:{json.dumps(prefix)},content:"committed"}});'
+    if approved:
+        code += "while (true) {}"
+    else:
+        code += f'await tools.write_file({{path:{json.dumps(pending_file)},content:"never dispatched"}});'
     with client.terminal(workspace, confirm_permissions=False) as terminal:
         terminal.expect("New session", state="Ready")
         terminal.submit(title)
-        client.provider.next(title).tool(
-            "run_js", "interrupted-script", code=(
-                'await tools.write_file({path:"prefix.txt",content:"committed"});'
-                'await tools.write_file({path:"pending.txt",content:"needs approval"});'
-            ),
-        )
+        client.provider.next(title).reply([
+            {"type": "tool_use", "id": "interrupted-script", "name": "run_js", "input": {"code": code}},
+            {"type": "tool_use", "id": "queued-write", "name": "write_file",
+             "input": {"path": sibling, "content": "must stay undispatched"}},
+        ])
         terminal.expect("Tool approvals (1) · F2 Review")
         terminal.press(F2)
-        terminal.expect("Tool approval", also=("prefix.txt",))
+        terminal.expect("Tool approval", also=(prefix, "write_file", '"content": "committed"'))
         terminal.press("y")
-        eventually("the approved first write", lambda: (workspace / "prefix.txt").exists())
+        eventually("the approved first write", lambda: (workspace / prefix).exists())
         session = next(item["session_id"] for item in client.sessions(workspace) if item["title"] == title)
         query = urlencode({"workspace": workspace})
         path = f"/sessions/{session}/permissions?{query}"
 
         def next_request():
             return next((item["request"] for item in client.request("GET", path).as_json()["approvals"]
-                         if item["request"]["candidate"] == "pending.txt"), None)
+                         if item["request"]["candidate"] == pending_file), None)
 
-        pending = eventually("the script to wait on the second write", next_request)
+        if approved:
+            pending = None
+            assert client.request("GET", path).as_json()["approvals"] == []
+        else:
+            pending = eventually("the script to wait on the second write", next_request)
         client.kill(client.connection())
 
     with client.terminal(workspace, confirm_permissions=False) as terminal:
         terminal.resume(title)
-        terminal.expect("The service restarted while awaiting approval.", state="Interrupted")
+        terminal.expect("The service restarted before the script settled.", state="Interrupted")
         assert client.request("GET", path).as_json()["approvals"] == []
-        client.cli(workspace, "reply", session, pending["id"], "--allow", success=False)
+        if pending:
+            client.cli(workspace, "reply", session, pending["id"], "--allow", success=False)
         client.provider.assert_idle(duration=0.2)
-        assert (workspace / "prefix.txt").read_text(encoding="utf-8") == "committed"
-        assert not (workspace / "pending.txt").exists()
+        assert (workspace / prefix).read_text(encoding="utf-8") == "committed"
+        assert not (workspace / pending_file).exists() and not (workspace / sibling).exists()
         events = client.request("GET", f"/sessions/{session}/events?{query}").as_json()["events"]
         facts = [event["payload"] for event in events]
-        assert sum(fact.get("kind") == "workspace.action" and fact.get("target") == "prefix.txt"
+        assert sum(fact.get("kind") == "workspace.action" and fact.get("target") == prefix
                    and fact.get("status") == "ok" for fact in facts) == 1
         records = [fact["record"] for fact in facts if fact.get("kind") == "runtime.operation"]
-        assert any(record.get("operation") == "script_permission_ended"
-                   and record.get("request_id") == pending["id"] for record in records)
+        if pending:
+            assert any(record.get("operation") == "script_permission_ended"
+                       and record.get("request_id") == pending["id"] for record in records)
         terminal.expect("F2 Continue")
         terminal.press(F2 + "\r")
         resumed = client.provider.next("interrupted-script")
         result = resumed.tool_result("interrupted-script", error=True)["content"]
-        assert "Restart the remaining script steps" in result and "prefix.txt" in result, result
+        assert "Restart the remaining script steps" in result and prefix in result, result
+        resumed.tool_result("queued-write", error=True)
+        assert not (workspace / sibling).exists()
         resumed.text("The saved prefix is available for the next step.")
         terminal.expect("The saved prefix is available for the next step.")
         terminal.exit_cleanly()
 
-    print("A service restart retained the completed write once and expired the suspended script approval.")
+    print(f"A service restart {stage} retained the completed write once and settled the interrupted batch.")
+
+
+def cli_script_permission(client, workspace):
+    prompt = "Offer the script approval to the command-line client"
+    with client.command(workspace, "run", "--json", prompt) as process:
+        client.provider.next(prompt).tool(
+            "run_js", "cli-script",
+            code='return await tools.write_file({path:"cli.txt",content:"approved"});',
+        )
+        output, _ = client.finish(process)
+    waiting = json.loads(output)
+    assert waiting["event"] == "waiting" and waiting["permission"]["tool"] == "write_file", waiting
+    assert not (workspace / "cli.txt").exists()
+    with client.command(workspace, "reply", waiting["session_id"], waiting["permission"]["id"], "--allow") as process:
+        client.provider.next("cli-script").text("The command-line client approved the write.")
+        client.finish(process)
+    assert (workspace / "cli.txt").read_text(encoding="utf-8") == "approved"

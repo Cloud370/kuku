@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -192,7 +192,6 @@ pub(super) enum Record {
     ScriptPermissionWaiting {
         address: String,
         request: crate::query::PermissionRequest,
-        args: serde_json::Value,
     },
     ScriptPermissionReplied {
         address: String,
@@ -206,6 +205,11 @@ pub(super) enum Record {
         turn: u64,
         request_id: String,
         reason: String,
+    },
+    ScriptRecoveryCompleted {
+        address: String,
+        turn: u64,
+        tool_call_id: String,
     },
     CleanupFailed {
         address: String,
@@ -370,6 +374,8 @@ pub(super) struct State {
     pub(super) jobs: JobIndex,
     #[serde(default)]
     pub(super) script_permissions: BTreeMap<String, crate::query::PermissionRequest>,
+    #[serde(default)]
+    pub(super) recoverable_scripts: BTreeSet<(u64, String, String)>,
 }
 
 impl State {
@@ -696,6 +702,11 @@ impl State {
                 turn,
                 usage: _,
             } => {
+                if matches!(status, AgentStatus::Idle | AgentStatus::Waiting) {
+                    self.recoverable_scripts.retain(|(script_turn, owner, _)| {
+                        owner != &address || Some(*script_turn) != turn
+                    });
+                }
                 if !matches!(status, AgentStatus::Waiting | AgentStatus::Interrupted) {
                     self.values
                         .release_turn(&address, turn.or(self.agent(&address)?.snapshot.turn));
@@ -793,7 +804,14 @@ impl State {
                 agent.permission_reply = Some((request_id, allow));
                 agent.snapshot.status = AgentStatus::Idle;
             }
-            Record::ScriptPermissionWaiting { request, .. } => {
+            Record::ScriptPermissionWaiting {
+                address, request, ..
+            } => {
+                self.recoverable_scripts.insert((
+                    request.turn,
+                    address,
+                    request.tool_call_id.clone(),
+                ));
                 self.script_permissions.insert(request.id.clone(), request);
             }
             Record::ScriptPermissionReplied {
@@ -808,6 +826,14 @@ impl State {
             }
             Record::ScriptPermissionEnded { request_id, .. } => {
                 self.script_permissions.remove(&request_id);
+            }
+            Record::ScriptRecoveryCompleted {
+                address,
+                turn,
+                tool_call_id,
+            } => {
+                self.recoverable_scripts
+                    .remove(&(turn, address, tool_call_id));
             }
             Record::SessionClosed => {}
             Record::JobFinished {
@@ -944,9 +970,9 @@ impl State {
                 snapshot.status = AgentStatus::Interrupted;
                 snapshot.execution_id = None;
                 let pending_script = self
-                    .script_permissions
-                    .values()
-                    .any(|request| request.conversation.as_str() == address);
+                    .recoverable_scripts
+                    .iter()
+                    .any(|(_, owner, _)| owner == address);
                 snapshot.last_error = Some(if pending_script {
                     super::script_permissions::RESTARTED_SCRIPT.into()
                 } else {

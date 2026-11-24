@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::sync::oneshot;
 
 use crate::event::{EventPayload, EventStore};
@@ -12,49 +14,98 @@ use crate::{Error, Result};
 use crate::{WorkspaceScriptActionFacts, WorkspaceScriptActionStatus};
 
 use super::record::{Record, State};
-use super::{Receipt, Session, ensure_open};
+use super::{AgentStatus, Receipt, Session, ensure_open};
 
 const MAX_PENDING_SCRIPT_APPROVALS: usize = 64;
 pub(super) const RESTARTED_SCRIPT: &str =
-    "The service restarted while awaiting approval. Restart the remaining script steps.";
+    "The service restarted before the script settled. Restart the remaining script steps.";
+
+#[derive(Clone)]
+pub(crate) struct ScriptOwner {
+    pub(crate) execution_id: u64,
+    pub(crate) detached: Arc<AtomicBool>,
+}
+
+pub(super) struct ScriptWaiter {
+    owner: ScriptOwner,
+    reply: oneshot::Sender<bool>,
+}
+
+impl ScriptOwner {
+    fn can_dispatch(&self, state: &State, address: &str) -> Result<bool> {
+        let agent = &state.agent(address)?.snapshot;
+        Ok(!state.closing
+            && !state.closed
+            && (self.detached.load(Ordering::Acquire)
+                || agent.status == AgentStatus::Running
+                    && agent.execution_id == Some(self.execution_id)))
+    }
+}
 
 impl Session {
+    pub(crate) fn mark_script_action_dispatched(
+        &self,
+        agent: &str,
+        owner: &ScriptOwner,
+        payload: EventPayload,
+    ) -> Result<bool> {
+        let state = self.inner.state.lock().unwrap();
+        if !owner.can_dispatch(&state, agent)? {
+            return Ok(false);
+        }
+        EventStore::open(self.events_path())?.append(payload)?;
+        Ok(true)
+    }
     pub(super) fn recover_script_permissions(&self) -> Result<()> {
-        let scripts: BTreeSet<_> = self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .script_permissions
-            .values()
-            .map(|request| {
-                (
-                    request.turn,
-                    request.conversation.as_str().to_owned(),
-                    request.tool_call_id.clone(),
-                )
-            })
-            .collect();
+        let scripts = self.inner.state.lock().unwrap().recoverable_scripts.clone();
         for (turn, agent, id) in scripts {
             self.recover_paused_script(turn, &agent, &id)?;
+            self.commit(
+                &mut self.inner.state.lock().unwrap(),
+                Record::ScriptRecoveryCompleted {
+                    address: agent,
+                    turn,
+                    tool_call_id: id,
+                },
+            )?;
         }
         self.expire_script_permissions(RESTARTED_SCRIPT)
     }
 
     fn recover_paused_script(&self, turn: u64, agent: &str, id: &str) -> Result<()> {
-        let mut settled = false;
+        let mut settled = BTreeSet::new();
+        let mut dispatched = BTreeSet::new();
+        let mut batches = BTreeMap::new();
         let mut actions = BTreeMap::new();
         EventStore::visit_after_path(self.events_path(), turn.saturating_sub(1), |event| {
-            if let EventPayload::ToolResult {
-                conversation,
-                turn: settled_turn,
-                tool_call_id,
-                ..
-            } = &event.payload
-            {
-                settled |= *settled_turn == turn
-                    && tool_call_id == id
-                    && conversation.as_deref() == Some(agent);
+            match &event.payload {
+                EventPayload::ToolCall {
+                    conversation,
+                    turn: event_turn,
+                    tool_call_id,
+                    request_id,
+                    ..
+                } if *event_turn == turn && conversation.as_deref() == Some(agent) => {
+                    batches.insert(tool_call_id.clone(), request_id.clone());
+                }
+                EventPayload::ToolResult {
+                    conversation,
+                    turn: event_turn,
+                    tool_call_id,
+                    ..
+                } if *event_turn == turn && conversation.as_deref() == Some(agent) => {
+                    settled.insert(tool_call_id.clone());
+                }
+                EventPayload::Unknown(data)
+                    if data["kind"] == "runtime.tool_dispatched"
+                        && data["turn"] == turn
+                        && data["agent"] == agent =>
+                {
+                    if let Some(id) = data["tool_call_id"].as_str() {
+                        dispatched.insert(id.to_owned());
+                    }
+                }
+                _ => {}
             }
             if let Some(action) = WorkspaceActionReceipt::from_event(&event)? {
                 if action.agent == agent && action.turn == turn && action.tool_call_id == id {
@@ -62,17 +113,42 @@ impl Session {
                         .action_id
                         .rsplit('/')
                         .next()
+                        .and_then(|value| value.strip_prefix("action_"))
                         .and_then(|value| value.parse::<usize>().ok());
                     actions.insert((ordinal, action.action_id.clone()), action);
                 }
             }
             Ok(())
         })?;
-        if settled {
+        let mut writer = EventStore::open(self.events_path())?;
+        if let Some(batch) = batches.get(id) {
+            let state = self.inner.state.lock().unwrap();
+            let waiting = state
+                .agent(agent)?
+                .snapshot
+                .permission
+                .as_ref()
+                .map(|request| request.tool_call_id.as_str());
+            for (sibling, request) in &batches {
+                if request == batch
+                    && sibling != id
+                    && !settled.contains(sibling)
+                    && !dispatched.contains(sibling)
+                    && waiting != Some(sibling)
+                {
+                    let outcome = ToolResultEnvelope::cancelled(
+                        "script batch interrupted before this action was dispatched",
+                    );
+                    writer.append(super::controls::cancelled_tool_result(
+                        agent, turn, sibling, outcome,
+                    )?)?;
+                }
+            }
+        }
+        if settled.contains(id) {
             return Ok(());
         }
-        let mut outcome =
-            ToolResultEnvelope::cancelled("run_js interrupted while awaiting approval");
+        let mut outcome = ToolResultEnvelope::cancelled("run_js interrupted before settlement");
         let actions: Vec<_> = actions
             .into_values()
             .map(recovered_action)
@@ -88,7 +164,7 @@ impl Session {
         }
         append_recovery_evidence(&mut outcome.model_content, &actions, false);
         let result = super::controls::cancelled_tool_result(agent, turn, id, outcome)?;
-        EventStore::open(self.events_path())?.append(result)?;
+        writer.append(result)?;
         Ok(())
     }
 
@@ -113,7 +189,7 @@ impl Session {
     pub(crate) fn request_script_permission(
         &self,
         request: PermissionRequest,
-        args: Value,
+        owner: ScriptOwner,
     ) -> Result<oneshot::Receiver<bool>> {
         let mut state = self.inner.state.lock().unwrap();
         ensure_open(&state)?;
@@ -129,20 +205,19 @@ impl Session {
             ));
         }
         let address = request.conversation.as_str().to_owned();
+        if !owner.can_dispatch(&state, &address)? {
+            return Err(Error::ExecutionNotActive(owner.execution_id));
+        }
         self.commit(
             &mut state,
-            Record::ScriptPermissionWaiting {
-                address,
-                request,
-                args,
-            },
+            Record::ScriptPermissionWaiting { address, request },
         )?;
         let (send, receive) = oneshot::channel();
         self.inner
             .script_permission_replies
             .lock()
             .unwrap()
-            .insert(request_id, send);
+            .insert(request_id, ScriptWaiter { owner, reply: send });
         Ok(receive)
     }
 
@@ -156,10 +231,10 @@ impl Session {
         allow: bool,
     ) -> Result<Receipt> {
         let mut replies = self.inner.script_permission_replies.lock().unwrap();
-        if replies
-            .get(request_id)
-            .is_none_or(oneshot::Sender::is_closed)
-        {
+        let Some(waiter) = replies.get(request_id) else {
+            return Err(Error::PermissionRequestNotPending(request_id.into()));
+        };
+        if waiter.reply.is_closed() || !waiter.owner.can_dispatch(state, address)? {
             return Err(Error::PermissionRequestNotPending(request_id.into()));
         }
         self.commit(
@@ -173,7 +248,7 @@ impl Session {
             },
         )?;
         if let Some(reply) = replies.remove(request_id) {
-            let _ = reply.send(allow);
+            let _ = reply.reply.send(allow);
         }
         Ok(state.commands[command_id].1.clone())
     }
@@ -228,7 +303,12 @@ fn recovered_action(receipt: WorkspaceActionReceipt) -> Result<WorkspaceScriptAc
     };
     let mut result = serde_json::to_value(receipt.facts)?;
     if let Some(target) = receipt.target {
-        result["path"] = json!(target);
+        if receipt.tool == crate::WorkspaceScriptOperation::SaveValue {
+            result["name"] = json!(target);
+            result["reference"] = result["output_ref"].clone();
+        } else {
+            result["path"] = json!(target);
+        }
     }
     Ok(WorkspaceScriptActionFacts {
         id: receipt.action_id,

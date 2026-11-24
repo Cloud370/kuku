@@ -26,6 +26,7 @@ pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
 
 pub(crate) use jobs::{JobControl, JobRequest};
 pub(crate) use retention::OutputReservation;
+pub(crate) use script_permissions::ScriptOwner;
 pub(crate) use selection::resolve_agent_model;
 pub(crate) use values::OutputSelector;
 
@@ -33,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use tokio::sync::{Semaphore, broadcast, oneshot, watch};
+use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::event::store::JournalSummary;
@@ -70,7 +71,7 @@ pub(crate) struct SessionInner {
     id: String,
     options: SessionOptions,
     permission_mode: RwLock<PermissionMode>,
-    script_permission_replies: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    script_permission_replies: Mutex<HashMap<String, script_permissions::ScriptWaiter>>,
     events_path: PathBuf,
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,

@@ -89,6 +89,7 @@ mod tests {
                 candidate: "find_files".to_string(),
                 source: "resume".to_string(),
                 workspace: None,
+                arguments: None,
             });
 
         let (slot_event_tx, slot_event_rx) = tokio::sync::mpsc::channel(16);

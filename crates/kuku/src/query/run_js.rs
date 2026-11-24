@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -8,6 +8,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, oneshot};
 
 use crate::event::{EventPayload, EventStore};
 use crate::permission::{ActionAuthorization, ToolAuthorization, ToolAuthorizer, authorize_action};
+use crate::session::runtime::ScriptOwner;
 use crate::tool::builtin::common::{ExecutorObservation, changed_file_target, prepare_file_target};
 use crate::tool::run_js::{
     self, ScriptCall, ScriptExecution, ScriptFuture, ScriptHost, ScriptOperation, WorkspaceActions,
@@ -39,7 +40,13 @@ pub(super) fn spawn(
     let limits = pending.query.runtime_limits.workspace_script.clone();
     let host_capacity = session.workspace_execution_host();
     let host = Arc::new(WorkspaceHost {
-        detached: job.detached_flag(),
+        owner: ScriptOwner {
+            detached: job.detached_flag(),
+            execution_id: pending
+                .query
+                .runtime_execution
+                .expect("Session owns the script"),
+        },
         host_result_limit: limits.host_bytes / 2,
         actions: WorkspaceActions {
             session,
@@ -108,7 +115,7 @@ fn selected_methods(pending: &PendingRun) -> Vec<ToolDefinition> {
 }
 
 struct WorkspaceHost {
-    detached: Arc<AtomicBool>,
+    owner: ScriptOwner,
     actions: WorkspaceActions,
     host_result_limit: usize,
     methods: Vec<ToolDefinition>,
@@ -149,7 +156,7 @@ impl ScriptHost for WorkspaceHost {
 }
 impl WorkspaceHost {
     fn has_step_input(&self) -> Result<bool> {
-        if self.detached.load(Ordering::Acquire) {
+        if self.owner.detached.load(Ordering::Acquire) {
             return Ok(false);
         }
         self.actions.session.has_step_input(&self.actions.agent)
@@ -381,10 +388,11 @@ impl WorkspaceHost {
             candidate: candidate.into(),
             source: source.into(),
             workspace: Some(action.workspace.clone()),
+            arguments: Some(action.args.clone()),
         };
         let id = request.id.clone();
         let session = &self.actions.session;
-        let approval = session.request_script_permission(request, action.args.clone())?;
+        let approval = session.request_script_permission(request, self.owner.clone())?;
         tokio::select! {
             biased;
             _ = execution.cancelled() => {
@@ -428,13 +436,22 @@ impl WorkspaceHost {
         }
         if mutating {
             let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&args)?));
-            self.record(
+            let payload = self.action_event(
                 &id,
                 name,
                 &target,
                 "dispatched",
                 json!({"args_sha256":hash}),
             )?;
+            if !self.actions.session.mark_script_action_dispatched(
+                &self.actions.agent,
+                &self.owner,
+                payload,
+            )? {
+                return Ok(ToolResultEnvelope::cancelled(
+                    "stopped before prepared action dispatch",
+                ));
+            }
         }
         let result = match operation {
             ScriptOperation::ReadOutput => {
@@ -533,10 +550,22 @@ impl WorkspaceHost {
         status: &str,
         facts: Value,
     ) -> Result<()> {
-        EventStore::open(self.actions.session.events_path())?.append(EventPayload::Unknown(json!({
+        EventStore::open(self.actions.session.events_path())?
+            .append(self.action_event(id, name, target, status, facts)?)?;
+        Ok(())
+    }
+
+    fn action_event(
+        &self,
+        id: &str,
+        name: &str,
+        target: &Value,
+        status: &str,
+        facts: Value,
+    ) -> Result<EventPayload> {
+        Ok(EventPayload::Unknown(json!({
             "kind":"workspace.action","ts":now_timestamp()?,"agent":self.actions.agent,"turn":self.turn,
             "tool_call_id":self.call_id,"action_id":id,"tool":name,"target":target,"status":status,"facts":facts
-        })))?;
-        Ok(())
+        })))
     }
 }

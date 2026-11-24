@@ -229,6 +229,7 @@ fn make_waiting_run(
                 ),
                 source: "default_ask".to_string(),
                 workspace: None,
+                arguments: None,
             },
         })),
         slots: std::collections::HashMap::new(),

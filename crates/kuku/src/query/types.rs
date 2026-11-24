@@ -98,6 +98,9 @@ pub struct PermissionRequest {
     /// Final working directory of the prepared action.
     #[serde(default)]
     pub workspace: Option<std::path::PathBuf>,
+    /// Final arguments available for reviewing the prepared action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
 }
 
 /// The host's response to a permission request.

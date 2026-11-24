@@ -179,6 +179,7 @@ impl RunRenderer {
     ) -> CliResult {
         self.close_thinking();
         let event = match agent.status {
+            _ if agent.permission.is_some() => "waiting",
             AgentStatus::Idle => "completed",
             AgentStatus::Waiting => "waiting",
             AgentStatus::Stopped | AgentStatus::Interrupted => "interrupted",
