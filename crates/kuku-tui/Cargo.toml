@@ -29,8 +29,8 @@ syntect = { version = "5.3", default-features = false, features = ["default-synt
 tempfile = "3"
 time = { version = "0.3", default-features = false, features = ["std", "parsing"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-toml = "0.8"
-toml_edit = "0.22"
+toml = { workspace = true }
+toml_edit = { workspace = true, features = ["serde"] }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 url = "2"
