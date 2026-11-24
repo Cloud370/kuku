@@ -1,7 +1,3 @@
-use std::sync::LazyLock;
-
-use regex::Regex;
-
 use crate::error::Result;
 use crate::event::types::{ContextMessage, EventPayload, StoredEvent};
 use crate::prompt::{ProjectContextInput, render_project_context};
@@ -166,52 +162,45 @@ fn render_project_policy(
         .iter()
         .any(|tool| matches!(tool.name.as_str(), "create_agent" | "fetch_web"));
     let model_tiers_text = if !can_select_model {
-        String::new()
+        None
     } else if input.model_tiers.is_empty() {
-        "No model tiers configured.".to_string()
+        Some("No model tiers configured.".to_string())
     } else {
-        input
-            .model_tiers
-            .iter()
-            .map(|info| {
-                format!(
-                    "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, output text)",
-                    info.name,
-                    info.purpose,
-                    info.model,
-                    info.reasoning_effort
-                        .as_deref()
-                        .unwrap_or("provider default"),
-                    if info.reasoning_choices.is_empty() { "use default".into() } else { info.reasoning_choices.join(", ") },
-                    info.service_tier.as_deref().unwrap_or("provider default"),
-                    match &info.service_choices {
-                        None => "unknown".into(),
-                        Some(choices) if choices.is_empty() => "none".into(),
-                        Some(choices) => choices.join(", "),
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        Some(
+            input
+                .model_tiers
+                .iter()
+                .map(|info| {
+                    format!(
+                        "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, output text)",
+                        info.name,
+                        info.purpose,
+                        info.model,
+                        info.reasoning_effort.as_deref().unwrap_or("provider default"),
+                        if info.reasoning_choices.is_empty() {
+                            "use default".into()
+                        } else {
+                            info.reasoning_choices.join(", ")
+                        },
+                        info.service_tier.as_deref().unwrap_or("provider default"),
+                        match &info.service_choices {
+                            None => "unknown".into(),
+                            Some(choices) if choices.is_empty() => "none".into(),
+                            Some(choices) => choices.join(", "),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     };
 
     // ---- Layer 2: project_policy ----
     let project_policy = catalog.blocks.get("project-policy").ok_or_else(|| {
         crate::error::Error::PromptRender("missing project-policy template".into())
     })?;
-    static MODEL_TIERS_SECTION: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\r?\n<kuku_models>\r?\n\{\{model_tiers_rendered\}\}\r?\n</kuku_models>\r?\n")
-            .expect("model tiers section pattern is valid")
-    });
-    let without_models;
-    let template = if can_select_model {
-        project_policy.text.as_str()
-    } else {
-        without_models = MODEL_TIERS_SECTION.replace_all(&project_policy.text, "");
-        without_models.as_ref()
-    };
     render_project_context(
-        template,
+        &project_policy.text,
         &ProjectContextInput {
             workspace_root: input.environment.workspace_path.clone(),
             platform: input.environment.platform.clone(),
