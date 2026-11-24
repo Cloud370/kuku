@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "docs/**"
       - ".github/workflows/docs-translate.yml"
       - ".github/workflows/docs-translate-en-changes.yml"
       - ".github/workflows/docs-translate-open-pr.yml"
@@ -12,6 +13,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "docs/**"
       - ".github/workflows/docs-translate.yml"
       - ".github/workflows/docs-translate-en-changes.yml"
       - ".github/workflows/docs-translate-open-pr.yml"

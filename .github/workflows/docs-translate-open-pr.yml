@@ -28,6 +28,7 @@ permissions:
 concurrency:
   group: docs-translate-open-pr-${{ inputs.pr_number || inputs.branch_name || github.run_id }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   translate:

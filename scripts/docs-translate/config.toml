@@ -1,5 +1,8 @@
 default_model = { connection = "translation", model = "$CI_LLM_MODEL" }
 
+[discovery]
+extra_project_paths = ["/run/kuku-docs-translate"]
+
 [model.translation."$CI_LLM_MODEL"]
 reasoning_effort = "high"
 max_output_tokens = 32768

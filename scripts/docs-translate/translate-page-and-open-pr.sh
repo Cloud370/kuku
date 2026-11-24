@@ -177,9 +177,6 @@ if [[ "$retry" == false ]]; then
     [[ -n "${CI_LLM_API_KEY:-}" && -n "${CI_LLM_BASE_URL:-}" ]] ||
         die "CI_LLM_API_KEY and CI_LLM_BASE_URL are required"
 
-    mkdir -p "$scratch/translation/.kuku/skills" "$scratch/translation/.kuku/agents"
-    cp -R -- "$WORKSPACE_ROOT/.kuku/skills/docs-translate" "$scratch/translation/.kuku/skills/"
-    cp -- "$SCRIPT_DIR/agent.md" "$scratch/translation/.kuku/agents/docs-translation.md"
     prompt="$(jq -nr --rawfile template "$SCRIPT_DIR/prompts/translate-page-and-open-pr.txt" \
         --arg SOURCE_PATH "$source_path" --arg TARGET_PATH "$target_path" --arg TARGET_LOCALE "$locale" '
             $ARGS.named as $values
@@ -212,6 +209,15 @@ if [[ "$retry" == false ]]; then
         exit 0
     fi
     git -C "$scratch/checkout" diff --cached --check
+    printf 'Checking the embedded docs for %s\n' "$target_path" >&2
+    KUKU_ENV_FILE=/dev/null KUKU_RUN_ID="$run_id" KUKU_CHECK_RUN=0 KUKU_CHECK_SESSION_ID= \
+    KUKU_CHECK_DOCS_CHECKOUT="$scratch/checkout" KUKU_CHECK_WORKSPACE= \
+    KUKU_CHECK_SHOW_SKILL_INFO=0 KUKU_CHECK_OUTPUT_MODE=raw \
+        bash "$SCRIPT_DIR/run-local-check.sh" || {
+            status=$?
+            summarize "Translated docs failed validation (exit $status)"
+            exit "$status"
+        }
     if [[ -n "$pr" ]]; then
         gh pr view "$pr" --json state,baseRefName,headRefName |
             jq -e --arg base "$base" --arg branch "$branch" \

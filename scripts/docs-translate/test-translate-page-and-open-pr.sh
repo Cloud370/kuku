@@ -5,26 +5,56 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf -- "$TMP_DIR"' EXIT
 
-mkdir -p "$TMP_DIR/bin" "$TMP_DIR/checkout/scripts" "$TMP_DIR/checkout/.kuku/skills/docs-translate"
-cp -R -- "$SCRIPT_DIR" "$TMP_DIR/checkout/scripts/"
+fixture_scripts="$TMP_DIR/checkout/scripts/docs-translate"
+mkdir -p "$TMP_DIR/bin" "$fixture_scripts/prompts" "$TMP_DIR/checkout/.kuku/skills/docs-translate"
+cp -- "$SCRIPT_DIR"/{translate-page-and-open-pr,run-local-check,check-in-container,open-pr-from-body,render-run-stats,report-docs-en-changes}.sh \
+    "$SCRIPT_DIR"/{agent.md,config.toml} "$fixture_scripts/"
+cp -- "$SCRIPT_DIR/prompts/translate-page-and-open-pr.txt" "$fixture_scripts/prompts/"
 printf 'Translate the selected page.\n' > "$TMP_DIR/checkout/.kuku/skills/docs-translate/SKILL.md"
 
 cat > "$TMP_DIR/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${!#}" == kuku-app ]]; then
+    exit 0
+fi
+if [[ "${!#}" == kuku ]]; then
+    for arg; do
+        case "$arg" in
+            *:/workspace/docs:ro) docs="${arg%:/workspace/docs:ro}" ;;
+            KUKU_DOCS_INPUT_TREE=*) tree="${arg#*=}" ;;
+        esac
+    done
+    [[ -f "$docs/zh/${MODEL_PAGE:-start/new.md}" ]]
+    [[ "$tree" == "$(git -C "$docs/.." write-tree --prefix=docs/)" ]]
+    printf 'validate\n' >> "$RUN_LOG"
+    [[ "${FAIL_VALIDATION:-0}" == 0 ]] || exit 42
+    exit 0
+fi
+[[ "${!#}" == /run/kuku-docs-translate/check-in-container.sh ]]
 for arg; do
     case "$arg" in
-        cargo) exit 0 ;;
+        "$PWD:"*|"$PWD/scripts/docs-translate:"*) exit 99 ;;
         *:/translation) workspace="${arg%:/translation}" ;;
+        *:/workspace/docs:ro) smoke_docs="${arg%:/workspace/docs:ro}" ;;
+        *:/run/kuku-docs-translate/check-in-container.sh:ro) entrypoint="${arg%:*:ro}" ;;
+        *:/run/kuku-docs-translate/config.toml:ro) config="${arg%:*:ro}" ;;
+        *:/run/kuku-docs-translate/agents/docs-translation.md:ro) agent="${arg%:*:ro}" ;;
+        *:/run/kuku-docs-translate/skills/docs-translate/SKILL.md:ro) skill="${arg%:*:ro}" ;;
         *:/run/kuku-docs-translate.key:ro) key_file="${arg%:/run/kuku-docs-translate.key:ro}" ;;
         KUKU_CHECK_PROMPT=*) prompt="${arg#*=}" ;;
         GH_TOKEN*|GITHUB_TOKEN*|CI_LLM_API_KEY*) exit 99 ;;
     esac
 done
+[[ -f "$entrypoint" && -f "$config" && -f "$agent" && -f "$skill" ]]
+if [[ -z "${KUKU_CHECK_WORKSPACE:-}" ]]; then
+    [[ "$smoke_docs" == "$PWD/docs" && -f "$smoke_docs/AGENTS.md" && -z "${workspace:-}" ]]
+    exit 0
+fi
 page="${MODEL_PAGE:-start/new.md}"
-[[ -f "$workspace/docs/en/$page" && ! -e "$workspace/.git" ]]
+[[ -f "$workspace/docs/en/$page" && ! -e "$workspace/.git" && -z "${smoke_docs:-}" ]]
 [[ "$prompt" == *"\`docs/en/$page\`"* && "$prompt" == *"\`docs/zh/$page\`"* ]]
-[[ -f "$workspace/.kuku/agents/docs-translation.md" && -s "$key_file" ]]
+[[ -s "$key_file" ]]
 printf 'model\n' >> "$RUN_LOG"
 if [[ "${MODEL_RESULT:-}" == "waiting" ]]; then
     exit 3
@@ -63,6 +93,7 @@ case "$1 $2" in
         fi
         ;;
     "pr create")
+        [[ "${FAIL_CREATE:-0}" == 0 ]] || exit 43
         printf 'created\n' >> "$RUN_LOG"
         touch "$PR_CREATED"
         printf 'https://example.invalid/pull/7\n'
@@ -86,6 +117,7 @@ cd "$TMP_DIR/checkout"
 git config user.name Fixture
 git config user.email fixture@example.invalid
 mkdir -p docs/en/start docs/zh/start
+printf '# Docs rules\n' > docs/AGENTS.md
 printf '# Docs\n' > docs/zh/index.md
 printf '# Old page\n' > docs/en/start/old.md
 printf '# Removal\n' > docs/en/start/removed.md
@@ -107,11 +139,14 @@ git switch -q main
 
 runner=scripts/docs-translate/translate-page-and-open-pr.sh
 branch=docs-translate/zh/start-new-test
+KUKU_CHECK_RUN=0 bash scripts/docs-translate/run-local-check.sh
 mkdir "$TMP_DIR/scratch"
 ln -s "$TMP_DIR/scratch" "$TMP_DIR/scratch-link"
 git fetch -q origin main
-TMPDIR="$TMP_DIR/scratch-link" KUKU_RUN_ID=test \
-    bash "$runner" --locale zh --base source docs/en/start/new.md
+status=0
+TMPDIR="$TMP_DIR/scratch-link" KUKU_RUN_ID=test FAIL_CREATE=1 \
+    bash "$runner" --locale zh --base source docs/en/start/new.md || status=$?
+[[ "$status" == 43 && ! -f "$PR_CREATED" ]]
 [[ "$(git rev-parse FETCH_HEAD)" == "$initial" ]]
 git fetch -q origin "$branch"
 [[ "$(git diff-tree --no-commit-id --name-only -r FETCH_HEAD)" == docs/zh/start/new.md ]]
@@ -120,11 +155,13 @@ git fetch -q origin "$branch"
 [[ "$(git branch --show-current)" == main ]]
 
 KUKU_RUN_ID=test bash "$runner" --locale zh --base source docs/en/start/new.md
-[[ "$(<"$RUN_LOG")" == $'model\ncreated' ]]
+KUKU_RUN_ID=test bash "$runner" --locale zh --base source docs/en/start/new.md
+[[ "$(<"$RUN_LOG")" == $'model\nvalidate\ncreated' ]]
 
 export PR_RECORD='{"state":"OPEN","isCrossRepository":false,"baseRefName":"source","headRefName":"docs-translate/zh/start-new-test","url":"https://example.invalid/pull/7"}'
 MODEL_RESULT=unchanged KUKU_RUN_ID=unchanged bash "$runner" --locale zh --pr 7 docs/en/start/new.md
 [[ "$(git ls-remote origin "refs/heads/$branch" | cut -f1)" == "$(git rev-parse FETCH_HEAD)" ]]
+[[ "$(grep -c '^validate$' "$RUN_LOG")" == 1 ]]
 MODEL_TEXT=revised KUKU_RUN_ID=update bash "$runner" --locale zh --pr 7 docs/en/start/new.md
 git fetch -q origin "$branch"
 [[ "$(git show FETCH_HEAD:docs/zh/start/new.md)" == revised ]]
@@ -146,6 +183,11 @@ status=0
 MODEL_RESULT=waiting KUKU_RUN_ID=waiting bash "$runner" --locale zh --base source docs/en/start/new.md || status=$?
 [[ "$status" == 3 ]]
 [[ -z "$(git ls-remote origin refs/heads/docs-translate/zh/start-new-waiting)" ]]
+
+status=0
+FAIL_VALIDATION=1 KUKU_RUN_ID=invalid-docs bash "$runner" --locale zh --base source docs/en/start/new.md || status=$?
+[[ "$status" == 42 ]]
+[[ -z "$(git ls-remote origin refs/heads/docs-translate/zh/start-new-invalid-docs)" ]]
 
 race_ref=refs/heads/docs-translate/zh/start-new-race
 if RACE_REF="$race_ref" RACE_COMMIT="$source_revision" KUKU_RUN_ID=race \

@@ -11,6 +11,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/docs.rs");
     println!("cargo:rerun-if-changed=src/skill/bundle/format.rs");
+    // A translation check can mount a different Git tree at the same docs path.
+    println!("cargo:rerun-if-env-changed=KUKU_DOCS_INPUT_TREE");
     let git_revision = Path::new("../../.git")
         .exists()
         .then(|| git(&["rev-parse", "HEAD"]))

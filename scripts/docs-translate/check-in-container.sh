@@ -12,10 +12,7 @@ SHOW_SKILL_INFO="${KUKU_CHECK_SHOW_SKILL_INFO:-0}"
 WORKSPACE_ROOT="$(pwd)"
 export CI_LLM_MODEL="${CI_LLM_MODEL:-deepseek-flash}"
 BIN=/usr/local/bin/kuku
-RUN_ARGS=(--no-agents)
-if [[ -n "${KUKU_CHECK_PRESET:-}" ]]; then
-    RUN_ARGS+=(--preset "$KUKU_CHECK_PRESET")
-fi
+RUN_ARGS=(--no-agents --preset "${KUKU_CHECK_PRESET:-docs-translation}")
 
 mkdir -p "$RUNTIME_HOME"
 
