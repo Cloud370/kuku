@@ -310,9 +310,11 @@ impl Field {
                         .map_or(effort.width(), |width| {
                             width.max(effort.width()).max("Default".width())
                         });
+                    let show_connection = custom
+                        && resolved.is_none_or(|(_, caps)| caps.subscription_channel.is_none());
                     Segment::model(
                         single_line(id),
-                        custom.then(|| single_line(connection)),
+                        show_connection.then(|| single_line(connection)),
                         Some(effort),
                         service_tier,
                         slot,

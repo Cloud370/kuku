@@ -63,11 +63,11 @@ pub(crate) fn resolve_capabilities(
             (&[], &[])
         }
     };
-    let services = match options
+    let subscription_channel = options
         .subscription
         .as_ref()
-        .map(|account| account.channel())
-    {
+        .map(|account| account.channel());
+    let services = match subscription_channel {
         Some(SubscriptionChannel::ChatGpt) => &["auto", "default", "fast", "ultrafast"][..],
         None => services,
     };
@@ -180,6 +180,7 @@ pub(crate) fn resolve_capabilities(
     };
     ProviderCapabilities {
         profile,
+        subscription_channel,
         prompt_cache_control: profile == ProviderProfile::OpenRouter
             && model
                 .trim_start_matches('~')

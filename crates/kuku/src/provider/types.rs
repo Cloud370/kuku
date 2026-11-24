@@ -160,6 +160,9 @@ pub struct ProviderSettings {
 pub struct ProviderCapabilities {
     /// Endpoint family that interprets these settings.
     pub profile: ProviderProfile,
+    /// Subscription channel used by the configured connection, when applicable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription_channel: Option<crate::config::SubscriptionChannel>,
     /// Whether the gateway accepts the Anthropic cache-control extension on the selected route.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub prompt_cache_control: bool,

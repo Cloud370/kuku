@@ -415,7 +415,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
             _ => None,
         })
         .expect("initial model request");
-    let model = serde_json::from_value(json!({
+    let model: kuku_client::ModelSelection = serde_json::from_value(json!({
         "connection": "configured-model-gateway",
         "protocol": "openai-responses",
         "model": "openai/gpt-6-luna",
@@ -425,7 +425,7 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
         "capabilities": {"profile": "openai", "reasoning_efforts": ["xhigh"], "service_tiers": ["ultrafast"]},
     }))
     .unwrap();
-    app.update(Update::DefaultModel(version, Ok(model)));
+    app.update(Update::DefaultModel(version, Ok(model.clone())));
     let layout = StatusLine::default();
     for width in [60, 80, 140] {
         let rows = screen(&mut app, &layout, width, 20);
@@ -445,6 +445,16 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
         .is_some_and(|remaining| remaining.trim_start().starts_with('·')));
     let lines = layout.render_rows(&app, 80, 20, app.pane().activity());
     assert_eq!(Some(MODEL), lines[0].spans[0].style.fg);
+
+    let mut subscription = model;
+    subscription.capabilities.subscription_channel =
+        Some(kuku::config::SubscriptionChannel::ChatGpt);
+    subscription.connection = "chatgpt-internal-account".into();
+    app.update(Update::DefaultModel(version, Ok(subscription)));
+    let rows = screen(&mut app, &configured, 140, 20);
+    let footer = rows[19].trim();
+    assert!(footer.starts_with("openai/gpt-6-luna xhigh ultrafast"));
+    assert!(!footer.contains("chatgpt-internal-account"));
 
     let long = Segment::model(
         "custom/a-long-model-from-a-named-provider".into(),

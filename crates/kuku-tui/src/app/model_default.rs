@@ -36,7 +36,11 @@ impl Pane {
                 width,
             ));
         }
-        let route = crate::text::single_line(&format!("{}/{}", model.connection, model.model));
+        let route = if model.capabilities.subscription_channel.is_some() {
+            crate::text::single_line(&model.model)
+        } else {
+            crate::text::single_line(&format!("{}/{}", model.connection, model.model))
+        };
         let effort = crate::text::effort_label(model.settings.reasoning_effort.as_deref());
         let prefix = "Next model request · ";
         Some(format!(
