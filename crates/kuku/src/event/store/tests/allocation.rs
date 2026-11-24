@@ -12,22 +12,22 @@ thread_local! {
 
 struct TrackingAllocator;
 
-// NOTE: GlobalAlloc is the only allocator hook; System retains ownership and const TLS only records sizes.
+// SAFETY: GlobalAlloc is the only allocator hook; System retains ownership and const TLS only records sizes.
 unsafe impl GlobalAlloc for TrackingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         record_allocation(layout.size());
-        // NOTE: GlobalAlloc supplies a valid layout, and System owns the returned allocation.
+        // SAFETY: GlobalAlloc supplies a valid layout, and System owns the returned allocation.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // NOTE: GlobalAlloc requires this pointer and layout to identify a live System allocation.
+        // SAFETY: GlobalAlloc requires this pointer and layout to identify a live System allocation.
         unsafe { System.dealloc(pointer, layout) }
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         record_allocation(size);
-        // NOTE: GlobalAlloc supplies the original System allocation and a valid replacement size.
+        // SAFETY: GlobalAlloc supplies the original System allocation and a valid replacement size.
         unsafe { System.realloc(pointer, layout, size) }
     }
 }

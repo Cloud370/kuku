@@ -27,6 +27,13 @@ thiserror = "1"
 arc-swap = "1"
 home = "0.5.12"
 
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+
 [profile.release]
 opt-level = 2
 strip = true

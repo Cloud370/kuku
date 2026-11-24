@@ -8,7 +8,10 @@ use tempfile::TempDir;
 
 use kuku::session::session_events_path;
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub fn shell_args(command: &str) -> Value {
     if cfg!(windows) {
         serde_json::json!({"program":"cmd.exe","args":["/D", "/S", "/C", command]})
@@ -23,7 +26,10 @@ fn captured_http_requests() -> &'static Mutex<BTreeMap<String, Vec<Value>>> {
 }
 
 /// Record model wire bodies for assertions against committed context views.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub fn capture_http_request(request: &httpmock::prelude::HttpMockRequest) -> bool {
     let body: Value = serde_json::from_slice(request.body.as_deref().unwrap_or_default())
         .expect("model request is JSON");
@@ -36,7 +42,10 @@ pub fn capture_http_request(request: &httpmock::prelude::HttpMockRequest) -> boo
 }
 
 /// Take captured bodies for one test's unique model endpoint path.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub fn take_http_requests(path: &str) -> Vec<Value> {
     captured_http_requests()
         .lock()
@@ -48,11 +57,17 @@ pub fn take_http_requests(path: &str) -> Vec<Value> {
 // ---------- SSE response builders ----------
 
 #[cfg(feature = "test_support")]
-#[allow(unused_imports)] // used by provider_integration and query_runtime test binaries
+#[allow(
+    unused_imports,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub use kuku::test_support::anthropic_sse_response;
 
 /// Wrap an OpenAI-style chat completion JSON into SSE streaming frames.
-#[allow(dead_code)] // used by provider_integration test binary
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub fn openai_sse_response(completion: Value) -> String {
     let id = completion
         .get("id")
@@ -147,7 +162,10 @@ pub fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-#[allow(dead_code)] // used by provider_integration test binary
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub fn restore_env(key: &str, value: Option<OsString>) {
     match value {
         Some(value) => std::env::set_var(key, value),
@@ -157,7 +175,10 @@ pub fn restore_env(key: &str, value: Option<OsString>) {
 
 // ---------- TestEnv for integration tests ----------
 
-#[allow(dead_code)] // used by provider_integration and query_runtime test binaries
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 const PROVIDER_ENV_KEYS: &[&str] = &[
     "KUKU_PROVIDER",
     "KUKU_ANTHROPIC_API_KEY",
@@ -165,7 +186,10 @@ const PROVIDER_ENV_KEYS: &[&str] = &[
     "KUKU_API_KEY",
 ];
 
-#[allow(dead_code)] // used by provider_integration and query_runtime test binaries
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub struct TestEnv {
     pub _guard: MutexGuard<'static, ()>,
     pub home: TempDir,
@@ -176,7 +200,10 @@ pub struct TestEnv {
 }
 
 impl TestEnv {
-    #[allow(dead_code)] // used by provider_integration and query_runtime test binaries
+    #[allow(
+        dead_code,
+        reason = "this shared fixture is used by a subset of integration binaries"
+    )]
     pub fn new() -> Self {
         let guard = env_lock()
             .lock()
@@ -207,12 +234,18 @@ impl TestEnv {
         }
     }
 
-    #[allow(dead_code)] // used by provider_integration test binary
+    #[allow(
+        dead_code,
+        reason = "this shared fixture is used by a subset of integration binaries"
+    )]
     pub fn workspace_path(&self) -> &Path {
         self.workspace.path()
     }
 
-    #[allow(dead_code)] // used by provider_integration and query_runtime test binaries
+    #[allow(
+        dead_code,
+        reason = "this shared fixture is used by a subset of integration binaries"
+    )]
     pub fn events_path(&self, session_id: &str) -> PathBuf {
         let workspace = std::fs::canonicalize(self.workspace.path()).unwrap();
         session_events_path(self.home.path(), &workspace, session_id).unwrap()
@@ -236,7 +269,10 @@ impl Drop for TestEnv {
 
 /// Build a minimal Config with anthropic + openai providers and a balanced tier.
 /// Builder overrides (.model(), .base_url(), .api_key()) take precedence at resolution time.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
 pub fn test_config() -> kuku::config::Config {
     use kuku::config::{
         ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ThinkLevel, TierConfig,

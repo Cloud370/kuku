@@ -476,12 +476,12 @@ fn micros(start: Instant) -> u64 {
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn allocator_usage() -> Value {
-    // NOTE: glibc may predate mallinfo2. The loader returns a function address or null.
+    // SAFETY: glibc may predate mallinfo2. The loader returns a function address or null.
     let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"mallinfo2".as_ptr()) };
     if symbol.is_null() {
         return Value::Null;
     }
-    // NOTE: The runtime symbol has glibc's mallinfo2 ABI. Rust has no allocator statistics API.
+    // SAFETY: The runtime symbol has glibc's mallinfo2 ABI. Rust has no allocator statistics API.
     let info = unsafe {
         let query: unsafe extern "C" fn() -> libc::mallinfo2 = std::mem::transmute(symbol);
         query()

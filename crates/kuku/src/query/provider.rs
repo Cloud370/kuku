@@ -581,7 +581,10 @@ pub(super) fn should_trigger_handoff(headroom: &ContextHeadroom, threshold: f64)
     used_ratio >= threshold
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "context assembly keeps runtime settings and prompt sources separate"
+)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,
     conversation: &str,

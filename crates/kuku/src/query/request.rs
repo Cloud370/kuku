@@ -19,7 +19,10 @@ pub(super) struct OwnedRequestBase {
 }
 
 impl OwnedRequestBase {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "request construction keeps the resolved assembly, identity, and provider inputs explicit"
+    )]
     pub(super) fn new(
         assembly: ContextAssembly,
         catalog: PromptCatalog,

@@ -781,7 +781,10 @@ impl OpenAiResponsesSseParser {
 }
 
 #[cfg(test)]
-#[allow(dead_code)] // included via include!() in integration tests
+#[allow(
+    dead_code,
+    reason = "this helper is included by the protocol adapter test target"
+)]
 pub(crate) fn parse_responses_sse(body: &str) -> Vec<ProviderChunk> {
     let mut parser = OpenAiResponsesSseParser::new();
     let mut chunks = Vec::new();

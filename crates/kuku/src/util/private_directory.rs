@@ -53,7 +53,7 @@ fn unix_directory(path: &Path) -> io::Result<()> {
         Err(error) => return Err(error),
     }
     let metadata = fs::symlink_metadata(path)?;
-    // NOTE: geteuid reads the calling process identity. Rust has no portable equivalent.
+    // SAFETY: geteuid reads the calling process identity. Rust has no portable equivalent.
     let owner = unsafe { libc::geteuid() };
     if metadata.is_dir() && metadata.uid() == owner && metadata.mode() & 0o077 == 0 {
         Ok(())

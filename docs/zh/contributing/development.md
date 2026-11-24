@@ -66,7 +66,7 @@ make release-linux
 
 ## Git 与平台规则
 
-使用 conventional commits，每个提交对应一个逻辑变更。不 amend 已推送提交。集成规则遵循[代码风格](code-style.md)，发布遵循[发布指南](release.md)。
+使用 conventional commits，每个提交对应一个逻辑变更。不 amend 已推送提交。本地集成 worktree 分支用 `git merge --ff-only`。发布遵循[发布指南](release.md)。
 
 默认面向 Linux、Windows 10+ 和 macOS。产品代码避免 shell 特定行为，使用 `std::path::Component` 而非字符串切片规范化路径。
 

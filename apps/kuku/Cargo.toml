@@ -17,6 +17,9 @@ path = "src/main.rs"
 default = []
 embedded-web-assets = ["dep:rust-embed"]
 
+[lints]
+workspace = true
+
 [dependencies]
 kuku-cli = { path = "../../crates/kuku-cli", features = ["server"] }
 kuku-server = { path = "../../crates/kuku-server" }

@@ -34,8 +34,7 @@ Use the default glibc target for Linux development and tests. See [Release](docs
 
 ## Code conventions
 
-- `MUST` / `PREFER` rules in [code-style.md](docs/en/contributing/code-style.md) are the contract.
-- No file over 1000 lines. Enums over strings. No wildcard imports. No comments by default.
+- Follow [Code Style](docs/en/contributing/code-style.md) for workspace lints, SDK contracts, and everyday defaults.
 - Module dependencies follow [module-contracts.md](docs/en/architecture/module-contracts.md).
 
 ## Editing tips

@@ -8,6 +8,9 @@ repository = "https://github.com/Cloud370/kuku"
 readme = "../../README.md"
 keywords = ["agent", "coding", "terminal", "llm", "cli"]
 
+[lints]
+workspace = true
+
 [dependencies]
 arc-swap = { workspace = true }
 home = { workspace = true }

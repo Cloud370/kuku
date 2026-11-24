@@ -153,7 +153,7 @@ fn command_console_fixture() {
 
 fn own_console() -> (bool, u32) {
     let mut pid = 0;
-    // NOTE: These APIs only inspect the calling process's console. One writable slot suffices to query the process count.
+    // SAFETY: These APIs only inspect the calling process's console. One writable slot suffices to query the process count.
     unsafe {
         (
             !GetConsoleWindow().is_null(),
@@ -189,17 +189,17 @@ struct ObservedProcess {
 impl ObservedProcess {
     fn open(pid: u32) -> Self {
         let access = PROCESS_QUERY_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE;
-        // NOTE: The pid was written by this test's owned child; the requested rights only inspect, wait for, or clean up that process.
+        // SAFETY: The pid was written by this test's owned child; the requested rights only inspect, wait for, or clean up that process.
         let raw = unsafe { OpenProcess(access, 0, pid) };
         assert!(
             !raw.is_null(),
             "could not observe child {pid}: {}",
             io::Error::last_os_error()
         );
-        // NOTE: OpenProcess returned a new valid unique handle, whose ownership is transferred to OwnedHandle.
+        // SAFETY: OpenProcess returned a new valid unique handle, whose ownership is transferred to OwnedHandle.
         let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
         let mut in_job = 0;
-        // NOTE: The live process handle has query rights, and the writable result remains valid for this call.
+        // SAFETY: The live process handle has query rights, and the writable result remains valid for this call.
         assert_ne!(0, unsafe {
             IsProcessInJob(handle.as_raw_handle(), ptr::null_mut(), &mut in_job)
         });
@@ -212,7 +212,7 @@ impl ObservedProcess {
     }
 
     fn is_running(&self) -> bool {
-        // NOTE: This owned process handle has synchronize rights and remains valid until this observer is dropped.
+        // SAFETY: This owned process handle has synchronize rights and remains valid until this observer is dropped.
         match unsafe { WaitForSingleObject(self.handle.as_raw_handle(), 0) } {
             WAIT_OBJECT_0 => false,
             WAIT_TIMEOUT => true,
@@ -233,7 +233,7 @@ impl ObservedProcess {
         .await
         .unwrap_or_else(|_| panic!("command left descendant {} running", self.pid));
         let mut code = 0;
-        // NOTE: This live handle has process query rights, and the exit-code pointer stays writable throughout the call.
+        // SAFETY: This live handle has process query rights, and the exit-code pointer stays writable throughout the call.
         assert_ne!(0, unsafe {
             GetExitCodeProcess(self.handle.as_raw_handle(), &mut code)
         });
@@ -247,9 +247,9 @@ impl ObservedProcess {
 impl Drop for ObservedProcess {
     fn drop(&mut self) {
         if self.is_running() {
-            // NOTE: This handle identifies only a descendant created by this test; terminate rights were requested for failure cleanup.
+            // SAFETY: This handle identifies only a descendant created by this test; terminate rights were requested for failure cleanup.
             unsafe { TerminateProcess(self.handle.as_raw_handle(), 1) };
-            // NOTE: The same owned process handle remains live while bounded failure cleanup waits for its exit.
+            // SAFETY: The same owned process handle remains live while bounded failure cleanup waits for its exit.
             unsafe {
                 WaitForSingleObject(
                     self.handle.as_raw_handle(),

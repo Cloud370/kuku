@@ -1,88 +1,33 @@
-# Code Style
+# Rust code style
 
-This page is the concrete style contract for repository code.
+Use the checks below for objective rules. Apply the defaults consistently in new code and follow a module's established pattern when it gives the same guarantees.
 
-## Markers
+## Required checks
 
-| Marker | Meaning |
-|--------|---------|
-| `MUST` | Hard rule. Violations are bugs. |
-| `PREFER` | Default. Deviate only with a reason. |
+- Let rustfmt own layout. Run `cargo fmt --all -- --check` for a read-only check. Format the edited Rust files once after editing.
+- Use the workspace lint settings. Clippy warnings fail CI. Check the affected crate locally with `cargo clippy -p PACKAGE --all-targets -- -D warnings`, adding the features that activate the edited paths. Use the integration selector for the full check. [Testing](testing.md)
+- Put each unsafe operation in an explicit `unsafe` block, including inside an `unsafe fn`. Add a nearby `// SAFETY:` comment for blocks and implementations that states the preconditions and how the code satisfies them. Document the caller's obligations under `# Safety` on public unsafe APIs.
+- Give each lint exception a `reason = "…"` at the narrowest applicable scope. Prefer `#[expect(...)]` when the lint is expected to fire across the checked configurations. Use `#[allow(...)]` for intentional exceptions whose applicability varies by feature, target or test binary.
+- Review the affected platform and feature selections. Cargo's `--all-targets` includes library, binary, example and test targets for the selected platform.
 
-## General rules
+## SDK and runtime contracts
 
-- `MUST` One responsibility per module. If the description needs an "and", split it.
-- `MUST` No file over 1000 lines, excluding `#[cfg(test)] mod tests`.
-- `MUST` Functions do one thing and usually stay in the 10-60 line range.
-- `MUST` No over-defensive guards. Protect core invariants, system boundaries, and real user-facing failure modes.
-- `MUST` No comments by default. Add one only when the reason is non-obvious.
-- `MUST` Only four annotation tags: `// NOTE:`, `// TODO:`, `// FIXME:`, `// HACK:`.
-- `MUST` Use enums instead of strings for finite known value sets.
-- `MUST` Treat every `pub` item as a semver commitment.
-- `MUST` Document any `unsafe` block with the invariant, the missing compiler proof, and why safe alternatives are not enough.
+- Use the narrowest visibility that serves the callers. Treat externally reachable items, including re-exports, as SDK surface. Document behavior that callers rely on, including errors, effects and cancellation where applicable. [Delivery and engineering choices](../architecture/core-direction.md#delivery-and-engineering-choices)
+- Reject malformed or out-of-range external values with an error that identifies the operation and value. Use checked conversions for narrowing. Use `Result` for expected file, network and SDK failures. An internal `expect` should identify the invariant. A `debug_assert!` may check an internal invariant. Input validation, authorization and required effects must execute in release builds.
+- For required filesystem operations, handle errors from the operation itself. An optional file may use a default on `NotFound`. Use atomic exclusive creation for paths that must be new. Keep path identity in `Path` or `PathBuf` and use a lossless representation for persisted identity. Lossy path display is suitable for human-readable labels.
+- Keep credentials out of diagnostics. Reuse redacting representations and check changed diagnostic paths with a fake credential. Use the SDK's explicit workspace and settings. Set each child process's environment and working directory on its command. Inject test settings or use a separate process when a test needs environment changes.
+- Make the owner, bound, cancellation and completion of effectful tasks explicit. End synchronous lock scopes before asynchronous I/O, and arrange cleanup and joining where the resource lives. Propagate errors that affect the result. Acknowledge a durable effect only after its required write succeeds. [Core direction](../architecture/core-direction.md#waiting-and-resource-lifetime)
+- Use enums for closed states and make state transitions, authorization decisions and error mappings exhaustive. Handle unknown values explicitly at open protocol boundaries. Use distinct types for identifiers or units that callers could confuse. Mark custom handles that must be retained to take effect with `#[must_use]`.
 
-## Naming
+## Everyday defaults
 
-- `MUST` Tool functions follow `<tool_name>(args, workspace, ...)` with args and workspace first.
-- `MUST` Tool request parsers follow `<tool_name>_request(args) -> Result<Request, ToolResultEnvelope>`.
-- `MUST` Renderers use `render_<what>(...)`.
-- `MUST` Lookups named `find_<what>` return `Option<Snapshot>`.
-- `PREFER` Constructors use `Xxx::new(...)` or `fn tool(...)` consistently within a module.
-- `MUST` Test names are descriptive snake_case.
+- Keep business logic together by responsibility. Use named functions for coherent steps and share the existing implementation when behavior matches. Consider splitting a long file at an ownership boundary. Use comments for invariants, platform requirements and decisions the code alone cannot express.
+- Prefer `?` for propagation and `let ... else` for a guard with an early exit. Use `if let` for a local branch, `matches!` for a predicate and `match` when branches describe different outcomes. Use the standard library for well-defined operations such as UTF-8 byte truncation with `floor_char_boundary`.
+- Group imports by standard library, external crates and local crate. Prefer explicit imports. A test module may import its parent's items with `use super::*`. Use names that describe the domain and consistent naming within a module.
+- Place a unit test near the implementation and exercise public contracts through their actual entry points. Name assertions by adding context where a failure would be unclear. Reuse the existing fixtures and keep paid calls opt-in. [Testing](testing.md)
 
-## Imports and visibility
+## Dependencies
 
-- `MUST` Import order is `std`, then external crates, then `crate::`, with one blank line between groups.
-- `MUST` No wildcard imports, except `use super::*` in unit tests.
-- `PREFER` `use std::fs;` over importing many individual `std::fs::*` items.
-- `MUST` Default to `pub(crate)` for internal items.
-- `MUST` Private helpers have no visibility modifier.
-- `MUST` Function order is `pub`, then `pub(crate)`, then private.
-- `MUST` Use `pub(crate) mod` for crate-internal modules and bare `mod` for private submodules.
+Share versions of direct dependencies in `[workspace.dependencies]` when multiple workspace members use them. Keep each member's feature requirements explicit. Review manifest and lockfile changes together.
 
-## Documentation in code
-
-- `MUST` Add `///` to every `pub` item with one sentence describing its purpose.
-- `MUST` Add `//!` module docs to public module boundary files.
-- `MUST` Do not add doc comments to `pub(crate)` or private items.
-- `MUST` Keep docstrings short. Do not place long design rationale in code comments.
-
-## Formatting and types
-
-- `MUST` Keep `impl` blocks immediately after the related type definition.
-- `MUST` Use `rustfmt` with default settings.
-- `MUST` Keep `clippy` at zero warnings. Any `#[allow(clippy::...)]` needs a short reason.
-- `MUST` Use one blank line between items and no trailing whitespace.
-
-## Derives and constants
-
-- `MUST` Derive order is `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `Deserialize`.
-- `PREFER` `derive(Default)` instead of manual `Default` when the default is obvious.
-- `MUST` Use `SCREAMING_SNAKE_CASE` for all constants.
-- `MUST` Place constants near the top of the file after imports, unless a constant is single-use and clearer inside one function.
-- `MUST` Name semantically meaningful numbers instead of leaving magic numbers inline.
-
-## Control flow and errors
-
-- `MUST` Match exhaustively on enums. Do not hide future variants behind `_ =>`.
-- `MUST` Use `if let` for a single-variant check and `match` for two or more branches.
-- `MUST` Error messages locate the problem.
-- `PREFER` `unwrap()` only for invariants that cannot fail in practice.
-
-## Assertions and tests
-
-- `MUST` Write `assert_eq!(expected, actual)` with expected first.
-- `MUST` Add an assertion message when the failure reason would otherwise be unclear.
-- `MUST` Do not use `debug_assert!` in production paths.
-- `MUST` Keep unit tests in `#[cfg(test)] mod tests` inside the source file.
-- `MUST` Keep integration tests in `tests/<domain>_<aspect>.rs` with one domain boundary per file.
-- `MUST` Keep live provider smoke tests in `tests/provider_live.rs`, gated by env vars and `#[ignore]`.
-- `MUST` Put shared test infrastructure in `tests/common/mod.rs`.
-- `PREFER` Use simple helper functions instead of elaborate test builders.
-
-## Commits
-
-- `MUST` Keep one completed logical chunk per commit.
-- `MUST` Use conventional commit messages: `type: description` or `type(scope): description`.
-- `MUST` Do not amend pushed commits.
-- `MUST` Merge worktree branches with `--ff-only`.
+For a dependency change, use `cargo tree --locked --workspace --target all --duplicates` to find multiple versions and `cargo tree --locked --target all --invert NAME@VERSION` to trace a particular version. Compare the application's normal graph with `cargo tree --locked -p kuku-app --edges normal --duplicates` when assessing shipped code. Existing upstream or test-only versions are useful review evidence and can coexist. Check configuration and native behavior when changing a library that owns those boundaries.

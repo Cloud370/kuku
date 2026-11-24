@@ -369,7 +369,10 @@ pub(super) async fn run_tool_pre_hooks(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the host action is prepared from explicit policy, context, and resource inputs"
+)]
 pub(super) async fn prepare_host_action(
     plugins: Option<&crate::plugin::PluginRegistry>,
     events_path: &std::path::Path,

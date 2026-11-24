@@ -66,7 +66,7 @@ Choose verification commands in [Testing](testing.md). For benchmark reproductio
 
 ## Git and platform rules
 
-Use conventional commits with one logical change per commit. Do not amend pushed commits. Follow [Code Style](code-style.md) for integration rules and [Release](release.md) for publishing.
+Use conventional commits with one logical change per commit. Do not amend pushed commits. Use `git merge --ff-only` for local worktree integration. Follow [Release](release.md) for publishing.
 
 Default to Linux, Windows 10+, and macOS. Avoid shell-specific behavior in product code. Normalize paths with `std::path::Component` rather than string slicing.
 

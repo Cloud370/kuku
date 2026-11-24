@@ -100,7 +100,7 @@ impl Input {
 impl Drop for Input {
     fn drop(&mut self) {
         self.receiver.close();
-        // NOTE: The owned event remains open until the worker leaves its wait.
+        // SAFETY: The owned event remains open until the worker leaves its wait.
         unsafe { SetEvent(self.stop.as_raw_handle()) };
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -118,7 +118,7 @@ fn read_events(stop: &OwnedHandle, sender: &mpsc::Sender<io::Result<Event>>) -> 
     let mut records = [MaybeUninit::<INPUT_RECORD>::uninit(); INPUT_RECORDS];
     let mut timeout = INFINITE;
     loop {
-        // NOTE: Both handles remain valid for this entire wait. The stop event takes priority over unread input.
+        // SAFETY: Both handles remain valid for this entire wait. The stop event takes priority over unread input.
         let ready =
             unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, timeout) };
         if ready == WAIT_OBJECT_0 {
@@ -129,7 +129,7 @@ fn read_events(stop: &OwnedHandle, sender: &mpsc::Sender<io::Result<Event>>) -> 
             timeout = INFINITE;
         } else if ready == WAIT_OBJECT_0 + 1 {
             let mut count = 0;
-            // NOTE: The array has space for the requested records, and only the initialized prefix is read.
+            // SAFETY: The array has space for the requested records, and only the initialized prefix is read.
             if unsafe {
                 ReadConsoleInputW(
                     input,
@@ -142,7 +142,7 @@ fn read_events(stop: &OwnedHandle, sender: &mpsc::Sender<io::Result<Event>>) -> 
                 return Err(io::Error::last_os_error());
             }
             for record in &records[..count as usize] {
-                // NOTE: A successful read initialized exactly `count` records.
+                // SAFETY: A successful read initialized exactly `count` records.
                 if let Some(event) = decoder.record(unsafe { record.assume_init_ref() }) {
                     if sender.blocking_send(Ok(event)).is_err() {
                         return Ok(());
@@ -181,8 +181,9 @@ impl Decoder {
     fn record(&mut self, record: &INPUT_RECORD) -> Option<Event> {
         match u32::from(record.EventType) {
             KEY_EVENT => {
-                // NOTE: The event type identifies the union member, and ReadConsoleInputW returns UTF-16.
+                // SAFETY: The event type identifies the union member, and ReadConsoleInputW returns UTF-16.
                 let key = unsafe { record.Event.KeyEvent };
+                // SAFETY: ReadConsoleInputW populated the Unicode member of the key record.
                 let unit = unsafe { key.uChar.UnicodeChar };
                 if unit != 0 && (key.bKeyDown != 0 || key.wVirtualKeyCode == VK_MENU) {
                     for _ in 0..key.wRepeatCount.max(1) {
@@ -192,13 +193,13 @@ impl Decoder {
                 None
             }
             WINDOW_BUFFER_SIZE_EVENT => {
-                // NOTE: The event type identifies the window-size union member.
+                // SAFETY: The event type identifies the window-size union member.
                 let size = unsafe { record.Event.WindowBufferSizeEvent }.dwSize;
                 self.viewport_origin = viewport_origin();
                 Some(Event::Resize(size.X as u16, size.Y as u16))
             }
             FOCUS_EVENT => {
-                // NOTE: The event type identifies the focus union member.
+                // SAFETY: The event type identifies the focus union member.
                 let focused = unsafe { record.Event.FocusEvent }.bSetFocus != 0;
                 Some(if focused {
                     Event::FocusGained
@@ -208,7 +209,7 @@ impl Decoder {
                 })
             }
             MOUSE_EVENT => {
-                // NOTE: The event type identifies the mouse union member.
+                // SAFETY: The event type identifies the mouse union member.
                 let mouse = unsafe { record.Event.MouseEvent };
                 self.native_mouse(mouse)
             }
@@ -410,7 +411,7 @@ fn mouse_event(kind: MouseEventKind, column: u16, row: u16, modifiers: KeyModifi
 
 fn viewport_origin() -> COORD {
     let mut screen = CONSOLE_SCREEN_BUFFER_INFO::default();
-    // NOTE: The process owns the output handle, and `screen` is writable during the call.
+    // SAFETY: The process owns the output handle, and `screen` is writable during the call.
     if unsafe { GetConsoleScreenBufferInfo(io::stdout().as_raw_handle(), &mut screen) } == 0 {
         return COORD::default();
     }
@@ -421,18 +422,18 @@ fn viewport_origin() -> COORD {
 }
 
 fn stop_event() -> io::Result<OwnedHandle> {
-    // NOTE: The event has default security, starts unsignaled, and its returned handle is owned here.
+    // SAFETY: The event has default security, starts unsignaled, and its returned handle is owned here.
     let handle = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
     if handle.is_null() {
         return Err(io::Error::last_os_error());
     }
-    // NOTE: CreateEventW returned a valid, individually owned handle.
+    // SAFETY: CreateEventW returned a valid, individually owned handle.
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
 fn mode(handle: HANDLE) -> io::Result<u32> {
     let mut mode = 0;
-    // NOTE: Standard console handles are borrowed from the process. `mode` is writable for this call.
+    // SAFETY: Standard console handles are borrowed from the process. `mode` is writable for this call.
     if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -440,7 +441,7 @@ fn mode(handle: HANDLE) -> io::Result<u32> {
 }
 
 fn set_mode(handle: HANDLE, mode: u32) -> io::Result<()> {
-    // NOTE: The console handle is a process standard handle, and GetConsoleMode verified it.
+    // SAFETY: The console handle is a process standard handle, and GetConsoleMode verified it.
     if unsafe { SetConsoleMode(handle, mode) } == 0 {
         return Err(io::Error::last_os_error());
     }

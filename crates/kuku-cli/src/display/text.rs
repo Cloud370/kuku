@@ -193,7 +193,10 @@ impl Display {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the completion renderer receives the summary counters and optional diagnostics"
+    )]
     pub fn session_completed(
         &self,
         session_id: &str,
@@ -230,7 +233,10 @@ impl Display {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the verbose renderer receives the same counters and diagnostic fields"
+    )]
     pub fn session_completed_verbose(
         &self,
         session_id: &str,

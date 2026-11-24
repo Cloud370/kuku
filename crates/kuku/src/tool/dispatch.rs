@@ -22,7 +22,10 @@ pub(crate) fn is_workspace_file(name: &str) -> bool {
 }
 
 // NOTE: Direct dispatch and cancellable slots use the same action and event identity.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the file dispatcher receives explicit workspace, output, and serialization inputs"
+)]
 pub(crate) fn dispatch_workspace_file(
     name: &str,
     args: &Value,
@@ -136,7 +139,10 @@ fn supplied_write_content<'a>(
 
 // Dispatch is the single entry point bridging tool registry, config, and event path;
 // splitting would add indirection without reducing cross-cutting complexity.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "dispatch takes explicit action, context, and resource limits"
+)]
 pub(crate) async fn dispatch(
     name: &str,
     args: &Value,
@@ -223,7 +229,10 @@ fn has_denied_permission(events: &[StoredEvent], tool_call_id: Option<&str>) -> 
 mod tests {
     use super::*;
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "this fixture mirrors the dispatcher arguments while filling optional inputs"
+    )]
     async fn dispatch(
         name: &str,
         args: &Value,

@@ -47,6 +47,7 @@ fn rejects_fifo_without_blocking() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("credential-pipe");
     let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: The CString provides a live NUL-terminated path in the test directory.
     assert_eq!(0, unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) });
     assert_eq!(
         std::io::ErrorKind::PermissionDenied,

@@ -226,7 +226,7 @@ mod windows {
     pub(super) fn rename(from: &Path, to: &Path) -> io::Result<()> {
         let from = absolute_name(from)?;
         let to = absolute_name(to)?;
-        // NOTE: Both buffers are live, NUL-terminated UTF-16 paths; std::fs::rename cannot set WRITE_THROUGH.
+        // SAFETY: Both buffers are live, NUL-terminated UTF-16 paths; std::fs::rename cannot set WRITE_THROUGH.
         let moved = unsafe {
             MoveFileExW(
                 from.as_ptr(),

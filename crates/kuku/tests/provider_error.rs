@@ -19,7 +19,10 @@ mod prompt {
 }
 
 mod provider {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules to exercise provider errors"
+    )]
     pub mod types {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -27,7 +30,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules to exercise provider errors"
+    )]
     pub mod error {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

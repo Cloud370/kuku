@@ -28,11 +28,11 @@ pub(super) struct DetachedChild(OwnedHandle);
 impl DetachedChild {
     pub(super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         let process = self.0.as_raw_handle();
-        // NOTE: The owned process handle remains live for this non-blocking wait.
+        // SAFETY: The owned process handle remains live for this non-blocking wait.
         match unsafe { WaitForSingleObject(process, 0) } {
             WAIT_OBJECT_0 => {
                 let mut code = 0;
-                // NOTE: The process has exited and the writable code slot is valid.
+                // SAFETY: The process has exited and the writable code slot is valid.
                 if unsafe { GetExitCodeProcess(process, &mut code) } == 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -83,7 +83,7 @@ fn create_process(
         ..Default::default()
     };
     let mut process = PROCESS_INFORMATION::default();
-    // NOTE: CreateProcessW reads NUL-terminated UTF-16 inputs and can write to the command line.
+    // SAFETY: CreateProcessW reads NUL-terminated UTF-16 inputs and can write to the command line.
     // Stable Command does not expose the handle inheritance flag.
     if unsafe {
         CreateProcessW(
@@ -102,7 +102,7 @@ fn create_process(
     {
         return Err(io::Error::last_os_error());
     }
-    // NOTE: A successful CreateProcessW returns owned process and initial thread handles.
+    // SAFETY: A successful CreateProcessW returns owned process and initial thread handles.
     unsafe {
         drop(OwnedHandle::from_raw_handle(process.hThread));
         Ok(DetachedChild(OwnedHandle::from_raw_handle(
@@ -205,7 +205,7 @@ fn environment_block(data_dir: &OsStr) -> Vec<u16> {
 }
 
 fn compare_names(left: &[u16], right: &[u16]) -> Ordering {
-    // NOTE: CompareStringOrdinal reads the explicit lengths of these UTF-16 buffers.
+    // SAFETY: CompareStringOrdinal reads the explicit lengths of these UTF-16 buffers.
     // Windows bounds environment variable names well below i32::MAX.
     match unsafe {
         CompareStringOrdinal(

@@ -617,7 +617,7 @@ fn spawn_detached(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    // NOTE: setsid is async-signal-safe and only changes the child launched for this service.
+    // SAFETY: setsid is async-signal-safe and only changes the child launched for this service.
     // Rust's process API cannot create a detached session on Unix.
     unsafe {
         command.as_std_mut().pre_exec(|| {

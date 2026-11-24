@@ -14,7 +14,10 @@ use super::common;
 
 const MODEL: &str = "claude-sonnet-4-6";
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fixture inputs identify the model, context, and workspace independently"
+)]
 pub(super) fn session_options(
     server: &MockServer,
     workspace: &Path,

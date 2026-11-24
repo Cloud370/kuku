@@ -24,7 +24,10 @@ impl ContextPreview {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the window takes explicit match coordinates, content, and output bounds"
+    )]
     pub(super) fn extend(
         &mut self,
         relative: &str,

@@ -19,6 +19,9 @@ path = "src/bin/kuku-cli.rs"
 [features]
 server = []
 
+[lints]
+workspace = true
+
 [dependencies]
 kuku = { workspace = true }
 kuku-client = { path = "../kuku-client" }

@@ -139,18 +139,20 @@ pub(crate) fn process_alive(pid: i32) -> bool {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        extern "C" {
+        unsafe extern "C" {
             fn kill(pid: i32, sig: i32) -> i32;
         }
+        // SAFETY: The ABI takes integer arguments and signal zero only queries process existence.
         unsafe { kill(pid, 0) == 0 }
     }
     #[cfg(target_os = "windows")]
     {
-        extern "system" {
+        unsafe extern "system" {
             fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
             fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
         }
         const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        // SAFETY: OpenProcess uses integer arguments and transfers ownership of a non-null handle.
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
             if handle.is_null() {

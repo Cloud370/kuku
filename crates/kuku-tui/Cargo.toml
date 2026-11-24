@@ -8,6 +8,9 @@ repository = "https://github.com/Cloud370/kuku"
 readme = "../../README.md"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 arboard = { version = "3.6", default-features = false }
 base64 = "0.22"

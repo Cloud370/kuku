@@ -1,5 +1,9 @@
 #[path = "../src/log/mod.rs"]
-#[allow(dead_code, unused_imports)]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "this target includes the production modules and exercises a subset of their APIs"
+)]
 mod log;
 
 mod session {
@@ -35,7 +39,10 @@ mod event {
 mod execution {
     pub use kuku::execution::OutputReference;
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     mod media {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -74,7 +81,10 @@ mod provider {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod types {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -82,7 +92,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod chunk {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -90,7 +103,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod error {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -98,7 +114,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod http_client {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -113,7 +132,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod prepare {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -121,7 +143,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod replay {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -129,7 +154,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod report {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -137,7 +165,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod transport {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -167,7 +198,10 @@ mod provider {
 
     use futures_core::Stream;
     use std::pin::Pin;
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub type ProviderChunkStream = Pin<
         Box<
             dyn Stream<Item = std::result::Result<chunk::ProviderChunk, types::ProviderFailure>>
@@ -175,7 +209,10 @@ mod provider {
         >,
     >;
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod anthropic {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -183,7 +220,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod openai_compat {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -191,12 +231,18 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod sse {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/provider/sse.rs"));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod trace {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -204,7 +250,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod openai_responses {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
