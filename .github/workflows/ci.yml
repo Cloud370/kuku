@@ -11,6 +11,11 @@ on:
       - ".gitignore"
   schedule:
     - cron: "23 4 * * 0"
+  workflow_call:
+    inputs:
+      release-revision:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       platform:
@@ -32,7 +37,7 @@ env:
   CARGO_PROFILE_DEV_DEBUG: '0'
 
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.platform || 'all' }}
+  group: ci-${{ inputs.release-revision && format('release-{0}', github.run_id) || format('{0}-{1}-{2}', github.event_name, github.ref, inputs.platform || 'all') }}
   cancel-in-progress: true
 
 jobs:
@@ -48,10 +53,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
+          ref: ${{ inputs.release-revision }}
       - name: Select checks for this revision
         id: select
         env:
-          CI_EVENT: ${{ github.event_name }}
+          CI_EVENT: ${{ inputs.release-revision && 'release' || github.event_name }}
           CI_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}
           CI_PLATFORM: ${{ inputs.platform || 'all' }}
         run: >-
@@ -63,6 +69,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release-revision }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -73,6 +81,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release-revision }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -85,7 +95,9 @@ jobs:
           python3 -c "print('Exact Rust dependency cache hit: ${{ steps.rust_cache.outputs.cache-hit }}')"
       - run: cargo clippy --workspace --all-targets --features kuku/test_support -- -D warnings
       - run: mkdir -p apps/web/dist && cp apps/web/index.html apps/web/dist/
+        if: ${{ !inputs.release-revision }}
       - run: cargo check -p kuku-app --features embedded-web-assets
+        if: ${{ !inputs.release-revision }}
 
   tooling:
     needs: plan
@@ -97,6 +109,8 @@ jobs:
         os: ${{ fromJSON(needs.plan.outputs.tooling) }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release-revision }}
       - run: python3 -m unittest discover -s scripts/acceptance -p "test_*.py"
 
   web-assets:
@@ -115,6 +129,7 @@ jobs:
     uses: ./.github/workflows/ci-platform.yml
     with:
       matrix: ${{ needs.plan.outputs.platform_jobs }}
+      revision: ${{ inputs.release-revision }}
 
   web-platform:
     name: Checks using embedded Web assets

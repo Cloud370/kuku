@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Version injection at build time (`kuku --version`)
 - Makefile with build-web, build, build-all targets
 
+## [0.1.0-alpha.4]
+
+这一版带来 ChatGPT 登录、可切换的工作区权限，以及首个 Linux ARM64 安装包。
+
+- **ChatGPT 登录和模型切换。** 可以用 ChatGPT 账号登录，从 `/model` 在当前会话里切换模型或保存默认选择。
+- **工作区权限和终端提醒。** 用 `F3` 或 `/permissions` 切换全开放、询问或只读。等待工具审批时，TUI 仍可操作，可在 `/notifications` 调整提问、审批、中断和轮次完成的声音。
+- **会话和工具改进。** 改善长会话的读取和压缩，修复 Agent 消息投递、脚本取消后的恢复提示，以及保存和读取工具输出的问题。
+- **Linux ARM64。** Linux 新增 ARM64 静态安装包，安装脚本会自动识别架构。
+
+发行包以终端客户端和 server API 为主。需要 WebUI 时，仍可从源码启用 `embedded-web-assets` 构建。
+
 ## [0.1.0-alpha.3] - 2026-11-22
 
 Developer preview for the native terminal and Session workflow.

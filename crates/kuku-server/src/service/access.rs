@@ -149,7 +149,7 @@ pub(super) async fn issue(
         return failure(
             StatusCode::NOT_FOUND,
             "browser_handoff_unavailable",
-            "browser handoff requires the packaged managed server",
+            "browser handoff requires a managed server built with embedded WebUI assets",
         );
     };
     match browser.issue_ticket() {

@@ -31,6 +31,15 @@ class AcceptanceTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_release_build_matches_both_commit_and_version(self):
+        revision = "9bb98c10f4a62302a123c0a31a4f5b93f95a4a16"
+        version = "0.1.0-alpha.4"
+        ACCEPTANCE.verify_installed_build(f"kuku {version} (9bb98c1)", revision, version)
+        with self.assertRaisesRegex(ValueError, "Installed revision"):
+            ACCEPTANCE.verify_installed_build(f"kuku {version} (62af525)", revision, version)
+        with self.assertRaisesRegex(ValueError, "Installed version"):
+            ACCEPTANCE.verify_installed_build("kuku 0.1.0 (9bb98c1)", revision, version)
+
     def budget(self, limit=1):
         budget = ACCEPTANCE.Budget(self.directory / "budget.json")
         budget.initialize("test-only authorization", limit, 0)

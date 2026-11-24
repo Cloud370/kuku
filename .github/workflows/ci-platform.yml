@@ -6,6 +6,8 @@ on:
       matrix:
         type: string
         required: true
+      revision:
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,6 +29,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         id: rust_cache

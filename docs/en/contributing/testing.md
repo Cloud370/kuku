@@ -23,7 +23,7 @@ To focus on the feature-gated provider and query integration suites, use the ded
 cargo test -p kuku --features test_support --test provider_integration --test query_runtime
 ```
 
-Before merging, confirm the selected ready-PR checks pass for the intended revision. The [CI plan](../../../scripts/acceptance/ci_plan.py) selects native and installed scenarios from the PR change set. The [release workflow](release.md) requires the full CI matrix with `platform=all` on the candidate.
+Before merging, confirm the selected ready-PR checks pass for the intended revision. The [CI plan](../../../scripts/acceptance/ci_plan.py) selects native and installed scenarios from the PR change set. The [release workflow](release.md) runs its own contracts and archive acceptance for the candidate.
 
 ## Installed client acceptance
 

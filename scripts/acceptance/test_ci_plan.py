@@ -104,6 +104,14 @@ class CiPlanTests(TestCase):
         self.assertFalse(windows["web"])
         self.assertFalse(verify_web)
 
+    def test_release_parallelizes_native_contracts_with_archive_builds(self):
+        jobs, tooling, verify_web = plan("release")
+        self.assertEqual(["ubuntu-latest", "macos-latest", "windows-latest"], tooling)
+        self.assertEqual(tooling, [entry["os"] for entry in jobs])
+        self.assertTrue(all(entry["contract"] == "workspace" for entry in jobs))
+        self.assertTrue(all(entry["installed"] == "none" and not entry["web"] for entry in jobs))
+        self.assertFalse(verify_web)
+
     @patch("ci_plan.subprocess.check_output", return_value=b"old\nname\0new name\0")
     def test_changed_paths_use_merge_tree_and_preserve_both_rename_paths(self, git):
         self.assertEqual(("old\nname", "new name"), changed_paths())
