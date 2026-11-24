@@ -225,10 +225,20 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
     let count = usize::from(list.height).max(1);
     let range = picker.composer_rows(count, picker.visible_choices().len());
     let choices = picker.visible_choices();
+    let model_column = if picker.kind == PickerKind::Models {
+        choices
+            .iter()
+            .filter(|choice| matches!(choice.kind, ChoiceKind::ModelRoute { .. }))
+            .map(|choice| crate::text::single_line(&choice.label).width())
+            .max()
+            .map(|label_width| label_width.min(width / 3).max(1))
+    } else {
+        None
+    };
     let mut lines = Vec::new();
     for (index, choice) in choices.iter().enumerate().take(range.end).skip(range.start) {
         let active = index == picker.selected;
-        lines.push(choice_line(picker, choice, width, active));
+        lines.push(choice_line(picker, choice, width, active, model_column));
         if active && list.x > 0 {
             let cursor = Rect::new(list.x - 1, list.y + (index - range.start) as u16, 1, 1);
             frame.render_widget(
@@ -318,8 +328,21 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, title: &str, picker: &mut Pi
     usize::from(field.width).max(1)
 }
 
-fn choice_line(picker: &Picker, choice: &Choice, width: usize, active: bool) -> Line<'static> {
+fn choice_line(
+    picker: &Picker,
+    choice: &Choice,
+    width: usize,
+    active: bool,
+    model_column: Option<usize>,
+) -> Line<'static> {
+    let model_column =
+        model_column.filter(|_| matches!(choice.kind, ChoiceKind::ModelRoute { .. }));
     let mut label = crate::text::single_line(&choice.label);
+    if let Some(column) = model_column {
+        if label.width() > column {
+            label = crate::text::shorten_middle(&label, column);
+        }
+    }
     let mut detail = choice.detail.as_str();
     let inherited;
     if let (Some(thinking), ChoiceKind::Thinking(effort)) = (&picker.thinking, &choice.kind) {
@@ -342,7 +365,9 @@ fn choice_line(picker: &Picker, choice: &Choice, width: usize, active: bool) -> 
     if detail.is_empty() || label.width() + 3 >= width {
         return picker_line(&label, width, active, style);
     }
-    let separator = if picker.kind == PickerKind::Commands {
+    let separator = if let Some(column) = model_column {
+        format!("{} · ", " ".repeat(column.saturating_sub(label.width())))
+    } else if picker.kind == PickerKind::Commands {
         " ".repeat(15usize.saturating_sub(label.width()).max(2))
     } else {
         " · ".to_owned()

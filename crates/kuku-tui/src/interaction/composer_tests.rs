@@ -599,23 +599,38 @@ fn model_picker_letters_are_actions_until_search_is_focused() {
 }
 
 #[test]
-fn models_fit_the_account_and_route_markers_without_a_fixed_column() {
+fn model_picker_aligns_details_and_fits_the_account_and_route_markers() {
     use crate::menu::{Choice, ChoiceKind};
 
     let mut app = connected_app();
+    let route = |name, detail| {
+        let tier =
+            serde_json::from_value(json!({"name":name, "connection":"fixture", "model":name}))
+                .unwrap();
+        Choice::new(
+            name,
+            detail,
+            ChoiceKind::ModelRoute {
+                tier: Box::new(tier),
+                current: false,
+            },
+        )
+    };
     app.picker(
         PickerKind::Models,
-        vec![Choice::new(
-            "gpt-6.2-sol",
-            "ChatGPT · team-operations · ali***e@exa***.com · Current · Default",
-            ChoiceKind::Close,
-        )],
+        vec![
+            route(
+                "gpt-6.2-sol",
+                "ChatGPT · team-operations · ali***e@exa***.com · Current · Default",
+            ),
+            route("gpt-6.2-astra", "ChatGPT · other · sam***e@exa***.com"),
+            Choice::new("Set current model as default", "", ChoiceKind::Close),
+        ],
     );
-    let screen = lines(&frame(&mut app, 94)).join("\n");
-    assert!(
-        screen.contains(
-            "gpt-6.2-sol · ChatGPT · team-operations · ali***e@exa***.com · Current · Default"
-        ),
-        "{screen}"
+    let screen = frame(&mut app, 94);
+    assert_eq!(
+        position(&screen, "ChatGPT · team-operations").0,
+        position(&screen, "ChatGPT · other").0
     );
+    position(&screen, "ali***e@exa***.com · Current · Default");
 }
