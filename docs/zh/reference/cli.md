@@ -135,6 +135,8 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 
 底部状态栏默认显示生效模型、思考等级和已配置的服务档位，例如 `gpt-6.2-sol xhigh ultrafast`、连接提示、当前 Agent、工作区、上下文用量、缓存命中率、平均 TPS、累计输入和输出 token 以及请求费用。待生效的设置显示在 **Next model request**。
 
+如果下一条消息将使用与该 Agent 上一次请求不同的模型路由，输入框上方会显示两条路由并提醒缓存可能无法复用。再按一次 Enter，按原先的时机发送。Esc 收起提示并保留草稿。
+
 输入区上方显示收件人（`To <agent>`）、输入投递状态（`Draft`、`Awaiting receipt`、`Input queued`、`Input accepted`）、当前 Turn 实时耗时及执行状态：
 
 - `Waiting for model`、`Thinking`、`Streaming reply`、`Writing tool arguments`、`Running tools`

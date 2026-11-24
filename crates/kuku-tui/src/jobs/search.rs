@@ -195,6 +195,32 @@ fn model_choices(
     (choices, format!("Default · {default}"))
 }
 
+pub(super) async fn send_route_labels(
+    connection: Option<&Connection>,
+    names: &[String; 2],
+) -> [Option<String>; 2] {
+    let Some(connection) = connection else {
+        return [None, None];
+    };
+    let Ok(catalog) = connection.client.models().await else {
+        return [None, None];
+    };
+    let labels = subscription_labels(&catalog.connections);
+    std::array::from_fn(|index| {
+        let name = &names[index];
+        catalog
+            .connections
+            .iter()
+            .find(|connection| connection.name == *name)
+            .map(|connection| {
+                labels
+                    .get(name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| connection.name.clone())
+            })
+    })
+}
+
 fn subscription_labels(connections: &[kuku_client::ConnectionSummary]) -> BTreeMap<&str, String> {
     let mut counts = BTreeMap::new();
     for label in connections

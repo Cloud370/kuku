@@ -2,12 +2,17 @@ use kuku_client::{new_id, Acknowledgement, Action, Command, Error, InputStatus, 
 
 use crate::jobs::Job;
 
+use super::send_route::RouteChange;
 use super::{Address, App, RewindDraft, SubmissionStatus};
 
 const MAX_CHECKING: usize = 4;
 
 impl App {
     pub(crate) fn send(&mut self, timing: Timing) {
+        self.send_with_route(timing, None);
+    }
+
+    pub(super) fn send_with_route(&mut self, timing: Timing, confirmed: Option<&RouteChange>) {
         let empty =
             self.pane().draft.text().trim().is_empty() && self.pane().value_attachments.is_empty();
         if empty || !self.require_service() {
@@ -28,6 +33,19 @@ impl App {
                 && !matches!(item.stage, PendingStage::Rejected(_))
         }) {
             self.problem("Check the previous send with delivery recovery · draft kept");
+            return;
+        }
+        if self.send_route_is_updating() {
+            self.problem("Wait for the model switch · draft kept");
+            return;
+        }
+        let change = self.send_route_change();
+        if change.as_ref() != confirmed {
+            if let Some(change) = change {
+                self.review_send_route(timing, change);
+            } else {
+                self.problem("The model selection changed · draft kept");
+            }
             return;
         }
         if self.pane().creation_rejected && !self.pane().exists {

@@ -103,7 +103,7 @@ impl App {
             return;
         }
         match &mut self.modal {
-            Some(Modal::Help | Modal::ExitConfirmation) => {}
+            Some(Modal::Help | Modal::ExitConfirmation | Modal::SendRouteConfirmation(_)) => {}
             Some(Modal::Output(viewer)) => {
                 if let Some(offset) = viewer.scroll(amount) {
                     self.read_output(offset);

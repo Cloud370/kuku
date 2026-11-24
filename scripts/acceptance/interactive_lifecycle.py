@@ -367,6 +367,9 @@ def shared_model_editor(binary, bridge, directory):
             terminal.click_text(match, "›gamma")
             terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
             terminal.press("\r")
+            terminal.expect("Model route changed", also=("beta → delta", "Enter Send", draft))
+            client.provider.assert_idle()
+            terminal.press("\r")
             active = client.provider.next(draft)
             assert active.request["model"] == "delta"
             draft = "draft across busy and allowed restart"

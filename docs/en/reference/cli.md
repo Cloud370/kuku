@@ -136,6 +136,8 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 
 The default bottom status bar shows the active model, resolved thinking level, and configured service tier, for example `gpt-6.2-sol xhigh ultrafast`, connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending settings show under **Next model request**.
 
+If the next message would use a different model route from this Agent’s last request, the composer shows both routes and warns that the cached prefix may miss. Press Enter again to send using the original send timing. Esc closes the notice and keeps the draft.
+
 Above the composer, kuku displays the recipient (`To <agent>`), input delivery state (`Draft`, `Awaiting receipt`, `Input queued`, `Input accepted`), live elapsed Turn timer, and Agent execution state:
 
 - `Waiting for model`, `Thinking`, `Streaming reply`, `Writing tool arguments`, `Running tools`

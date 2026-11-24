@@ -36,6 +36,7 @@ mod notice;
 mod pending;
 mod reading;
 mod rewind;
+pub(crate) mod send_route;
 pub(crate) use rewind::REWIND_PAGE;
 pub(crate) mod speed;
 mod thinking;
@@ -309,13 +310,14 @@ pub(crate) enum Modal {
     Output(Box<OutputViewer>),
     StatusLineEditor(StatusLineEditor),
     ExitConfirmation,
+    SendRouteConfirmation(Box<send_route::SendRouteConfirmation>),
 }
 
 impl Modal {
     pub(crate) fn composer_anchored(&self) -> bool {
         match self {
             Self::Picker(picker) => picker.kind.composer_anchored(),
-            Self::ExitConfirmation => true,
+            Self::ExitConfirmation | Self::SendRouteConfirmation(_) => true,
             Self::Help | Self::Prompt(_) | Self::Output(_) | Self::StatusLineEditor(_) => false,
         }
     }
@@ -671,6 +673,7 @@ impl App {
             Update::RewindGroupHistory(selection, request, result) => {
                 self.apply_rewind_group_history_update(selection, request, result);
             }
+            Update::SendRouteLabels(ticket, labels) => self.send_route_labels(ticket, labels),
             Update::Found(ticket, result) => {
                 if let Some(Modal::Picker(picker)) = &mut self.modal {
                     if picker.ticket == ticket {

@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::config::Config;
+use crate::config::{Config, ProviderFormat};
 use crate::execution::{CommandExecutionFacts, CommandTermination};
 use crate::permission::{ToolAuthorizer, TrustedLocal};
 use crate::tool::ToolResultEnvelope;
@@ -720,6 +721,43 @@ pub struct CacheWarning {
     pub input_tokens: u64,
 }
 
+/// Model route of an observed request, with the endpoint represented by a digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRequestRoute {
+    /// Named connection used for the request.
+    pub connection: String,
+    /// Provider model identifier sent in the request.
+    pub model: String,
+    protocol: ProviderFormat,
+    endpoint_hash: String,
+}
+
+impl ModelRequestRoute {
+    /// Return the request route of an effective model selection when its endpoint is known.
+    pub fn from_selection(selection: &crate::AgentSelection) -> Option<Self> {
+        Self::new(
+            &selection.connection,
+            &selection.model,
+            selection.protocol,
+            &selection.request_url,
+        )
+    }
+
+    pub(super) fn new(
+        connection: &str,
+        model: &str,
+        protocol: ProviderFormat,
+        endpoint: &str,
+    ) -> Option<Self> {
+        (!connection.is_empty() && !model.is_empty() && !endpoint.is_empty()).then(|| Self {
+            connection: connection.into(),
+            model: model.into(),
+            protocol,
+            endpoint_hash: format!("{:x}", Sha256::digest(endpoint.as_bytes())),
+        })
+    }
+}
+
 /// Queryable state of an agent without consuming its output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSnapshot {
@@ -754,6 +792,9 @@ pub struct AgentSnapshot {
     /// Measured low cache reads on the current route, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_warning: Option<CacheWarning>,
+    /// Most recent request route for the selected Turn, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_model_route: Option<ModelRequestRoute>,
     /// Durable identity of the observed execution, including a pending wait or cleanup.
     #[serde(default)]
     pub execution_id: Option<u64>,

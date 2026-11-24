@@ -51,7 +51,7 @@ pub use turns::{HistoryPoint, TurnIndex};
 pub use types::{
     Activation, AgentConfig, AgentSnapshot, AgentStatus, AgentView, CacheWarning, CostTotals,
     Input, InputSource, InputStatus, InputTiming, JobResult, JobSnapshot, JobStatus,
-    ModelUsageSample, PendingInput, QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary,
+    ModelRequestRoute, ModelUsageSample, PendingInput, QuestionRequest, Receipt, RuntimeLimits, SessionCostSummary,
     SessionOptions, TurnSummary, UsageTotals, Withdrawal, WorkspaceIoLimits,
 };
 pub use values::{

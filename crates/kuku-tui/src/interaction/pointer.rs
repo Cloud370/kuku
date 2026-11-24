@@ -101,7 +101,8 @@ impl App {
                 | Modal::Prompt(_)
                 | Modal::Output(_)
                 | Modal::StatusLineEditor(_)
-                | Modal::ExitConfirmation,
+                | Modal::ExitConfirmation
+                | Modal::SendRouteConfirmation(_),
             ) => None,
             None => {
                 if let Some(hit) = self

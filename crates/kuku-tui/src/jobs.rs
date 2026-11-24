@@ -92,6 +92,7 @@ pub(crate) enum Job {
     FileRewindPreview(Selection, u64, u64),
     RewindGroupHistory(Selection, RewindGroupRequest),
     Find(Ticket, Search),
+    SendRouteLabels(u64, [String; 2]),
     AgentModels(u64),
     ThinkingDefaults(u64, AgentConfig, ResolvedModel),
     LoadSpeed(u64, Selection, Target, Option<String>),
@@ -172,6 +173,7 @@ pub(crate) enum Update {
         Result<RewindGroupPage, Error>,
     ),
     Found(Ticket, Result<(Vec<Choice>, String), Error>),
+    SendRouteLabels(u64, [Option<String>; 2]),
     AgentModels(u64, Result<ModelCatalog, Error>),
     ThinkingDefaults(u64, crate::setup::ThinkingDefaults),
     SpeedLoaded(
@@ -317,6 +319,14 @@ impl Jobs {
                 let connection = self.connection.clone();
                 self.finder = Some(self.spawn(async move {
                     Update::Found(ticket, find(&options, connection.as_ref(), query).await)
+                }));
+            }
+            Job::SendRouteLabels(ticket, names) => {
+                Self::abort(&mut self.finder);
+                let connection = self.connection.clone();
+                self.finder = Some(self.spawn(async move {
+                    let labels = search::send_route_labels(connection.as_ref(), &names).await;
+                    Update::SendRouteLabels(ticket, labels)
                 }));
             }
             Job::ThinkingDefaults(ticket, config, route) => {
@@ -668,6 +678,7 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::Observe(_)
         | Job::StopObserving
         | Job::Find(_, _)
+        | Job::SendRouteLabels(..)
         | Job::ThinkingDefaults(..)
         | Job::LoadSpeed(..)
         | Job::CustomSpeed(..)

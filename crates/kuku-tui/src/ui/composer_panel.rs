@@ -29,6 +29,7 @@ pub(super) fn render(
     let modal = app.modal.as_mut()?;
     let height = match modal {
         Modal::ExitConfirmation => 1,
+        Modal::SendRouteConfirmation(_) => 3,
         Modal::Picker(picker) => match &picker.thinking {
             Some(thinking) if thinking.confirm.is_some() => 3,
             thinking => {
@@ -57,6 +58,27 @@ pub(super) fn render(
         Modal::ExitConfirmation => {
             let line = Line::styled("Exit kuku? Y exit · Esc edit", emphasis(ACCENT));
             frame.render_widget(Paragraph::new(line), inner);
+        }
+        Modal::SendRouteConfirmation(review) => {
+            let width = usize::from(inner.width);
+            let [previous, next] = review.model_labels().map(|label| {
+                crate::text::shorten_middle(
+                    &crate::text::single_line(&label),
+                    width.saturating_sub(3) / 2,
+                )
+            });
+            let mut lines = vec![Line::styled(
+                shorten(review.title(), width),
+                emphasis(crate::theme::WARNING),
+            )];
+            if inner.height >= 3 {
+                lines.push(Line::raw(format!("{previous} → {next}")));
+            }
+            lines.push(Line::styled(
+                shorten("Enter Send · Esc Keep draft", width),
+                Style::new().fg(MUTED),
+            ));
+            frame.render_widget(Paragraph::new(lines), inner);
         }
         Modal::Picker(picker) => {
             let confirmation = picker
