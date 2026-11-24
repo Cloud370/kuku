@@ -6,7 +6,7 @@
 
 客户端访问接口时发送 `Authorization: Bearer TOKEN`，回环连接也需要认证。`kuku web` 打开受管本地服务的内嵌界面时，通过 URL 片段传递短时一次性票据。页面清除片段，将票据交换成独立的浏览器令牌，并保存在该标签页的 `sessionStorage`。刷新同一标签页时可继续用该令牌连接同一服务实例。显式启动的服务使用其配置的访问令牌。服务的默认工具策略信任已认证的用户，允许文件和命令工具。
 
-公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。`protocol_version` 描述 Session API。升级受管服务时，即使 Session API 版本不同，仍可以查看服务状态和请求正常重启。缺少令牌或令牌无效时，返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求携带的浏览器来源。
+公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。Session HTTP API 的首版是 v1，以 `protocol_version: 1` 报告。受管服务的状态和重启接口使用 `management_version`。缺少令牌或令牌无效时，返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求携带的浏览器来源。
 
 ## 接口一览
 

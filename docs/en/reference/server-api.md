@@ -6,7 +6,7 @@ The terminal, script and browser clients use the same HTTP Session contract. The
 
 Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback. For managed local launches, `kuku web` opens the embedded browser with a short-lived, single-use ticket in the URL fragment. The page removes the fragment and exchanges the ticket for a separate browser bearer token, stored in that tab's `sessionStorage`. Reloading the same tab keeps its connection credentials for that service instance. An explicitly started service uses its configured access token. The default server tool policy trusts the authenticated user and permits file and command tools.
 
-`GET /health` is public and reports `version`, `protocol_version` and `management_version`. The protocol version describes the Session API. When upgrading a managed server, you can still check service status and request an orderly restart if the Session API versions differ. Missing or rejected credentials return `401` with `auth_required`. A managed server also checks its loopback host and the supplied browser origin.
+`GET /health` is public and reports `version`, `protocol_version` and `management_version`. The Session HTTP API is v1, reported as `protocol_version: 1`. Managed service status and restart use `management_version`. Missing or rejected credentials return `401` with `auth_required`. A managed server also checks its loopback host and the supplied browser origin.
 
 ## Endpoints
 
