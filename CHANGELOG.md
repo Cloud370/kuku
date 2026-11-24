@@ -18,35 +18,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.1.0-alpha.4]
 
-这一版带来 ChatGPT 登录、可切换的工作区权限，以及首个 Linux ARM64 安装包。
+这版可以在终端粘贴图片、用 ChatGPT 订阅登录，并在对话中切换模型和工作区权限。Linux ARM64 首次提供安装包。
 
 ### 新增功能
 
-- **ChatGPT 登录。** 支持保存多个账号、从无桌面主机发起浏览器授权，以及按账号获取可用模型。CLI 可用 `kuku auth login chatgpt` 登录。
-- **在会话中调整模型。** 用 `/model`、`/thinking` 和 `/speed` 设置当前 Agent。模型连接或服务档位与上次请求不同时，发送前会提示确认，草稿会保留。自定义连接和模型路线可以设置请求头和 JSON 请求字段。
-- **工作区权限和异步审批。** 默认全开放，用 `F3` 或 `/permissions` 可切换为询问或只读，并保存工作区的选择。`F2` 可查看待审批操作及参数，等待时仍可使用 TUI。批准后，前台或后台的 `run_js` 可以从等待处继续。
-- **终端声音。** 提问、审批、中断和轮次完成可发出提示音，可在 `/notifications` 分别设置。
-- **工具输出搜索。** 新增 `search_output`，可直接在保留的工具输出中按字节范围搜索，继续读取后续匹配。
-- **Linux ARM64。** 新增 ARM64 静态安装包，安装脚本会自动识别架构。
+- **TUI 图片输入。** 粘贴 PNG、JPEG 或本地图片路径。草稿里的 `[Image #1]` 可以整体移动和删除。发送前可选压缩或原图，三秒无操作时自动选压缩。
+- **Agent 图像能力。** 主 Agent 和子 Agent 能识别自身及候选模型的输入、输出模态。声明支持图像的 DeepSeek Responses 路线可以接收图片和使用 `view_image`。SDK 和 Session HTTP API v1 支持图片附件。
+- **ChatGPT 登录。** 支持多个账号、在远程主机发起浏览器授权，以及按账号获取可用模型。命令为 `kuku auth login chatgpt`。
+- **会话内调整模型。** 用 `/model`、`/thinking` 和 `/speed` 调整当前 Agent。模型连接或服务档位变化时，发送前提示确认并保留草稿。自定义连接和模型路线可配置请求字段。
+- **工作区权限和异步审批。** 用 `F3` 或 `/permissions` 在全开放、询问和只读之间切换，并保存工作区选择。用 `F2` 查看待审批操作及参数，等待时仍可操作终端。批准后，前台或后台 `run_js` 会继续执行。
+- **终端提示音。** 提问、审批、中断和轮次完成可发出声音，在 `/notifications` 中可分别设置。
 
 ### 体验改进
 
-- 初次启动直接进入主 TUI。模型未配置时可用 `/model` 打开设置，保存后在原窗口重连。
-- Agent 创建会返回实际工作区和工具。委派后可以用投递回执查询对应回合与结果，后续再次给同一个 Agent 发任务也能区分两次结果。
-- 长会话分批读取历史，自动压缩按可用输入额度计算。终端显示思考用时，可展开查看脚本执行记录、命令参数和带行号的工具输出。
-- 大文件搜索采用有界扫描并按页返回。直接工具和 `run_js` 共用工作区资源限制，SDK 宿主可以为命令子进程配置内存上限。
-- 新输入中断 `run_js` 时，工具结果会注明原因，并区分已完成、已取消和未派发的操作。
+- 初次启动直接进入主 TUI。未配置模型时可打开 `/model`，完成设置后在原窗口重连。
+- Agent 创建会报告实际工作区与工具。委派结果可按投递回执查找，连续给同一 Agent 发任务时也能区分结果。
+- 会话历史分批读取，自动压缩以可用输入额度为准。终端可显示思考用时，并展开脚本执行记录、命令参数和带行号的工具输出。
+- `search_output` 可以在保留的工具输出中按字节范围搜索。原生工具和 `run_js` 共用工作区资源限制，SDK 宿主可为命令子进程配置内存上限。
+- 内置和自定义 Prompt 统一使用 MiniJinja。模板可以按模态、工具集和权限模式渲染，项目指令和用户消息作为文字插入。
 
 ### Bug 修复
 
-- 修复 OpenRouter Gemini 路由上 `read_output` 和 `save_value` 的参数格式，并修复流式思考片段重放顺序。响应解析失败时，已收到的部分内容会保留在历史中。
-- 修复并发读取及恢复 Session 时的日志争用。损坏的单条 Session 记录可从列表隔离，其他 Session 仍可浏览。
-- 修复会话查询可能返回无效 JSON、较深的工具输出内容难以直接搜索等问题。保存的短输出 ID 在重开会话后仍可使用。
+- 修复请求预算紧张时漏传已接纳图片，以及召回同文异图、切换 Agent、编辑排队输入和重开 Session 时的附件恢复问题。
+- 修复流式思考片段的重放顺序和 OpenRouter Gemini 路线的输出引用参数。响应解析失败时会保留已收到的内容。新输入打断 `run_js` 时，可区分已完成、已取消和未派发的操作。
+- 修复并发读取及恢复 Session 时的日志争用、会话查询返回无效 JSON，以及保留输出在会话重开后难以查找的问题。损坏的单条会话可从列表中隔离。
 
-### 升级须知
+### 安装与升级
 
-- 发布包提供 TUI 和 server API。需要 WebUI 时，可从源码启用 `embedded-web-assets` 构建。
-- 源码工作区采用 Rust Edition 2024。SDK 和 HTTP 集成应核对旧回滚接口及子会话委派接口的移除，使用当前的会话历史和 Agent 消息接口。
+- 安装包提供终端客户端和 HTTP 服务，覆盖 Linux x86-64 与 ARM64、Apple Silicon macOS、Windows x86-64。WebUI 可从源码启用 `embedded-web-assets` 构建。[安装指南](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.4/docs/zh/start/install.md) · [WebUI 构建](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.4/docs/zh/reference/cli.md#kuku-server-与-kuku-web)
+- 若要跟踪后续预发布，运行 `kuku config set update.channel alpha`。从源码构建使用 Rust Edition 2024。
 
 ## [0.1.0-alpha.3] - 2026-11-22
 

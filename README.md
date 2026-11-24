@@ -21,7 +21,7 @@ kuku init
 kuku
 ```
 
-Type `Inspect the files in this directory` and press Enter. For OpenAI or an existing config, see [Quickstart](docs/en/start/quickstart.md). To use `kuku web` with the embedded browser UI, install a release bundle instead of building from `cargo install` ([Install](docs/en/start/install.md)).
+Type `Inspect the files in this directory` and press Enter. For OpenAI or an existing config, see [Quickstart](docs/en/start/quickstart.md). To use `kuku web`, [build with embedded Web assets](docs/en/reference/cli.md#kuku-server-and-kuku-web).
 
 ## Documentation
 
