@@ -13,6 +13,8 @@ Source builds and release packages include the TUI, CLI commands, and HTTP serve
 
 ## Install a published release
 
+Copy the installation commands for the current alpha from the [README](../../../README.md#install).
+
 Pick the `latest.json` asset URL from a tagged [GitHub Release](https://github.com/Cloud370/kuku/releases), then run the installer from a checkout:
 
 - Linux (x86-64, ARM64) and macOS (Apple Silicon):
