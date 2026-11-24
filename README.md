@@ -13,7 +13,7 @@ kuku stays light enough that a 371 MiB RAM ARM64 board can open and continue a 1
 
 ## Install
 
-Copy the block for your platform to install [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4).
+Copy the block for your platform to install [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4). [中文安装](docs/zh/start/install.md#安装已发布版本)
 
 ### Linux and macOS
 
