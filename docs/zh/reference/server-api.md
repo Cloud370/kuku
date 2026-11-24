@@ -101,6 +101,8 @@
 活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。读取完整原文时使用普通历史接口。
 4. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
 
+观察流接入时记录日志头。之后提交的事件会标记 `live_commit`，客户端可用它区分新事件和追赶回放，再决定是否提醒。
+
 所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
 
 快照的 `session_costs` 汇总同一游标下所有保留的 Agent。`reported_nanodollars` 和 `estimated_nanodollars` 的单位是十亿分之一美元。`unknown_requests` 是金额未知的请求尝试数。

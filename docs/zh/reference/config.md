@@ -239,3 +239,5 @@ fields = [
 设 `fields = []` 可隐藏状态栏；加入 `input` 会把输入状态反馈从输入框移至状态栏。[字段含义](cli.md#终端界面)
 
 设置 `KUKU_TUI_STATUSLINE` 为逗号分隔列表可做单次覆盖（`none` 隐藏，空值或无效值回退默认布局）。[环境变量](environment-variables.md)
+
+用 `/notifications` 打开声音设置。↑ 和 ↓ 选择，空格切换，Enter 保存。`tui.toml` 的 `[notifications]` 下有 `question`、`permission`、`interrupted` 和 `completed` 四个开关，默认都为 `true`。TUI 对新事件发送 BEL，由终端决定响铃、闪屏或静音。历史记录和重连回放保持安静。

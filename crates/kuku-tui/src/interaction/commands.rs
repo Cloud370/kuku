@@ -166,6 +166,7 @@ impl App {
             CommandMenu::Fast => self.open_speed(Some("fast".into())),
             CommandMenu::Ultrafast => self.open_speed(Some("ultrafast".into())),
             CommandMenu::StatusLine => self.open_statusline(),
+            CommandMenu::Notifications => self.open_notifications(),
             CommandMenu::Save => self.open_value_save(),
             CommandMenu::Values => self.open_values(),
             CommandMenu::Server => self.open_server(),

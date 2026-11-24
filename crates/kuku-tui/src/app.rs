@@ -309,6 +309,7 @@ pub(crate) enum Modal {
     Prompt(Box<Prompt>),
     Output(Box<OutputViewer>),
     StatusLineEditor(StatusLineEditor),
+    Notifications(crate::notifications::NotificationEditor),
     ExitConfirmation,
     SendRouteConfirmation(Box<send_route::SendRouteConfirmation>),
 }
@@ -318,7 +319,11 @@ impl Modal {
         match self {
             Self::Picker(picker) => picker.kind.composer_anchored(),
             Self::ExitConfirmation | Self::SendRouteConfirmation(_) => true,
-            Self::Help | Self::Prompt(_) | Self::Output(_) | Self::StatusLineEditor(_) => false,
+            Self::Help
+            | Self::Prompt(_)
+            | Self::Output(_)
+            | Self::StatusLineEditor(_)
+            | Self::Notifications(_) => false,
         }
     }
 }
@@ -342,6 +347,8 @@ pub(crate) struct App {
     pub(crate) taught_commands: HashSet<CommandMenu>,
     pub(crate) modal: Option<Modal>,
     pub(crate) statusline_settings: StatusLineSettings,
+    pub(crate) notification_settings: crate::config::NotificationSettings,
+    pub(crate) terminal_bell: crate::notifications::TerminalBell,
     pub(crate) text_selection: TextSelection,
     pub(crate) modal_selection: TextSelection,
     pub(crate) pending: HashMap<String, PendingItem>,
@@ -417,6 +424,8 @@ impl App {
             taught_commands: HashSet::new(),
             modal: None,
             statusline_settings: StatusLineSettings::default(),
+            notification_settings: crate::config::NotificationSettings::default(),
+            terminal_bell: crate::notifications::TerminalBell::default(),
             text_selection: TextSelection::default(),
             modal_selection: TextSelection::default(),
             pending: HashMap::new(),
@@ -649,6 +658,9 @@ impl App {
                 self.watch_failed(error);
             }
             Update::Observation(selection, event) if selection == self.selection() => {
+                let last_event = self.pane().last_event;
+                self.terminal_bell
+                    .observe(&event, last_event, self.notification_settings.active());
                 self.observe(event)
             }
             Update::Refreshed(selection, result) if selection == self.selection() => {

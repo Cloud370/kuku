@@ -14,6 +14,7 @@ pub(crate) enum CommandMenu {
     Fast,
     Ultrafast,
     StatusLine,
+    Notifications,
     Save,
     Values,
     Server,
@@ -37,6 +38,7 @@ impl CommandMenu {
         Self::Fast,
         Self::Ultrafast,
         Self::StatusLine,
+        Self::Notifications,
         Self::Save,
         Self::Values,
         Self::Server,
@@ -137,6 +139,12 @@ impl CommandMenu {
                 None,
             ),
             Self::StatusLine => ("statusline", &["status-line"], "Edit the status line", None),
+            Self::Notifications => (
+                "notifications",
+                &["notify", "sound"],
+                "Edit terminal sounds",
+                None,
+            ),
             Self::Save => (
                 "save",
                 &["save-value"],

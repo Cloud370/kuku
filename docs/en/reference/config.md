@@ -239,3 +239,5 @@ fields = [
 Set `fields = []` to hide the status line. Including `input` moves input feedback from the editor to the status line. [Field meanings](cli.md#terminal-interface)
 
 Set `KUKU_TUI_STATUSLINE` to a comma-separated list to override `tui.toml` for one launch (`none` hides it; blank uses defaults; invalid settings fall back to defaults). [Environment variables](environment-variables.md)
+
+Use `/notifications` to select with ↑ and ↓, toggle with Space and save with Enter. The `[notifications]` keys in `tui.toml` are `question`, `permission`, `interrupted`, and `completed`. Each defaults to `true`. The TUI sends BEL for new events. The terminal controls whether BEL produces sound, a flash or silence. History and replay on reconnect stay quiet.

@@ -115,6 +115,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 | `/speed [tier]` | `/fast`, `/ultra`, `/ultrafast` | Choose the selected Agent's service tier above the conversation input. The shortcuts choose `fast` or `ultrafast`. Select **Follow model default** to clear the override. Type to filter the available tiers and press Tab to complete the selection. An unknown tier can be added with an optional short probe. |
 | `/thinking` | `/think`, `/effort` | Pick a thinking level for the current Agent, choose **Use default** to clear the override, or press `D` + `Enter` on a writable local route to save as the model default. |
 | `/statusline` | `/status-line` | Preview, toggle, reorder, and save status-line fields to `tui.toml`. |
+| `/notifications` | `/notify`, `/sound` | Toggle and save terminal sounds. |
 | `/save` | `/save-value` | Name pasted text or the current draft before sending. |
 | `/values` | `/value`, `/saved-values` | Browse saved values to read or attach to the draft. |
 | `/server` | `/service` | Inspect the connected service (`Ctrl+R` reconnects). |

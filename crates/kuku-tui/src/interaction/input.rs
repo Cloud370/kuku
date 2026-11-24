@@ -110,6 +110,7 @@ impl App {
             Some(Modal::Prompt(_)) => self.prompt_key(key),
             Some(Modal::Output(_)) => self.output_key(key),
             Some(Modal::StatusLineEditor(_)) => self.statusline_key(key),
+            Some(Modal::Notifications(_)) => self.notification_key(key),
             Some(Modal::ExitConfirmation) => self.exit_confirmation_key(key),
             Some(Modal::SendRouteConfirmation(_)) => {
                 if Shortcut::ENTER.matches(key) && key.kind == KeyEventKind::Press {

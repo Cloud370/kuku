@@ -124,6 +124,7 @@ impl App {
                 prompt.instructions_top = prompt.instructions_top.saturating_add_signed(amount)
             }
             Some(Modal::StatusLineEditor(editor)) => editor.move_selection(amount),
+            Some(Modal::Notifications(editor)) => editor.move_selection(amount),
             None => self.scroll(amount),
         }
     }

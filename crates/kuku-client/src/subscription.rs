@@ -48,6 +48,9 @@ pub enum Observation {
     Committed {
         /// Stable durable event cursor.
         id: u64,
+        /// Whether the event was committed after the stream attached.
+        #[serde(default)]
+        live_commit: bool,
         /// Agent address associated with the fact, when known.
         agent: Option<String>,
         /// Committed event kind.

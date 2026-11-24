@@ -114,6 +114,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `/speed [档位]` | `/fast`、`/ultra`、`/ultrafast` | 在会话输入框上方选择当前 Agent 的服务档位。快捷命令选择 `fast` 或 `ultrafast`。选择 **Follow model default** 清除覆盖设置。输入可筛选已有档位，按 Tab 补全选中的档位。添加未知档位时可以选择是否探测。 |
 | `/thinking` | `/think`、`/effort` | 设置当前 Agent 思考等级，选 **Use default** 清除覆盖，或在可写本地路由上按 `D` + `Enter` 设为模型默认。 |
 | `/statusline` | `/status-line` | 预览、开关、排序并保存状态栏字段到 `tui.toml`。 |
+| `/notifications` | `/notify`、`/sound` | 开关并保存终端声音设置。 |
 | `/save` | `/save-value` | 发送前为粘贴内容或草稿命名保存。 |
 | `/values` | `/value`、`/saved-values` | 浏览保存值，读取或附到草稿。 |
 | `/server` | `/service` | 查看已连接的服务（`Ctrl+R` 重连）。 |

@@ -249,7 +249,7 @@ pub(super) async fn observe(
 ) -> Result<Response> {
     let target = SessionTarget::new(&state, &query.workspace, &id)?;
     let after = query.after.unwrap_or_default();
-    {
+    let replay_through = {
         let stopping = stop.borrow();
         if *stopping {
             return Err(ApiError::new(
@@ -259,12 +259,14 @@ pub(super) async fn observe(
             ));
         }
         target.require_exists()?;
-        if after != 0 && after > EventStore::read_head(&target.path)? {
+        let head = EventStore::read_head(&target.path)?;
+        if after > head {
             return Err(ApiError::invalid(
                 "observation cursor is ahead of the Session",
             ));
         }
-    }
+        head
+    };
     let manager = manager(&state).await;
     let (send, read) = mpsc::channel(1);
     let follow = async move {
@@ -274,6 +276,7 @@ pub(super) async fn observe(
             query.agent.as_deref(),
             query.include_agent_activity,
             after,
+            replay_through,
             &send,
         )
         .await
@@ -569,6 +572,7 @@ async fn follow(
     agent: Option<&str>,
     include_agent_activity: bool,
     mut after: u64,
+    replay_through: u64,
     send: &FrameWriter,
 ) -> Result<()> {
     let mut changes = manager.changes();
@@ -598,12 +602,10 @@ async fn follow(
                 let frame = match observation {
                     Observation::Committed(event) => {
                         after = event.id;
-                        Some(committed_frame(
-                            &event,
-                            agent,
-                            include_agent_activity,
-                            &turns,
-                        ))
+                        let mut frame =
+                            committed_frame(&event, agent, include_agent_activity, &turns);
+                        frame["live_commit"] = json!(event.id > replay_through);
+                        Some(frame)
                     }
                     Observation::Live {
                         agent: source,
@@ -654,7 +656,8 @@ async fn follow(
                 let turns = manager.turn_lookup(&target.path, last.id)?;
                 for event in events {
                     after = event.id;
-                    let frame = committed_frame(&event, agent, include_agent_activity, &turns);
+                    let mut frame = committed_frame(&event, agent, include_agent_activity, &turns);
+                    frame["live_commit"] = json!(event.id > replay_through);
                     if !write_frame(send, frame).await {
                         return Ok(());
                     }

@@ -685,6 +685,12 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             editor.render(frame, inner);
             inner
         }
+        Modal::Notifications(editor) => {
+            let area = popup(area, PICKER_WIDTH, 9);
+            let inner = render_popup(frame, area, "Terminal notifications");
+            editor.render(frame, inner);
+            inner
+        }
         Modal::ExitConfirmation | Modal::SendRouteConfirmation(_) => {
             unreachable!("confirmation is anchored to the composer")
         }
