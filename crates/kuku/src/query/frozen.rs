@@ -143,7 +143,11 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         Some(segment) => segment.clone(),
         None => initial_segment(pending, &catalog, &tools, &behavior)?,
     };
-    if workspace_changed || tool_names_changed {
+    let missing_modalities = new_segment
+        && previous.as_ref().is_some_and(|segment| {
+            super::provider::model_modalities_slot(&segment.prelude).is_none()
+        });
+    if workspace_changed || tool_names_changed || missing_modalities {
         segment = initial_segment(pending, &catalog, &tools, &behavior)?;
         if let Some(summary) = previous.as_ref().and_then(|segment| {
             segment
@@ -198,6 +202,13 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         segment.endpoint = resolved.base_url.clone();
         segment.capabilities = Some(resolved.capabilities.clone());
         segment.route_selectors = Some(route_selectors.clone());
+        super::provider::set_model_modalities(
+            &mut segment.prelude,
+            &tools,
+            &resolved,
+            pending.query.model_adapter.is_none(),
+            &catalog,
+        );
         segment.tools = tools;
         adapt_new_segment_tools(&resolved, &mut segment.tools);
         if handoff_changed {
@@ -451,7 +462,10 @@ fn initial_segment(
         project_memory,
         history: Vec::new(),
         tools: tools.to_vec(),
-        model_tiers: super::provider::usable_model_routes(&pending.config),
+        model_tiers: super::provider::usable_model_routes(
+            &pending.config,
+            pending.query.model_adapter.is_none(),
+        ),
         runtime_blocks: None,
         enable_memory: true,
         agent_instructions: behavior.into(),
@@ -528,6 +542,12 @@ fn signature(
             &resolved.base_url,
             &resolved.model,
             &resolved.capabilities,
+            (
+                resolved.output,
+                resolved
+                    .capabilities
+                    .image_input_support(pending.query.model_adapter.is_none()),
+            ),
             route_selectors,
             &resolved.settings,
             resolved.max_context_tokens,

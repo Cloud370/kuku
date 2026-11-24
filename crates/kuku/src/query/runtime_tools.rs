@@ -586,9 +586,8 @@ pub(crate) fn supported(
     name: &str,
 ) -> bool {
     name != "view_image"
-        || (builtin_adapter
-            && config.capabilities.media_adapter
-                == crate::config::MediaAdapterSupport::ResponsesImageToolResults)
+        || config.capabilities.image_input_support(builtin_adapter)
+            == crate::config::ImageInputSupport::Supported
 }
 
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
@@ -680,6 +679,11 @@ pub(super) async fn execute(
                     "preset": preset, "model": selection.model,
                     "reasoning_effort": selection.settings.reasoning_effort.or_else(|| selection.capabilities.reasoning_default.map(|level| level.value)),
                     "service_tier": selection.settings.service_tier,
+                    "input_modalities": selection.capabilities.input_modalities.map(|entry| entry.value),
+                    "output_modalities": selection.capabilities.output_modalities.map(|entry| entry.value),
+                    "effective_input_modalities": selection.image_input.modalities(),
+                    "output": selection.output,
+                    "image_input": selection.image_input,
                 });
             }
             receipt

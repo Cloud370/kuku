@@ -14,7 +14,7 @@ use super::common::{
 pub(crate) fn view_image_definition() -> ToolDefinition {
     ToolDefinition {
         name: "view_image".into(),
-        description: "View a workspace PNG or JPEG, such as a screenshot or diagram.".into(),
+        description: "Inspect the visual content of a workspace PNG or JPEG, such as a screenshot or diagram.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {"path": {"type": "string", "description": "Image path in the workspace."}},

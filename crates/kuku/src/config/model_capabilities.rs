@@ -24,6 +24,40 @@ pub enum MediaAdapterSupport {
     ResponsesImageToolResults,
 }
 
+/// Whether this runtime can attach images to requests on a selected route.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageInputSupport {
+    /// The route accepts tool-result images.
+    Supported,
+    /// The model declares input modalities without images.
+    UnsupportedByModel,
+    /// The model has not declared its input modalities.
+    #[default]
+    Unconfirmed,
+    /// The model declares images, and this route lacks an image adapter.
+    UnsupportedOnRoute,
+}
+
+impl ImageInputSupport {
+    /// Modalities this runtime can send on the selected route.
+    pub fn modalities(self) -> &'static [&'static str] {
+        match self {
+            Self::Supported => &["text", "image"],
+            _ => &["text"],
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::UnsupportedByModel => "unsupported by the model",
+            Self::Unconfirmed => "unconfirmed for the model",
+            Self::UnsupportedOnRoute => "unsupported on this route",
+        }
+    }
+}
+
 /// The scope of a capability value is the configured connection and model unless a protocol is named.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

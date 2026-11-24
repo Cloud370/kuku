@@ -57,7 +57,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         load_memory_sources(&pending.kuku_home, &pending.workspace, max_bytes)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
-    let model_tiers = resolve::usable_model_routes(&pending.config);
+    let model_tiers = resolve::usable_model_routes(&pending.config, false);
 
     let catalog = if let Some(dir) = &pending.prompts_dir {
         crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
@@ -183,6 +183,13 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             ));
     }
 
+    set_model_modalities(
+        &mut assembly.prelude_messages,
+        &assembly.tools,
+        &resolved_config,
+        false,
+        &catalog,
+    );
     assembly.handoff_summary = handoff_summary;
 
     let estimated_input = last_input_tokens(
@@ -690,6 +697,73 @@ fn assembly_runtime_prefix(
         None
     } else {
         Some(parts.join("\n"))
+    }
+}
+
+const MODEL_MODALITIES_TAG: &str = "<kuku_model_modalities>";
+
+pub(super) fn model_modalities_slot(prelude: &[CanonicalMessage]) -> Option<usize> {
+    prelude.iter().position(|message| {
+        matches!(message.blocks.as_slice(), [MessageBlock::Text(text)] if text.starts_with(MODEL_MODALITIES_TAG))
+    })
+}
+
+pub(super) fn set_model_modalities(
+    prelude: &mut Vec<CanonicalMessage>,
+    tools: &[crate::context::ToolSchema],
+    resolved: &crate::provider::types::ResolvedProvider,
+    builtin_adapter: bool,
+    catalog: &crate::prompt::PromptCatalog,
+) {
+    let template = catalog.runtime.get("model-modalities").map_or(
+        include_str!("../../prompts/runtime/model-modalities.md"),
+        |asset| asset.text.as_str(),
+    );
+    use crate::context::assembly::render_modalities;
+
+    let image_input = resolved.capabilities.image_input_support(builtin_adapter);
+    let output = match resolved.output {
+        crate::config::RequestedOutput::Text => "text",
+        crate::config::RequestedOutput::Image => "image",
+    };
+    let view_image = if tools.iter().any(|tool| tool.name == "view_image") {
+        "available"
+    } else {
+        "unavailable"
+    };
+    let text = template
+        .replace(
+            "{{input_modalities}}",
+            &render_modalities(
+                resolved
+                    .capabilities
+                    .input_modalities
+                    .as_ref()
+                    .map(|entry| entry.value.as_slice()),
+            ),
+        )
+        .replace(
+            "{{output_modalities}}",
+            &render_modalities(
+                resolved
+                    .capabilities
+                    .output_modalities
+                    .as_ref()
+                    .map(|entry| entry.value.as_slice()),
+            ),
+        )
+        .replace("{{route_input}}", &image_input.modalities().join(", "))
+        .replace("{{output_modality}}", output)
+        .replace("{{image_input}}", image_input.label())
+        .replace("{{view_image}}", view_image);
+    let message = CanonicalMessage::user_text(format!(
+        "{MODEL_MODALITIES_TAG}\n{}\n</kuku_model_modalities>",
+        text.trim_end(),
+    ));
+    if let Some(index) = model_modalities_slot(prelude) {
+        prelude[index] = message;
+    } else {
+        prelude.push(message);
     }
 }
 

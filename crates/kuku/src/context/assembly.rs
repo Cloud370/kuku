@@ -142,6 +142,13 @@ pub fn assemble_context(
     assemble_context_inner(input, catalog, false).map(|(assembly, _)| assembly)
 }
 
+pub(crate) fn render_modalities(modalities: Option<&[String]>) -> String {
+    modalities.map_or_else(
+        || "unknown".into(),
+        |values| serde_json::json!(values).to_string(),
+    )
+}
+
 fn render_project_policy(
     input: &ContextInput,
     catalog: &crate::prompt::PromptCatalog,
@@ -172,7 +179,7 @@ fn render_project_policy(
                 .iter()
                 .map(|info| {
                     format!(
-                        "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, output text)",
+                        "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, input_modalities {}, output_modalities {}, route input {}, Agent output text, image input {})",
                         info.name,
                         info.purpose,
                         info.model,
@@ -188,6 +195,10 @@ fn render_project_policy(
                             Some(choices) if choices.is_empty() => "none".into(),
                             Some(choices) => choices.join(", "),
                         },
+                        render_modalities(info.input_modalities.as_deref()),
+                        render_modalities(info.output_modalities.as_deref()),
+                        info.image_input.modalities().join(", "),
+                        info.image_input.label(),
                     )
                 })
                 .collect::<Vec<_>>()

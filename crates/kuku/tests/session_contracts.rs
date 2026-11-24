@@ -422,6 +422,8 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && context.contains("balanced")
                 && context.contains("Omit tier to use the default model")
                 && context.contains("service provider default, service options flex, priority")
+                && context.contains(r#"input_modalities [\"text\",\"image\"], output_modalities [\"text\"], route input text"#)
+                && context.contains("Image input is unsupported by the model. The view_image tool is unavailable.")
                 && context.contains("only when the user explicitly asks for that tier")
                 && context.contains("collect its reply with list_agents")
                 && create["function"]["description"].as_str().is_some_and(|text| {
@@ -464,6 +466,10 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && created["initial_status"] == "idle"
                 && created["workspace"].is_string()
                 && created["effective_tools"] == json!(["send_message", "list_agents"])
+                && created["model_selection"]["input_modalities"] == json!(["text", "image"])
+                && created["model_selection"]["output_modalities"] == json!(["text"])
+                && created["model_selection"]["effective_input_modalities"] == json!(["text"])
+                && created["model_selection"]["image_input"] == "unsupported_on_route"
                 && content("unknown-preset").contains("Available examples:")
                 && content("unknown-preset").contains("review")
                 && content("wrong-route").contains("unknown field `connection`")
@@ -514,6 +520,22 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
     let connection = options.config.providers.get_mut("openai").unwrap();
     connection.options.reasoning_efforts = Some(vec!["high".into()]);
     connection.options.service_tiers = Some(vec!["flex".into(), "priority".into()]);
+    for (model, input) in [
+        ("session-contract", vec!["text", "image"]),
+        ("parent-override", vec!["text"]),
+    ] {
+        connection.options.model_capabilities.insert(
+            model.into(),
+            kuku::config::ModelCapabilityEntry {
+                manual: Some(kuku::config::ModelCapabilityDeclaration {
+                    input_modalities: Some(input.into_iter().map(str::to_owned).collect()),
+                    output_modalities: Some(vec!["text".into()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    }
     let parent_provider = connection.clone();
     options
         .config

@@ -117,6 +117,9 @@ impl Session {
             context_window_tokens: resolved.max_context_tokens,
             max_output_tokens: resolved.max_output_tokens,
             settings: resolved.settings,
+            image_input: resolved
+                .capabilities
+                .image_input_support(self.inner.options.model_adapter.is_none()),
             capabilities: resolved.capabilities,
             output: resolved.output,
             tools,

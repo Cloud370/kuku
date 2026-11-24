@@ -404,6 +404,12 @@ pub struct TierInfo {
     pub service_tier: Option<String>,
     /// Known service choices. None indicates the route did not declare its capabilities.
     pub service_choices: Option<Vec<String>>,
+    /// Input modalities declared for the selected model.
+    pub input_modalities: Option<Vec<String>>,
+    /// Output modalities declared for the selected model.
+    pub output_modalities: Option<Vec<String>>,
+    /// Effective image input when supplied by the resolver.
+    pub image_input: super::ImageInputSupport,
     /// Requested output for this route.
     pub output: super::RequestedOutput,
 }
@@ -453,6 +459,9 @@ impl Config {
                 reasoning_choices: Vec::new(),
                 service_tier: tier.service_tier.clone(),
                 service_choices: None,
+                input_modalities: None,
+                output_modalities: None,
+                image_input: super::ImageInputSupport::Unconfirmed,
                 output: tier.output,
             })
             .collect()

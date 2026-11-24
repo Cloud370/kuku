@@ -5,7 +5,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use kuku::config::{
-    ModelCapabilityDeclaration, ModelCapabilityEntry, ProviderFormat, ProviderProfile,
+    ImageInputSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ProviderFormat,
+    ProviderProfile,
 };
 use kuku::event::EventPayload;
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
@@ -69,24 +70,7 @@ async fn authorized_image_replays_from_retained_bytes_after_reopen() {
         ));
     }).await;
 
-    let mut config = common::test_config();
-    let provider = config.providers.get_mut("openai").unwrap();
-    provider.base_url = server.url("/workspace-media");
-    provider.format = ProviderFormat::OpenAiResponses;
-    provider.options.profile = ProviderProfile::DeepSeek;
-    provider.options.model_capabilities.insert(
-        "vision-fixture".into(),
-        ModelCapabilityEntry {
-            manual: Some(ModelCapabilityDeclaration {
-                input_modalities: Some(vec!["text".into(), "image".into()]),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-    );
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "vision-fixture".into();
+    let config = media_config(&server, "/workspace-media");
     let mut options = SessionOptions::new(work.path(), data.path(), config);
     options.authorizer = Arc::new(Gate);
     options.limits.output_retention_secs = 0;
@@ -172,6 +156,123 @@ async fn authorized_image_replays_from_retained_bytes_after_reopen() {
             assert!(output["output"].is_string());
         }
     }
+}
+
+#[tokio::test]
+async fn switching_to_text_only_reports_modalities_and_omits_a_recent_image() {
+    const SWITCH_ENDPOINT: &str = "/image-route-switch/responses";
+    const DONE: &str = concat!(
+        "event: response.output_text.delta\ndata: {\"delta\":\"image check complete\"}\n\n",
+        "event: response.completed\ndata: {\"response\":{\"id\":\"media-done\",\"status\":\"completed\",\"output\":[]}}\n\n"
+    );
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("photo.png"), STANDARD.decode(PNG).unwrap()).unwrap();
+
+    let vision = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(SWITCH_ENDPOINT)
+                .matches(initial_image_request)
+                .body_contains("This route accepts text, image.")
+                .body_contains("Image input is supported. The view_image tool is available.");
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(tool_response(&[("fresh", "photo.png")]));
+        })
+        .await;
+    let image_result = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(SWITCH_ENDPOINT)
+                .body_contains("data:image/png;base64,");
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(DONE);
+        })
+        .await;
+    let text_only = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(SWITCH_ENDPOINT)
+                .matches(|request| {
+                    let payload = body(request);
+                    payload["model"] == "text-fixture"
+                        && !payload.to_string().contains("data:image/")
+                        && payload["tools"].as_array().is_some_and(|tools| {
+                            tools.iter().all(|tool| tool["name"] != "view_image")
+                        })
+                        && payload["input"].as_array().is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item["type"] == "function_call_output"
+                                    && item["output"].as_str().is_some_and(|output| {
+                                        output.starts_with("Image photo.png (")
+                                    })
+                            })
+                        })
+                })
+                .body_contains(
+                    "Image input is unsupported by the model. The view_image tool is unavailable.",
+                )
+                .body_contains("you cannot see any images in kuku")
+                .body_contains("Never guess what an unseen image contains.");
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(DONE);
+        })
+        .await;
+
+    let config = media_config(&server, "/image-route-switch");
+    let session = Session::open(SessionOptions::new(work.path(), data.path(), config))
+        .await
+        .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    run(&session, "inspect", "View the PNG.").await;
+    let text = AgentConfig {
+        model: Some("text-fixture".into()),
+        ..Default::default()
+    };
+    session.configure_agent("switch", "main", text).unwrap();
+    run(&session, "describe", "What did the previous tool return?").await;
+    assert_eq!(
+        session.agent_selection("main").unwrap().image_input,
+        ImageInputSupport::UnsupportedByModel
+    );
+    session.close().await.unwrap();
+    vision.assert_hits_async(1).await;
+    image_result.assert_hits_async(1).await;
+    text_only.assert_hits_async(1).await;
+}
+
+fn media_config(server: &MockServer, path: &str) -> kuku::config::Config {
+    let mut config = common::test_config();
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.base_url = server.url(path);
+    provider.format = ProviderFormat::OpenAiResponses;
+    provider.options.profile = ProviderProfile::DeepSeek;
+    for (model, input) in [
+        ("vision-fixture", vec!["text", "image"]),
+        ("text-fixture", vec!["text"]),
+    ] {
+        provider.options.model_capabilities.insert(
+            model.into(),
+            ModelCapabilityEntry {
+                manual: Some(ModelCapabilityDeclaration {
+                    input_modalities: Some(input.into_iter().map(str::to_owned).collect()),
+                    output_modalities: Some(vec!["text".into()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    }
+    let tier = config.tiers.get_mut("balanced").unwrap();
+    tier.provider = "openai".into();
+    tier.model = "vision-fixture".into();
+    config
 }
 
 async fn run(session: &Session, id: &str, input: &str) {

@@ -1,5 +1,6 @@
 <kuku_delegation>
 - Create an idle Agent with an address and standing role. Omit tier to use the default model, or choose a tier from <kuku_models>. Read the successful creation receipt and check the effective settings before preparing the task.
+- If delegated work needs visual inspection, select a tier with image input and check the created Agent's image input and `view_image` tool before sending the task.
 - Use the service_tier argument for service tiers. Use preset for an available Agent preset. Omit service_tier to use the configured or default service tier. Select a supported service tier only when the user explicitly asks for that tier, such as “Use Flex” or “Enable Fast mode”. “Finish quickly” refers to how you do the task.
 - For a reply-only Agent set tools to an empty list. Handle a creation error before dispatch. After creation succeeds, send the goal, necessary context and the user’s constraints with send_message in a later call. A delivery receipt confirms delivery. Continue independent work while the Agent runs.
 - When sharing a saved value, include its exact name in `send_message`'s `values` array. The recipient receives a fixed output reference with the task.

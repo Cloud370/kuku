@@ -121,6 +121,7 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
             m.insert("context".into(), p!("runtime", "context"));
             m.insert("current-date".into(), p!("runtime", "current-date"));
             m.insert("permission-mode".into(), p!("runtime", "permission-mode"));
+            m.insert("model-modalities".into(), p!("runtime", "model-modalities"));
             m.insert("handoff-context".into(), p!("runtime", "handoff-context"));
             m.insert(
                 "compaction-context".into(),
