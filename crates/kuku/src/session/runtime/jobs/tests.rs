@@ -32,15 +32,13 @@ fn dispatch_recorded_call(path: &Path, tool: &str, id: &str, turn: u64) -> Event
     store
         .append(EventPayload::Unknown(json!({
             "kind": "runtime.tool_dispatched", "ts": timestamp().unwrap(), "agent": "main",
-            "turn": turn, "tool_call_id": id,
+            "turn": turn, "tool_call_id": id, "tool": tool,
         })))
         .unwrap();
     store
 }
 
-#[tokio::test]
-async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
-    let dir = tempfile::tempdir().unwrap();
+fn session_options(root: &Path) -> SessionOptions {
     let config = Config {
         tiers: BTreeMap::new(),
         providers: BTreeMap::new(),
@@ -51,7 +49,65 @@ async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
         plugin: PluginConfig::default(),
         update: UpdateConfig::default(),
     };
-    let mut options = SessionOptions::new(dir.path(), dir.path().join("data"), config);
+    SessionOptions::new(root, root.join("data"), config)
+}
+
+#[tokio::test]
+async fn reopening_settles_a_script_and_its_dispatched_sibling_before_the_first_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = session_options(dir.path());
+    options.session_id = Some("script-recovery".into());
+    let session = Session::open(options.clone()).await.unwrap();
+    let path = session.events_path().to_owned();
+    {
+        let mut state = session.inner.state.lock().unwrap();
+        session
+            .commit(
+                &mut state,
+                Record::AgentCreated {
+                    command_id: "fixture-agent".into(),
+                    fingerprint: String::new(),
+                    address: "main".into(),
+                    config: AgentConfig::default(),
+                },
+            )
+            .unwrap();
+    }
+    session.close().await.unwrap();
+    drop(session);
+    dispatch_recorded_call(&path, "run_js", "script", 3);
+    dispatch_recorded_call(&path, "query_session", "sibling", 3);
+
+    for _ in 0..2 {
+        let reopened = Session::open(options.clone()).await.unwrap();
+        let mut results = BTreeMap::new();
+        EventStore::visit_after_path(&path, 0, |event| {
+            if let EventPayload::ToolResult {
+                tool_call_id,
+                model_content,
+                status,
+                ..
+            } = event.payload
+            {
+                assert_eq!("cancelled", status);
+                assert!(results.insert(tool_call_id, model_content).is_none());
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(2, results.len());
+        assert!(results["script"].contains("Restart the remaining script steps"));
+        assert!(results["sibling"].contains("prior effects are unknown"));
+        assert!(reopened.pending_permissions().is_empty());
+        reopened.close().await.unwrap();
+        drop(reopened);
+    }
+}
+
+#[tokio::test]
+async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut options = session_options(dir.path());
     options.session_id = Some("job-recovery".into());
     let session = Session::open(options.clone()).await.unwrap();
     let path = session.events_path().to_owned();
@@ -99,6 +155,7 @@ async fn reopening_settles_an_unconfirmed_job_once_without_dispatch() {
                     output_id: Some("out_1".into()),
                     summary: "interrupted command".into(),
                     started: Instant::now(),
+                    cancelling: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     wait_tool_available: false,
                 },
             )

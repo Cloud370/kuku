@@ -23,6 +23,7 @@ pub(super) struct ForegroundJob {
     deadline: Instant,
     completion: Option<oneshot::Receiver<SlotEvent>>,
     detached: Arc<AtomicBool>,
+    cancelling: Arc<AtomicBool>,
 }
 
 impl ForegroundJob {
@@ -47,12 +48,17 @@ impl ForegroundJob {
             deadline: started + observation,
             completion: Some(receiver),
             detached: Arc::new(AtomicBool::new(false)),
+            cancelling: Arc::new(AtomicBool::new(false)),
         };
         (Box::new(job), sender)
     }
 
     pub(super) fn detached_flag(&self) -> Arc<AtomicBool> {
         self.detached.clone()
+    }
+
+    pub(super) fn cancelling_flag(&self) -> Arc<AtomicBool> {
+        self.cancelling.clone()
     }
 }
 
@@ -207,6 +213,7 @@ impl Run {
                 output_id: job.output_id.clone(),
                 summary: slot.label.clone(),
                 started: job.started,
+                cancelling: job.cancelling_flag(),
                 wait_tool_available: super::helpers::resolved_tool_available(pending, "wait_job"),
             },
             slot.cancel.clone(),

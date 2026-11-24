@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    FileCancellation, ensure_active, file_read_error, file_version, required_path,
+    FileCancellation, FileScope, ensure_active, file_read_error, file_version, required_path,
     resolve_stat_path,
 };
 
@@ -23,7 +23,7 @@ enum EntryKind {
 
 pub(crate) fn stat_file(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
@@ -34,7 +34,7 @@ pub(crate) fn stat_file(
     if let Err(error) = ensure_active(cancelled) {
         return file_read_error(Path::new(path), error);
     }
-    let resolved = match resolve_stat_path(workspace, path) {
+    let resolved = match scope.resolve(path, resolve_stat_path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };

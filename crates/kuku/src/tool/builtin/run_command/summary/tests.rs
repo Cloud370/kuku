@@ -4,7 +4,7 @@ use crate::execution::{
 
 use super::super::super::test_helpers::workspace;
 use super::super::output::{OutputLimits, OutputRead, read_output};
-use super::super::{CommandCapture, ModelOutputAccess, run_command_to};
+use super::super::{CommandCapture, CommandCwd, ModelOutputAccess, run_command_to};
 use super::Collector;
 
 fn cargo(args: &[&str]) -> CommandInvocation {
@@ -409,7 +409,7 @@ async fn cargo_rule_retains_assertions_and_the_original_output() {
             "args": ["test", "--offline", "--color", "always", "--target-dir", "build"],
             "cwd": ".",
         }),
-        dir.path(),
+        CommandCwd::Unprepared(dir.path()),
         None,
         None,
         CommandCapture::model(

@@ -230,6 +230,14 @@ def cli_script_permission(client, workspace):
     waiting = json.loads(output)
     assert waiting["event"] == "waiting" and waiting["permission"]["tool"] == "write_file", waiting
     assert not (workspace / "cli.txt").exists()
+    peer_prompt = "Finish a different Agent while the script waits"
+    with client.command(workspace, "run", "--json", "--session", waiting["session_id"],
+                        "--agent", "reviewer", peer_prompt) as process:
+        client.provider.next(peer_prompt).text("The other Agent finished.")
+        peer_output, _ = client.finish(process)
+    peer = json.loads(peer_output)
+    assert peer["agent"] == "reviewer" and peer["event"] != "waiting", peer
+    assert not (workspace / "cli.txt").exists()
     with client.command(workspace, "reply", waiting["session_id"], waiting["permission"]["id"], "--allow") as process:
         client.provider.next("cli-script").text("The command-line client approved the write.")
         client.finish(process)

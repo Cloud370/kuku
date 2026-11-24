@@ -10,7 +10,7 @@ use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    ExecutorObservation, FileCancellation, IoLimit, ResolvedPath, WriteEvidence,
+    ExecutorObservation, FileCancellation, FileScope, IoLimit, ResolvedPath, WriteEvidence,
     WriteSnapshotLookup, append_text, content_hash, ensure_active, expected_version,
     file_read_error, mutation_preview, plural, publish_file, read_file_as_utf8_bounded,
     require_version, resolve_path, snapshot_stale_error, text_matches,
@@ -36,7 +36,7 @@ struct EditTextCandidate<'a> {
 
 pub(crate) fn edit_file(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     text_bytes: usize,
@@ -44,7 +44,7 @@ pub(crate) fn edit_file(
 ) -> ToolResultEnvelope {
     edit_file_with_evidence(
         args,
-        workspace,
+        scope,
         WriteEvidence::Model {
             conversation,
             events: prior_events,
@@ -56,14 +56,14 @@ pub(crate) fn edit_file(
 
 pub(crate) fn edit_file_for_executor(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     reads: &[ExecutorObservation],
     text_bytes: usize,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     edit_file_with_evidence(
         args,
-        workspace,
+        scope,
         WriteEvidence::Executor(reads),
         text_bytes,
         cancelled,
@@ -72,7 +72,7 @@ pub(crate) fn edit_file_for_executor(
 
 fn edit_file_with_evidence(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     evidence: WriteEvidence<'_>,
     text_bytes: usize,
     cancelled: &FileCancellation<'_>,
@@ -85,7 +85,7 @@ fn edit_file_with_evidence(
         Ok(expected) => expected,
         Err(result) => return result,
     };
-    let resolved = match resolve_path(workspace, request.path) {
+    let resolved = match scope.resolve(request.path, resolve_path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };

@@ -943,10 +943,23 @@ impl ToolAuthorizer for DeferredWrite {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn detached_script_waits_for_approval_and_continues_its_remaining_writes() {
+    check_detached_script_approval(false).await;
+}
+
+#[tokio::test]
+async fn cancellation_closes_a_detached_scripts_approval_before_worker_cleanup() {
+    check_detached_script_approval(true).await;
+}
+
+async fn check_detached_script_approval(cancel: bool) {
     let server = MockServer::start_async().await;
-    let route = "/job-deferred-write";
+    let route = if cancel {
+        "/job-deferred-cancel"
+    } else {
+        "/job-deferred-write"
+    };
     let mut fixture = Fixture::new(&server, route, 20_000);
     fixture.options.authorizer = Arc::new(DeferredWrite);
     let command = command_args(false);
@@ -989,6 +1002,24 @@ await tools.write_file({{path:"later.txt",content:"resumed"}});
     );
     assert!(!fixture.workspace.join("guarded.txt").exists());
     assert!(!fixture.workspace.join("later.txt").exists());
+    if cancel {
+        let mut stop = std::pin::pin!(session.cancel_job(AGENT, id));
+        std::future::poll_fn(|context| {
+            assert!(stop.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(matches!(
+            session.reply_permission("allow", AGENT, &request.id, true),
+            Err(kuku::Error::PermissionRequestNotPending(_))
+        ));
+        assert_eq!(JobStatus::Cancelled, stop.await.unwrap().status);
+        assert!(!fixture.workspace.join("guarded.txt").exists());
+        assert!(!fixture.workspace.join("later.txt").exists());
+        assert!(session.pending_permissions().is_empty());
+        session.close().await.unwrap();
+        return;
+    }
     session
         .reply_permission("allow", AGENT, &request.id, true)
         .unwrap();

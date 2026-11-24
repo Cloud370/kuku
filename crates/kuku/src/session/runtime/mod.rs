@@ -874,7 +874,7 @@ impl Session {
             let _ = worker.cancel.send(true);
         }
         for job in jobs.values() {
-            job.cancel.notify_one();
+            job.cancel();
         }
         let mut failure = None;
         for (_, worker) in workers {
@@ -1016,6 +1016,7 @@ fn reduce_event(
     if let Some(record) = record {
         state.reduce(event.id, record)?;
     }
+    state.observe_script_dispatch(&event.payload);
     job_replay.observe(state, &event)?;
     usage::reduce_model_fact(state, &event.payload)
 }

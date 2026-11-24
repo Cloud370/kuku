@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     Acknowledgement, Action, AgentConfig, AgentSnapshot, AgentStatus, Command, Connection, Error,
-    Observation, PermissionRequest, Snapshot, Target, Timing, new_id,
+    Observation, PendingApproval, PermissionRequest, Snapshot, Target, Timing, new_id,
 };
 use serde_json::json;
 
@@ -57,6 +57,7 @@ pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {
         acknowledgement,
         Some(&mut renderer),
         args.stream_json,
+        None,
     )
     .await?;
     renderer.finish(&target.session_id, &snapshot, start.elapsed())?;
@@ -110,15 +111,23 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
     if acknowledgement.replayed {
         return render_acknowledgement(&connection, &command.target, acknowledgement, true).await;
     }
-    if let Some(request) = request {
+    if let Some(request) = &request {
         let decision = if args.allow { "allow" } else { "deny" };
         write_json(&permission_decision_line(
-            &request,
+            request,
             decision.into(),
             "host".into(),
         ))?;
     }
-    let snapshot = settle(&connection, &command.target, acknowledgement, None, false).await?;
+    let snapshot = settle(
+        &connection,
+        &command.target,
+        acknowledgement,
+        None,
+        false,
+        request.as_ref(),
+    )
+    .await?;
     write_json(&snapshot)?;
     check_outcome(snapshot)
 }
@@ -312,18 +321,26 @@ async fn settle(
     acknowledgement: Acknowledgement,
     mut renderer: Option<&mut RunRenderer>,
     stream_json: bool,
+    replied_to: Option<&PermissionRequest>,
 ) -> Result<AgentSnapshot, Box<dyn std::error::Error>> {
     let receipt_cursor = acknowledgement.receipt.event_id;
     let mut observer = connection
         .client
         .subscribe_session(target, receipt_cursor.saturating_sub(1));
     let mut settled = connection.client.snapshot(target).await?;
-    if let Some(agent) = paused_script_agent(connection, target, &settled).await? {
-        return Ok(agent);
-    }
-    while !is_settled(&settled, receipt_cursor)
-        || (stream_json && observer.cursor() < settled.cursor)
-    {
+    let mut approvals = connection.client.pending_approvals(target).await?;
+    loop {
+        if let Some(request) =
+            observed_script_approval(&settled.agent, &approvals, receipt_cursor, replied_to)
+        {
+            settled.agent.permission = Some(request.clone());
+            return Ok(settled.agent);
+        }
+        if is_settled(&settled, receipt_cursor, &approvals)
+            && (!stream_json || observer.cursor() >= settled.cursor)
+        {
+            break;
+        }
         let event = tokio::select! {
             result = observer.next() => result?,
             signal = tokio::signal::ctrl_c() => {
@@ -351,10 +368,15 @@ async fn settle(
                 if state_changed && id > settled.cursor {
                     settled = connection.client.snapshot(target).await?;
                 }
-                if operation.as_deref() == Some("script_permission_waiting") {
-                    if let Some(agent) = paused_script_agent(connection, target, &settled).await? {
-                        return Ok(agent);
-                    }
+                if matches!(
+                    operation.as_deref(),
+                    Some(
+                        "script_permission_waiting"
+                            | "script_permission_replied"
+                            | "script_permission_ended"
+                    )
+                ) {
+                    approvals = connection.client.pending_approvals(target).await?;
                 }
             }
             Observation::Live { agent, event, .. } if agent == target.agent => {
@@ -367,9 +389,7 @@ async fn settle(
                     write_json(&json!({"type":"lagged","skipped":skipped}))?;
                 }
                 settled = connection.client.snapshot(target).await?;
-                if let Some(agent) = paused_script_agent(connection, target, &settled).await? {
-                    return Ok(agent);
-                }
+                approvals = connection.client.pending_approvals(target).await?;
             }
             Observation::Live { .. } | Observation::Heartbeat => {}
         }
@@ -394,33 +414,28 @@ async fn settle(
     Ok(settled.agent)
 }
 
-async fn paused_script_agent(
-    connection: &Connection,
-    target: &Target,
-    snapshot: &Snapshot,
-) -> Result<Option<AgentSnapshot>, Error> {
-    let pending = connection.client.pending_approvals(target).await?;
-    let Some(request) = pending
-        .into_iter()
-        .map(|approval| approval.request)
-        .find(|request| request.id.starts_with("script:"))
-    else {
-        return Ok(None);
-    };
-    let mut agent = if request.conversation.as_str() == target.agent {
-        snapshot.agent.clone()
-    } else {
-        let owner = Target {
-            agent: request.conversation.as_str().to_owned(),
-            ..target.clone()
-        };
-        connection.client.snapshot(&owner).await?.agent
-    };
-    agent.permission = Some(request);
-    Ok(Some(agent))
+fn observed_script_approval<'a>(
+    agent: &AgentSnapshot,
+    approvals: &'a [PendingApproval],
+    receipt_cursor: u64,
+    replied_to: Option<&PermissionRequest>,
+) -> Option<&'a PermissionRequest> {
+    approvals.iter().find_map(|approval| {
+        let request = &approval.request;
+        if request.conversation.as_str() != agent.address || !request.id.starts_with("script:") {
+            return None;
+        }
+        let current_turn = Some(request.turn) == agent.turn
+            && (request.turn >= receipt_cursor
+                || approval.job_id.is_none() && agent.status == AgentStatus::Running);
+        let same_script = replied_to.is_some_and(|replied| {
+            replied.turn == request.turn && replied.tool_call_id == request.tool_call_id
+        });
+        (current_turn || same_script).then_some(request)
+    })
 }
 
-fn is_settled(snapshot: &Snapshot, receipt_cursor: u64) -> bool {
+fn is_settled(snapshot: &Snapshot, receipt_cursor: u64, approvals: &[PendingApproval]) -> bool {
     let target_completed = match snapshot.agent.status {
         AgentStatus::Idle => snapshot.agent.pending_inputs == 0,
         AgentStatus::Waiting | AgentStatus::Stopped | AgentStatus::Interrupted => true,
@@ -429,10 +444,16 @@ fn is_settled(snapshot: &Snapshot, receipt_cursor: u64) -> bool {
     snapshot.cursor >= receipt_cursor
         && target_completed
         && !snapshot.cleaning_up
-        && !snapshot
-            .agents
-            .iter()
-            .any(|agent| agent.status == AgentStatus::Running)
+        && !snapshot.agents.iter().any(|agent| {
+            agent.status == AgentStatus::Running
+                && !approvals.iter().any(|approval| {
+                    let request = &approval.request;
+                    approval.job_id.is_none()
+                        && request.conversation.as_str() == agent.address
+                        && Some(request.turn) == agent.turn
+                        && request.id.starts_with("script:")
+                })
+        })
 }
 
 fn check_outcome(snapshot: AgentSnapshot) -> CliResult {

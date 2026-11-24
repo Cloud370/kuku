@@ -1,10 +1,11 @@
 use super::super::test_helpers::{read_snapshot_event, workspace};
 use super::*;
+use crate::tool::builtin::common::FileScope;
 
 fn edit_file(args: &Value, workspace: &Path, prior_events: &[StoredEvent]) -> ToolResultEnvelope {
     super::edit_file(
         args,
-        workspace,
+        FileScope::Unprepared(workspace),
         &crate::conversation::address::ConversationAddress::MAIN,
         prior_events,
         crate::WorkspaceIoLimits::default().text_bytes,
@@ -36,14 +37,14 @@ fn replace_all_stops_at_the_output_budget_without_publishing() {
     std::fs::write(&path, &original).unwrap();
     let (_, snapshot) = crate::tool::builtin::read_file_for_executor(
         &serde_json::json!({"path":"README.md"}),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         128,
         u64::MAX,
         &|| false,
     );
     let result = edit_file_for_executor(
         &serde_json::json!({"path":"README.md","old_text":"a","new_text":"more text","replace_all":true}),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         &[snapshot.unwrap()],
         64,
         &|| false,
@@ -715,7 +716,7 @@ fn executor_edit_targets_observed_occurrence_and_reports_committed_versions() {
     std::fs::write(dir.path().join("README.md"), original).unwrap();
     let (_, read) = crate::tool::builtin::read_file_for_executor(
         &serde_json::json!({"path":"README.md","offset":3,"limit":1}),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         80,
         u64::MAX,
         &|| false,
@@ -727,7 +728,7 @@ fn executor_edit_targets_observed_occurrence_and_reports_committed_versions() {
             "path":"README.md", "old_text":"same", "new_text":"visible",
             "expected_version": read.content_hash
         }),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         std::slice::from_ref(&read),
         crate::WorkspaceIoLimits::default().text_bytes,
         &|| false,
@@ -759,14 +760,14 @@ fn executor_scope_cannot_disambiguate_unobserved_repeated_text() {
     std::fs::write(dir.path().join("README.md"), original).unwrap();
     let (_, read) = crate::tool::builtin::read_file_for_executor(
         &serde_json::json!({"path":"README.md","limit":1}),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         80,
         u64::MAX,
         &|| false,
     );
     let result = edit_file_for_executor(
         &serde_json::json!({"path":"README.md","old_text":"private","new_text":"changed"}),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         &[read.unwrap()],
         crate::WorkspaceIoLimits::default().text_bytes,
         &|| false,
@@ -786,14 +787,14 @@ fn mixed_line_ending_replacements_choose_leftmost_nonoverlapping_match() {
     std::fs::write(dir.path().join("README.md"), original).unwrap();
     let (_, read) = crate::tool::builtin::read_file_for_executor(
         &serde_json::json!({"path":"README.md"}),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         80,
         u64::MAX,
         &|| false,
     );
     let result = edit_file_for_executor(
         &serde_json::json!({"path":"README.md","old_text":"x\nx","new_text":"changed","replace_all":true}),
-        dir.path(),
+        FileScope::Unprepared(dir.path()),
         &[read.unwrap()],
         crate::WorkspaceIoLimits::default().text_bytes,
         &|| false,

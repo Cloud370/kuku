@@ -42,6 +42,7 @@ pub(super) fn spawn(
     let host = Arc::new(WorkspaceHost {
         owner: ScriptOwner {
             detached: job.detached_flag(),
+            cancelling: job.cancelling_flag(),
             execution_id: pending
                 .query
                 .runtime_execution

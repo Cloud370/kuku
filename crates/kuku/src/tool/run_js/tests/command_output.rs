@@ -4,7 +4,9 @@ use serde_json::{Value, json};
 
 use crate::OutputRead;
 use crate::tool::ToolResultEnvelope;
-use crate::tool::builtin::run_command::{CommandCapture, output::OutputLimits, run_command_to};
+use crate::tool::builtin::run_command::{
+    CommandCapture, CommandCwd, output::OutputLimits, run_command_to,
+};
 
 use super::{
     ScriptCall, ScriptExecution, ScriptOperation, TestHost, WorkspaceScriptLimits, facts, run,
@@ -34,7 +36,7 @@ async fn command_readers_use_the_authorized_short_capture_and_keep_its_reference
                     };
                     run_command_to(
                         &json!({"shell":shell, "command":command, "cwd":".", "timeout":5}),
-                        workspace.path(),
+                        CommandCwd::Unprepared(workspace.path()),
                         None,
                         Some(execution.cancellation()),
                         CommandCapture::script(

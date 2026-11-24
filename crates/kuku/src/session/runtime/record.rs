@@ -957,6 +957,21 @@ impl State {
         snapshot
     }
 
+    pub(super) fn observe_script_dispatch(&mut self, payload: &crate::event::EventPayload) {
+        if let crate::event::EventPayload::Unknown(data) = payload
+            && data["kind"] == "runtime.tool_dispatched"
+            && data["tool"] == "run_js"
+            && let (Some(turn), Some(agent), Some(id)) = (
+                data["turn"].as_u64(),
+                data["agent"].as_str(),
+                data["tool_call_id"].as_str(),
+            )
+        {
+            self.recoverable_scripts
+                .insert((turn, agent.into(), id.into()));
+        }
+    }
+
     pub(super) fn mark_interrupted(&mut self) {
         for (address, agent) in &mut self.agents {
             if agent.snapshot.status == AgentStatus::Running

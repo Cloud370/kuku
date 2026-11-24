@@ -8,7 +8,7 @@ use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    ExecutorObservation, ExecutorObservationSource, FileCancellation, file_read_error,
+    ExecutorObservation, ExecutorObservationSource, FileCancellation, FileScope, file_read_error,
     find_covering_read, optional_positive_usize, requested_line_count, required_path, resolve_path,
 };
 
@@ -31,7 +31,7 @@ struct ReadRequest<'a> {
 
 pub(crate) fn read_file(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
     read_event_id: u64,
@@ -40,7 +40,7 @@ pub(crate) fn read_file(
 ) -> ToolResultEnvelope {
     read_file_impl(
         args,
-        workspace,
+        scope,
         ReadBy::Model,
         limits.max_preview_bytes - PAGE_NOTICE_BYTES,
         limits.workspace_io.scan_bytes,
@@ -52,14 +52,14 @@ pub(crate) fn read_file(
 
 pub(crate) fn read_file_for_executor(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     max_bytes: usize,
     scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> (ToolResultEnvelope, Option<ExecutorObservation>) {
     read_file_impl(
         args,
-        workspace,
+        scope,
         ReadBy::Executor,
         max_bytes,
         scan_bytes,
@@ -70,7 +70,7 @@ pub(crate) fn read_file_for_executor(
 
 fn read_file_impl(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     read_by: ReadBy,
     max_bytes: usize,
     scan_bytes: u64,
@@ -81,7 +81,7 @@ fn read_file_impl(
         Ok(request) => request,
         Err(result) => return (result, None),
     };
-    let resolved = match resolve_path(workspace, request.path) {
+    let resolved = match scope.resolve(request.path, resolve_path) {
         Ok(resolved) => resolved,
         Err(result) => return (result, None),
     };
@@ -256,7 +256,7 @@ mod tests {
     ) -> ToolResultEnvelope {
         super::read_file(
             args,
-            workspace,
+            FileScope::Unprepared(workspace),
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
             read_event_id,
@@ -546,8 +546,13 @@ mod tests {
         assert_eq!(false, facts["is_full_file_snapshot"]);
 
         let args = serde_json::json!({"path": "sample.txt", "offset": 1, "limit": 1});
-        let (local, observation) =
-            read_file_for_executor(&args, dir.path(), content.len(), u64::MAX, &|| false);
+        let (local, observation) = read_file_for_executor(
+            &args,
+            FileScope::Unprepared(dir.path()),
+            content.len(),
+            u64::MAX,
+            &|| false,
+        );
         assert!(!local.truncated);
         let observation = observation.unwrap();
         assert_eq!(0..line.len() + 2, observation.range);
@@ -569,7 +574,7 @@ mod tests {
         let write = |events: &[StoredEvent]| {
             super::super::write_file(
                 &serde_json::json!({"path":"sample.txt", "content":"replacement\n"}),
-                dir.path(),
+                FileScope::Unprepared(dir.path()),
                 &ConversationAddress::MAIN,
                 events,
                 crate::WorkspaceIoLimits::default(),
@@ -620,7 +625,7 @@ mod tests {
 
         let (result, observation) = read_file_for_executor(
             &serde_json::json!({"path":"README.md","offset":2}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             "第二行\r\n第三行\n".len(),
             u64::MAX,
             &|| false,
@@ -648,7 +653,7 @@ mod tests {
 
         let (result, observation) = read_file_for_executor(
             &serde_json::json!({"path":"README.md","limit":1}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             80,
             u64::MAX,
             &|| false,
@@ -681,7 +686,7 @@ mod tests {
 
         let main_result = super::read_file(
             &serde_json::json!({"path": "README.md"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             &crate::conversation::address::ConversationAddress::MAIN,
             std::slice::from_ref(&review_read),
             18,
@@ -690,7 +695,7 @@ mod tests {
         );
         let review_result = super::read_file(
             &serde_json::json!({"path": "README.md"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             &crate::conversation::address::ConversationAddress::parse("review").unwrap(),
             &[review_read],
             19,

@@ -24,6 +24,7 @@ pub(super) const RESTARTED_SCRIPT: &str =
 pub(crate) struct ScriptOwner {
     pub(crate) execution_id: u64,
     pub(crate) detached: Arc<AtomicBool>,
+    pub(crate) cancelling: Arc<AtomicBool>,
 }
 
 pub(super) struct ScriptWaiter {
@@ -36,6 +37,7 @@ impl ScriptOwner {
         let agent = &state.agent(address)?.snapshot;
         Ok(!state.closing
             && !state.closed
+            && !self.cancelling.load(Ordering::Acquire)
             && (self.detached.load(Ordering::Acquire)
                 || agent.status == AgentStatus::Running
                     && agent.execution_id == Some(self.execution_id)))
@@ -84,9 +86,10 @@ impl Session {
                     turn: event_turn,
                     tool_call_id,
                     request_id,
+                    tool,
                     ..
                 } if *event_turn == turn && conversation.as_deref() == Some(agent) => {
-                    batches.insert(tool_call_id.clone(), request_id.clone());
+                    batches.insert(tool_call_id.clone(), (request_id.clone(), tool.clone()));
                 }
                 EventPayload::ToolResult {
                     conversation,
@@ -121,7 +124,7 @@ impl Session {
             Ok(())
         })?;
         let mut writer = EventStore::open(self.events_path())?;
-        if let Some(batch) = batches.get(id) {
+        if let Some((batch, _)) = batches.get(id) {
             let state = self.inner.state.lock().unwrap();
             let waiting = state
                 .agent(agent)?
@@ -129,16 +132,20 @@ impl Session {
                 .permission
                 .as_ref()
                 .map(|request| request.tool_call_id.as_str());
-            for (sibling, request) in &batches {
+            for (sibling, (request, tool)) in &batches {
                 if request == batch
                     && sibling != id
                     && !settled.contains(sibling)
-                    && !dispatched.contains(sibling)
+                    && !(tool == "run_js" && dispatched.contains(sibling))
                     && waiting != Some(sibling)
                 {
-                    let outcome = ToolResultEnvelope::cancelled(
-                        "script batch interrupted before this action was dispatched",
-                    );
+                    let reason = if dispatched.contains(sibling) {
+                        "script batch interrupted after dispatch; prior effects are unknown. Inspect before retrying"
+                    } else {
+                        "script batch interrupted before this action was dispatched"
+                    };
+                    let mut outcome = ToolResultEnvelope::cancelled(reason);
+                    outcome.model_content = reason.into();
                     writer.append(super::controls::cancelled_tool_result(
                         agent, turn, sibling, outcome,
                     )?)?;

@@ -34,6 +34,38 @@ pub(super) struct ResolvedPath {
     pub(super) relative: String,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum FileScope<'a> {
+    Unprepared(&'a Path),
+    Prepared(&'a Path),
+}
+
+impl FileScope<'_> {
+    pub(super) fn resolve(
+        self,
+        path: &str,
+        resolver: fn(&Path, &str) -> Result<ResolvedPath, ToolResultEnvelope>,
+    ) -> Result<ResolvedPath, ToolResultEnvelope> {
+        match self {
+            Self::Unprepared(workspace) => resolver(workspace, path),
+            Self::Prepared(workspace) => {
+                let resolved = resolver(workspace, path)?;
+                if resolved.path != workspace.join(path) {
+                    return Err(workspace_target_changed());
+                }
+                Ok(resolved)
+            }
+        }
+    }
+}
+
+fn workspace_target_changed() -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        "workspace target changed after preparation",
+        "read the new target before requesting another action",
+    )
+}
+
 fn prepare_workspace_path(
     tool: &str,
     args: &Value,
@@ -76,12 +108,7 @@ pub(crate) fn changed_file_target(
     if let Err(result) = prepare_file_target(name, &mut current, workspace) {
         return Some(result);
     }
-    (current != *args).then(|| {
-        ToolResultEnvelope::blocked(
-            "workspace target changed after preparation",
-            "read the new target before requesting another action",
-        )
-    })
+    (current != *args).then(workspace_target_changed)
 }
 
 pub(super) fn required_path<'a>(

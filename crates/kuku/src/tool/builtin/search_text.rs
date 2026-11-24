@@ -11,9 +11,10 @@ use crate::WorkspaceIoLimits;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    FileCancellation, IoLimit, ScanDeadline, WorkspaceFiles, charge_entry, ensure_active,
-    file_read_error, glob_match, is_cancellation, is_default_excluded_dir, is_io_limit,
-    optional_positive_usize, relative_path, resolve_path, verify_directory, workspace_path_blocked,
+    FileCancellation, FileScope, IoLimit, ScanDeadline, WorkspaceFiles, charge_entry,
+    ensure_active, file_read_error, glob_match, is_cancellation, is_default_excluded_dir,
+    is_io_limit, optional_positive_usize, relative_path, resolve_path, verify_directory,
+    workspace_path_blocked,
 };
 
 mod preview;
@@ -160,16 +161,16 @@ impl SearchPage {
 
 pub(crate) fn search_text_for_executor(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    search_text(args, workspace, SEARCH_MATCH_BYTES, limits, cancelled)
+    search_text(args, scope, SEARCH_MATCH_BYTES, limits, cancelled)
 }
 
 pub(crate) fn search_text(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     preview_bytes: usize,
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
@@ -210,7 +211,7 @@ pub(crate) fn search_text(
             );
         }
     };
-    let resolved = match resolve_path(workspace, path) {
+    let resolved = match scope.resolve(path, resolve_path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
@@ -574,7 +575,7 @@ mod tests {
     fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope {
         super::search_text(
             args,
-            workspace,
+            FileScope::Unprepared(workspace),
             crate::RuntimeLimits::default().max_preview_bytes,
             WorkspaceIoLimits::default(),
             &|| false,
@@ -590,7 +591,7 @@ mod tests {
         let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 4;
         let result = super::search_text(
             &serde_json::json!({"path":"large.txt","pattern":"missing pattern"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             crate::RuntimeLimits::default().max_preview_bytes,
             WorkspaceIoLimits::default(),
             &stop,
@@ -628,7 +629,7 @@ mod tests {
         };
         let result = super::search_text(
             &serde_json::json!({"pattern":"needle"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             1024,
             limits,
             &|| false,
@@ -653,7 +654,7 @@ mod tests {
         std::fs::write(dir.path().join("large.txt"), "ordinary\n".repeat(1024)).unwrap();
         let result = super::search_text(
             &serde_json::json!({"pattern":"needle"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             1024,
             WorkspaceIoLimits {
                 scan_bytes: 32,
@@ -853,7 +854,7 @@ mod tests {
             loop {
                 let result = super::search_text(
                     &serde_json::json!({"path":"fixture.txt","pattern":"TODO","view":"lines","context":context,"offset":offset,"limit":1000}),
-                    dir.path(),
+                    FileScope::Unprepared(dir.path()),
                     cap,
                     WorkspaceIoLimits::default(),
                     &|| false,
@@ -905,8 +906,19 @@ mod tests {
         std::fs::write(dir.path().join("fixture.txt"), row.repeat(20)).unwrap();
         let args = serde_json::json!({"path":"fixture.txt","pattern":"TODO","view":"lines"});
         let limits = WorkspaceIoLimits::default();
-        let direct = super::search_text(&args, dir.path(), 1024, limits, &|| false);
-        let local = super::search_text_for_executor(&args, dir.path(), limits, &|| false);
+        let direct = super::search_text(
+            &args,
+            FileScope::Unprepared(dir.path()),
+            1024,
+            limits,
+            &|| false,
+        );
+        let local = super::search_text_for_executor(
+            &args,
+            FileScope::Unprepared(dir.path()),
+            limits,
+            &|| false,
+        );
 
         assert!(direct.model_content.len() <= 1024);
         let facts = direct.structured.unwrap();

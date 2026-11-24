@@ -977,6 +977,7 @@ fn mark_dispatched(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> 
         execution,
         pending.turn,
         &queued.tool_call.id,
+        &queued.tool_call.name,
     )
 }
 

@@ -9,6 +9,7 @@ use tokio::process::Command;
 use crate::execution::{CommandInvocation, CommandShell};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
+use super::directory::CommandDirectory;
 use super::shell::shell_command;
 
 pub(super) struct PreparedCommand {
@@ -31,11 +32,16 @@ pub(super) struct CommandRequest {
 }
 
 impl CommandRequest {
-    pub(super) fn command(&self, memory_bytes: Option<NonZeroU64>) -> io::Result<PreparedCommand> {
+    pub(super) fn command(
+        &self,
+        directory: &CommandDirectory,
+        memory_bytes: Option<NonZeroU64>,
+    ) -> io::Result<PreparedCommand> {
         #[cfg(not(unix))]
-        let _ = memory_bytes;
+        let _ = (directory, memory_bytes);
         match &self.invocation {
             CommandInvocation::Program { program, args } => {
+                #[cfg(windows)]
                 let program = if Path::new(program).file_name() == Some(OsStr::new(program)) {
                     PathBuf::from(program)
                 } else {
@@ -43,6 +49,8 @@ impl CommandRequest {
                 };
                 let mut command = Command::new(program);
                 command.args(args);
+                #[cfg(unix)]
+                directory.configure(&mut command)?;
                 #[cfg(unix)]
                 super::native::configure_memory(&mut command, memory_bytes)?;
                 #[cfg(unix)]
@@ -64,6 +72,7 @@ impl CommandRequest {
                 #[cfg(unix)]
                 let command = {
                     let mut command = command;
+                    directory.configure(&mut command)?;
                     super::native::configure_memory(&mut command, memory_bytes)?;
                     command
                 };
@@ -97,12 +106,14 @@ pub(crate) fn changed_command_directory(args: &Value) -> Option<ToolResultEnvelo
     (!cwd
         .canonicalize()
         .is_ok_and(|current| current == cwd && current.is_dir()))
-    .then(|| {
-        ToolResultEnvelope::blocked(
-            "command directory changed after preparation",
-            "choose the working directory again before requesting another command",
-        )
-    })
+    .then(command_directory_changed)
+}
+
+pub(super) fn command_directory_changed() -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        "command directory changed after preparation",
+        "choose the working directory again before requesting another command",
+    )
 }
 
 fn apply_command_defaults(

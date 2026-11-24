@@ -8,8 +8,8 @@ use crate::WorkspaceIoLimits;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    FileCancellation, ScanDeadline, bounded_lines, charge_entry, ensure_active, file_read_error,
-    glob_match, is_default_excluded_dir, is_io_limit, relative_path, resolve_path,
+    FileCancellation, FileScope, ScanDeadline, bounded_lines, charge_entry, ensure_active,
+    file_read_error, glob_match, is_default_excluded_dir, is_io_limit, relative_path, resolve_path,
     verify_directory, workspace_path_blocked,
 };
 
@@ -59,7 +59,7 @@ impl Listing {
 
 pub(crate) fn find_files(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
@@ -70,7 +70,7 @@ pub(crate) fn find_files(
         .and_then(Value::as_u64)
         .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
         .unwrap_or_else(|| pattern.map_or(0, |_| u32::MAX));
-    let root = match resolve_path(workspace, path) {
+    let root = match scope.resolve(path, resolve_path) {
         Ok(root) => root,
         Err(result) => return result,
     };
@@ -259,7 +259,12 @@ mod tests {
     use super::*;
 
     fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
-        super::find_files(args, workspace, WorkspaceIoLimits::default(), &|| false)
+        super::find_files(
+            args,
+            FileScope::Unprepared(workspace),
+            WorkspaceIoLimits::default(),
+            &|| false,
+        )
     }
 
     #[test]
@@ -269,7 +274,7 @@ mod tests {
         let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
         let result = super::find_files(
             &serde_json::json!({}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             WorkspaceIoLimits::default(),
             &stop,
         );
@@ -286,7 +291,7 @@ mod tests {
         }
         let result = super::find_files(
             &serde_json::json!({}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             WorkspaceIoLimits {
                 scan_entries: 1,
                 ..Default::default()

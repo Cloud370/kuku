@@ -84,15 +84,10 @@ pub(crate) fn spawn_simple_slot(
                             &cancelled,
                         );
                     }
-                    if let Some(blocked) = crate::tool::builtin::common::changed_file_target(
-                        &tool_name, &args, &workspace,
-                    ) {
-                        return blocked;
-                    }
                     crate::tool::dispatch::dispatch_workspace_file(
                         &tool_name,
                         &args,
-                        &workspace,
+                        crate::tool::builtin::common::FileScope::Prepared(&workspace),
                         &dispatch_conversation,
                         &prior_events,
                         0,
@@ -200,11 +195,13 @@ pub(super) fn spawn_command_slot(
 
             let r = match output {
                 Some(mut output) => {
-                    use crate::tool::builtin::run_command::{CommandCapture, run_command_to};
+                    use crate::tool::builtin::run_command::{
+                        CommandCapture, CommandCwd, run_command_to,
+                    };
 
                     let result = run_command_to(
                         &args,
-                        &workspace,
+                        CommandCwd::Prepared(&workspace),
                         Some(tool_tx),
                         Some(cancel_cmd),
                         CommandCapture::model(
@@ -229,7 +226,7 @@ pub(super) fn spawn_command_slot(
                     result
                 }
                 None => {
-                    crate::tool::builtin::run_command(
+                    crate::tool::builtin::run_command::run_prepared_command(
                         &args,
                         &workspace,
                         Some(tool_tx),
