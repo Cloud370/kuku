@@ -18,6 +18,9 @@ impl App {
         if empty || !self.require_service() {
             return;
         }
+        if !self.permission_mode_ready() {
+            return;
+        }
         if self.pane().value_saving {
             self.problem("Wait for the current save");
             return;
@@ -126,6 +129,7 @@ mod tests {
             endpoint: "http://127.0.0.1:6789".into(),
             workspace,
         });
+        app.complete_test_permissions();
         app.effects.clear();
         app
     }

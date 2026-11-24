@@ -156,36 +156,6 @@ pub(super) fn display_summary(
     }
 }
 
-pub(super) fn permission_scope(choice: PermissionChoice) -> &'static str {
-    match choice {
-        PermissionChoice::Once | PermissionChoice::Deny => "once",
-        PermissionChoice::Session => "session",
-        PermissionChoice::Project => "project",
-    }
-}
-
-pub(super) fn gate_source_name(source: crate::permission::GateSource) -> &'static str {
-    match source {
-        crate::permission::GateSource::HardGuard => "hard_guard",
-        crate::permission::GateSource::ProjectPolicy => "project_policy",
-        crate::permission::GateSource::SessionGrant => "session_grant",
-        crate::permission::GateSource::TrustPosture => "trust_posture",
-        crate::permission::GateSource::Host => "host",
-        crate::permission::GateSource::DefaultAsk => "default_ask",
-    }
-}
-
-pub(super) fn gate_choice(source: &crate::permission::GateSource) -> PermissionChoice {
-    use crate::permission::GateSource;
-    match source {
-        GateSource::ProjectPolicy => PermissionChoice::Project,
-        GateSource::SessionGrant => PermissionChoice::Session,
-        _ => PermissionChoice::Once,
-    }
-}
-
-// ---------- Event append helpers ----------
-
 fn append_event(events_path: &std::path::Path, payload: EventPayload) -> Result<()> {
     let mut store = EventStore::open(events_path)?;
     store.append(payload)?;
@@ -209,6 +179,7 @@ pub(super) fn append_permission_request(
             summary: request.summary.clone(),
             candidate: request.candidate.clone(),
             source: request.source.clone(),
+            workspace: request.workspace.clone(),
         },
     )
 }
@@ -266,17 +237,15 @@ pub(super) fn append_permission_decision(
             reason: rule.to_string(),
             source: source.to_string(),
         },
-        PermissionChoice::Once | PermissionChoice::Session | PermissionChoice::Project => {
-            EventPayload::PermissionAllow {
-                turn,
-                ts: now_timestamp()?,
-                tool_call_id: tool_call_id.to_string(),
-                tool: rule.split('(').next().unwrap_or("").trim().to_string(),
-                scope: permission_scope(choice).to_string(),
-                matcher: rule.to_string(),
-                source: source.to_string(),
-            }
-        }
+        PermissionChoice::Once => EventPayload::PermissionAllow {
+            turn,
+            ts: now_timestamp()?,
+            tool_call_id: tool_call_id.to_string(),
+            tool: rule.split('(').next().unwrap_or("").trim().to_string(),
+            scope: "once".to_owned(),
+            matcher: rule.to_string(),
+            source: source.to_string(),
+        },
     };
     append_event(events_path, payload)
 }

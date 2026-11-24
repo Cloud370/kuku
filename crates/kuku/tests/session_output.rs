@@ -28,7 +28,7 @@ impl ToolAuthorizer for ReadPolicy {
         self.actions.lock().unwrap().push(action.clone());
         Ok(
             if action.tool_call_id == "denied"
-                || (action.tool.name == "read_output" && action.args["text"] == "withheld")
+                || (action.tool.name == "search_output" && action.args["text"] == "withheld")
             {
                 AuthorizationDecision::Deny
             } else {
@@ -587,7 +587,7 @@ async fn direct_and_script_search_share_the_read_output_permission() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|action| action.tool.name == "read_output" && action.args["text"].is_string())
+        .filter(|action| action.tool.name == "search_output" && action.args["text"].is_string())
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(5, actions.len());

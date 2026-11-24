@@ -373,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn generated_accounts_get_short_connections_and_reuse_them_when_saved_again() {
         let root = tempfile::tempdir().unwrap();
-        let data_dir = root.path().join("data");
+        let data_dir = root.path().canonicalize().unwrap().join("data");
         let options = ConnectionOptions {
             workspace: Some(root.path().to_owned()),
             data_dir: Some(data_dir.clone()),

@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tempfile::NamedTempFile;
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
+use crate::notifications::Notifications;
 use crate::statusline::StatusLine;
 
 const FILE_NAME: &str = "tui.toml";
@@ -18,12 +19,74 @@ const STATUSLINE_ENV: &str = "KUKU_TUI_STATUSLINE";
 #[serde(deny_unknown_fields)]
 struct TuiFile {
     statusline: Option<StatusLineFile>,
+    notifications: Option<Notifications>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StatusLineFile {
     fields: Option<Vec<String>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct NotificationSettings {
+    path: Result<PathBuf, String>,
+    active: Notifications,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            path: Err("The client data directory is unavailable".into()),
+            active: Notifications::default(),
+        }
+    }
+}
+
+impl NotificationSettings {
+    pub(crate) fn active(&self) -> Notifications {
+        self.active
+    }
+
+    pub(crate) fn save(&mut self, settings: Notifications) -> Result<(), String> {
+        let path = self.path.as_deref().map_err(Clone::clone)?;
+        save_notifications(path, settings).map_err(|error| file_problem(path, error))?;
+        self.active = settings;
+        Ok(())
+    }
+}
+
+pub(crate) fn load_notifications(
+    options: &ConnectionOptions,
+) -> (NotificationSettings, Option<String>) {
+    let mut settings = NotificationSettings {
+        path: preferences_path(options),
+        ..NotificationSettings::default()
+    };
+    let result = settings
+        .path
+        .as_deref()
+        .map_err(Clone::clone)
+        .and_then(|path| {
+            let content = read_file(path).map_err(|error| file_problem(path, error))?;
+            let file: TuiFile =
+                toml::from_str(&content).map_err(|error| file_problem(path, error))?;
+            Ok(file.notifications.unwrap_or_default())
+        });
+    match result {
+        Ok(active) => {
+            settings.active = active;
+            (settings, None)
+        }
+        Err(error) => (settings, Some(error)),
+    }
+}
+
+fn preferences_path(options: &ConnectionOptions) -> Result<PathBuf, String> {
+    options
+        .data_dir()
+        .map(|path| path.join(FILE_NAME))
+        .map_err(|error| format!("Locate {FILE_NAME} · {error}"))
 }
 
 #[derive(Debug)]
@@ -83,10 +146,7 @@ fn resolve_statusline(
     override_value: Option<OsString>,
 ) -> (StatusLineSettings, Option<String>) {
     let mut settings = StatusLineSettings {
-        path: options
-            .data_dir()
-            .map(|path| path.join(FILE_NAME))
-            .map_err(|error| format!("Locate {FILE_NAME} · {error}")),
+        path: preferences_path(options),
         ..StatusLineSettings::default()
     };
     let overridden = override_value.is_some();
@@ -148,6 +208,30 @@ fn save_statusline(path: &Path, layout: &StatusLine) -> Result<(), String> {
     replace_file(path, &content).map_err(|error| error.to_string())
 }
 
+fn save_notifications(path: &Path, settings: Notifications) -> Result<(), String> {
+    let content = read_file(path).map_err(|error| error.to_string())?;
+    let mut file = content
+        .parse::<DocumentMut>()
+        .map_err(|error| error.message().to_owned())?;
+    let table = file
+        .as_table_mut()
+        .entry("notifications")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_like_mut()
+        .ok_or("notifications must be a table")?;
+    for (name, enabled) in [
+        ("question", settings.question),
+        ("permission", settings.permission),
+        ("interrupted", settings.interrupted),
+        ("completed", settings.completed),
+    ] {
+        table.insert(name, value(enabled));
+    }
+    let content = file.to_string();
+    parse_file(&content)?;
+    replace_file(path, &content).map_err(|error| error.to_string())
+}
+
 fn replace_file(path: &Path, content: &str) -> io::Result<()> {
     let directory = path
         .parent()
@@ -186,6 +270,44 @@ mod tests {
     ) -> Result<StatusLine, String> {
         let (settings, problem) = load(options, value);
         problem.map_or_else(|| Ok(settings.active().clone()), Err)
+    }
+
+    #[test]
+    fn notification_aliases_open_one_editor_and_save_local_preferences() {
+        let data_dir = TempDir::new().unwrap();
+        let file = data_dir.path().join(FILE_NAME);
+        fs::write(&file, "# Keep this\n[statusline]\nfields = [\"agent\"]\n").unwrap();
+        let options = ConnectionOptions {
+            data_dir: Some(data_dir.path().to_owned()),
+            remote: Some("https://service.example".into()),
+            ..ConnectionOptions::default()
+        };
+        let (settings, error) = super::load_notifications(&options);
+        assert!(error.is_none());
+        assert!(settings.active().question);
+        let mut app = App::new(PathBuf::from("/workspace"), options.remote.clone());
+        app.notification_settings = settings;
+        let buffer = Buffer::empty(Rect::new(0, 0, 100, 30));
+        let press = |app: &mut App, code| {
+            app.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), &buffer);
+        };
+        for command in ["/notifications", "/notify", "/sound"] {
+            app.pane_mut().draft.set_text(command.into());
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(app.modal, Some(Modal::Notifications(_))));
+            press(&mut app, KeyCode::Esc);
+        }
+        app.open_notifications();
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Enter);
+        let (saved, error) = super::load_notifications(&options);
+        assert!(error.is_none());
+        assert!(!saved.active().question);
+        assert!(
+            saved.active().permission && saved.active().interrupted && saved.active().completed
+        );
+        let contents = fs::read_to_string(file).unwrap();
+        assert!(contents.contains("# Keep this") && contents.contains("fields = [\"agent\"]"));
     }
 
     #[test]

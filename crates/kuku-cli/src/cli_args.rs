@@ -561,20 +561,4 @@ pub enum ConfigSubcommand {
         /// Value to set
         value: String,
     },
-    /// Manage project permission policy
-    Policy(PolicyArgs),
-}
-
-#[derive(Args)]
-pub struct PolicyArgs {
-    #[command(subcommand)]
-    pub cmd: PolicySubcommand,
-}
-
-#[derive(Subcommand)]
-pub enum PolicySubcommand {
-    /// Allow a risk level in this project
-    Allow { risk: String },
-    /// Deny a risk level in this project
-    Deny { risk: String },
 }

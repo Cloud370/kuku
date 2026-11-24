@@ -17,6 +17,7 @@ pub use kuku::execution::{
     CommandTermination, FileCommitState, FileMutationFacts, FileMutationKind, OutputReference,
     ReportedTests, TestReportFormat,
 };
+pub use kuku::permission::PermissionMode;
 pub use kuku::query::ModelPhase;
 pub use kuku::session::runtime::SessionCostSummary;
 pub use kuku::session::{FileRewindChange, FileRewindPreview};
@@ -38,6 +39,15 @@ pub use types::{
     SessionSummary, Snapshot, Target, Timing,
 };
 pub use workspace::{ConnectionSummary, ModelCatalog, SkillSummary, TierSummary};
+
+/// An unresolved approval and its execution context.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PendingApproval {
+    /// The exact request identity and action to approve or deny.
+    pub request: PermissionRequest,
+    /// Background Job waiting for the decision, when applicable.
+    pub job_id: Option<String>,
+}
 
 /// Generate a new independent Session or command identity.
 pub fn new_id() -> String {

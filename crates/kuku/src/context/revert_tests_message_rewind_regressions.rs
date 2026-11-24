@@ -5,6 +5,7 @@ use super::{
 };
 use crate::conversation::address::ConversationAddress;
 use crate::event::{EventPayload, EventStore, StoredEvent};
+use crate::tool::builtin::common::FileScope;
 use crate::tool::{ToolResultEnvelope, builtin};
 use serde_json::json;
 use std::collections::HashSet;
@@ -50,7 +51,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
 
     let read_before = builtin::read_file(
         &json!({"path": "rewind.txt"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         3,
@@ -76,7 +77,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
 
     let write = builtin::write_file(
         &json!({"path": "rewind.txt", "content": "after write\n"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         crate::WorkspaceIoLimits::default(),
@@ -91,7 +92,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
 
     let read_after = builtin::read_file(
         &json!({"path": "rewind.txt"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         5,
@@ -117,7 +118,7 @@ fn assert_real_tool_rewind(workspace_alias: &Path, session_dir: &Path) {
             "old_text": "after write",
             "new_text": "after edit",
         }),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         crate::WorkspaceIoLimits::default().text_bytes,
@@ -171,7 +172,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
 
     let read_before = builtin::read_file(
         &json!({"path": "mutation-rewind.txt"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         3,
@@ -189,7 +190,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
 
     let write = builtin::write_file(
         &json!({"path": "mutation-rewind.txt", "content": "after write\n"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         crate::WorkspaceIoLimits::default(),
@@ -208,7 +209,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
 
     let read_before_edit = builtin::read_file(
         &json!({"path": "mutation-rewind.txt"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         5,
@@ -230,7 +231,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
             "old_text": "after write",
             "new_text": "after edit",
         }),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         crate::WorkspaceIoLimits::default().text_bytes,
@@ -249,7 +250,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
 
     let read_after_edit = builtin::read_file(
         &json!({"path": "mutation-rewind.txt"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         7,
@@ -270,7 +271,7 @@ fn assert_real_mutation_backed_rewind(workspace_alias: &Path, session_dir: &Path
 
     let target_write = builtin::write_file(
         &json!({"path": "mutation-rewind.txt", "content": "after target\n"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         crate::WorkspaceIoLimits::default(),
@@ -343,7 +344,7 @@ fn assert_real_created_file_deletion(workspace_alias: &Path, session_dir: &Path)
     let mut events = vec![ts(1, 1), ui(2, 1, "remove created file")];
     let write = builtin::write_file(
         &json!({"path": "created-by-tool.txt", "content": "created\n"}),
-        workspace_alias,
+        FileScope::Unprepared(workspace_alias),
         &conversation,
         &events,
         crate::WorkspaceIoLimits::default(),

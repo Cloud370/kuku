@@ -1,4 +1,4 @@
-use super::{FrozenSegment, custom_project_policy_has_date, insert_runtime_date};
+use super::{FrozenSegment, custom_project_policy_has_date, insert_runtime_notice};
 use crate::context::CanonicalMessage;
 use crate::context::runtime::{AdmittedMessage, MessageOrigin};
 
@@ -26,7 +26,7 @@ fn midnight_date_change_does_not_reorder_admitted_tool_turn_input() {
         .collect();
     let next_date = CanonicalMessage::user_text("Current date: 2026-05-19");
 
-    insert_runtime_date(&mut messages, 3, &next_date, frozen_prefix.len(), 2);
+    insert_runtime_notice(&mut messages, 3, &next_date, frozen_prefix.len(), 2);
 
     assert_eq!(
         frozen_prefix,

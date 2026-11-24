@@ -3,9 +3,9 @@ use kuku::adapter::inspect_model;
 use kuku::config::{load_config, set_value, show_redacted};
 use kuku::session::AgentConfig;
 
-use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs, PolicySubcommand};
+use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs};
 
-/// Show or manage configuration: `kuku config [show|validate|set|policy]`
+/// Show or manage configuration: `kuku config [show|validate|set]`
 pub async fn run(
     args: ConfigArgs,
     target: &ConnectionArgs,
@@ -109,15 +109,5 @@ pub async fn run(
             println!("updated {key} = {display_value}");
             Ok(())
         }
-        Some(ConfigSubcommand::Policy(policy_args)) => match policy_args.cmd {
-            PolicySubcommand::Allow { risk: _ } => {
-                eprintln!("kuku config policy: policy.md write not yet implemented");
-                Ok(())
-            }
-            PolicySubcommand::Deny { risk: _ } => {
-                eprintln!("kuku config policy: policy.md write not yet implemented");
-                Ok(())
-            }
-        },
     }
 }

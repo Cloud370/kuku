@@ -26,10 +26,7 @@ pub(crate) use runtime::execute;
 const MAX_SCRIPT_ACTIONS: usize = 2048;
 const MAX_SCRIPT_RESULT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_OUTPUT_TEXT_BYTES: usize = 1024 * 1024;
-const SCRIPT_DESCRIPTION: &str = concat!(
-    "Combine tools or process their results in JavaScript. Call await tools.<name>(args) and return a small JSON value. ",
-    "tools.methods shows the available tools and their inputs. Use JavaScript built-ins. Slow scripts return a Job."
-);
+const SCRIPT_DESCRIPTION: &str = include_str!("../../../prompts/tools/run-js.md");
 
 /// Bounds one disposable workspace JavaScript worker and its host operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,7 +110,7 @@ impl WorkspaceScriptLimits {
 pub(crate) fn definition() -> ToolDefinition {
     ToolDefinition {
         name: "run_js".into(),
-        description: SCRIPT_DESCRIPTION.into(),
+        description: SCRIPT_DESCRIPTION.trim().into(),
         input_schema: json!({
             "type":"object",
             "properties":{
@@ -161,7 +158,7 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
     };
     let methods =
         method_definitions(|op| tools.iter().find(|tool| tool.name == op.name()).cloned());
-    let mut description = format!("{SCRIPT_DESCRIPTION}\n");
+    let mut description = SCRIPT_DESCRIPTION.to_owned();
     description.push_str("File methods and retained-output page calls return {status,result,truncated,error?}. After checking status === 'ok', read their fields from result.\n");
     if methods.iter().any(|method| method.name == "read_file") {
         description.push_str("Read example: `const r = await tools.read_file({path:'README.md',limit:5}); return r.status === 'ok' ? r.result.raw_text : r.error;`.\n");

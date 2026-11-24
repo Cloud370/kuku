@@ -13,18 +13,24 @@ use tokio::sync::{Notify, mpsc};
 use tokio::time::{Duration, Instant as TokioInstant, sleep_until, timeout};
 
 use crate::execution::CommandTermination;
-use crate::permission::gate::blocked_command_reason;
 use crate::tool::ToolResultEnvelope;
 
+use crate::util::bound_directory::BoundDirectory;
 use output::{OutputLimits, OutputRead, OutputStream, OutputWriter, read_output};
 use process::ProcessTree;
 use render::render_command_result;
-use request::{CommandRequest, run_command_request};
+use request::{CommandRequest, command_directory_changed, run_command_request};
 
-pub(crate) use request::{command_permission_candidate, prepare_command_args};
+pub(crate) use request::{
+    changed_command_directory, command_permission_candidate, prepare_command_args,
+    prepared_command_guard,
+};
 pub(crate) use shell::available_shells;
 
+#[cfg(unix)]
+mod directory;
 pub(crate) mod encoding;
+mod guard;
 #[cfg(unix)]
 mod native;
 pub(crate) mod output;
@@ -32,6 +38,8 @@ mod process;
 mod render;
 mod reports;
 mod request;
+
+use guard::blocked_command_reason;
 mod shell;
 mod summary;
 
@@ -136,24 +144,37 @@ pub(crate) async fn run_command(
     if let Err(result) = prepare_command_args(&mut args, workspace, &definition) {
         return result;
     }
+    run_prepared_command(&args, workspace, event_tx, cancel).await
+}
+
+pub(crate) async fn run_prepared_command(
+    args: &Value,
+    workspace: &Path,
+    event_tx: Option<mpsc::Sender<CommandEvent>>,
+    cancel: Option<Arc<Notify>>,
+) -> ToolResultEnvelope {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     let sequence = OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let output_id = format!("command-{}-{timestamp}-{sequence}", std::process::id());
-    run_command_with_output(
-        &args,
-        workspace,
+    run_command_to(
+        args,
+        CommandCwd::prepared(workspace),
         event_tx,
         cancel,
-        &workspace.join(".kuku").join("outputs"),
-        &output_id,
-        OutputLimits::default(),
+        CommandCapture::model(
+            &workspace.join(".kuku").join("outputs"),
+            &output_id,
+            OutputLimits::default(),
+            ModelOutputAccess::Unavailable,
+        ),
     )
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn run_command_with_output(
     args: &Value,
     workspace: &Path,
@@ -165,7 +186,7 @@ pub(crate) async fn run_command_with_output(
 ) -> ToolResultEnvelope {
     run_command_to(
         args,
-        workspace,
+        CommandCwd::unprepared(workspace),
         event_tx,
         cancel,
         CommandCapture::model(
@@ -178,9 +199,31 @@ pub(crate) async fn run_command_with_output(
     .await
 }
 
+pub(crate) struct CommandCwd<'a> {
+    workspace: &'a Path,
+    prepared: bool,
+}
+
+impl<'a> CommandCwd<'a> {
+    pub(crate) fn prepared(workspace: &'a Path) -> Self {
+        Self {
+            workspace,
+            prepared: true,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unprepared(workspace: &'a Path) -> Self {
+        Self {
+            workspace,
+            prepared: false,
+        }
+    }
+}
+
 pub(crate) async fn run_command_to(
     args: &Value,
-    workspace: &Path,
+    cwd: CommandCwd<'_>,
     event_tx: Option<mpsc::Sender<CommandEvent>>,
     cancel: Option<Arc<Notify>>,
     output: CommandCapture<'_>,
@@ -189,10 +232,13 @@ pub(crate) async fn run_command_to(
     let cancelled = cancel.notified();
     tokio::pin!(cancelled);
     cancelled.as_mut().enable();
-    let mut request = match run_command_request(args, workspace) {
+    let mut request = match run_command_request(args, cwd.workspace) {
         Ok(request) => request,
         Err(result) => return result,
     };
+    if cwd.prepared && args["cwd"].as_str().map(Path::new) != Some(request.cwd.as_path()) {
+        return command_directory_changed();
+    }
     if let Some(seconds) = output.max_seconds.map(NonZeroU32::get) {
         request.timeout_seconds = Some(
             request
@@ -282,7 +328,13 @@ async fn execute_command(
     cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
     memory_bytes: Option<NonZeroU64>,
 ) -> Result<CommandOutcome, ToolResultEnvelope> {
-    let mut prepared = match request.command(memory_bytes) {
+    let directory = BoundDirectory::open(&request.cwd).map_err(|error| {
+        ToolResultEnvelope::blocked(
+            format!("failed to bind prepared command directory: {error}"),
+            "choose the working directory again before requesting another command",
+        )
+    })?;
+    let mut prepared = match request.command(&directory, memory_bytes) {
         Ok(command) => command,
         Err(error) => {
             let termination = if error.kind() == io::ErrorKind::NotFound {
@@ -296,9 +348,10 @@ async fn execute_command(
             });
         }
     };
+    #[cfg(windows)]
+    prepared.command.current_dir(&request.cwd);
     prepared
         .command
-        .current_dir(&request.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -319,6 +372,7 @@ async fn execute_command(
             });
         }
     };
+    drop(directory);
     let mut capture =
         capture_command(&mut child, &mut tree, request, output, &event_tx, cancelled).await;
     if child.id().is_some() {

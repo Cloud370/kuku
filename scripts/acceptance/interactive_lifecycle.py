@@ -160,9 +160,9 @@ def first_run_credential_repair(binary, bridge, directory):
     instance.provider.dispatch = dispatch
     with instance as client:
         config = client.home / "config.toml"
-        config.write_text(config.read_text().replace(
+        config.write_text(config.read_text(encoding="utf-8").replace(
             'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_MISSING_KEY"'
-        ))
+        ), encoding="utf-8")
         workspace = client.directory
         prompt = "Verify the repaired first-run settings"
         with client.terminal(workspace) as terminal:
@@ -218,10 +218,10 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.expect("Same model and credential.", state="Finished")
             terminal.exit_cleanly()
         assert authenticated == [True, True]
-        assert key not in config.read_text()
+        assert key not in config.read_text(encoding="utf-8")
         credential_files = list((client.home / "credentials").iterdir())
         assert len(credential_files) == 1
-        assert credential_files[0].read_text() == key
+        assert credential_files[0].read_text(encoding="utf-8") == key
         (client.directory / "first-run.json").write_text(json.dumps({
             "missing_credential_screen": missing,
             "masked_credential_screen": masked,
@@ -250,8 +250,8 @@ def shared_model_editor(binary, bridge, directory):
     instance.provider.dispatch = dispatch
     with instance as client:
         config = client.home / "config.toml"
-        endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
-        config.write_text("")
+        endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text(encoding="utf-8"))[1]
+        config.write_text("", encoding="utf-8")
         workspace = client.workspace("work-model-setup")
         with client.terminal(workspace) as terminal:
             terminal.request("resize", rows=32, cols=110)
@@ -509,8 +509,8 @@ def setup_probe_progress(binary, bridge, directory):
     try:
         with instance as client:
             config = client.home / "config.toml"
-            endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text())[1]
-            config.write_text("")
+            endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text(encoding="utf-8"))[1]
+            config.write_text("", encoding="utf-8")
             with client.terminal(client.workspace("work-probe-progress")) as terminal:
                 terminal.open_first_model_settings()
                 terminal.expect("Find and test models", also=("Edit config file",))
@@ -628,10 +628,10 @@ def persistent_model_default(client):
     workspace = client.workspace("work-model-default")
     chosen = "fixture-saved-model"
     config_path = client.home / "config.toml"
-    config_path.write_text(config_path.read_text().replace(
+    config_path.write_text(config_path.read_text(encoding="utf-8").replace(
         '[model.light]\nprovider = "test-anthropic"\nmodel = "claude-sonnet-4-6"',
         f'[model.light]\nprovider = "test-anthropic"\nmodel = "{chosen}"',
-    ))
+    ), encoding="utf-8")
     prompt = "Verify the separately chosen Session model"
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
@@ -667,7 +667,7 @@ def persistent_model_default(client):
         eventually("the current Session uses light",
                    lambda: client.snapshot(workspace, session)["config"].get("tier") == "light")
         terminal.exit_cleanly()
-    config = (client.home / "config.toml").read_text()
+    config = (client.home / "config.toml").read_text(encoding="utf-8")
     assert 'default_model = "light"' in config and chosen in config
     client.cli(workspace, "server", "restart")
     new_workspace = client.workspace("work-new-default")
@@ -897,16 +897,16 @@ def runtime_credential_repair(binary, bridge, directory):
         draft = "An independent draft survives credential repair"
         config_path = client.home / "config.toml"
         client.env["KUKU_ACCEPTANCE_REJECTED_KEY"] = "test-key"
-        config_path.write_text(config_path.read_text().replace(
+        config_path.write_text(config_path.read_text(encoding="utf-8").replace(
             'api_key = "test-key"', 'api_key = "$KUKU_ACCEPTANCE_REJECTED_KEY"',
-        ))
+        ), encoding="utf-8")
         with client.terminal(workspace) as terminal:
             terminal.expect("New session", state="Ready")
             terminal.submit(prompt)
             failure = terminal.expect("Authentication error", state="Interrupted", also=("No automatic retry",))["screen"]
             session = client.session(workspace)
             original = client.connection()
-            original_config = config_path.read_text()
+            original_config = config_path.read_text(encoding="utf-8")
             terminal.type(draft)
             focus_action(terminal, "Repair credentials")
             terminal.press("\r")
@@ -940,7 +940,7 @@ def runtime_credential_repair(binary, bridge, directory):
             assert len(retained) == 1
             terminal.press("\x03")
             terminal.exit_cleanly()
-        saved_text = config_path.read_text()
+        saved_text = config_path.read_text(encoding="utf-8")
         assert repaired_key not in saved_text
         assert re.search(r'''(?m)^api_key = (["'])file:[^\r\n]+\1$''', saved_text)
         normalize = lambda text: re.subn(r"(?m)^api_key = .*?$", "api_key = <credential>", text)
@@ -952,7 +952,7 @@ def runtime_credential_repair(binary, bridge, directory):
         )
         assert client.env["KUKU_ACCEPTANCE_REJECTED_KEY"] == "test-key"
         credential_files = list((client.home / "credentials").iterdir())
-        assert len(credential_files) == 1 and credential_files[0].read_text() == repaired_key
+        assert len(credential_files) == 1 and credential_files[0].read_text(encoding="utf-8") == repaired_key
         client.provider.assert_idle()
         (client.directory / "auth-repair.json").write_text(json.dumps({
             "session": session, "failed_screen": failure, "masked_screen": masked,

@@ -575,7 +575,7 @@ impl App {
                 self.related_agents.invalidate(cursor);
                 self.request_refresh(SnapshotRefresh::Progress);
             }
-            Observation::Heartbeat => {}
+            Observation::WorkspacePermission { .. } | Observation::Heartbeat => {}
         }
     }
 

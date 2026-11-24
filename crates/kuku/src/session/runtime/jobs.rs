@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::json;
 use tokio::sync::{Notify, watch};
@@ -65,14 +66,23 @@ pub(crate) struct JobRequest {
     pub(crate) output_id: Option<String>,
     pub(crate) summary: String,
     pub(crate) started: Instant,
+    pub(crate) cancelling: Arc<AtomicBool>,
     pub(crate) wait_tool_available: bool,
 }
 
 pub(super) struct JobWorker {
     agent: String,
-    pub(super) cancel: Arc<Notify>,
+    cancel: Arc<Notify>,
+    cancelling: Arc<AtomicBool>,
     done: watch::Receiver<CleanupOutcome>,
     pub(super) join: JoinHandle<Result<()>>,
+}
+
+impl JobWorker {
+    pub(super) fn cancel(&self) {
+        self.cancelling.store(true, Ordering::Release);
+        self.cancel.notify_one();
+    }
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -353,7 +363,7 @@ impl Session {
                 let worker = workers.get(job_id).ok_or_else(|| {
                     Error::InvalidEventStream(format!("job '{job_id}' has no live worker"))
                 })?;
-                worker.cancel.notify_one();
+                worker.cancel();
                 Some(worker.done.clone())
             } else {
                 None
@@ -483,6 +493,7 @@ impl Session {
             JobWorker {
                 agent: request.agent,
                 cancel,
+                cancelling: request.cancelling,
                 done,
                 join,
             },
@@ -527,7 +538,7 @@ impl Session {
             .values()
             .filter(|worker| worker.agent == agent && !worker.join.is_finished())
             .map(|worker| {
-                worker.cancel.notify_one();
+                worker.cancel();
                 worker.done.clone()
             })
             .collect()

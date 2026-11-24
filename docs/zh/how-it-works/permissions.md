@@ -1,24 +1,23 @@
 # 工具权限
 
-工具执行前，Session 会把生效的工具定义和最终参数绑定到这次调用的 ID 上。内置保护和项目策略可以直接拦截违规动作；通过初筛的动作交给宿主的 `ToolAuthorizer`，传入 Session、执行 Agent、可信输入来源、工具、参数和工作区。默认 CLI 和 HTTP 服务都使用 `TrustedLocal`，放行符合条件的本地动作。
+同一 Session 的 Agent 共用一个权限模式，默认全开放。TUI 可用 `F3` 或 `/permissions` 选择。没有已保存权限偏好的工作区会在模型就绪后询问一次。每个 Agent 从自己的目录解析相对路径。全开放允许通过绝对路径访问目录外的文件，包括系统临时目录。
 
-| 决定 | 效果 |
+| 模式 | 工作区操作 |
 |---|---|
-| `Allow` | 先记录派发，再调用工具，最后落盘结果。 |
-| `Deny` | 该调用收到 `blocked` 结果；宿主授权本身出错同样阻止派发并报错。 |
-| `Defer` | 若动作支持延后审批，Agent 带持久 `request_id` 暂停等待，直到宿主回复（重开 Session 依然有效）。 |
+| 全开放 | 在宿主策略允许时读写文件和执行命令。 |
+| 询问 | 放行普通读取，写入和执行命令前询问。 |
+| 只读 | 放行普通读取，拦截写入和命令。 |
 
-嵌入 SDK 时通过 `SessionOptions.authorizer` 注入自定义策略。CLI 用 `kuku reply SESSION_ID REQUEST_ID --agent AGENT --allow` 或 `--deny` 回复授权（`ask_user` 用 `--answer`）。批准后，运行时会重新核对已准备动作和当前工具定义再派发。[Session 等待与回复](sessions.md#等待与回复) · [工具授权源码](../../../crates/kuku/src/permission/runtime.rs)
+有待审批操作时，TUI 保留输入焦点。按 `F2` 查看实际操作、Agent、目录和询问原因，按 `Tab` 切换请求。`Y` 允许一次，`N` 拒绝。对询问模式产生的请求，`A` 信任此工作区，切换到全开放后批准当前操作。宿主发起的审批可选择允许一次或拒绝。[终端命令](../reference/cli.md#终端界面)
 
-## `run_command`
+## SDK 和服务
 
-授权前，运行时会先解析规范化的 `cwd` 和最终 `invocation`（含默认值）。项目策略匹配的是包含 `cwd` 与 `invocation` 的 JSON 字符串（`invocation` 带 `mode`，以及字面 `program`/`args` 或选中的 `shell`/`command`）。授权覆盖整次调用；如果需要操作系统级沙箱隔离，由宿主负责。
+用 `SessionOptions.permission_mode` 设定初始模式，用 `Session::set_permission_mode` 更新后续操作的模式。自定义 `SessionOptions.authorizer` 可检查 Session、Agent、可信输入来源、实际工具定义、最终参数和规范化工作目录，并决定允许、拒绝或等待审批。宿主拒绝在各种模式下都生效。工作区模式和宿主策略在派发前的同一个入口判定。
+
+用 `Session::pending_permissions` 查看请求，用 `Session::reply_permission` 回复。CLI 可用 `kuku reply SESSION_ID REQUEST_ID --agent AGENT --allow` 或 `--deny`。批准绑定到已准备的动作，派发前重新校验目标和生效策略。操作系统级隔离由宿主负责。[服务端 API](../reference/server-api.md)
 
 ## `run_js` 与后台 Job
 
-宿主会分别审批外层 `run_js` 调用以及脚本内发起的每一个宿主动作：
+宿主分别检查外层 `run_js` 和每个宿主动作。工作区模式作用于脚本内的每个动作。需要批准时，脚本暂停在对应的 `await`。批准后运行时执行已准备的动作一次，原脚本继续。拒绝时结果以 `blocked` 返回，其他 Agent 在等待期间可以继续工作。
 
-- 延后外层 `run_js` 会在启动 JS worker 之前暂停。
-- 延后前台脚本里某个可持久准备的动作时，worker 会停止并释放 JS 状态，Session 保存已准备好的动作和已观察到的事实；批准后重新核对并派发一次，模型接着这些事实继续推进。
-- 派生输出草稿（`create_output`、`append_output`、`finish_output`）要求即时授权，返回 `Defer` 会在派发前直接 `blocked`。
-- 运行中的调用转成[后台 Job](sessions.md#后台-job) 后，已获批的执行继续跑，脚本内后续宿主动作依然要过授权；如果已分离的脚本遇到需要延后审批的动作，Job 会在派发前停止并汇报已观察到的事实。
+后台脚本同样支持这一流程，审批面板会标出所属 Job。服务进程仍在运行时，客户端重连后可以回复。如果进程重启，Session 保留已准备的动作和已完成的效果。继续前台脚本所在的 Agent 时，下一次模型请求会带上这些事实。剩余脚本步骤需要重新发起。[后台 Job](sessions.md#后台-job)

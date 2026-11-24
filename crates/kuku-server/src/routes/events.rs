@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -22,7 +22,7 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 
 use super::Params;
-use super::{SessionTarget, journal_task, manager};
+use super::{SessionTarget, WorkspaceQuery, journal_task, manager};
 use crate::AppState;
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::{RunManager, TurnLookup};
@@ -249,7 +249,7 @@ pub(super) async fn observe(
 ) -> Result<Response> {
     let target = SessionTarget::new(&state, &query.workspace, &id)?;
     let after = query.after.unwrap_or_default();
-    {
+    let replay_through = {
         let stopping = stop.borrow();
         if *stopping {
             return Err(ApiError::new(
@@ -259,12 +259,14 @@ pub(super) async fn observe(
             ));
         }
         target.require_exists()?;
-        if after != 0 && after > EventStore::read_head(&target.path)? {
+        let head = EventStore::read_head(&target.path)?;
+        if after > head {
             return Err(ApiError::invalid(
                 "observation cursor is ahead of the Session",
             ));
         }
-    }
+        head
+    };
     let manager = manager(&state).await;
     let (send, read) = mpsc::channel(1);
     let follow = async move {
@@ -274,6 +276,7 @@ pub(super) async fn observe(
             query.agent.as_deref(),
             query.include_agent_activity,
             after,
+            replay_through,
             &send,
         )
         .await
@@ -283,13 +286,66 @@ pub(super) async fn observe(
             let _ = write_frame(&send, value).await;
         }
     };
+    Ok(observation_response(read, follow, stop))
+}
+
+pub(super) async fn observe_workspace_permissions(
+    State(state): State<Arc<AppState>>,
+    Extension(stop): Extension<watch::Receiver<bool>>,
+    Params(query): Params<WorkspaceQuery>,
+) -> Result<Response> {
+    let workspace = super::workspaces::resolve_workspace(&query.workspace)?;
+    let manager = manager(&state).await;
+    let mut changes = manager.changes();
+    let initial = {
+        let manager = manager.clone();
+        let workspace = workspace.clone();
+        journal_task(move || manager.workspace_permission(&state.kuku_home, &workspace)).await?
+    };
+    let (send, read) = mpsc::channel(1);
+    let follow = async move {
+        if !write_frame(
+            &send,
+            json!({"type":"workspace_permission", "mode":initial}),
+        )
+        .await
+        {
+            return;
+        }
+        let mut permission_mode = initial;
+        let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        while observe_workspace_permission(&manager, &workspace, &mut permission_mode, &send).await
+        {
+            tokio::select! {
+                _ = send.closed() => return,
+                _ = changes.changed() => {}
+                _ = ping.tick() => {
+                    if !write_frame(&send, json!({"type":"heartbeat"})).await {
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    Ok(observation_response(read, follow, stop))
+}
+
+fn observation_response<F>(
+    read: mpsc::Receiver<Frame>,
+    follow: F,
+    stop: watch::Receiver<bool>,
+) -> Response
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     let body = ObservationBody {
         frames: ReceiverStream::new(read),
         follow: Some(Box::pin(follow)),
         stopped: WatchStream::from_changes(stop.clone()),
         stop,
     };
-    Ok((
+    (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/x-ndjson"),
@@ -297,7 +353,7 @@ pub(super) async fn observe(
         ],
         Body::from_stream(body),
     )
-        .into_response())
+        .into_response()
 }
 
 pub(super) async fn output(
@@ -569,12 +625,19 @@ async fn follow(
     agent: Option<&str>,
     include_agent_activity: bool,
     mut after: u64,
+    replay_through: u64,
     send: &FrameWriter,
 ) -> Result<()> {
     let mut changes = manager.changes();
+    let mut permission_mode = None;
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        if !observe_workspace_permission(manager, &target.workspace, &mut permission_mode, send)
+            .await
+        {
+            return Ok(());
+        }
         if let Some(session) = manager.open_session(&target.path) {
             let turns = TurnLookup::Live(session.clone());
             let mut observer = match agent.filter(|_| include_agent_activity) {
@@ -584,6 +647,12 @@ async fn follow(
             loop {
                 let observation = tokio::select! {
                     _ = send.closed() => return Ok(()),
+                    _ = changes.changed() => {
+                        if !observe_workspace_permission(manager, &target.workspace, &mut permission_mode, send).await {
+                            return Ok(());
+                        }
+                        continue;
+                    }
                     _ = ping.tick() => {
                         if !write_frame(send, json!({"type":"heartbeat"})).await {
                             return Ok(());
@@ -598,12 +667,10 @@ async fn follow(
                 let frame = match observation {
                     Observation::Committed(event) => {
                         after = event.id;
-                        Some(committed_frame(
-                            &event,
-                            agent,
-                            include_agent_activity,
-                            &turns,
-                        ))
+                        let mut frame =
+                            committed_frame(&event, agent, include_agent_activity, &turns);
+                        frame["live_commit"] = json!(event.id > replay_through);
+                        Some(frame)
                     }
                     Observation::Live {
                         agent: source,
@@ -654,7 +721,8 @@ async fn follow(
                 let turns = manager.turn_lookup(&target.path, last.id)?;
                 for event in events {
                     after = event.id;
-                    let frame = committed_frame(&event, agent, include_agent_activity, &turns);
+                    let mut frame = committed_frame(&event, agent, include_agent_activity, &turns);
+                    frame["live_commit"] = json!(event.id > replay_through);
                     if !write_frame(send, frame).await {
                         return Ok(());
                     }
@@ -672,6 +740,17 @@ async fn follow(
             }
         }
     }
+}
+
+async fn observe_workspace_permission(
+    manager: &RunManager,
+    workspace: &FsPath,
+    previous: &mut Option<kuku::permission::PermissionMode>,
+    send: &FrameWriter,
+) -> bool {
+    let mode = manager.cached_workspace_permission(workspace);
+    let changed = std::mem::replace(previous, mode) != mode;
+    !changed || write_frame(send, json!({"type":"workspace_permission", "mode":mode})).await
 }
 
 async fn write_frame(send: &FrameWriter, frame: Value) -> bool {

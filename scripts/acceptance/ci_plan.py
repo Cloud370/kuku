@@ -14,6 +14,10 @@ PLATFORMS = {
 }
 
 CASE_RULES = (
+    (("crates/kuku/src/permission/*", "crates/kuku/src/query/run_js*",
+      "crates/kuku-tui/src/*permission*", "crates/kuku-tui/src/notifications.rs",
+      "scripts/acceptance/interactive_permissions.py"),
+     ("permissions",)),
     (("crates/kuku-tui/*", "crates/kuku-client/*", "crates/kuku-cli/*", "apps/kuku/*",
       "scripts/acceptance/interactive_composer.py", "scripts/acceptance/interactive_rendering.py"),
      ("startup-info", "composer-actions", "paste", "statusline", "interrupt", "keyboard-queue")),
@@ -72,6 +76,8 @@ def job(platform, contract, installed="none", cases=(), browser=False, web=False
 
 
 def plan(event, draft=False, platform="all", paths=()):
+    if event == "workflow_dispatch" and platform == "windows-desktop":
+        return [job("windows", "none", "desktop")], [PLATFORMS["windows"][0]], False
     if event in ("schedule", "workflow_dispatch"):
         platforms = PLATFORMS if platform == "all" else (platform,)
         jobs = [job(name, "workspace", "full", browser=name == "linux", web=True)
@@ -108,7 +114,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event", required=True, choices=("pull_request", "push", "schedule", "workflow_dispatch"))
     parser.add_argument("--draft", choices=("true", "false"), default="false")
-    parser.add_argument("--platform", default="all", choices=("all", *PLATFORMS))
+    parser.add_argument("--platform", default="all", choices=("all", *PLATFORMS, "windows-desktop"))
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     draft = args.draft == "true"

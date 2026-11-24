@@ -161,7 +161,7 @@ pub(super) fn validate_agent_workspace(workspace: &FsPath, config: &mut AgentCon
     if let Some(requested) = config.workspace.as_mut() {
         let absolute = workspace.join(&*requested);
         let resolved = super::workspaces::resolve_workspace(&absolute)?;
-        if !resolved.starts_with(workspace) {
+        if !requested.is_absolute() && !resolved.starts_with(workspace) {
             return Err(ApiError::invalid(
                 "Agent workspace must be inside the selected Session workspace",
             ));

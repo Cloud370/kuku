@@ -138,6 +138,7 @@ fn host_terminal(
                         "cursor_hidden": screen.hide_cursor(),
                         "bracketed_paste": screen.bracketed_paste(),
                         "console_restored": console_restored,
+                        "audible_bells": parser.callbacks().audible_bells,
                         "exit_code": exit_code,
                     });
                     if styled {

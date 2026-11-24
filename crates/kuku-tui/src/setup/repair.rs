@@ -589,6 +589,7 @@ mod tests {
             endpoint: "http://127.0.0.1:1".into(),
             workspace: workspace.clone(),
         });
+        app.complete_test_permissions();
         let mut repair = state(&app);
         repair.stage = Stage::Saving;
         assert!(repair.saved(Ok(CredentialRepairApplied::Applied)));
@@ -597,6 +598,7 @@ mod tests {
             endpoint: "http://127.0.0.1:2".into(),
             workspace: workspace.join("changed-workspace"),
         });
+        app.complete_test_permissions();
         assert!(app.connection_problem.is_some());
         assert_eq!(
             Stage::ReconnectFailed,

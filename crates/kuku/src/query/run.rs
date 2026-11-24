@@ -9,18 +9,11 @@ mod queued_calls;
 mod tests;
 use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
-use crate::permission::append_project_allow_rule;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::types::ProviderToolCall;
 use crate::tool::{ToolFaults, ToolResultEnvelope};
-use helpers::persist_blocked_tool_result;
 
-use super::helpers::{
-    append_permission_decision, append_turn_cancelled, display_summary, now_timestamp,
-    permission_candidate,
-};
-use super::slots::query_workspace_access;
-use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
+use super::helpers::{append_permission_decision, append_turn_cancelled, now_timestamp};
 use super::types::{
     ModelPhase, PendingPermission, PendingRun, PendingStep, PermissionChoice, QueuedToolCall, Run,
     RunState, StreamingChunkState, UiEvent, WorkspaceAccess,
@@ -708,7 +701,7 @@ impl Run {
                 )));
             }
         };
-        let result = super::run_js::cancelled_permission(waiting)?;
+        let result = ToolResultEnvelope::cancelled("permission request cancelled");
         let mut store = EventStore::open(&waiting.pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: waiting.pending.turn,
@@ -748,136 +741,49 @@ impl Run {
             .queued_tool_calls
             .pop_front()
             .expect("PendingPermission implies a queued tool call");
-        let tool_call = &queued.tool_call;
-        if pending.query.runtime.is_some() {
+        let (rejection, decision_source) = if matches!(choice, PermissionChoice::Deny) {
+            (Some("host denied tool action"), source)
+        } else {
             super::provider::ensure_resolved(&mut pending)?;
             super::runtime_tools::validate_prepared(&pending, &queued)?;
-        }
-        let (granted_tool, candidate) = if waiting.request.source == "run_js" {
+            let rejection =
+                super::runtime_tools::check_approved(&pending, &queued, &waiting.request.source)?;
             (
-                waiting.request.tool.clone(),
-                waiting.request.candidate.clone(),
-            )
-        } else {
-            (
-                tool_call.name.clone(),
-                permission_candidate(
-                    &pending.kuku_home,
-                    &pending.workspace,
-                    &tool_call.name,
-                    &tool_call.args,
-                ),
+                rejection,
+                if rejection.is_some() {
+                    "active_policy"
+                } else {
+                    source
+                },
             )
         };
-        let rule = format!("{granted_tool}({candidate})");
-        if matches!(choice, PermissionChoice::Project) {
-            append_project_allow_rule(&pending.policy_path, &granted_tool, &candidate)?;
-        }
+        let tool_call = &queued.tool_call;
+        let rule = format!("{}({})", tool_call.name, waiting.request.candidate);
         append_permission_decision(
             &pending.events_path,
             pending.turn,
             &tool_call.id,
-            choice,
-            source,
+            if rejection.is_some() {
+                PermissionChoice::Deny
+            } else {
+                PermissionChoice::Once
+            },
+            decision_source,
             &rule,
         )?;
-        if pending.query.runtime.is_some() {
-            let step = if matches!(choice, PermissionChoice::Deny) {
-                super::runtime_tools::reject(pending, queued)?
-            } else {
-                super::runtime_tools::dispatch(
-                    pending,
-                    queued,
-                    self.slot_event_tx.clone(),
-                    self.slots.len(),
-                )
-                .await?
-            };
-            return self.apply_pending_step(step).await;
-        }
-        let QueuedToolCall {
-            tool_call,
-            display_summary: queued_summary,
-            ..
-        } = queued;
-        let prior_events = EventStore::replay(&pending.events_path)?;
-        if matches!(choice, PermissionChoice::Deny) {
-            pending.record_tool_denied(&tool_call.name);
-            let result = execute_tool_call(&mut pending, &tool_call).await?;
-            let mc = if result.model_content.is_empty() {
-                None
-            } else {
-                Some(result.model_content)
-            };
-            self.state = RunState::Pending(Box::new(pending));
-            return Ok(Some(UiEvent::ToolEnd {
-                id: tool_call.id,
-                status: result.status,
-                summary: result.summary,
-                model_content: mc,
-                result: result.structured,
-            }));
-        }
-        if query_workspace_access(&tool_call.name).conflicts_with(self.active_workspace_access()) {
-            pending
-                .queued_tool_calls
-                .push_front(QueuedToolCall::new(tool_call, queued_summary));
-            self.state = RunState::Pending(Box::new(pending));
-            return Ok(None);
-        }
-        let hook_result = run_tool_pre_hooks(
-            &mut pending,
-            &tool_call.name,
-            &tool_call.args,
-            &tool_call.id,
-        )
-        .await?;
-        if let Some(block) = hook_result.block {
-            let blocked = crate::tool::ToolResultEnvelope::blocked_marker();
-            pending.record_tool_call(&tool_call.name);
-            persist_blocked_tool_result(
-                &pending.events_path,
-                pending.turn,
-                &tool_call.id,
-                &block.reason,
-            )?;
-            self.state = RunState::Pending(Box::new(pending));
-            return Ok(Some(UiEvent::ToolEnd {
-                id: tool_call.id,
-                status: "blocked".to_string(),
-                summary: block.reason,
-                model_content: None,
-                result: Some(blocked),
-            }));
-        }
-        let summary = display_summary(&tool_call.name, &hook_result.args, None);
-        pending.record_tool_call(&tool_call.name);
-        let (slot, tool_kind) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
-            capacity: crate::WorkspaceExecutionHost::default(),
-            workspace_access: query_workspace_access(&tool_call.name),
-            limits: pending.query.runtime_limits.clone(),
-            output: None,
-            tool_name: tool_call.name.clone(),
-            tool_id: tool_call.id.clone(),
-            conversation: (!pending.conversation.is_main()).then(|| pending.conversation.clone()),
-            args: hook_result.args,
-            summary: summary.clone(),
-            workspace: pending.workspace.clone(),
-            kuku_home: pending.kuku_home.clone(),
-            prior_events: prior_events.clone(),
-            event_tx: self.slot_event_tx.clone(),
-            config: pending.config.clone(),
-            catalog: pending.catalog.clone(),
-            events_path: pending.events_path.clone(),
-        });
-        self.slots.insert(slot.tool_call_id.clone(), slot);
-        self.state = RunState::Pending(Box::new(pending));
-        Ok(Some(UiEvent::ToolStart {
-            id: tool_call.id,
-            tool: tool_call.name,
-            summary,
-            kind: tool_kind,
-        }))
+        let step = if let Some(reason) = rejection {
+            pending.record_tool_denied();
+            super::runtime_tools::reject(pending, queued, reason)?
+        } else {
+            super::runtime_tools::dispatch(
+                pending,
+                queued,
+                self.slot_event_tx.clone(),
+                self.slots.len(),
+            )
+            .await?
+        };
+        self.apply_pending_step(step).await
     }
 }
 

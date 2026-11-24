@@ -48,6 +48,9 @@ pub enum Observation {
     Committed {
         /// Stable durable event cursor.
         id: u64,
+        /// Whether the event was committed after the stream attached.
+        #[serde(default)]
+        live_commit: bool,
         /// Agent address associated with the fact, when known.
         agent: Option<String>,
         /// Committed event kind.
@@ -97,6 +100,11 @@ pub enum Observation {
         /// Number of missed transient frames, or zero after a reconnect with an unknown count.
         skipped: u64,
     },
+    /// The service changed the effective permission mode for the workspace.
+    WorkspacePermission {
+        /// Latest saved permission mode for the observed workspace.
+        mode: Option<crate::PermissionMode>,
+    },
     /// An idle connection is still healthy.
     Heartbeat,
 }
@@ -129,6 +137,7 @@ pub(crate) enum SubscriptionScope {
     Agent,
     Session,
     AgentWithActivity,
+    WorkspacePermissions,
 }
 
 impl Subscription {
@@ -246,20 +255,26 @@ impl Subscription {
             after: u64,
             include_agent_activity: Option<bool>,
         }
-        let response = self
-            .client
-            .request(
-                Method::GET,
-                ["sessions", &self.target.session_id, "observe"],
-            )
-            .query(&Query {
-                workspace: &self.target.workspace,
-                agent: (self.scope != SubscriptionScope::Session)
-                    .then_some(self.target.agent.as_str()),
-                after: self.cursor,
-                include_agent_activity: (self.scope == SubscriptionScope::AgentWithActivity)
-                    .then_some(true),
-            })
+        let request = if self.scope == SubscriptionScope::WorkspacePermissions {
+            self.client
+                .request(Method::GET, ["workspaces", "permissions", "observe"])
+                .query(&[("workspace", self.target.workspace.as_path())])
+        } else {
+            self.client
+                .request(
+                    Method::GET,
+                    ["sessions", &self.target.session_id, "observe"],
+                )
+                .query(&Query {
+                    workspace: &self.target.workspace,
+                    agent: (self.scope != SubscriptionScope::Session)
+                        .then_some(self.target.agent.as_str()),
+                    after: self.cursor,
+                    include_agent_activity: (self.scope == SubscriptionScope::AgentWithActivity)
+                        .then_some(true),
+                })
+        };
+        let response = request
             .read_timeout(READ_TIMEOUT)
             .send()
             .await

@@ -38,12 +38,16 @@
 | `PUT` | `/sessions/{id}/values/{name}` | 绑定命名值或显式替换来源 |
 | `GET` | `/models` | 已配置的模型目录 |
 | `GET` | `/models/resolve` | 解析候选 Agent 配置的生效设置 |
+| `GET` | `/sessions/{id}/permissions` | 列出 Session 各 Agent 的待审批请求 |
+| `GET` / `PUT` | `/workspaces/permissions` | 读取或设定工作区权限模式 |
 | `GET` | `/workspaces` | 列出工作区 |
 | `GET` | `/workspaces/resolve`、`/workspaces/files`、`/workspaces/skills` | 解析服务端路径，或查找工作区文件与 Skill |
 
 状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的工作，包括运行中的 Job。受管客户端会等旧进程释放服务租约后启动替代进程。
 
 `GET /service/model-default-plan` 仅适用于存在活动配置文件的受管服务。它要求常规 Bearer 认证，并执行相同的回环主机和来源检查，响应包含 `Cache-Control: no-store`，只接受 `connection`、`model` 和 `config_sha256` 查询字段。服务在自身进程环境中读取活动配置并验证请求路由；`config_sha256` 必须与客户端持有的原始字节一致。响应只包含 `tier`、`overwrite_user_default` 和 `config_sha256`，不会写入文件、解析凭据或发送模型请求。客户端仍负责本地且带并发保护的配置编辑。配置已变化、路由不可用、服务非受管或配置不可读时，会返回不泄露敏感信息的通用错误。
+
+两个权限接口都通过查询参数接收 `workspace`。工作区权限模式为 JSON 字符串（`"full"`、`"ask"` 或 `"read-only"`）。尚未保存时 GET 返回 `null`。PUT 接收模式字符串并更新该工作区已打开的 Session。Session 接口返回 `approvals`，每项有 `request` 和可选的 `job_id`。发送包含请求 Agent 和 ID 的 `reply_permission` 命令来回复。
 
 ## 命令与回执
 
@@ -100,6 +104,8 @@
 
 活动用户消息选择器可用 `/history?user_only=true`。该模式返回每条最多 512 个字符的消息预览，`rewind_groups` 为空数组。扫描达到字节预算时，页面可能没有填满，但仍有 `next_before` 可继续。读取完整原文时使用普通历史接口。
 4. 连接 `/observe?workspace=...&agent=...&after=CURSOR`，接收包含快照之后提交记录的 NDJSON。省略 `agent` 可以观察整个 Session。从已提交的条目更新续读游标。断开或落后时，从最后的已提交游标重连。对所选 Agent 设置 `include_agent_activity=true`，同一订阅即可收到其他 Agent 的活动。其增量文本及结算预览有长度上限，工具输出仅在切换到对应 Agent 后提供。重连后，Agent 摘要提供最近的输出或错误预览。
+
+观察流接入时记录日志头。之后提交的事件会标记 `live_commit`，客户端可用它区分新事件和追赶回放，再决定是否提醒。
 
 所选 Agent 的 `agent.usage` 包含累计 token 数，以及报告输入或输出量的请求数。`cache_measured_input_tokens` 和 `cache_measured_read_tokens` 分别汇总同一批提供有效成对计数的请求中的输入与缓存读取量。有测量时，`latest_request` 提供同一次请求的 `input_tokens`、`output_tokens`、`context_window_tokens` 和 `elapsed_us`。旧记录可能缺少可选测量字段。[终端用量字段](cli.md#终端界面)
 

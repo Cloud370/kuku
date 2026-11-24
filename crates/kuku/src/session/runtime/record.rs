@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -189,6 +189,28 @@ pub(super) enum Record {
         request_id: String,
         allow: bool,
     },
+    ScriptPermissionWaiting {
+        address: String,
+        request: crate::query::PermissionRequest,
+    },
+    ScriptPermissionReplied {
+        address: String,
+        command_id: String,
+        fingerprint: String,
+        request_id: String,
+        allow: bool,
+    },
+    ScriptPermissionEnded {
+        address: String,
+        turn: u64,
+        request_id: String,
+        reason: String,
+    },
+    ScriptRecoveryCompleted {
+        address: String,
+        turn: u64,
+        tool_call_id: String,
+    },
     CleanupFailed {
         address: String,
         message: String,
@@ -350,6 +372,10 @@ pub(super) struct State {
     pub(super) model_images: HashMap<String, RetainedModelImage>,
     pub(super) model_image_ids: HashMap<String, String>,
     pub(super) jobs: JobIndex,
+    #[serde(default)]
+    pub(super) script_permissions: BTreeMap<String, crate::query::PermissionRequest>,
+    #[serde(default)]
+    pub(super) recoverable_scripts: BTreeSet<(u64, String, String)>,
 }
 
 impl State {
@@ -676,6 +702,11 @@ impl State {
                 turn,
                 usage: _,
             } => {
+                if matches!(status, AgentStatus::Idle | AgentStatus::Waiting) {
+                    self.recoverable_scripts.retain(|(script_turn, owner, _)| {
+                        owner != &address || Some(*script_turn) != turn
+                    });
+                }
                 if !matches!(status, AgentStatus::Waiting | AgentStatus::Interrupted) {
                     self.values
                         .release_turn(&address, turn.or(self.agent(&address)?.snapshot.turn));
@@ -772,6 +803,37 @@ impl State {
                 let agent = self.agent_mut(&address)?;
                 agent.permission_reply = Some((request_id, allow));
                 agent.snapshot.status = AgentStatus::Idle;
+            }
+            Record::ScriptPermissionWaiting {
+                address, request, ..
+            } => {
+                self.recoverable_scripts.insert((
+                    request.turn,
+                    address,
+                    request.tool_call_id.clone(),
+                ));
+                self.script_permissions.insert(request.id.clone(), request);
+            }
+            Record::ScriptPermissionReplied {
+                address,
+                command_id,
+                fingerprint,
+                request_id,
+                ..
+            } => {
+                self.remember(command_id, fingerprint, event_id, address);
+                self.script_permissions.remove(&request_id);
+            }
+            Record::ScriptPermissionEnded { request_id, .. } => {
+                self.script_permissions.remove(&request_id);
+            }
+            Record::ScriptRecoveryCompleted {
+                address,
+                turn,
+                tool_call_id,
+            } => {
+                self.recoverable_scripts
+                    .remove(&(turn, address, tool_call_id));
             }
             Record::SessionClosed => {}
             Record::JobFinished {
@@ -895,8 +957,23 @@ impl State {
         snapshot
     }
 
+    pub(super) fn observe_script_dispatch(&mut self, payload: &crate::event::EventPayload) {
+        if let crate::event::EventPayload::Unknown(data) = payload
+            && data["kind"] == "runtime.tool_dispatched"
+            && data["tool"] == "run_js"
+            && let (Some(turn), Some(agent), Some(id)) = (
+                data["turn"].as_u64(),
+                data["agent"].as_str(),
+                data["tool_call_id"].as_str(),
+            )
+        {
+            self.recoverable_scripts
+                .insert((turn, agent.into(), id.into()));
+        }
+    }
+
     pub(super) fn mark_interrupted(&mut self) {
-        for agent in self.agents.values_mut() {
+        for (address, agent) in &mut self.agents {
             if agent.snapshot.status == AgentStatus::Running
                 || agent.snapshot.status == AgentStatus::Stopped
                     && agent.snapshot.execution_id.is_some()
@@ -907,7 +984,15 @@ impl State {
                 let snapshot = &mut agent.snapshot;
                 snapshot.status = AgentStatus::Interrupted;
                 snapshot.execution_id = None;
-                snapshot.last_error = Some("execution interrupted before a durable settlement; explicitly advance after reconciling side effects".into());
+                let pending_script = self
+                    .recoverable_scripts
+                    .iter()
+                    .any(|(_, owner, _)| owner == address);
+                snapshot.last_error = Some(if pending_script {
+                    super::script_permissions::RESTARTED_SCRIPT.into()
+                } else {
+                    "execution interrupted before a durable settlement; explicitly advance after reconciling side effects".into()
+                });
             }
         }
     }

@@ -85,7 +85,8 @@ Workspace files stay unchanged by default. When rewinding to an earlier Turn on 
 | `/` (on empty draft) or `Ctrl+P` then `/` | Search slash commands and Skills above the composer. Picking a Skill inserts an editable `/skill:NAME` prefix. |
 | `@` or `Tab` | Complete workspace-relative file paths into the draft. |
 | `Alt+←` / `Alt+→` | Cycle between Agents (`main` first, others sorted by address, wrapping at ends). |
-| `F2` (outside editor) | Cycle visible interactive controls (pending requests, auth repair, continue/stop, pending delivery recovery, previous Agent, service actions, and **Messages**). `F2` or clicking a question opens its reply editor; `F2` or clicking a permission focuses it for explicit `←`/`→` + `Enter` (**Deny** / **Allow once**; keyboard deny is `F2`, `←`, `Enter`). `Ctrl+R` reconnects. |
+| `F2` | Open tool approvals when any are waiting. Otherwise use the contextual control for questions, recovery, and other actions. |
+| `F3` | Open workspace permission modes. |
 | `Ctrl+T` | Cycle supported thinking levels for the active model (applies on the next safe request boundary). |
 | **Repair credentials** | Shown after a matching auth failure to update the failing managed local connection and explicitly restart its service (remote connections show server-side instructions). [Recovering from an auth failure](../start/configuration.md#recover-an-authentication-failure) |
 | **Messages** (narrow: **Msg**) | Inspect user, assistant, and tool entries in the current Agent's transcript. Pick an entry, then choose an action (`Full output` opens retained output or full inline content; multi-output JS scripts let you pick individual actions). |
@@ -115,6 +116,8 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 | `/speed [tier]` | `/fast`, `/ultra`, `/ultrafast` | Choose the selected Agent's service tier above the conversation input. The shortcuts choose `fast` or `ultrafast`. Select **Follow model default** to clear the override. Type to filter the available tiers and press Tab to complete the selection. An unknown tier can be added with an optional short probe. |
 | `/thinking` | `/think`, `/effort` | Pick a thinking level for the current Agent, choose **Use default** to clear the override, or press `D` + `Enter` on a writable local route to save as the model default. |
 | `/statusline` | `/status-line` | Preview, toggle, reorder, and save status-line fields to `tui.toml`. |
+| `/permissions [full\|ask\|read-only]` | `/perm`, `/permission` | Open the permission picker or apply a mode. |
+| `/notifications` | `/notify`, `/sound` | Toggle and save terminal sounds. |
 | `/save` | `/save-value` | Name pasted text or the current draft before sending. |
 | `/values` | `/value`, `/saved-values` | Browse saved values to read or attach to the draft. |
 | `/server` | `/service` | Inspect the connected service (`Ctrl+R` reconnects). |

@@ -10,7 +10,11 @@ use sha2::{Digest, Sha256};
 
 use crate::execution::{FileCommitState, FileMutationFacts};
 use crate::tool::{ToolErrorReason, ToolResultEnvelope};
+use crate::util::bound_directory::BoundDirectory;
 use crate::util::fs_sync;
+
+#[cfg(unix)]
+mod native_mutation;
 
 pub(crate) const FILE_BUFFER_BYTES: usize = 64 * 1024;
 pub(crate) const FILE_SCAN_BYTES: IoLimit = IoLimit("file scan byte budget exhausted");
@@ -457,11 +461,24 @@ pub(crate) fn file_version_with_text(
 
 fn scan_file_version(
     path: &Path,
-    mut scan_bytes: u64,
+    scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
     text_limit: Option<usize>,
 ) -> io::Result<(String, Metadata, Option<Vec<u8>>)> {
-    let mut file = StableFile::open(path, cancelled)?;
+    scan_open_file_version(
+        StableFile::open(path, cancelled)?,
+        scan_bytes,
+        text_limit,
+        |file| file.verify(path),
+    )
+}
+
+fn scan_open_file_version(
+    mut file: StableFile<'_>,
+    mut scan_bytes: u64,
+    text_limit: Option<usize>,
+    verify: impl FnOnce(&StableFile<'_>) -> io::Result<()>,
+) -> io::Result<(String, Metadata, Option<Vec<u8>>)> {
     file.check_size(scan_bytes, FILE_SCAN_BYTES)?;
     let mut hash = Sha256::new();
     let mut text = text_limit
@@ -488,7 +505,7 @@ fn scan_file_version(
             }
         }
     }
-    file.verify(path)?;
+    verify(&file)?;
     Ok((
         format_content_hash(hash),
         file.opened,
@@ -607,35 +624,37 @@ pub(crate) fn publish_file(
     cancelled: &FileCancellation<'_>,
 ) -> Result<Publication, WorkspaceCommitError> {
     let _commit = path_lock(path, cancelled)?;
-    match verify_canonical_parent(path) {
-        Err(error) if expected.is_none() && error.kind() == io::ErrorKind::NotFound => {
-            create_missing_parents(path, cancelled).map_err(version_error)?;
+    let (parent, name) = mutation_target(path, expected.is_none(), cancelled)?;
+    #[cfg(unix)]
+    return native_mutation::publish_file(&parent, name, expected, bytes, scan_bytes, cancelled);
+    #[cfg(windows)]
+    {
+        let _binding = (parent, name);
+        let mut staged = stage_file(path, bytes, cancelled)?;
+        staged.flush()?;
+        if expected.is_some() {
+            let metadata = fs::symlink_metadata(path).map_err(version_error)?;
+            staged.as_file().set_permissions(metadata.permissions())?;
         }
-        result => result.map_err(version_error)?,
-    }
-    let mut staged = stage_file(path, bytes, cancelled)?;
-    staged.flush()?;
-    if expected.is_some() {
-        let metadata = fs::symlink_metadata(path).map_err(version_error)?;
-        staged.as_file().set_permissions(metadata.permissions())?;
-    }
-    fs_sync::sync_file(staged.as_file())?;
-    let staged = staged.into_temp_path();
-    verify_canonical_parent(path).map_err(version_error)?;
-    if let Some(expected) = expected {
-        verify_file_version(path, expected, scan_bytes, cancelled)?;
+        fs_sync::sync_file(staged.as_file())?;
+        let staged = staged.into_temp_path();
+        verify_canonical_parent(path).map_err(version_error)?;
+        if let Some(expected) = expected {
+            verify_file_version(path, expected, scan_bytes, cancelled)?;
+            ensure_active(cancelled)?;
+            fs_sync::rename(&staged, path)?;
+            return Ok(Publication::Committed);
+        }
         ensure_active(cancelled)?;
-        return replace_existing(&staged, path);
+        staged.persist_noclobber(path).map_err(|error| {
+            if error.error.kind() == io::ErrorKind::AlreadyExists {
+                WorkspaceCommitError::Conflict
+            } else {
+                WorkspaceCommitError::WriteFailed(error.error)
+            }
+        })?;
+        Ok(confirm_publication(fs_sync::sync_parent(path)))
     }
-    ensure_active(cancelled)?;
-    staged.persist_noclobber(path).map_err(|error| {
-        if error.error.kind() == io::ErrorKind::AlreadyExists {
-            WorkspaceCommitError::Conflict
-        } else {
-            WorkspaceCommitError::WriteFailed(error.error)
-        }
-    })?;
-    Ok(confirm_publication(fs_sync::sync_parent(path)))
 }
 
 pub(crate) fn remove_observed_file(
@@ -645,18 +664,34 @@ pub(crate) fn remove_observed_file(
     cancelled: &FileCancellation<'_>,
 ) -> Result<(Publication, String, u64), WorkspaceCommitError> {
     let _commit = path_lock(path, cancelled)?;
-    verify_canonical_parent(path).map_err(version_error)?;
-    let (version, metadata) = verify_file_version(path, expected, scan_bytes, cancelled)?;
-    ensure_active(cancelled)?;
-    fs::remove_file(path).map_err(version_error)?;
+    let (parent, name) = mutation_target(path, false, cancelled)?;
     #[cfg(unix)]
-    return Ok((
-        confirm_publication(fs_sync::sync_parent(path)),
-        version,
-        metadata.len(),
-    ));
-    #[cfg(not(unix))]
-    Ok((Publication::Committed, version, metadata.len()))
+    return native_mutation::remove_file(&parent, name, expected, scan_bytes, cancelled);
+    #[cfg(windows)]
+    {
+        let _binding = (parent, name);
+        let (version, metadata) = verify_file_version(path, expected, scan_bytes, cancelled)?;
+        ensure_active(cancelled)?;
+        fs::remove_file(path).map_err(version_error)?;
+        Ok((Publication::Committed, version, metadata.len()))
+    }
+}
+
+fn mutation_target<'a>(
+    path: &'a Path,
+    create: bool,
+    cancelled: &FileCancellation<'_>,
+) -> Result<(BoundDirectory, &'a std::ffi::OsStr), WorkspaceCommitError> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(WorkspaceCommitError::Conflict);
+    };
+    let directory = if create {
+        BoundDirectory::open_or_create(parent, &|| ensure_active(cancelled))
+    } else {
+        BoundDirectory::open(parent)
+    }
+    .map_err(version_error)?;
+    Ok((directory, name))
 }
 
 pub(crate) fn mutation_preview(content: &str, fields: &mut serde_json::Value) {
@@ -752,40 +787,7 @@ fn verify_canonical_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn create_missing_parents(path: &Path, cancelled: &FileCancellation<'_>) -> io::Result<()> {
-    let mut missing = Vec::new();
-    for directory in path.ancestors().skip(1) {
-        match directory.canonicalize() {
-            Ok(canonical) if canonical == directory => break,
-            Ok(_) => return Err(changed_during_read()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => missing.push(directory),
-            Err(error) => return Err(error),
-        }
-    }
-
-    for directory in missing.into_iter().rev() {
-        ensure_active(cancelled)?;
-        verify_canonical_parent(directory)?;
-        match fs::create_dir(directory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-        if directory.canonicalize()? != directory {
-            return Err(changed_during_read());
-        }
-        if !fs::metadata(directory)?.is_dir() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotADirectory,
-                format!("{} is not a directory", directory.display()),
-            ));
-        }
-        #[cfg(unix)]
-        fs_sync::sync_parent(directory)?;
-    }
-    verify_canonical_parent(path)
-}
-
+#[cfg(windows)]
 fn verify_file_version(
     path: &Path,
     expected: &str,
@@ -815,18 +817,6 @@ fn confirm_publication(result: io::Result<()>) -> Publication {
         Ok(()) => Publication::Committed,
         Err(error) => Publication::Unconfirmed(error),
     }
-}
-
-#[cfg(unix)]
-fn replace_existing(staged: &Path, path: &Path) -> Result<Publication, WorkspaceCommitError> {
-    fs::rename(staged, path)?;
-    Ok(confirm_publication(fs_sync::sync_parent(path)))
-}
-
-#[cfg(not(unix))]
-fn replace_existing(staged: &Path, path: &Path) -> Result<Publication, WorkspaceCommitError> {
-    fs_sync::rename(staged, path)?;
-    Ok(Publication::Committed)
 }
 
 #[cfg(test)]

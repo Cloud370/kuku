@@ -78,9 +78,6 @@ pub enum Error {
     #[error("interrupted open tool state: {0}")]
     InterruptedOpenTool(String),
 
-    #[error("invalid policy file: {0}")]
-    InvalidPolicy(String),
-
     #[error("prompt render error: {0}")]
     PromptRender(String),
 
@@ -150,7 +147,6 @@ impl Error {
             Error::OutputUnavailable(_) => "output_unavailable",
             Error::OutputQuotaExceeded { .. } => "output_quota_exceeded",
             Error::InterruptedOpenTool(_) => "interrupted_open_tool",
-            Error::InvalidPolicy(_) => "internal",
             Error::PromptRender(_) => "internal",
             Error::ConfigLoad(_) => "internal",
             Error::InvalidArgument(_) => "invalid_request",
@@ -205,14 +201,6 @@ mod tests {
             Error::InterruptedOpenTool("session s_1 has unresolved tool call toolu_1".to_string())
                 .to_string(),
             "interrupted open tool state: session s_1 has unresolved tool call toolu_1"
-        );
-    }
-
-    #[test]
-    fn invalid_policy_variant_formats_message() {
-        assert_eq!(
-            Error::InvalidPolicy("malformed allow rule".to_string()).to_string(),
-            "invalid policy file: malformed allow rule"
         );
     }
 

@@ -62,7 +62,7 @@ export function applyObservation(
   frame: Observation,
   agent: string,
 ): ConversationView {
-  if (frame.type === "heartbeat") return view;
+  if (frame.type === "heartbeat" || frame.type === "workspace_permission") return view;
   if (frame.type === "lagged") return { ...view, preview: null };
   if (frame.type === "live") return frame.agent === agent ? applyLive(view, frame) : view;
   if ((frame.agent ?? frame.entry?.agent ?? "main") !== agent) return view;

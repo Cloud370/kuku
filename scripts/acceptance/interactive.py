@@ -11,6 +11,7 @@ import sys
 from urllib.parse import urlencode, urlsplit
 
 from interactive_composer import agent_setup, composer_actions, startup_info
+from interactive_permissions import workspace_permissions
 from interactive_stream import profile_markdown_stream
 from interactive_review import dense_transcript, release_review, replay_release_review, write_renderings
 from interactive_lifecycle import first_run_credential_repair, lifecycle_checks, shared_model_editor, verify_restored_tool
@@ -285,6 +286,7 @@ def configure_statusline(client):
 
     try:
         with client.terminal(workspace) as terminal:
+            terminal.expect("New session", state="Ready")
             original = footer(terminal, lambda line: line.startswith("Agent main") and "work-statusline" in line)
             sdk_settings = (client.home / "config.toml").read_bytes()
             open_settings(terminal)
@@ -868,6 +870,7 @@ def main():
                      client, *two_workspaces_and_disconnect(client))),
                  ("fast-stream", fast_markdown_stream),
                  ("statusline", configure_statusline),
+                 ("permissions", workspace_permissions),
                  ("startup-info", startup_info),
                  ("composer-actions", composer_actions),
                  ("interrupt", preserve_draft_after_interrupt),

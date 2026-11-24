@@ -206,6 +206,7 @@ impl Field {
         match self {
             Self::Model => "Model",
             Self::Connection => "Connection",
+            Self::PermissionMode => "Permission mode",
             Self::Execution => "Execution",
             Self::Agent => "Agent",
             Self::Workspace => "Workspace",

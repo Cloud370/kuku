@@ -17,6 +17,7 @@ mod local_settings;
 mod markup;
 mod menu;
 mod model_default;
+mod notifications;
 mod onboarding;
 mod output;
 mod retry_notice;

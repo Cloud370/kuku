@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use crate::error::{Error, Result};
@@ -9,7 +12,7 @@ pub(crate) struct ProjectContextInput {
     pub(crate) platform: String,
     pub(crate) current_date: String,
     pub(crate) project_instructions_rendered: String,
-    pub(crate) model_tiers_rendered: String,
+    pub(crate) model_tiers_rendered: Option<String>,
 }
 
 pub(crate) fn render_project_context(
@@ -27,7 +30,11 @@ pub(crate) fn render_project_context(
         ],
     )?;
 
-    let mut rendered = template.to_string();
+    let mut rendered = if input.model_tiers_rendered.is_some() {
+        template.to_owned()
+    } else {
+        without_model_tiers(template).into_owned()
+    };
     rendered = rendered.replace("{{workspace_root}}", &input.workspace_root);
     rendered = rendered.replace("{{platform}}", &input.platform);
     rendered = rendered.replace("{{current_date}}", &input.current_date);
@@ -35,7 +42,10 @@ pub(crate) fn render_project_context(
         "{{project_instructions_rendered}}",
         &input.project_instructions_rendered,
     );
-    rendered = rendered.replace("{{model_tiers_rendered}}", &input.model_tiers_rendered);
+    rendered = rendered.replace(
+        "{{model_tiers_rendered}}",
+        input.model_tiers_rendered.as_deref().unwrap_or_default(),
+    );
     Ok(rendered)
 }
 
@@ -52,6 +62,24 @@ pub(crate) fn project_policy_has_date(text: &str, template: &str, current_date: 
     if !template.contains("{{current_date}}") {
         return false;
     }
+    if matches_project_policy_date(text, template, current_date) {
+        return true;
+    }
+    if let Cow::Owned(template) = without_model_tiers(template) {
+        return matches_project_policy_date(text, &template, current_date);
+    }
+    false
+}
+
+fn without_model_tiers(template: &str) -> Cow<'_, str> {
+    static MODEL_TIERS_SECTION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\r?\n<kuku_models>\r?\n\{\{model_tiers_rendered\}\}\r?\n</kuku_models>\r?\n")
+            .expect("model tiers section pattern is valid")
+    });
+    MODEL_TIERS_SECTION.replace_all(template, "")
+}
+
+fn matches_project_policy_date(text: &str, template: &str, current_date: &str) -> bool {
     let mut pattern = String::from(r"\A");
     let mut rest = template;
     while let Some((literal, placeholder)) = rest.split_once("{{") {
@@ -105,7 +133,7 @@ mod tests {
             platform: "linux".to_string(),
             current_date: "2026-05-18".to_string(),
             project_instructions_rendered: "No project instructions found.".to_string(),
-            model_tiers_rendered: "No model tiers configured.".to_string(),
+            model_tiers_rendered: Some("No model tiers configured.".into()),
         };
 
         let template = "Workspace: {{workspace_root}}\nPlatform: {{platform}}";
@@ -121,7 +149,7 @@ mod tests {
             platform: "".into(),
             current_date: "".into(),
             project_instructions_rendered: "".into(),
-            model_tiers_rendered: "".into(),
+            model_tiers_rendered: None,
         };
         let error = render_project_context("{{missing_key}}", &input).unwrap_err();
         assert!(error.to_string().contains("missing_key"));
@@ -143,6 +171,31 @@ mod tests {
         let error = render_runtime_date(&catalog, "2026-05-18").unwrap_err();
 
         assert!(error.to_string().contains("timezone"));
+    }
+
+    #[test]
+    fn project_date_matches_policy_with_model_tiers_removed() {
+        let template = "Project policy\r\n- Date: {{current_date}}\r\n\r\n<kuku_models>\r\n{{model_tiers_rendered}}\r\n</kuku_models>\r\nEnd of policy";
+        let mut input = ProjectContextInput {
+            workspace_root: String::new(),
+            platform: String::new(),
+            current_date: "2026-05-19".into(),
+            project_instructions_rendered: String::new(),
+            model_tiers_rendered: None,
+        };
+        let without_tiers = render_project_context(template, &input).unwrap();
+        assert_eq!(
+            without_tiers,
+            "Project policy\r\n- Date: 2026-05-19\r\nEnd of policy"
+        );
+
+        input.model_tiers_rendered = Some("balanced".into());
+        let with_tiers = render_project_context(template, &input).unwrap();
+        assert!(with_tiers.contains("<kuku_models>\r\nbalanced\r\n</kuku_models>"));
+        for text in [without_tiers, with_tiers] {
+            assert!(project_policy_has_date(&text, template, "2026-05-19"));
+            assert!(!project_policy_has_date(&text, template, "2026-05-20"));
+        }
     }
 
     #[test]

@@ -224,6 +224,8 @@ TUI 在本地和远程连接下均从本地客户端数据目录（`--data-dir` 
 
 未设置 `tui.toml` 或 `statusline.fields` 时，默认顺序为 `model,agent,workspace,context,cache,tps,tokens_in,tokens_out,cost`。显式列出 `model` 可在空间允许时显示路由。可选字段 `connection` 也会在连接正常时显示本地或远程连接状态。`execution` 为可选字段。
 
+可选字段 `permission_mode` 显示当前工作区的权限模式。
+
 在 TUI 中运行 `/statusline` 可用 `Space` 开关、`←`/`→` 排序、`R` 预览默认并按 `Enter` 保存到 `tui.toml`（保存默认布局会移除 `statusline.fields`）。
 
 全部可用字段示例：
@@ -232,10 +234,12 @@ TUI 在本地和远程连接下均从本地客户端数据目录（`--data-dir` 
 [statusline]
 fields = [
   "model", "connection", "execution", "input", "agent", "workspace",
-  "context", "tokens_in", "tokens_out", "cache", "cost", "tps",
+  "context", "tokens_in", "tokens_out", "cache", "cost", "tps", "permission_mode",
 ]
 ```
 
 设 `fields = []` 可隐藏状态栏；加入 `input` 会把输入状态反馈从输入框移至状态栏。[字段含义](cli.md#终端界面)
 
 设置 `KUKU_TUI_STATUSLINE` 为逗号分隔列表可做单次覆盖（`none` 隐藏，空值或无效值回退默认布局）。[环境变量](environment-variables.md)
+
+用 `/notifications` 打开声音设置。↑ 和 ↓ 选择，空格切换，Enter 保存。`tui.toml` 的 `[notifications]` 下有 `question`、`permission`、`interrupted` 和 `completed` 四个开关，默认都为 `true`。TUI 对新事件发送 BEL，由终端决定响铃、闪屏或静音。历史记录和重连回放保持安静。

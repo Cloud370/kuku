@@ -28,6 +28,7 @@ fn connected_workspace(workspace: PathBuf) -> App {
         workspace,
         endpoint: "http://127.0.0.1:6789".into(),
     });
+    app.complete_test_permissions();
     app
 }
 

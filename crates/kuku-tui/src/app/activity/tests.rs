@@ -20,6 +20,7 @@ fn connected() -> App {
         endpoint: "http://127.0.0.1:6789".into(),
         workspace,
     });
+    app.complete_test_permissions();
     assert_eq!(ServiceStatus::Connected, app.service_status());
     app.effects.clear();
     app
@@ -655,6 +656,7 @@ fn footer_workspace_uses_the_resolved_service_path_and_active_agent_override() {
         endpoint,
         workspace: PathBuf::from("/host-workspace"),
     });
+    app.complete_test_permissions();
     assert_eq!(Some(Path::new("/host-workspace")), app.resolved_workspace());
 
     let main = app.active.clone();

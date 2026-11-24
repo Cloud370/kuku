@@ -281,6 +281,7 @@ mod tests {
             endpoint: "http://127.0.0.1:6789".into(),
             workspace,
         });
+        app.complete_test_permissions();
         app.select(app.active.clone(), true, "Navigation fixture".into());
         app.effects.clear();
         app
@@ -514,6 +515,6 @@ mod tests {
         );
         assert!(choice(&app).1.contains("Which branch?"));
         assert!(choice(&app).2.is_none());
-        assert!(app.effects.is_empty());
+        assert!(matches!(app.effects.as_slice(), [Job::PendingApprovals(_)]));
     }
 }

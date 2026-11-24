@@ -262,63 +262,55 @@ for (let i=1; i<=40; i++) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_script_action_reopens_without_its_worker_or_replaying_the_prefix() {
+async fn deferred_script_resumes_the_same_worker_and_revalidates_the_write() {
     for stale in [false, true] {
         let work = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         std::fs::write(work.path().join("approval.txt"), "before").unwrap();
-        let mut options = options(
+        let options = options(
             &work,
             &data,
             r#"
 await tools.write_file({path:"prefix",content:"once"});
 await tools.read_file({path:"approval.txt"});
-await tools.edit_file({path:"approval.txt", old_text:"before",new_text:"approved"});
-await tools.write_file({path:"after-approval",content:"should not run"});
+const edit = await tools.edit_file({path:"approval.txt", old_text:"before",new_text:"approved"});
+if (edit.status === "ok") await tools.write_file({path:"after-approval",content:"continued"});
+return edit.status;
 "#,
         );
-        options.session_id = Some("approvaltest".into());
         let host = options.workspace_host.clone();
-        let session = start(options.clone()).await;
-        let request = until(|| session.agent("main").unwrap().permission).await;
+        let session = start(options).await;
+        let request = until(|| session.pending_permissions().pop()).await;
         assert_eq!("edit_file", request.tool);
-        assert_eq!(0, host.metrics().active_workers);
-        session.close().await.unwrap();
+        assert_eq!(1, host.metrics().active_workers);
+        assert!(!work.path().join("after-approval").exists());
         if stale {
             std::fs::write(work.path().join("approval.txt"), "external").unwrap();
         }
-        let reopened = Session::open(options).await.unwrap();
-        reopened
+        let receipt = session
             .reply_permission("allow", "main", &request.id, true)
             .unwrap();
-        let facts = until(|| script_facts(&reopened)).await;
-        assert_eq!(1, host.metrics().started_workers);
-        assert!(
-            facts
-                .actions
-                .iter()
-                .any(|action| action.tool == WorkspaceScriptOperation::EditFile
-                    && if stale {
-                        action.status != WorkspaceScriptActionStatus::Ok
-                    } else {
-                        action.status == WorkspaceScriptActionStatus::Ok
-                    }),
-            "{facts:?}"
+        assert_eq!(
+            receipt,
+            session
+                .reply_permission("allow", "main", &request.id, true)
+                .unwrap()
         );
+        let facts = until(|| script_facts(&session)).await;
+        assert_eq!(1, host.metrics().started_workers);
+        assert_eq!(facts.value == "ok", !stale);
         assert_eq!(
             if stale { "external" } else { "approved" },
             std::fs::read_to_string(work.path().join("approval.txt")).unwrap()
         );
-        assert!(!work.path().join("after-approval").exists());
-        let writes=reopened.events(0,256).unwrap().into_iter().filter(|event|matches!(&event.payload,
-            EventPayload::Unknown(value) if value["kind"]=="workspace.action" && value["target"]=="prefix" && value["status"]=="ok")).count();
-        assert_eq!(1, writes);
-        reopened.close().await.unwrap();
+        assert_eq!(work.path().join("after-approval").exists(), !stale);
+        assert_eq!(completed_prefix_writes(&session), 1);
+        session.close().await.unwrap();
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cancelling_a_reopened_script_approval_retains_completed_actions() {
+async fn stopping_a_script_approval_retains_completed_actions_after_reopen() {
     let work = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     std::fs::write(work.path().join("approval.txt"), "before").unwrap();
@@ -333,33 +325,70 @@ await tools.edit_file({path:"approval.txt",old_text:"before",new_text:"changed"}
     );
     options.session_id = Some("cancelapproval".into());
     let session = start(options.clone()).await;
-    until(|| session.agent("main").unwrap().permission).await;
+    let request = until(|| session.pending_permissions().pop()).await;
     session.close().await.unwrap();
     let reopened = Session::open(options).await.unwrap();
-    reopened.cancel("main").await.unwrap();
-    let facts = until(|| script_facts(&reopened)).await;
+    assert!(reopened.pending_permissions().is_empty());
+    assert!(matches!(
+        reopened.reply_permission("stale", "main", &request.id, true),
+        Err(kuku::Error::PermissionRequestNotPending(_))
+    ));
     assert_eq!(
         std::fs::read_to_string(work.path().join("approval.txt")).unwrap(),
         "before"
     );
-    assert_eq!(
-        std::fs::read_to_string(work.path().join("prefix")).unwrap(),
-        "done"
-    );
-    let statuses: Vec<_> = facts
-        .actions
-        .iter()
-        .map(|action| (action.tool.name(), action.status))
-        .collect();
-    assert_eq!(
-        statuses,
-        [
-            ("write_file", WorkspaceScriptActionStatus::Ok),
-            ("read_file", WorkspaceScriptActionStatus::Ok),
-            ("edit_file", WorkspaceScriptActionStatus::Cancelled)
-        ]
-    );
+    assert_eq!(completed_prefix_writes(&reopened), 1);
     reopened.close().await.unwrap();
+}
+
+fn completed_prefix_writes(session: &Session) -> usize {
+    session
+        .events(0, 256)
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(&event.payload,
+            EventPayload::Unknown(value) if value["kind"] == "workspace.action"
+                && value["target"] == "prefix" && value["status"] == "ok")
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn stopped_execution_rejects_approval_before_its_worker_observes_cancellation() {
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("approval.txt"), "before").unwrap();
+    let session = start(options(
+        &work,
+        &data,
+        r#"
+await tools.read_file({path:"approval.txt"});
+await tools.edit_file({path:"approval.txt",old_text:"before",new_text:"changed"});
+"#,
+    ))
+    .await;
+    let request = until(|| session.pending_permissions().pop()).await;
+    let mut stop = std::pin::pin!(session.cancel("main"));
+    poll_fn(|context| {
+        assert!(stop.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
+    assert!(matches!(
+        session.reply_permission("approve-after-stop", "main", &request.id, true),
+        Err(kuku::Error::PermissionRequestNotPending(_))
+    ));
+    stop.await.unwrap();
+    assert_eq!(
+        "before",
+        std::fs::read_to_string(work.path().join("approval.txt")).unwrap()
+    );
+    session.close().await.unwrap();
 }
 
 #[derive(Debug)]
@@ -514,7 +543,7 @@ impl ToolAuthorizer for DraftGate {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_draft_actions_are_blocked_before_dispatch_without_pending_approval() {
+async fn denied_draft_operations_leave_already_published_output_intact() {
     let work = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let mut options = options(
@@ -536,14 +565,17 @@ return {base, id, statuses:[create.status,append.status,deny.status,allowed.stat
     );
     options.authorizer = Arc::new(DraftGate::default());
     let session = start(options).await;
-    let facts = until(|| {
-        assert!(
-            session.agent("main").unwrap().permission.is_none(),
-            "a draft must not enter pending authorization"
-        );
-        script_facts(&session)
-    })
-    .await;
+    for (index, tool) in ["create_output", "append_output", "finish_output"]
+        .into_iter()
+        .enumerate()
+    {
+        let request = until(|| session.pending_permissions().pop()).await;
+        assert_eq!(tool, request.tool);
+        session
+            .reply_permission(&format!("deny-{index}"), "main", &request.id, false)
+            .unwrap();
+    }
+    let facts = until(|| script_facts(&session)).await;
     assert_eq!(
         json!(["blocked", "blocked", "blocked", "ok", "blocked", "ok"]),
         facts.value["statuses"]
@@ -560,7 +592,6 @@ return {base, id, statuses:[create.status,append.status,deny.status,allowed.stat
         assert_eq!(expected, text);
     }
     let events = session.events(0, 256).unwrap();
-    assert!(!events.iter().any(|event| matches!(&event.payload, EventPayload::Unknown(fact) if fact["kind"] == "workspace.deferred")));
     let actions = events
         .iter()
         .filter_map(|event| WorkspaceActionReceipt::from_event(event).unwrap())

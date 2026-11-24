@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     Acknowledgement, Action, AgentConfig, AgentSnapshot, AgentStatus, Command, Connection, Error,
-    Observation, PermissionRequest, Snapshot, Target, Timing, new_id,
+    JobSnapshot, JobStatus, Observation, PendingApproval, PermissionRequest, Snapshot, Target,
+    Timing, new_id,
 };
 use serde_json::json;
 
@@ -57,6 +58,7 @@ pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {
         acknowledgement,
         Some(&mut renderer),
         args.stream_json,
+        None,
     )
     .await?;
     renderer.finish(&target.session_id, &snapshot, start.elapsed())?;
@@ -68,21 +70,15 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
     let connection = options.connect().await?;
     let has_explicit_id = args.command_id.is_some();
     let target = connection.target(args.session_id, args.agent);
-    let (action, permission_reply) = match args.answer {
-        Some(text) => (
-            Action::ReplyQuestion {
-                request_id: args.request_id,
-                text,
-            },
-            false,
-        ),
-        None => (
-            Action::ReplyPermission {
-                request_id: args.request_id,
-                allow: args.allow,
-            },
-            true,
-        ),
+    let action = match args.answer {
+        Some(text) => Action::ReplyQuestion {
+            request_id: args.request_id,
+            text,
+        },
+        None => Action::ReplyPermission {
+            request_id: args.request_id,
+            allow: args.allow,
+        },
     };
     let command = Command {
         target,
@@ -99,13 +95,16 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
                 .await;
         }
     }
-    let request = if permission_reply {
+    let request = if let Action::ReplyPermission { request_id, .. } = &command.action {
         connection
             .client
-            .snapshot(&command.target)
+            .pending_approvals(&command.target)
             .await?
-            .agent
-            .permission
+            .into_iter()
+            .find(|approval| {
+                approval.request.id == *request_id
+                    && approval.request.conversation.as_str() == command.target.agent
+            })
     } else {
         None
     };
@@ -113,15 +112,23 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
     if acknowledgement.replayed {
         return render_acknowledgement(&connection, &command.target, acknowledgement, true).await;
     }
-    if let Some(request) = request {
+    if let Some(approval) = &request {
         let decision = if args.allow { "allow" } else { "deny" };
         write_json(&permission_decision_line(
-            &request,
+            &approval.request,
             decision.into(),
             "host".into(),
         ))?;
     }
-    let snapshot = settle(&connection, &command.target, acknowledgement, None, false).await?;
+    let snapshot = settle(
+        &connection,
+        &command.target,
+        acknowledgement,
+        None,
+        false,
+        request.as_ref(),
+    )
+    .await?;
     write_json(&snapshot)?;
     check_outcome(snapshot)
 }
@@ -315,19 +322,57 @@ async fn settle(
     acknowledgement: Acknowledgement,
     mut renderer: Option<&mut RunRenderer>,
     stream_json: bool,
+    replied_to: Option<&PendingApproval>,
 ) -> Result<AgentSnapshot, Box<dyn std::error::Error>> {
     let receipt_cursor = acknowledgement.receipt.event_id;
     let mut observer = connection
         .client
         .subscribe_session(target, receipt_cursor.saturating_sub(1));
     let mut settled = connection.client.snapshot(target).await?;
-    while !is_settled(&settled, receipt_cursor)
-        || (stream_json && observer.cursor() < settled.cursor)
-    {
+    let mut approvals = connection.client.pending_approvals(target).await?;
+    let mut job = match replied_to.and_then(|approval| approval.job_id.as_deref()) {
+        Some(id) => Some(connection.client.job(target, id).await?),
+        None => None,
+    };
+    loop {
+        if let Some(request) =
+            observed_script_approval(&settled.agent, &approvals, receipt_cursor, replied_to)
+        {
+            settled.agent.permission = Some(request.clone());
+            return Ok(settled.agent);
+        }
+        let agent_complete = is_settled(&settled, receipt_cursor, &approvals);
+        if job.is_none()
+            && agent_complete
+            && settled.agent.running_jobs != 0
+            && let Some(approval) =
+                replied_to.filter(|approval| approval.request.id.starts_with("script:"))
+        {
+            // Promotion may have occurred after the pending approval was looked up.
+            job = connection
+                .client
+                .jobs(target)
+                .await?
+                .into_iter()
+                .find(|job| {
+                    job.turn == approval.request.turn
+                        && job.tool_call_id == approval.request.tool_call_id
+                });
+        }
+        let complete = job
+            .as_ref()
+            .map_or(agent_complete, |job| job.status != JobStatus::Running);
+        if complete && (!stream_json || observer.cursor() >= settled.cursor) {
+            break;
+        }
         let event = tokio::select! {
             result = observer.next() => result?,
             signal = tokio::signal::ctrl_c() => {
                 signal?;
+                if let Some(job) = &job {
+                    connection.client.cancel_job(target, &job.id).await?;
+                    return Err("job cancelled after cleanup".into());
+                }
                 if let Some(execution_id) = settled.execution_id() {
                     submit(connection, &Command { target: target.clone(), command_id: new_id(), action: Action::Cancel { execution_id } }).await?;
                     return Ok(connection.client.snapshot(target).await?.agent);
@@ -340,6 +385,7 @@ async fn settle(
                 id,
                 entry,
                 state_changed,
+                operation,
                 ..
             } => {
                 if let (Some(renderer), Some(entry)) = (&mut renderer, entry) {
@@ -349,6 +395,19 @@ async fn settle(
                 }
                 if state_changed && id > settled.cursor {
                     settled = connection.client.snapshot(target).await?;
+                }
+                if operation.as_deref() == Some("job_finished") {
+                    refresh_observed_job(connection, target, &mut job).await?;
+                }
+                if matches!(
+                    operation.as_deref(),
+                    Some(
+                        "script_permission_waiting"
+                            | "script_permission_replied"
+                            | "script_permission_ended"
+                    )
+                ) {
+                    approvals = connection.client.pending_approvals(target).await?;
                 }
             }
             Observation::Live { agent, event, .. } if agent == target.agent => {
@@ -361,8 +420,12 @@ async fn settle(
                     write_json(&json!({"type":"lagged","skipped":skipped}))?;
                 }
                 settled = connection.client.snapshot(target).await?;
+                approvals = connection.client.pending_approvals(target).await?;
+                refresh_observed_job(connection, target, &mut job).await?;
             }
-            Observation::Live { .. } | Observation::Heartbeat => {}
+            Observation::Live { .. }
+            | Observation::WorkspacePermission { .. }
+            | Observation::Heartbeat => {}
         }
     }
     if let Some(renderer) = renderer.filter(|renderer| renderer.needs_preview()) {
@@ -385,7 +448,42 @@ async fn settle(
     Ok(settled.agent)
 }
 
-fn is_settled(snapshot: &Snapshot, receipt_cursor: u64) -> bool {
+async fn refresh_observed_job(
+    connection: &Connection,
+    target: &Target,
+    job: &mut Option<JobSnapshot>,
+) -> Result<(), Error> {
+    if let Some(job) = job {
+        *job = connection.client.job(target, &job.id).await?;
+    }
+    Ok(())
+}
+
+fn observed_script_approval<'a>(
+    agent: &AgentSnapshot,
+    approvals: &'a [PendingApproval],
+    receipt_cursor: u64,
+    replied_to: Option<&PendingApproval>,
+) -> Option<&'a PermissionRequest> {
+    approvals.iter().find_map(|approval| {
+        let request = &approval.request;
+        if request.conversation.as_str() != agent.address || !request.id.starts_with("script:") {
+            return None;
+        }
+        let current_turn = Some(request.turn) == agent.turn
+            && (request.turn >= receipt_cursor
+                || approval.job_id.is_none() && agent.status == AgentStatus::Running);
+        let same_script = replied_to.is_some_and(|replied| {
+            replied.request.turn == request.turn
+                && replied.request.tool_call_id == request.tool_call_id
+        });
+        let relevant = same_script
+            || (current_turn && replied_to.is_none_or(|approval| approval.job_id.is_none()));
+        relevant.then_some(request)
+    })
+}
+
+fn is_settled(snapshot: &Snapshot, receipt_cursor: u64, approvals: &[PendingApproval]) -> bool {
     let target_completed = match snapshot.agent.status {
         AgentStatus::Idle => snapshot.agent.pending_inputs == 0,
         AgentStatus::Waiting | AgentStatus::Stopped | AgentStatus::Interrupted => true,
@@ -394,10 +492,16 @@ fn is_settled(snapshot: &Snapshot, receipt_cursor: u64) -> bool {
     snapshot.cursor >= receipt_cursor
         && target_completed
         && !snapshot.cleaning_up
-        && !snapshot
-            .agents
-            .iter()
-            .any(|agent| agent.status == AgentStatus::Running)
+        && !snapshot.agents.iter().any(|agent| {
+            agent.status == AgentStatus::Running
+                && !approvals.iter().any(|approval| {
+                    let request = &approval.request;
+                    approval.job_id.is_none()
+                        && request.conversation.as_str() == agent.address
+                        && Some(request.turn) == agent.turn
+                        && request.id.starts_with("script:")
+                })
+        })
 }
 
 fn check_outcome(snapshot: AgentSnapshot) -> CliResult {

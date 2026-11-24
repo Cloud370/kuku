@@ -282,6 +282,7 @@ fn event_brief_renders_permission_requested() {
             summary: "run tests".to_string(),
             candidate: "cargo test".to_string(),
             source: "default_ask".to_string(),
+            workspace: None,
         },
     };
 

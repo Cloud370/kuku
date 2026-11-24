@@ -6,7 +6,18 @@ use crate::Result;
 use crate::context::ToolSchema;
 use crate::session::InputSource;
 
-use super::{GateDecisionKind, GateSource, PermissionPolicy, decide_tool_call};
+/// Default authorization for the Agents in an open Session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    /// Permit tools subject to the embedding host's policy.
+    #[default]
+    Full,
+    /// Defer writes and execution for approval.
+    Ask,
+    /// Permit reads and reject writes and execution.
+    ReadOnly,
+}
 
 /// Final action and trusted provenance presented to an embedding host.
 #[derive(Debug, Clone)]
@@ -61,32 +72,52 @@ pub(crate) enum ActionAuthorization {
         source: &'static str,
         reason: &'static str,
     },
-    Defer,
+    Defer {
+        source: &'static str,
+    },
+}
+
+impl ActionAuthorization {
+    pub(crate) fn rejection_after_approval(self, approved_source: &str) -> Option<&'static str> {
+        match self {
+            Self::Allow => None,
+            Self::Defer { source } if source == approved_source => None,
+            Self::Defer { .. } => Some("the active policy requires a different approval"),
+            Self::Deny { reason, .. } => Some(reason),
+        }
+    }
 }
 
 pub(crate) fn authorize_action(
-    policy: &PermissionPolicy,
-    risk: &str,
-    candidate: &str,
+    mode: PermissionMode,
+    read_only: bool,
     authority: &dyn ToolAuthorizer,
     action: &ToolAuthorization,
 ) -> Result<ActionAuthorization> {
-    let gate = decide_tool_call(&action.tool.name, risk, candidate, policy, &[]);
-    if gate.kind == GateDecisionKind::Deny {
-        let source = match gate.source {
-            GateSource::HardGuard => "hard_guard",
-            _ => "project_policy",
-        };
+    if action.tool.name == "run_command" {
+        if let Some(reason) =
+            crate::tool::builtin::run_command::prepared_command_guard(&action.args)
+        {
+            return Ok(ActionAuthorization::Deny {
+                source: "hard_guard",
+                reason,
+            });
+        }
+    }
+    if mode == PermissionMode::ReadOnly && !read_only {
         return Ok(ActionAuthorization::Deny {
-            source,
-            reason: gate
-                .denial_reason
-                .unwrap_or("authorization denied this action"),
+            source: "permission_mode",
+            reason: "read-only mode permits reads only",
         });
     }
     Ok(match authority.authorize(action)? {
+        AuthorizationDecision::Allow if mode == PermissionMode::Ask && !read_only => {
+            ActionAuthorization::Defer {
+                source: "permission_mode",
+            }
+        }
         AuthorizationDecision::Allow => ActionAuthorization::Allow,
-        AuthorizationDecision::Defer => ActionAuthorization::Defer,
+        AuthorizationDecision::Defer => ActionAuthorization::Defer { source: "host" },
         AuthorizationDecision::Deny => ActionAuthorization::Deny {
             source: "host",
             reason: "the host denied this action",

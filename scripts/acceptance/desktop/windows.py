@@ -1,6 +1,7 @@
 """Drive the installed client in Windows Terminal on a dedicated Windows test desktop."""
 
 import argparse
+from collections import Counter
 from contextlib import contextmanager, suppress
 import ctypes
 from ctypes import wintypes
@@ -316,7 +317,8 @@ def selection_pixels(image):
     marker_spacing = marker_size + len(SELECTION) + 2
     matches = {}
     for y in range(image.height):
-        background = pixels[0, y]
+        # The message card can use a different background from the window margin.
+        background = Counter(pixels[x, y] for x in range(image.width)).most_common(1)[0][0]
         runs = []
         start = None
         for x in range(1, image.width):
@@ -588,7 +590,7 @@ def run(args, result):
                   windows_build=sys.getwindowsversion().build,
                   binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest())
     with InstalledClient(args.binary, args.bridge, args.directory) as client:
-        workspace = client.workspace("work-windows-terminal")
+        workspace = client.workspace("work-windows-terminal", permissions="full")
         state = args.directory / "terminal-state.json"
         title = f"{TITLE} {secrets.token_hex(4)}"
         process = subprocess.Popen([terminal, "-w", "new", "--maximized", "new-tab", "--suppressApplicationTitle",

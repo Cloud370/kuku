@@ -84,7 +84,8 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | 空草稿按 `/`，或 `Ctrl+P` 后按 `/` | 搜索斜杠命令和 Skill；选中 Skill 会填入可编辑的 `/skill:NAME` 前缀。 |
 | `@` 或 `Tab` | 补全工作区相对路径。 |
 | `Alt+←` / `Alt+→` | 在 Agent 间循环切换（`main` 排第一，其余按地址排序）。 |
-| 编辑器外按 `F2` | 依次聚焦可见交互控件（待决请求、认证修复、继续/停止、待确认投递恢复、上一个 Agent、服务操作、**Messages**）。`F2` 或点击问题卡片打开答复编辑器；`F2` 或点击权限卡片聚焦请求，再用 `←`/`→` + `Enter` 选择 **Deny** / **Allow once**（键盘拒绝路径为 `F2`、`←`、`Enter`）。`Ctrl+R` 重连。 |
+| `F2` | 有待审批工具时打开审批面板，否则使用当前问题、恢复等可见交互控件。 |
+| `F3` | 打开工作区权限模式菜单。 |
 | `Ctrl+T` | 切换当前模型支持的思考等级，在下一个安全请求边界生效。 |
 | **Repair credentials** | 出现匹配的认证失败后显示，用于更新受管本地连接并明确重启其服务；远程连接显示服务端修复步骤。[认证失败后的恢复](../start/configuration.md#认证失败后的恢复) |
 | **Messages**（窄屏 **Msg**） | 浏览当前 Agent 的用户、助手和工具条目并执行操作（`Full output` 打开保留输出或完整内联内容；多输出 JS 脚本可进一步选择单个动作）。 |
@@ -114,6 +115,8 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `/speed [档位]` | `/fast`、`/ultra`、`/ultrafast` | 在会话输入框上方选择当前 Agent 的服务档位。快捷命令选择 `fast` 或 `ultrafast`。选择 **Follow model default** 清除覆盖设置。输入可筛选已有档位，按 Tab 补全选中的档位。添加未知档位时可以选择是否探测。 |
 | `/thinking` | `/think`、`/effort` | 设置当前 Agent 思考等级，选 **Use default** 清除覆盖，或在可写本地路由上按 `D` + `Enter` 设为模型默认。 |
 | `/statusline` | `/status-line` | 预览、开关、排序并保存状态栏字段到 `tui.toml`。 |
+| `/permissions [full\|ask\|read-only]` | `/perm`、`/permission` | 打开权限菜单或直接设定模式。 |
+| `/notifications` | `/notify`、`/sound` | 开关并保存终端声音设置。 |
 | `/save` | `/save-value` | 发送前为粘贴内容或草稿命名保存。 |
 | `/values` | `/value`、`/saved-values` | 浏览保存值，读取或附到草稿。 |
 | `/server` | `/service` | 查看已连接的服务（`Ctrl+R` 重连）。 |

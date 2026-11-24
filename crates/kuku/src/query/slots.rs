@@ -87,7 +87,7 @@ pub(crate) fn spawn_simple_slot(
                     crate::tool::dispatch::dispatch_workspace_file(
                         &tool_name,
                         &args,
-                        &workspace,
+                        crate::tool::builtin::common::FileScope::Prepared(&workspace),
                         &dispatch_conversation,
                         &prior_events,
                         0,
@@ -164,6 +164,11 @@ pub(super) fn spawn_command_slot(
                 _=cancel_cmd.notified()=>return cancelled_slot("command cancelled before dispatch"),
                 permit=operations.acquire_owned()=>permit.expect("host capacity remains open"),
             };
+            if let Some(blocked) =
+                crate::tool::builtin::run_command::changed_command_directory(&args)
+            {
+                return SlotEvent::Done(blocked);
+            }
             let (tool_tx, mut tool_rx) = mpsc::channel::<crate::tool::builtin::CommandEvent>(64);
 
             let fwd_tc_id = tc_id.clone();
@@ -190,11 +195,13 @@ pub(super) fn spawn_command_slot(
 
             let r = match output {
                 Some(mut output) => {
-                    use crate::tool::builtin::run_command::{CommandCapture, run_command_to};
+                    use crate::tool::builtin::run_command::{
+                        CommandCapture, CommandCwd, run_command_to,
+                    };
 
                     let result = run_command_to(
                         &args,
-                        &workspace,
+                        CommandCwd::prepared(&workspace),
                         Some(tool_tx),
                         Some(cancel_cmd),
                         CommandCapture::model(
@@ -219,7 +226,7 @@ pub(super) fn spawn_command_slot(
                     result
                 }
                 None => {
-                    crate::tool::builtin::run_command(
+                    crate::tool::builtin::run_command::run_prepared_command(
                         &args,
                         &workspace,
                         Some(tool_tx),
@@ -498,7 +505,8 @@ mod tests {
     #[tokio::test]
     async fn simple_slot_scopes_file_snapshot_to_active_conversation() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("visible.txt");
+        let workspace = dir.path().canonicalize().unwrap();
+        let path = workspace.join("visible.txt");
         let content = "alpha\nalpha\n";
         std::fs::write(&path, content).unwrap();
         let main_read = read_event(1, dir.path(), None, content, 1);
@@ -518,7 +526,7 @@ mod tests {
             "edit_file".to_string(),
             args.clone(),
             "edit".to_string(),
-            dir.path().to_path_buf(),
+            workspace.clone(),
             dir.path().to_path_buf(),
             vec![main_read.clone()],
             event_tx.clone(),
@@ -542,7 +550,7 @@ mod tests {
             "edit_file".to_string(),
             args,
             "edit".to_string(),
-            dir.path().to_path_buf(),
+            workspace,
             dir.path().to_path_buf(),
             vec![main_read, review_read],
             event_tx,

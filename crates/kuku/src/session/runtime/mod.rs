@@ -13,6 +13,7 @@ mod receipts;
 mod record;
 mod recovery;
 mod retention;
+mod script_permissions;
 mod selection;
 mod turns;
 mod types;
@@ -25,12 +26,13 @@ pub use workspace_host::{WorkspaceExecutionHost, WorkspaceExecutionMetrics};
 
 pub(crate) use jobs::{JobControl, JobRequest};
 pub(crate) use retention::OutputReservation;
+pub(crate) use script_permissions::ScriptOwner;
 pub(crate) use selection::resolve_agent_model;
 pub(crate) use values::OutputSelector;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::task::JoinHandle;
@@ -38,6 +40,7 @@ use tokio::task::JoinHandle;
 use crate::event::store::JournalSummary;
 use crate::event::{EventStore, StoredEvent};
 use crate::execution::OutputReference;
+use crate::permission::PermissionMode;
 use crate::{Error, Result};
 
 pub use crate::tool::builtin::run_command::output::{
@@ -67,6 +70,8 @@ type CleanupOutcome = Option<WorkerOutcome>;
 pub(crate) struct SessionInner {
     id: String,
     options: SessionOptions,
+    permission_mode: RwLock<PermissionMode>,
+    script_permission_replies: Mutex<HashMap<String, script_permissions::ScriptWaiter>>,
     events_path: PathBuf,
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,
@@ -205,6 +210,8 @@ impl Session {
         let session = Self {
             inner: Arc::new(SessionInner {
                 id,
+                permission_mode: RwLock::new(options.permission_mode),
+                script_permission_replies: Mutex::new(HashMap::new()),
                 options,
                 events_path,
                 writer: Mutex::new(Some(writer)),
@@ -223,6 +230,7 @@ impl Session {
                 close_result: Mutex::new(None),
             }),
         };
+        session.recover_script_permissions()?;
         session.recover_jobs()?;
         Ok(session)
     }
@@ -237,6 +245,16 @@ impl Session {
 
     pub(crate) fn workspace_execution_host(&self) -> WorkspaceExecutionHost {
         self.inner.options.workspace_host.clone()
+    }
+
+    /// Return the permission mode used for the next tool action.
+    pub fn permission_mode(&self) -> PermissionMode {
+        *self.inner.permission_mode.read().unwrap()
+    }
+
+    /// Apply a mode to future tool actions in the open Session.
+    pub fn set_permission_mode(&self, mode: PermissionMode) {
+        *self.inner.permission_mode.write().unwrap() = mode;
     }
 
     /// Return the stable identity used when reopening this session.
@@ -694,6 +712,14 @@ impl Session {
             return Ok(receipt);
         }
         let agent = state.agent(address)?;
+        if let Some(request) = state.script_permissions.get(request_id) {
+            if request.conversation.as_str() != address {
+                return Err(Error::PermissionRequestNotPending(request_id.into()));
+            }
+            return self.reply_script_permission(
+                &mut state, command_id, address, request_id, digest, allow,
+            );
+        }
         if agent.snapshot.status != AgentStatus::Waiting
             || agent
                 .snapshot
@@ -848,7 +874,7 @@ impl Session {
             let _ = worker.cancel.send(true);
         }
         for job in jobs.values() {
-            job.cancel.notify_one();
+            job.cancel();
         }
         let mut failure = None;
         for (_, worker) in workers {
@@ -877,6 +903,11 @@ impl Session {
                     )));
                 }
             }
+        }
+        if let Err(error) = self
+            .expire_script_permissions("the session closed while the script was awaiting approval")
+        {
+            failure.get_or_insert(error);
         }
         let writer = {
             let _values = self.inner.value_writes.lock().await;
@@ -985,6 +1016,7 @@ fn reduce_event(
     if let Some(record) = record {
         state.reduce(event.id, record)?;
     }
+    state.observe_script_dispatch(&event.payload);
     job_replay.observe(state, &event)?;
     usage::reduce_model_fact(state, &event.payload)
 }

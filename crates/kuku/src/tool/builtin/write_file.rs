@@ -10,7 +10,7 @@ use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    ExecutorObservation, FileCancellation, IoLimit, WriteEvidence, WriteSnapshotLookup,
+    ExecutorObservation, FileCancellation, FileScope, IoLimit, WriteEvidence, WriteSnapshotLookup,
     content_hash, expected_version, file_read_error, file_version_with_text, mutation_preview,
     plural, publish_file, require_version, resolve_stat_path, snapshot_stale_error,
 };
@@ -24,7 +24,7 @@ struct WriteRequest<'a> {
 
 pub(crate) fn write_file(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     limits: WorkspaceIoLimits,
@@ -32,7 +32,7 @@ pub(crate) fn write_file(
 ) -> ToolResultEnvelope {
     write_file_with_evidence(
         args,
-        workspace,
+        scope,
         WriteEvidence::Model {
             conversation,
             events: prior_events,
@@ -44,14 +44,14 @@ pub(crate) fn write_file(
 
 pub(crate) fn write_file_for_executor(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     reads: &[ExecutorObservation],
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     write_file_with_evidence(
         args,
-        workspace,
+        scope,
         WriteEvidence::Executor(reads),
         limits,
         cancelled,
@@ -60,7 +60,7 @@ pub(crate) fn write_file_for_executor(
 
 fn write_file_with_evidence(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     evidence: WriteEvidence<'_>,
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
@@ -73,7 +73,7 @@ fn write_file_with_evidence(
         Ok(expected) => expected,
         Err(result) => return result,
     };
-    let resolved = match resolve_stat_path(workspace, request.path) {
+    let resolved = match scope.resolve(request.path, resolve_stat_path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
@@ -203,7 +203,7 @@ mod tests {
     ) -> ToolResultEnvelope {
         super::write_file(
             args,
-            workspace,
+            FileScope::Unprepared(workspace),
             &crate::conversation::address::ConversationAddress::MAIN,
             prior_events,
             crate::WorkspaceIoLimits::default(),
@@ -388,7 +388,7 @@ mod tests {
         let read = |offset, limit| {
             crate::tool::builtin::read_file_for_executor(
                 &serde_json::json!({"path":"README.md","offset":offset,"limit":limit}),
-                dir.path(),
+                FileScope::Unprepared(dir.path()),
                 80,
                 u64::MAX,
                 &|| false,
@@ -403,7 +403,7 @@ mod tests {
 
         let partial = write_file_for_executor(
             &args,
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             &reads,
             crate::WorkspaceIoLimits::default(),
             &|| false,
@@ -416,7 +416,7 @@ mod tests {
 
         let committed = write_file_for_executor(
             &args,
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             &reads,
             crate::WorkspaceIoLimits::default(),
             &|| false,
@@ -432,7 +432,7 @@ mod tests {
         let read = || {
             crate::tool::builtin::read_file_for_executor(
                 &serde_json::json!({"path":"README.md"}),
-                dir.path(),
+                FileScope::Unprepared(dir.path()),
                 80,
                 u64::MAX,
                 &|| false,
@@ -449,7 +449,7 @@ mod tests {
 
         let stale = write_file_for_executor(
             &args,
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             &[first, newer],
             crate::WorkspaceIoLimits::default(),
             &|| false,

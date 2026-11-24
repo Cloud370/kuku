@@ -34,6 +34,23 @@ async fn next_tool_start(run: &mut Run, tool_call_id: &str) -> UiEvent {
     }
 }
 
+#[derive(Debug)]
+struct CommandApproval;
+
+impl kuku::permission::ToolAuthorizer for CommandApproval {
+    fn authorize(
+        &self,
+        action: &kuku::permission::ToolAuthorization,
+    ) -> kuku::Result<kuku::permission::AuthorizationDecision> {
+        use kuku::permission::AuthorizationDecision::{Allow, Defer};
+        Ok(if action.tool.name == "run_command" {
+            Defer
+        } else {
+            Allow
+        })
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn command_mutation_finishes_before_same_run_edit_starts() {
     let Some(env) = TestEnv::enter(
@@ -82,6 +99,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     let session_id = "s_same_run_mutator_ordering";
     let snapshot = query("prepare race snapshot")
         .session(session_id)
+        .tool_authorizer(std::sync::Arc::new(CommandApproval))
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(snapshot_server.base_url())
@@ -123,6 +141,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
 
     let mut run = query("run conflicting mutations")
         .session(session_id)
+        .tool_authorizer(std::sync::Arc::new(CommandApproval))
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(race_server.base_url())
@@ -224,6 +243,7 @@ async fn command_mutation_finishes_before_same_run_memory_write_starts() {
 
     let mut run = query("run memory conflict")
         .session("s_same_run_memory_ordering")
+        .tool_authorizer(std::sync::Arc::new(CommandApproval))
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -319,6 +339,7 @@ async fn read_only_tool_starts_while_ordered_tool_waits_for_active_mutation() {
 
     let mut run = query("run mixed concurrency")
         .session("s_mixed_same_run_concurrency")
+        .tool_authorizer(std::sync::Arc::new(CommandApproval))
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())

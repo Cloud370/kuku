@@ -144,13 +144,6 @@ pub fn host_log_path(kuku_home: &Path, host: HostLogKind, day: &str) -> Result<P
     crate::log::host_log_path(kuku_home, host, day)
 }
 
-/// Resolve the policy.md path for a workspace.
-pub fn project_policy_path(kuku_home: &Path, workspace: &Path) -> Result<PathBuf> {
-    let mut path = project_home(kuku_home, workspace)?;
-    path.push("policy.md");
-    Ok(path)
-}
-
 /// Resolve the global memory.md path within kuku home.
 pub fn global_memory_path(kuku_home: &Path) -> PathBuf {
     kuku_home.join("memory.md")

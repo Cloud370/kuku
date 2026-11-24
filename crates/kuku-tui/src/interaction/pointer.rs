@@ -101,6 +101,9 @@ impl App {
                 | Modal::Prompt(_)
                 | Modal::Output(_)
                 | Modal::StatusLineEditor(_)
+                | Modal::Notifications(_)
+                | Modal::Permissions(_)
+                | Modal::Approvals(_)
                 | Modal::ExitConfirmation
                 | Modal::SendRouteConfirmation(_),
             ) => None,

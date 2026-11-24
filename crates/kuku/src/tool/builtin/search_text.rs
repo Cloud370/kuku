@@ -11,9 +11,10 @@ use crate::WorkspaceIoLimits;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    FileCancellation, IoLimit, ScanDeadline, WorkspaceFiles, charge_entry, ensure_active,
-    file_read_error, glob_match, is_cancellation, is_default_excluded_dir, is_io_limit,
-    optional_positive_usize, relative_path, resolve_path, verify_directory, workspace_path_blocked,
+    FileCancellation, FileScope, IoLimit, ScanDeadline, WorkspaceFiles, charge_entry,
+    ensure_active, file_read_error, glob_match, is_cancellation, is_default_excluded_dir,
+    is_io_limit, optional_positive_usize, relative_path, resolve_path, verify_directory,
+    workspace_path_blocked,
 };
 
 mod preview;
@@ -160,16 +161,16 @@ impl SearchPage {
 
 pub(crate) fn search_text_for_executor(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
-    search_text(args, workspace, SEARCH_MATCH_BYTES, limits, cancelled)
+    search_text(args, scope, SEARCH_MATCH_BYTES, limits, cancelled)
 }
 
 pub(crate) fn search_text(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     preview_bytes: usize,
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
@@ -210,13 +211,14 @@ pub(crate) fn search_text(
             );
         }
     };
-    let resolved = match resolve_path(workspace, path) {
+    let resolved = match scope.resolve(path, resolve_path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
 
     let mut candidates = SearchFiles {
         workspace: &resolved.workspace,
+        absolute_paths: resolved.external,
         include,
         view: view_kind,
         files: Vec::new(),
@@ -402,6 +404,7 @@ fn incomplete_notice(
 
 struct SearchFiles<'a> {
     workspace: &'a Path,
+    absolute_paths: bool,
     include: Option<&'a str>,
     view: SearchView,
     files: Vec<CollectedFile>,
@@ -475,6 +478,11 @@ impl SearchFiles<'_> {
         {
             return Ok(());
         }
+        let relative = if self.absolute_paths {
+            path.to_string_lossy().into_owned()
+        } else {
+            relative
+        };
         let original = path.strip_prefix(self.workspace).unwrap_or(path);
         let original = (original != Path::new(&relative)).then(|| Box::<Path>::from(original));
         let bytes = std::mem::size_of::<CollectedFile>()
@@ -574,11 +582,29 @@ mod tests {
     fn search_text(args: &Value, workspace: &Path) -> ToolResultEnvelope {
         super::search_text(
             args,
-            workspace,
+            FileScope::Unprepared(workspace),
             crate::RuntimeLimits::default().max_preview_bytes,
             WorkspaceIoLimits::default(),
             &|| false,
         )
+    }
+
+    #[test]
+    fn external_search_returns_a_path_that_can_be_opened_directly() {
+        let workspace = workspace();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("notes.txt");
+        std::fs::write(&path, "marker").unwrap();
+        let result = search_text(
+            &serde_json::json!({"path": outside.path(), "pattern": "marker"}),
+            workspace.path(),
+        );
+        assert_eq!("ok", result.status);
+        let matches = result.structured.unwrap()["matches"].clone();
+        assert_eq!(
+            matches[0]["path"],
+            path.canonicalize().unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -590,7 +616,7 @@ mod tests {
         let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 4;
         let result = super::search_text(
             &serde_json::json!({"path":"large.txt","pattern":"missing pattern"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             crate::RuntimeLimits::default().max_preview_bytes,
             WorkspaceIoLimits::default(),
             &stop,
@@ -628,7 +654,7 @@ mod tests {
         };
         let result = super::search_text(
             &serde_json::json!({"pattern":"needle"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             1024,
             limits,
             &|| false,
@@ -653,7 +679,7 @@ mod tests {
         std::fs::write(dir.path().join("large.txt"), "ordinary\n".repeat(1024)).unwrap();
         let result = super::search_text(
             &serde_json::json!({"pattern":"needle"}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             1024,
             WorkspaceIoLimits {
                 scan_bytes: 32,
@@ -853,7 +879,7 @@ mod tests {
             loop {
                 let result = super::search_text(
                     &serde_json::json!({"path":"fixture.txt","pattern":"TODO","view":"lines","context":context,"offset":offset,"limit":1000}),
-                    dir.path(),
+                    FileScope::Unprepared(dir.path()),
                     cap,
                     WorkspaceIoLimits::default(),
                     &|| false,
@@ -905,8 +931,19 @@ mod tests {
         std::fs::write(dir.path().join("fixture.txt"), row.repeat(20)).unwrap();
         let args = serde_json::json!({"path":"fixture.txt","pattern":"TODO","view":"lines"});
         let limits = WorkspaceIoLimits::default();
-        let direct = super::search_text(&args, dir.path(), 1024, limits, &|| false);
-        let local = super::search_text_for_executor(&args, dir.path(), limits, &|| false);
+        let direct = super::search_text(
+            &args,
+            FileScope::Unprepared(dir.path()),
+            1024,
+            limits,
+            &|| false,
+        );
+        let local = super::search_text_for_executor(
+            &args,
+            FileScope::Unprepared(dir.path()),
+            limits,
+            &|| false,
+        );
 
         assert!(direct.model_content.len() <= 1024);
         let facts = direct.structured.unwrap();

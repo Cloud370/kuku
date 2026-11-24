@@ -74,6 +74,8 @@ fn stream_json_permission_lines_include_request_conversation() {
         summary: "run gated command".into(),
         candidate: "cargo test".into(),
         source: "default_ask".into(),
+        workspace: None,
+        arguments: None,
     };
     let ask: serde_json::Value =
         serde_json::from_str(&permission_ask_line(&request).to_json_line()).unwrap();

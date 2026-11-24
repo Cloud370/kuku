@@ -248,6 +248,8 @@ mod tests {
                 summary: "cargo test".to_string(),
                 candidate: "cargo test".to_string(),
                 source: "default_ask".to_string(),
+                workspace: None,
+                arguments: None,
             },
         };
         let wire = to_wire(&event).unwrap();

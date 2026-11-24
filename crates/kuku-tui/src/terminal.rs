@@ -23,7 +23,7 @@ use ratatui::style::Color;
 use ratatui::{CompletedFrame, Terminal};
 
 use crate::app::{Address, App};
-use crate::config::load_statusline;
+use crate::config::{load_notifications, load_statusline};
 use crate::jobs::{Job, Jobs, Update};
 use crate::ui::{self, ActivityClock, ActivityFrame};
 
@@ -201,6 +201,13 @@ pub(crate) async fn run(options: ConnectionOptions, build: &'static str) -> io::
     if let Some(problem) = problem {
         app.problem(format!("Using the default status line · {problem}"));
     }
+    let (settings, problem) = load_notifications(&options);
+    app.notification_settings = settings;
+    if let Some(problem) = problem {
+        app.problem(format!(
+            "Using the default terminal notifications · {problem}"
+        ));
+    }
     let mut jobs = Jobs::new(options, build);
     let mut terminal = Screen::new(app.active.clone())?;
     #[cfg(not(windows))]
@@ -267,9 +274,17 @@ pub(crate) async fn run(options: ConnectionOptions, build: &'static str) -> io::
                 }
             },
         }
+        if app.terminal_bell.take(Instant::now()) {
+            write_bell(io::stdout().lock())?;
+        }
         dispatch(&mut app, &mut jobs, &mut clipboard);
     }
     Ok(())
+}
+
+fn write_bell(mut output: impl Write) -> io::Result<()> {
+    output.write_all(b"\x07")?;
+    output.flush()
 }
 
 fn dispatch(app: &mut App, jobs: &mut Jobs, clipboard: &mut Clipboard) {
@@ -671,6 +686,13 @@ mod tests {
         AuthorizationLink, Duration, FRAME_INTERVAL, FrameBackend, Instant, PaintSchedule,
         strip_cell_colors,
     };
+
+    #[test]
+    fn notifications_write_one_terminal_bel() {
+        let mut output = Vec::new();
+        super::write_bell(&mut output).unwrap();
+        assert_eq!(output, b"\x07");
+    }
 
     #[test]
     fn color_suppression_preserves_attributes_across_color_changes() {

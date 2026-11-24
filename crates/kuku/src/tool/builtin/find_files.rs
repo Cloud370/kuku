@@ -8,8 +8,8 @@ use crate::WorkspaceIoLimits;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    FileCancellation, ScanDeadline, bounded_lines, charge_entry, ensure_active, file_read_error,
-    glob_match, is_default_excluded_dir, is_io_limit, relative_path, resolve_path,
+    FileCancellation, FileScope, ScanDeadline, bounded_lines, charge_entry, ensure_active,
+    file_read_error, glob_match, is_default_excluded_dir, is_io_limit, relative_path, resolve_path,
     verify_directory, workspace_path_blocked,
 };
 
@@ -25,6 +25,7 @@ enum EntryKind {
 struct Listing {
     count: usize,
     entries_left: usize,
+    absolute_paths: bool,
     deadline: ScanDeadline,
     first_bytes: usize,
     first: BinaryHeap<(EntryKind, usize, String)>,
@@ -59,7 +60,7 @@ impl Listing {
 
 pub(crate) fn find_files(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     limits: WorkspaceIoLimits,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
@@ -70,13 +71,14 @@ pub(crate) fn find_files(
         .and_then(Value::as_u64)
         .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
         .unwrap_or_else(|| pattern.map_or(0, |_| u32::MAX));
-    let root = match resolve_path(workspace, path) {
+    let root = match scope.resolve(path, resolve_path) {
         Ok(root) => root,
         Err(result) => return result,
     };
 
     let mut listing = Listing {
         entries_left: limits.scan_entries,
+        absolute_paths: root.external,
         deadline: ScanDeadline::new(limits.scan_timeout_ms),
         ..Listing::default()
     };
@@ -202,7 +204,12 @@ fn collect_entries(
                 }
             };
             if add_dir {
-                listing.push(format!("{relative}/"), EntryKind::Directory);
+                let directory = if listing.absolute_paths {
+                    format!("{}{}", path.display(), std::path::MAIN_SEPARATOR_STR)
+                } else {
+                    format!("{relative}/")
+                };
+                listing.push(directory, EntryKind::Directory);
             }
             if recurse && depth < max_depth {
                 collect_entries(
@@ -248,7 +255,12 @@ fn push_entry(path: &Path, workspace: &Path, pattern: Option<&str>, listing: &mu
         return;
     }
 
-    listing.push(relative, EntryKind::File);
+    let display = if listing.absolute_paths {
+        path.to_string_lossy().into_owned()
+    } else {
+        relative
+    };
+    listing.push(display, EntryKind::File);
 }
 
 #[cfg(test)]
@@ -259,7 +271,12 @@ mod tests {
     use super::*;
 
     fn find_files(args: &Value, workspace: &Path) -> ToolResultEnvelope {
-        super::find_files(args, workspace, WorkspaceIoLimits::default(), &|| false)
+        super::find_files(
+            args,
+            FileScope::Unprepared(workspace),
+            WorkspaceIoLimits::default(),
+            &|| false,
+        )
     }
 
     #[test]
@@ -269,7 +286,7 @@ mod tests {
         let stop = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
         let result = super::find_files(
             &serde_json::json!({}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             WorkspaceIoLimits::default(),
             &stop,
         );
@@ -286,7 +303,7 @@ mod tests {
         }
         let result = super::find_files(
             &serde_json::json!({}),
-            dir.path(),
+            FileScope::Unprepared(dir.path()),
             WorkspaceIoLimits {
                 scan_entries: 1,
                 ..Default::default()
@@ -328,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn find_files_filters_pattern_globs_and_blocks_outside_workspace() {
+    fn find_files_filters_globs_and_distinguishes_absolute_paths_from_relative_escapes() {
         let dir = workspace();
         let md = find_files(
             &serde_json::json!({"path": ".", "pattern": "*.md"}),
@@ -351,12 +368,17 @@ mod tests {
         );
         assert_eq!(recursive_docs.model_content, "docs/tools.md");
 
-        let outside_path = if cfg!(target_os = "windows") {
-            "C:\\Windows"
-        } else {
-            "/etc"
-        };
-        let blocked = find_files(&serde_json::json!({"path": outside_path}), dir.path());
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("notes.txt"), "outside").unwrap();
+        let absolute = find_files(&serde_json::json!({"path": outside.path()}), dir.path());
+        assert_eq!(absolute.status, "ok");
+        let expected = outside.path().join("notes.txt").canonicalize().unwrap();
+        assert_eq!(absolute.model_content, expected.to_str().unwrap());
+        let protected = outside.path().join(".ssh").join("nested");
+        std::fs::create_dir_all(&protected).unwrap();
+        let protected = find_files(&serde_json::json!({"path": protected}), dir.path());
+        assert_eq!(protected.status, "blocked");
+        let blocked = find_files(&serde_json::json!({"path": ".."}), dir.path());
         assert_eq!(blocked.status, "blocked");
     }
 

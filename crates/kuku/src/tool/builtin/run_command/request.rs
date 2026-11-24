@@ -10,6 +10,7 @@ use crate::execution::{CommandInvocation, CommandShell};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
 use super::shell::shell_command;
+use crate::util::bound_directory::BoundDirectory;
 
 pub(super) struct PreparedCommand {
     pub(super) command: Command,
@@ -31,11 +32,16 @@ pub(super) struct CommandRequest {
 }
 
 impl CommandRequest {
-    pub(super) fn command(&self, memory_bytes: Option<NonZeroU64>) -> io::Result<PreparedCommand> {
+    pub(super) fn command(
+        &self,
+        directory: &BoundDirectory,
+        memory_bytes: Option<NonZeroU64>,
+    ) -> io::Result<PreparedCommand> {
         #[cfg(not(unix))]
-        let _ = memory_bytes;
+        let _ = (directory, memory_bytes);
         match &self.invocation {
             CommandInvocation::Program { program, args } => {
+                #[cfg(windows)]
                 let program = if Path::new(program).file_name() == Some(OsStr::new(program)) {
                     PathBuf::from(program)
                 } else {
@@ -43,6 +49,8 @@ impl CommandRequest {
                 };
                 let mut command = Command::new(program);
                 command.args(args);
+                #[cfg(unix)]
+                super::directory::configure(directory, &mut command)?;
                 #[cfg(unix)]
                 super::native::configure_memory(&mut command, memory_bytes)?;
                 #[cfg(unix)]
@@ -64,6 +72,7 @@ impl CommandRequest {
                 #[cfg(unix)]
                 let command = {
                     let mut command = command;
+                    super::directory::configure(directory, &mut command)?;
                     super::native::configure_memory(&mut command, memory_bytes)?;
                     command
                 };
@@ -90,6 +99,21 @@ pub(crate) fn prepare_command_args(
         .ok_or_else(|| invalid("command cwd is not valid Unicode"))?;
     args["cwd"] = cwd.into();
     Ok(request.cwd)
+}
+
+pub(crate) fn changed_command_directory(args: &Value) -> Option<ToolResultEnvelope> {
+    let cwd = Path::new(args["cwd"].as_str()?);
+    (!cwd
+        .canonicalize()
+        .is_ok_and(|current| current == cwd && current.is_dir()))
+    .then(command_directory_changed)
+}
+
+pub(super) fn command_directory_changed() -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        "command directory changed after preparation",
+        "choose the working directory again before requesting another command",
+    )
 }
 
 fn apply_command_defaults(
@@ -289,4 +313,8 @@ fn is_batch_file(program: &str) -> bool {
 fn invalid(message: impl Into<String>) -> ToolResultEnvelope {
     let message = message.into();
     ToolResultEnvelope::error(format!("failed: {message}"), message)
+}
+
+pub(crate) fn prepared_command_guard(args: &Value) -> Option<&'static str> {
+    super::guard::blocked_command_reason(&invocation(args).ok()?)
 }

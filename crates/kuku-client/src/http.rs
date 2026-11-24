@@ -183,6 +183,29 @@ impl Client {
         self.get(["health"], &()).await
     }
 
+    /// Read the workspace's saved tool permission preference.
+    pub async fn workspace_permission(
+        &self,
+        workspace: &Path,
+    ) -> Result<Option<crate::PermissionMode>, Error> {
+        self.get(["workspaces", "permissions"], &[("workspace", workspace)])
+            .await
+    }
+
+    /// Save a tool permission mode and make it effective in active Sessions.
+    pub async fn set_workspace_permission(
+        &self,
+        workspace: &Path,
+        mode: crate::PermissionMode,
+    ) -> Result<crate::PermissionMode, Error> {
+        self.json(
+            self.request(Method::PUT, ["workspaces", "permissions"])
+                .query(&[("workspace", workspace)])
+                .json(&mode),
+        )
+        .await
+    }
+
     /// Ask the authenticated managed service to validate a model-default plan against its active config.
     pub async fn model_default_plan(
         &self,
@@ -326,6 +349,24 @@ impl Client {
             )
             .await?;
         Ok(response.jobs)
+    }
+
+    /// List unresolved approvals for every Agent in a Session.
+    pub async fn pending_approvals(
+        &self,
+        target: &Target,
+    ) -> Result<Vec<crate::PendingApproval>, Error> {
+        #[derive(Deserialize)]
+        struct Approvals {
+            approvals: Vec<crate::PendingApproval>,
+        }
+        let response: Approvals = self
+            .get(
+                ["sessions", &target.session_id, "permissions"],
+                &[("workspace", &target.workspace)],
+            )
+            .await?;
+        Ok(response.approvals)
     }
 
     /// Get the current state and any terminal outcome of one background Job.
@@ -600,6 +641,16 @@ impl Client {
     /// Create a reconnectable observation across all Agents in one Session.
     pub fn subscribe_session(&self, target: &Target, after: u64) -> Subscription {
         Subscription::new(self.clone(), target, SubscriptionScope::Session, after)
+    }
+
+    /// Observe permission changes for the target's workspace before a Session exists.
+    pub fn subscribe_workspace_permissions(&self, target: &Target) -> Subscription {
+        Subscription::new(
+            self.clone(),
+            target,
+            SubscriptionScope::WorkspacePermissions,
+            0,
+        )
     }
 
     /// Follow the selected Agent's full stream and bounded progress from other Agents in its Session.

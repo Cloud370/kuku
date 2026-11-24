@@ -1,3 +1,4 @@
+pub(crate) mod bound_directory;
 pub(crate) mod fs_sync;
 pub(crate) mod json;
 pub mod path;

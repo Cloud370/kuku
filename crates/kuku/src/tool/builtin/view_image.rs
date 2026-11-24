@@ -33,13 +33,7 @@ pub(crate) fn read_image(
     cancelled: &FileCancellation<'_>,
 ) -> Result<(ImageMime, Vec<u8>), ToolResultEnvelope> {
     let path = required_path("view_image", args)?;
-    let resolved = resolve_path(workspace, path)?;
-    if workspace.join(path) != resolved.path {
-        return Err(ToolResultEnvelope::blocked(
-            "image target changed after authorization",
-            "request the image at its new path",
-        ));
-    }
+    let resolved = super::common::FileScope::Prepared(workspace).resolve(path, resolve_path)?;
     let mut file = StableFile::open(&resolved.path, cancelled)
         .map_err(|error| file_read_error(&resolved.path, error))?;
     let limit = IoLimit("image exceeds 1 MiB, reduce its size before viewing it");

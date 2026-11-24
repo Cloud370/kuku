@@ -41,6 +41,7 @@ pub(super) struct ContextCommit {
     source_head: u64,
     current_input: usize,
     runtime_date_index: Option<usize>,
+    permission_mode_index: Option<usize>,
     prefix_context_head: usize,
     new_segment: bool,
     reason: &'static str,
@@ -228,6 +229,16 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
             cursor.admitted.len()
         },
     )?;
+    let permission_mode = append_permission_mode(
+        pending,
+        &mut messages,
+        &catalog,
+        if new_segment {
+            0
+        } else {
+            cursor.admitted.len()
+        },
+    )?;
     let current_input = if compact_only {
         messages
             .iter()
@@ -328,6 +339,9 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         segment,
         runtime_date_index: messages.iter().rposition(|entry| {
             entry.origin == MessageOrigin::Runtime && entry.message == date_message
+        }),
+        permission_mode_index: messages.iter().rposition(|entry| {
+            entry.origin == MessageOrigin::Runtime && entry.message == permission_mode
         }),
         messages,
         source_head: cursor.after,
@@ -610,7 +624,7 @@ fn append_dynamic(
         .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
         .map_or(0, |message| message.admitted_at);
     if let Some(date_message) = date_message {
-        insert_runtime_date(
+        insert_runtime_notice(
             messages,
             pending.turn,
             date_message,
@@ -637,10 +651,41 @@ fn append_dynamic(
     Ok(())
 }
 
-fn insert_runtime_date(
+fn append_permission_mode(
+    pending: &PendingRun,
+    messages: &mut Vec<AdmittedMessage>,
+    catalog: &PromptCatalog,
+    frozen_head: usize,
+) -> Result<CanonicalMessage> {
+    use crate::permission::PermissionMode;
+
+    const TAG: &str = "<kuku_permission_mode>";
+    let mode = match super::runtime_tools::effective_permission_mode(pending)? {
+        PermissionMode::Full => "Full",
+        PermissionMode::Ask => "Ask",
+        PermissionMode::ReadOnly => "Read-only",
+    };
+    let template = &catalog.runtime["permission-mode"].text;
+    let message = CanonicalMessage::user_text(template.replace("{{mode}}", mode));
+    let last = messages.iter().rev().find(|entry| {
+        entry.origin == MessageOrigin::Runtime
+            && entry
+                .message
+                .blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::Text(text) if text.starts_with(TAG)))
+    });
+    if last.is_none_or(|entry| entry.message != message) {
+        let admitted_at = messages.last().map_or(0, |entry| entry.admitted_at);
+        insert_runtime_notice(messages, pending.turn, &message, frozen_head, admitted_at);
+    }
+    Ok(message)
+}
+
+fn insert_runtime_notice(
     messages: &mut Vec<AdmittedMessage>,
     turn: u64,
-    date_message: &CanonicalMessage,
+    message: &CanonicalMessage,
     frozen_head: usize,
     admitted_at: u64,
 ) {
@@ -658,7 +703,7 @@ fn insert_runtime_date(
         AdmittedMessage {
             turn,
             origin: MessageOrigin::Runtime,
-            message: date_message.clone(),
+            message: message.clone(),
             admitted_at,
         },
     );

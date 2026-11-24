@@ -529,7 +529,6 @@ mod tests {
             events_path,
             kuku_home: workspace.clone(),
             workspace: workspace.clone(),
-            policy_path: workspace.join("policy.md"),
             turn: 1,
             request_num: 1,
             cumulative: CumulativeUsage::default(),

@@ -8,14 +8,14 @@ use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    ExecutorObservation, FileCancellation, WorkspaceCommitError, WriteEvidence,
+    ExecutorObservation, FileCancellation, FileScope, WorkspaceCommitError, WriteEvidence,
     WriteSnapshotLookup, expected_version, file_read_error, file_version, remove_observed_file,
     required_path, resolve_remove_path, snapshot_stale_error,
 };
 
 pub(crate) fn remove_file(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     conversation: &ConversationAddress,
     prior_events: &[StoredEvent],
     scan_bytes: u64,
@@ -23,7 +23,7 @@ pub(crate) fn remove_file(
 ) -> ToolResultEnvelope {
     remove_file_with_evidence(
         args,
-        workspace,
+        scope,
         WriteEvidence::Model {
             conversation,
             events: prior_events,
@@ -35,14 +35,14 @@ pub(crate) fn remove_file(
 
 pub(crate) fn remove_file_for_executor(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     reads: &[ExecutorObservation],
     scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
 ) -> ToolResultEnvelope {
     remove_file_with_evidence(
         args,
-        workspace,
+        scope,
         WriteEvidence::Executor(reads),
         scan_bytes,
         cancelled,
@@ -51,7 +51,7 @@ pub(crate) fn remove_file_for_executor(
 
 fn remove_file_with_evidence(
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     evidence: WriteEvidence<'_>,
     scan_bytes: u64,
     cancelled: &FileCancellation<'_>,
@@ -64,7 +64,7 @@ fn remove_file_with_evidence(
         Ok(expected) => expected,
         Err(result) => return result,
     };
-    let resolved = match resolve_remove_path(workspace, path) {
+    let resolved = match scope.resolve(path, resolve_remove_path) {
         Ok(resolved) => resolved,
         Err(result) => return result,
     };
@@ -164,14 +164,24 @@ mod tests {
         std::fs::write(&path, original).unwrap();
         let args = serde_json::json!({"path": "二进制 & file.out"});
 
-        let cheap = stat_file(&args, workspace.path(), u64::MAX, &|| false)
-            .structured
-            .unwrap();
+        let cheap = stat_file(
+            &args,
+            FileScope::Unprepared(workspace.path()),
+            u64::MAX,
+            &|| false,
+        )
+        .structured
+        .unwrap();
         assert_eq!("file", cheap["entry_kind"]);
         assert_eq!(3, cheap["size_bytes"]);
         assert!(cheap.get("content_hash").is_none());
-        let no_observation =
-            remove_file_for_executor(&args, workspace.path(), &[], u64::MAX, &|| false);
+        let no_observation = remove_file_for_executor(
+            &args,
+            FileScope::Unprepared(workspace.path()),
+            &[],
+            u64::MAX,
+            &|| false,
+        );
         assert!(
             no_observation
                 .model_content
@@ -189,7 +199,7 @@ mod tests {
 
         let versioned = stat_file(
             &serde_json::json!({"path":"二进制 & file.out","version":true}),
-            workspace.path(),
+            FileScope::Unprepared(workspace.path()),
             u64::MAX,
             &|| false,
         )
@@ -202,15 +212,26 @@ mod tests {
         let bare = serde_json::json!({"path":"二进制 & file.out","expected_version":digest.to_ascii_uppercase()});
 
         std::fs::write(&path, b"\xff\x00").unwrap();
-        let stale = remove_file_for_executor(&pinned, workspace.path(), &[], u64::MAX, &|| false);
+        let stale = remove_file_for_executor(
+            &pinned,
+            FileScope::Unprepared(workspace.path()),
+            &[],
+            u64::MAX,
+            &|| false,
+        );
         assert!(
             stale
                 .model_content
                 .contains("Confirm removal is still intended before retrying.")
         );
         assert_eq!("snapshot_stale", stale.structured.unwrap()["reason_code"]);
-        let stale_bare =
-            remove_file_for_executor(&bare, workspace.path(), &[], u64::MAX, &|| false);
+        let stale_bare = remove_file_for_executor(
+            &bare,
+            FileScope::Unprepared(workspace.path()),
+            &[],
+            u64::MAX,
+            &|| false,
+        );
         assert_eq!(
             "snapshot_stale",
             stale_bare.structured.unwrap()["reason_code"]
@@ -218,7 +239,13 @@ mod tests {
         assert_eq!(b"\xff\x00", std::fs::read(&path).unwrap().as_slice());
         std::fs::write(&path, original).unwrap();
 
-        let removed = remove_file_for_executor(&bare, workspace.path(), &[], u64::MAX, &|| false);
+        let removed = remove_file_for_executor(
+            &bare,
+            FileScope::Unprepared(workspace.path()),
+            &[],
+            u64::MAX,
+            &|| false,
+        );
         assert_eq!("ok", removed.status);
         let facts =
             FileMutationFacts::from_structured(removed.structured.as_ref().unwrap()).unwrap();
@@ -227,9 +254,14 @@ mod tests {
         assert_eq!(Some(3), facts.bytes_removed);
         assert_eq!(Some(hash), facts.content_hash_before.as_deref());
         assert!(!path.exists());
-        let absent = stat_file(&args, workspace.path(), u64::MAX, &|| false)
-            .structured
-            .unwrap();
+        let absent = stat_file(
+            &args,
+            FileScope::Unprepared(workspace.path()),
+            u64::MAX,
+            &|| false,
+        )
+        .structured
+        .unwrap();
         assert_eq!("missing", absent["entry_kind"]);
         assert_eq!(false, absent["exists"]);
     }
@@ -241,7 +273,7 @@ mod tests {
         std::fs::write(&path, b"\xff\0").unwrap();
         let result = remove_file(
             &serde_json::json!({"path":"scratch.bin"}),
-            workspace.path(),
+            FileScope::Unprepared(workspace.path()),
             &ConversationAddress::parse("main").unwrap(),
             &[],
             u64::MAX,

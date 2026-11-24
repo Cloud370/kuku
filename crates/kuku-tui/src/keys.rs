@@ -27,6 +27,7 @@ impl Shortcut {
     pub(crate) const ACTIONS: Self = Self::control('p', "Ctrl+P");
     pub(crate) const ACTIONS_ALIAS: Self = Self::plain(KeyCode::F(1), "F1");
     pub(crate) const REPLY: Self = Self::plain(KeyCode::F(2), "F2");
+    pub(crate) const PERMISSIONS: Self = Self::plain(KeyCode::F(3), "F3");
     pub(crate) const ESCAPE: Self = Self::plain(KeyCode::Esc, "Esc");
     pub(crate) const ENTER: Self = Self::plain(KeyCode::Enter, "Enter");
     pub(crate) const TAB: Self = Self::plain(KeyCode::Tab, "Tab");

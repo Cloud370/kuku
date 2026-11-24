@@ -32,6 +32,39 @@ pub(super) struct ResolvedPath {
     pub(super) workspace: PathBuf,
     pub(super) path: PathBuf,
     pub(super) relative: String,
+    pub(super) external: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FileScope<'a> {
+    Unprepared(&'a Path),
+    Prepared(&'a Path),
+}
+
+impl FileScope<'_> {
+    pub(super) fn resolve(
+        self,
+        path: &str,
+        resolver: fn(&Path, &str) -> Result<ResolvedPath, ToolResultEnvelope>,
+    ) -> Result<ResolvedPath, ToolResultEnvelope> {
+        match self {
+            Self::Unprepared(workspace) => resolver(workspace, path),
+            Self::Prepared(workspace) => {
+                let resolved = resolver(workspace, path)?;
+                if resolved.path != workspace.join(path) {
+                    return Err(workspace_target_changed());
+                }
+                Ok(resolved)
+            }
+        }
+    }
+}
+
+fn workspace_target_changed() -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        "workspace target changed after preparation",
+        "read the new target before requesting another action",
+    )
 }
 
 fn prepare_workspace_path(
@@ -76,12 +109,7 @@ pub(crate) fn changed_file_target(
     if let Err(result) = prepare_file_target(name, &mut current, workspace) {
         return Some(result);
     }
-    (current != *args).then(|| {
-        ToolResultEnvelope::blocked(
-            "workspace target changed after preparation",
-            "read the new target before requesting another action",
-        )
-    })
+    (current != *args).then(workspace_target_changed)
 }
 
 pub(super) fn required_path<'a>(
@@ -116,7 +144,7 @@ pub(super) fn resolve_stat_path(
                 .parent()
                 .and_then(|parent| parent.canonicalize().ok())
             {
-                if !parent.starts_with(&workspace) {
+                if !Path::new(path).is_absolute() && !parent.starts_with(&workspace) {
                     return Err(outside_workspace(path));
                 }
             }
@@ -156,6 +184,8 @@ fn workspace_path(workspace: &Path, path: &str) -> Result<(PathBuf, PathBuf), To
     let lexical = normalize_existing_components(joined.clone());
     if let Ok(relative) = lexical.strip_prefix(&workspace) {
         guard_relative(&relative.to_string_lossy())?;
+    } else if Path::new(path).is_absolute() {
+        guard_relative(path)?;
     }
     Ok((workspace, joined))
 }
@@ -186,12 +216,24 @@ fn resolve_missing_path(path: &Path, requested: &str) -> Result<PathBuf, ToolRes
 }
 
 fn checked_resolved_path(
-    workspace: PathBuf,
+    mut workspace: PathBuf,
     resolved: PathBuf,
     requested: &str,
 ) -> Result<ResolvedPath, ToolResultEnvelope> {
-    if !resolved.starts_with(&workspace) {
-        return Err(outside_workspace(requested));
+    let external = !resolved.starts_with(&workspace);
+    if external {
+        if !Path::new(requested).is_absolute() {
+            return Err(outside_workspace(requested));
+        }
+        guard_relative(&resolved.to_string_lossy())?;
+        // Anchor operations at an existing directory so relative opens stay pinned.
+        workspace = resolved
+            .ancestors()
+            .skip(1)
+            .find(|path| path.is_dir())
+            .or_else(|| resolved.is_dir().then_some(resolved.as_path()))
+            .ok_or_else(|| outside_workspace(requested))?
+            .to_owned();
     }
     let relative = relative_path(&resolved, &workspace);
     guard_relative(&relative)?;
@@ -199,6 +241,7 @@ fn checked_resolved_path(
         workspace,
         path: resolved,
         relative,
+        external,
     })
 }
 

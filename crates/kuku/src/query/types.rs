@@ -42,6 +42,7 @@ pub struct Query {
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) output: Option<crate::config::RequestedOutput>,
     pub(crate) service_tier: Option<String>,
+    pub(super) permission_mode: crate::permission::PermissionMode,
     pub(crate) authorizer: Option<Arc<dyn crate::permission::ToolAuthorizer>>,
     pub(crate) model_adapter: Option<Arc<dyn crate::ModelAdapter>>,
     pub(crate) provider_trace: crate::ProviderTraceMode,
@@ -94,14 +95,18 @@ pub struct PermissionRequest {
     pub summary: String,
     pub candidate: String,
     pub source: String,
+    /// Final working directory of the prepared action.
+    #[serde(default)]
+    pub workspace: Option<std::path::PathBuf>,
+    /// Final arguments available for reviewing the prepared action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
 }
 
 /// The host's response to a permission request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionChoice {
     Once,
-    Session,
-    Project,
     Deny,
 }
 
@@ -269,7 +274,6 @@ impl std::fmt::Debug for ExecSlot {
 
 #[derive(Debug)]
 pub(crate) enum SlotEvent {
-    WorkspacePermission(Box<super::run_js::AwaitingAction>),
     Output(ToolEvent),
     Done(crate::tool::ToolResultEnvelope),
     JobControlDone(crate::tool::ToolResultEnvelope),
@@ -338,7 +342,6 @@ pub(super) struct PendingRun {
     pub(super) events_path: PathBuf,
     pub(super) kuku_home: PathBuf,
     pub(super) workspace: PathBuf,
-    pub(super) policy_path: PathBuf,
     pub(super) turn: u64,
     pub(super) request_num: u64,
     pub(super) cumulative: CumulativeUsage,
@@ -421,8 +424,7 @@ impl PendingRun {
         }
     }
 
-    pub(super) fn record_tool_denied(&mut self, name: &str) {
-        self.record_tool_call(name);
+    pub(super) fn record_tool_denied(&mut self) {
         self.tool_denied += 1;
     }
 
@@ -634,6 +636,7 @@ impl Query {
             reasoning_effort: None,
             output: None,
             service_tier: None,
+            permission_mode: crate::permission::PermissionMode::default(),
             authorizer: None,
             model_adapter: None,
             provider_trace: crate::ProviderTraceMode::Auto,
@@ -749,6 +752,21 @@ impl Query {
     /// Use an in-memory config (bypasses file loading).
     pub fn config(mut self, cfg: Config) -> Self {
         self.config_obj = Some(cfg);
+        self
+    }
+
+    /// Set the authorization mode for a standalone query.
+    pub fn permission_mode(mut self, mode: crate::permission::PermissionMode) -> Self {
+        self.permission_mode = mode;
+        self
+    }
+
+    /// Set the host authority for a standalone query's prepared tool calls.
+    pub fn tool_authorizer(
+        mut self,
+        authorizer: Arc<dyn crate::permission::ToolAuthorizer>,
+    ) -> Self {
+        self.authorizer = Some(authorizer);
         self
     }
 

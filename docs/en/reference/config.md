@@ -222,7 +222,7 @@ Starter template: `crates/kuku/assets/default-config.toml`.
 
 The TUI reads `tui.toml` from the local client data directory (`--data-dir`, then `KUKU_HOME`, then `~/.kuku`) for both local and remote connections. Execution settings stay in `config.toml`.
 
-If `tui.toml` or `statusline.fields` is absent, the built-in order is `model,agent,workspace,context,cache,tps,tokens_in,tokens_out,cost`. An explicit `model` can show its route when space permits. The optional `connection` field includes healthy connections as local or remote. `execution` is optional.
+If `tui.toml` or `statusline.fields` is absent, the built-in order is `model,agent,workspace,context,cache,tps,tokens_in,tokens_out,cost`. An explicit `model` can show its route when space permits. The optional `connection` field includes healthy connections as local or remote. `execution` and `permission_mode` are optional. `permission_mode` reports the workspace permission mode.
 
 Run `/statusline` in the TUI to toggle (`Space`), reorder (`←`/`→`), preview defaults (`R`), and save (`Enter`) directly to `tui.toml` (saving defaults removes `statusline.fields`).
 
@@ -232,10 +232,12 @@ Example with all supported fields:
 [statusline]
 fields = [
   "model", "connection", "execution", "input", "agent", "workspace",
-  "context", "tokens_in", "tokens_out", "cache", "cost", "tps",
+  "context", "tokens_in", "tokens_out", "cache", "cost", "tps", "permission_mode",
 ]
 ```
 
 Set `fields = []` to hide the status line. Including `input` moves input feedback from the editor to the status line. [Field meanings](cli.md#terminal-interface)
 
 Set `KUKU_TUI_STATUSLINE` to a comma-separated list to override `tui.toml` for one launch (`none` hides it; blank uses defaults; invalid settings fall back to defaults). [Environment variables](environment-variables.md)
+
+Use `/notifications` to select with ↑ and ↓, toggle with Space and save with Enter. The `[notifications]` keys in `tui.toml` are `question`, `permission`, `interrupted`, and `completed`. Each defaults to `true`. The TUI sends BEL for new events. The terminal controls whether BEL produces sound, a flash or silence. History and replay on reconnect stay quiet.

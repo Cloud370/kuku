@@ -101,8 +101,9 @@ impl Session {
         execution: u64,
         turn: u64,
         tool_call_id: &str,
+        tool: &str,
     ) -> Result<()> {
-        let state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().unwrap();
         if self
             .executing_agent(&state, address, execution)?
             .snapshot
@@ -111,10 +112,13 @@ impl Session {
         {
             return Err(Error::ExecutionNotActive(execution));
         }
-        EventStore::open(self.events_path())?.append(EventPayload::Unknown(serde_json::json!({
-            "kind": "runtime.tool_dispatched", "ts": timestamp()?, "agent": address,
-            "turn": turn, "tool_call_id": tool_call_id,
-        })))?;
+        let event = EventStore::open(self.events_path())?.append(EventPayload::Unknown(
+            serde_json::json!({
+                "kind": "runtime.tool_dispatched", "ts": timestamp()?, "agent": address,
+                "turn": turn, "tool_call_id": tool_call_id, "tool": tool,
+            }),
+        ))?;
+        state.observe_script_dispatch(&event.payload);
         Ok(())
     }
 

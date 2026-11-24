@@ -28,7 +28,7 @@ kuku 按工作区解析后的规范路径定位 Session、项目 Memory 和权�
 ```text
 $KUKU_HOME/p/code/my-app/
 ├── memory.md
-├── policy.md
+├── permission-mode.json
 └── sessions/
 ```
 

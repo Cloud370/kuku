@@ -6,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
+use crate::tool::builtin::common::FileScope;
 use crate::tool::{ToolResultEnvelope, builtin};
 
 pub(crate) fn is_workspace_file(name: &str) -> bool {
@@ -29,7 +30,7 @@ pub(crate) fn is_workspace_file(name: &str) -> bool {
 pub(crate) fn dispatch_workspace_file(
     name: &str,
     args: &Value,
-    workspace: &Path,
+    scope: FileScope<'_>,
     conversation: &crate::conversation::address::ConversationAddress,
     prior_events: &[StoredEvent],
     result_event_id: u64,
@@ -43,10 +44,10 @@ pub(crate) fn dispatch_workspace_file(
         return Some(permission_denied(name));
     }
     let mut result = match name {
-        "find_files" => builtin::find_files(args, workspace, limits.workspace_io, cancelled),
+        "find_files" => builtin::find_files(args, scope, limits.workspace_io, cancelled),
         "read_file" => builtin::read_file(
             args,
-            workspace,
+            scope,
             conversation,
             prior_events,
             result_event_id,
@@ -55,17 +56,15 @@ pub(crate) fn dispatch_workspace_file(
         ),
         "search_text" => builtin::search_text(
             args,
-            workspace,
+            scope,
             limits.max_preview_bytes,
             limits.workspace_io,
             cancelled,
         ),
-        "stat_file" => {
-            builtin::stat_file(args, workspace, limits.workspace_io.scan_bytes, cancelled)
-        }
+        "stat_file" => builtin::stat_file(args, scope, limits.workspace_io.scan_bytes, cancelled),
         "edit_file" => builtin::edit_file(
             args,
-            workspace,
+            scope,
             conversation,
             prior_events,
             limits.workspace_io.text_bytes,
@@ -73,7 +72,7 @@ pub(crate) fn dispatch_workspace_file(
         ),
         "write_file" => builtin::write_file(
             args,
-            workspace,
+            scope,
             conversation,
             prior_events,
             limits.workspace_io,
@@ -81,7 +80,7 @@ pub(crate) fn dispatch_workspace_file(
         ),
         "remove_file" => builtin::remove_file(
             args,
-            workspace,
+            scope,
             conversation,
             prior_events,
             limits.workspace_io.scan_bytes,
@@ -161,7 +160,7 @@ pub(crate) async fn dispatch(
     if let Some(result) = dispatch_workspace_file(
         name,
         args,
-        workspace,
+        FileScope::Unprepared(workspace),
         conversation,
         prior_events,
         result_event_id,
@@ -329,7 +328,7 @@ mod tests {
         let result = dispatch_workspace_file(
             "write_file",
             &serde_json::json!({"path":"out.txt","content":"host text"}),
-            workspace.path(),
+            FileScope::Unprepared(workspace.path()),
             &crate::conversation::address::ConversationAddress::MAIN,
             &[call],
             2,

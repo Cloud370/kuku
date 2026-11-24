@@ -24,7 +24,7 @@ def run(client, terminal, prompt):
 
 def result_fact(root, call_id):
     for path in root.rglob("events.jsonl"):
-        with path.open() as journal:
+        with path.open(encoding="utf-8") as journal:
             for record in map(json.loads, journal):
                 if record.get("kind") == "tool.result" and record.get("tool_call_id") == call_id:
                     return record["structured"]
@@ -35,7 +35,7 @@ def seed(workspace):
     for folder in ("billing", "exports", "docs", "tests", "tools"):
         (workspace / folder).mkdir()
     (workspace / "billing/settlement.py").write_text(
-        'import csv\n\n\ndef total(path):\n    with open(path, newline="") as source:\n'
+        'import csv\n\n\ndef total(path):\n    with open(path, encoding="utf-8", newline="") as source:\n'
         '        rows = csv.DictReader(source)\n        return sum(int(row["amount"]) for row in rows if row["status"] == "paid")\n',
         encoding="utf-8",
     )
@@ -153,7 +153,8 @@ def write_renderings(path, frames):
 def release_review(client):
     workspace = review_workspace(client)
     config = client.home / "config.toml"
-    config.write_text(config.read_text().replace("[handoff]\nenabled = false", "[handoff]\nenabled = true"))
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "[handoff]\nenabled = false", "[handoff]\nenabled = true"), encoding="utf-8")
     cli_test = dict(program=sys.executable, args=["-B", "-m", "unittest", "discover", "-s", "tests", "-v"])
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
@@ -194,7 +195,7 @@ def release_review(client):
                     'from billing.settlement import total\n\n\nclass FilterTest(unittest.TestCase):\n'
                     '    def evaluate(self, lines):\n        with tempfile.TemporaryDirectory() as folder:\n'
                     '            path = Path(folder) / "report.csv"\n'
-                    '            path.write_text("status,amount\\n" + lines)\n'
+                    '            path.write_text("status,amount\\n" + lines, encoding="utf-8")\n'
                     '            return total(path)\n\n'
                     '    def test_pending_excluded(self):\n        self.assertEqual(self.evaluate("pending,999\\n"), 0)\n\n'
                     '    def test_refund_only(self):\n        self.assertEqual(self.evaluate("refunded,-300\\n"), -300)\n'

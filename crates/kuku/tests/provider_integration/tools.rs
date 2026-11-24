@@ -82,7 +82,7 @@ async fn executes_find_files_and_continues_to_final_response() {
                 EventPayload::PermissionAllow { .. } | EventPayload::PermissionDeny { .. }
             ))
             .count(),
-        0
+        1
     );
 }
 
@@ -269,7 +269,7 @@ async fn executes_read_file_and_search_text() {
                 EventPayload::PermissionAllow { .. } | EventPayload::PermissionDeny { .. }
             ))
             .count(),
-        0
+        2
     );
 }
 
@@ -562,7 +562,11 @@ async fn can_allow_run_command_once_via_run_decide() {
             })));
     });
 
-    let mut run = anthro("run tests", &server).start().await.unwrap();
+    let mut run = anthro("run tests", &server)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
+        .start()
+        .await
+        .unwrap();
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let event = next_matching(&mut run, deadline, |e| {
@@ -574,7 +578,7 @@ async fn can_allow_run_command_once_via_run_decide() {
         _ => unreachable!(),
     };
 
-    run.decide(&request.id, kuku::query::PermissionChoice::Session)
+    run.decide(&request.id, kuku::query::PermissionChoice::Once)
         .await
         .unwrap();
 
@@ -591,133 +595,11 @@ async fn can_allow_run_command_once_via_run_decide() {
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::PermissionAllow { ref scope, .. }
-            if scope == "session"
+            if scope == "once"
     )));
     assert!(events.iter().any(|event| matches!(
         event.payload,
         EventPayload::ToolResult { ref status, .. } if status == "ok"
-    )));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
-    let Some(env) = TestEnv::enter(
-        module_path!(),
-        stringify!(project_scope_allow_persists_to_policy_file_and_applies_on_next_run),
-    ) else {
-        return;
-    };
-    let server = MockServer::start();
-
-    let tool_mock_1 = server.mock(|when, then| {
-        context_conditions(when, "run tests")
-            .method(POST)
-            .path("/v1/messages");
-        then.status(200)
-            .header("request-id", "req_tool")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_tool",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "I will run a command."},
-                    {"type": "tool_use", "id": "toolu_cmd", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            })));
-    });
-    let catch_all_1 = server.mock(|when, then| {
-        when.method(POST).path("/v1/messages");
-        then.status(200)
-            .header("request-id", "req_final_1")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "First command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
-
-    let mut run = anthro("run tests", &server).start().await.unwrap();
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    let event = next_matching(&mut run, deadline, |e| {
-        matches!(e, UiEvent::PermissionRequested { .. })
-    })
-    .await;
-    let request = match event {
-        UiEvent::PermissionRequested { request } => request,
-        _ => unreachable!(),
-    };
-    run.decide(&request.id, kuku::query::PermissionChoice::Project)
-        .await
-        .unwrap();
-    let event = next_matching(&mut run, deadline, |e| matches!(e, UiEvent::Done { .. })).await;
-    match event {
-        UiEvent::Done { output, .. } => assert_eq!(output.text, "First command completed."),
-        _ => unreachable!(),
-    }
-
-    tool_mock_1.assert();
-    catch_all_1.assert();
-
-    // Policy file persisted on disk.
-    let policy_path = kuku::session::project_policy_path(
-        env.home.as_path(),
-        &std::fs::canonicalize(env.workspace.as_path()).unwrap(),
-    )
-    .unwrap();
-    let policy_text = std::fs::read_to_string(&policy_path).unwrap();
-    assert!(policy_text.contains(&format!("run_command({})", request.candidate)));
-
-    // Second run — permission auto-allowed from persisted policy.
-    let server2 = MockServer::start();
-
-    let tool_mock_2 = server2.mock(|when, then| {
-        context_conditions(when, "run tests")
-            .method(POST)
-            .path("/v1/messages");
-        then.status(200)
-            .header("request-id", "req_tool_2")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_tool_2",
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "I will run a command again."},
-                    {"type": "tool_use", "id": "toolu_cmd_2", "name": "run_command", "input": {"program": "cargo", "args": ["test"], "cwd": ".", "timeout": 60, "brief": "run tests"}}
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 5, "output_tokens": 6}
-            })));
-    });
-    let catch_all_2 = server2.mock(|when, then| {
-        when.method(POST).path("/v1/messages");
-        then.status(200)
-            .header("request-id", "req_final_2")
-            .body(anthropic_sse_response(serde_json::json!({
-                "id": "msg_final_2",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Second command completed."}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 10, "output_tokens": 8}
-            })));
-    });
-
-    let output = anthro("run tests", &server2).run().await.unwrap();
-
-    tool_mock_2.assert();
-    catch_all_2.assert();
-    assert_eq!(output.text, "Second command completed.");
-    let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event.payload,
-        EventPayload::PermissionAllow { ref scope, .. }
-            if scope == "project"
     )));
 }
 
@@ -763,7 +645,11 @@ async fn records_denied_run_command_and_continues() {
             })));
     });
 
-    let output = anthro("run tests", &server).run().await.unwrap();
+    let output = anthro("run tests", &server)
+        .permission_mode(kuku::permission::PermissionMode::Ask)
+        .run()
+        .await
+        .unwrap();
 
     tool_mock.assert();
     catch_all.assert();
@@ -784,6 +670,6 @@ async fn records_denied_run_command_and_continues() {
         event.payload,
         EventPayload::ToolResult { ref status, ref model_content, .. }
             if status == "blocked"
-                && model_content.contains("run_command was not executed because the permission gate denied this tool call")
+                && model_content.contains("host denied tool action")
     )));
 }

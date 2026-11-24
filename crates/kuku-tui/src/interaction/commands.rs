@@ -12,6 +12,7 @@ enum Invocation {
     RestoreContext,
     CancelJob(String),
     Speed(String),
+    Permission(kuku_client::PermissionMode),
 }
 
 impl Invocation {
@@ -20,6 +21,14 @@ impl Invocation {
         let Some(operation) = words.next() else {
             return Ok(Self::Command(command));
         };
+        if command == CommandMenu::Permissions {
+            if let Some(mode) = crate::app::permissions::parse_mode(operation)
+                && words.next().is_none()
+            {
+                return Ok(Self::Permission(mode));
+            }
+            return Err("Use /permissions [full | ask | read-only]".into());
+        }
         if command == CommandMenu::Speed {
             return if words.next().is_none() && crate::setup::service_tier::valid_tier(operation) {
                 Ok(Self::Speed(operation.into()))
@@ -63,7 +72,10 @@ impl App {
             .filter(|(input, command)| {
                 matches!(
                     command,
-                    CommandMenu::Jobs | CommandMenu::Compact | CommandMenu::Speed
+                    CommandMenu::Jobs
+                        | CommandMenu::Compact
+                        | CommandMenu::Speed
+                        | CommandMenu::Permissions
                 ) || input.arguments.trim().is_empty()
             })
         else {
@@ -134,6 +146,7 @@ impl App {
         let command = match invocation {
             Invocation::Command(command) => command,
             Invocation::Speed(tier) => return self.open_speed(Some(tier)),
+            Invocation::Permission(mode) => return self.set_permission_mode(mode),
             Invocation::CancelJob(id) => return self.cancel_background_job(id),
             Invocation::RestoreContext => {
                 if self.pane().exists {
@@ -166,6 +179,8 @@ impl App {
             CommandMenu::Fast => self.open_speed(Some("fast".into())),
             CommandMenu::Ultrafast => self.open_speed(Some("ultrafast".into())),
             CommandMenu::StatusLine => self.open_statusline(),
+            CommandMenu::Notifications => self.open_notifications(),
+            CommandMenu::Permissions => self.open_permissions(),
             CommandMenu::Save => self.open_value_save(),
             CommandMenu::Values => self.open_values(),
             CommandMenu::Server => self.open_server(),

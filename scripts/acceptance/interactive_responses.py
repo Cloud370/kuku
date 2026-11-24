@@ -41,7 +41,8 @@ def responses_reasoning(binary, bridge, directory):
 
 def configure_responses(client):
     config = client.home / "config.toml"
-    config.write_text(re.sub(r'^(base_url = "[^"]+)"$', r'\1/api/v1"', config.read_text(), flags=re.M)
+    text = config.read_text(encoding="utf-8")
+    config.write_text(re.sub(r'^(base_url = "[^"]+)"$', r'\1/api/v1"', text, flags=re.M)
                       .replace('format = "anthropic"', 'format = "openai-responses"')
                       .replace('profile = "compatible"', 'profile = "openrouter"')
                       .replace('claude-sonnet-4-6', 'google/gemini-4-neon')

@@ -268,6 +268,7 @@ fn query_session_kind_filter_permission_requested() {
                 summary: "run tests".into(),
                 candidate: "cargo test".into(),
                 source: "default_ask".into(),
+                workspace: None,
             },
         ],
     );

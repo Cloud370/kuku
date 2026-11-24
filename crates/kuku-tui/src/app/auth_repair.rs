@@ -160,6 +160,7 @@ mod tests {
             endpoint: "http://127.0.0.1:6789".into(),
             workspace,
         });
+        app.complete_test_permissions();
         let snapshot: Snapshot = serde_json::from_value(json!({
             "workspace":app.workspace, "session_id":app.active.session, "cursor":5,
             "agent":{"address":"main", "status":"running", "turn":7,

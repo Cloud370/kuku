@@ -7,8 +7,9 @@ use super::{ScriptExecution, ScriptOperation};
 use crate::session::runtime::OutputReservation;
 use crate::tool::ToolResultEnvelope;
 use crate::tool::builtin;
+use crate::tool::builtin::common::FileScope;
 use crate::tool::builtin::run_command::output::{MAX_FRAME_BYTES, OutputLimits, OutputWriter};
-use crate::tool::builtin::run_command::{CommandCapture, run_command_to};
+use crate::tool::builtin::run_command::{CommandCapture, CommandCwd, run_command_to};
 use crate::{Error, OutputReference, OutputStream, Result, Session};
 
 pub(crate) struct WorkspaceActions {
@@ -88,7 +89,7 @@ impl WorkspaceActions {
                     .join("outputs");
                 let result = run_command_to(
                     &args,
-                    &self.workspace,
+                    CommandCwd::prepared(&self.workspace),
                     None,
                     Some(execution.cancellation()),
                     CommandCapture::script(
@@ -134,18 +135,19 @@ impl WorkspaceActions {
                         );
                     }
                     let cancelled = || execution.is_cancelled();
+                    let scope = FileScope::Prepared(&workspace);
                     match op {
-                        Op::FindFiles => builtin::find_files(&args, &workspace, limits, &cancelled),
+                        Op::FindFiles => builtin::find_files(&args, scope, limits, &cancelled),
                         Op::SearchText => {
-                            builtin::search_text_for_executor(&args, &workspace, limits, &cancelled)
+                            builtin::search_text_for_executor(&args, scope, limits, &cancelled)
                         }
                         Op::StatFile => {
-                            builtin::stat_file(&args, &workspace, limits.scan_bytes, &cancelled)
+                            builtin::stat_file(&args, scope, limits.scan_bytes, &cancelled)
                         }
                         Op::ReadFile => {
                             let (result, read) = builtin::read_file_for_executor(
                                 &args,
-                                &workspace,
+                                scope,
                                 execution.limits.file_bytes,
                                 limits.scan_bytes,
                                 &cancelled,
@@ -157,21 +159,21 @@ impl WorkspaceActions {
                         }
                         Op::EditFile => builtin::edit_file_for_executor(
                             &args,
-                            &workspace,
+                            scope,
                             &execution.observations(),
                             limits.text_bytes,
                             &cancelled,
                         ),
                         Op::WriteFile => builtin::write_file_for_executor(
                             &args,
-                            &workspace,
+                            scope,
                             &execution.observations(),
                             limits,
                             &cancelled,
                         ),
                         Op::RemoveFile => builtin::remove_file_for_executor(
                             &args,
-                            &workspace,
+                            scope,
                             &execution.observations(),
                             limits.scan_bytes,
                             &cancelled,

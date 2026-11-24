@@ -23,6 +23,7 @@ pub(super) struct ForegroundJob {
     deadline: Instant,
     completion: Option<oneshot::Receiver<SlotEvent>>,
     detached: Arc<AtomicBool>,
+    cancelling: Arc<AtomicBool>,
 }
 
 impl ForegroundJob {
@@ -47,12 +48,17 @@ impl ForegroundJob {
             deadline: started + observation,
             completion: Some(receiver),
             detached: Arc::new(AtomicBool::new(false)),
+            cancelling: Arc::new(AtomicBool::new(false)),
         };
         (Box::new(job), sender)
     }
 
     pub(super) fn detached_flag(&self) -> Arc<AtomicBool> {
         self.detached.clone()
+    }
+
+    pub(super) fn cancelling_flag(&self) -> Arc<AtomicBool> {
+        self.cancelling.clone()
     }
 }
 
@@ -104,25 +110,6 @@ impl Run {
                 id: id.into(),
                 event,
             },
-            SlotEvent::WorkspacePermission(action) => {
-                let action = *action;
-                if let RunState::Pending(pending) = &mut self.state {
-                    self.slots.remove(id);
-                    action.persist(&pending.events_path)?;
-                    super::helpers::append_permission_request(
-                        &pending.events_path,
-                        &pending.conversation,
-                        pending.turn,
-                        &action.request,
-                    )?;
-                    pending
-                        .resumed_permission_requests
-                        .push_front(action.request);
-                    pending.queued_tool_calls.push_front(action.queued);
-                    return Ok(None);
-                }
-                self.finish_slot(id, action.partial, false)?
-            }
             SlotEvent::Done(result) | SlotEvent::JobControlDone(result) => {
                 let faults = result.faults;
                 let event = self.finish_slot(id, result, job_control)?;
@@ -226,6 +213,7 @@ impl Run {
                 output_id: job.output_id.clone(),
                 summary: slot.label.clone(),
                 started: job.started,
+                cancelling: job.cancelling_flag(),
                 wait_tool_available: super::helpers::resolved_tool_available(pending, "wait_job"),
             },
             slot.cancel.clone(),
@@ -235,7 +223,6 @@ impl Run {
                 async move {
                     match receiver.await.unwrap_or_else(|_| worker_exited()) {
                         SlotEvent::Done(result) => result,
-                        SlotEvent::WorkspacePermission(action) => action.blocked_job(),
                         SlotEvent::Output(_) | SlotEvent::JobControlDone(_) => {
                             unreachable!("unexpected Job completion event")
                         }

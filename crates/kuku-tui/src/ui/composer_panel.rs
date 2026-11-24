@@ -136,7 +136,8 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
         Line::raw("Esc         Close/back; stop active work"),
         Line::raw("↑ / ↓       Edit draft; select queued input"),
         Line::raw("Delete      Remove selected input from queue"),
-        Line::raw("F2          Focus a pending request"),
+        Line::raw("F2          Review tool approvals or reply"),
+        Line::raw("F3          Change workspace permissions"),
         Line::raw(format!(
             "{:<12}Cycle thinking",
             Shortcut::CYCLE_THINKING.label

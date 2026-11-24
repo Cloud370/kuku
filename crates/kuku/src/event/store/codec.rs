@@ -116,7 +116,8 @@ fn probe_payload(payload: &EventPayload, writer: &mut RecordWriter) -> serde_jso
             risk,
             summary,
             candidate,
-            source
+            source,
+            workspace
         },
         PermissionDeny {
             turn,

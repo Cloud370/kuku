@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{Config, ProviderFormat};
 use crate::execution::{CommandExecutionFacts, CommandTermination};
-use crate::permission::{ToolAuthorizer, TrustedLocal};
+use crate::permission::{PermissionMode, ToolAuthorizer, TrustedLocal};
 use crate::tool::ToolResultEnvelope;
 use crate::{Error, Result};
 
@@ -133,6 +133,8 @@ pub struct SessionOptions {
     pub workspace_host: crate::WorkspaceExecutionHost,
     /// Host authority consulted before every tool dispatch.
     pub authorizer: Arc<dyn ToolAuthorizer>,
+    /// Initial mode applied to the tools of every Agent in this Session.
+    pub permission_mode: PermissionMode,
     /// Optional host model transport; preparation and dispatch limits remain owned by the SDK.
     pub model_adapter: Option<Arc<dyn crate::ModelAdapter>>,
     /// Provider diagnostics policy. Auto follows the build and process environment.
@@ -169,6 +171,7 @@ impl SessionOptions {
             limits: RuntimeLimits::default(),
             workspace_host: crate::WorkspaceExecutionHost::default(),
             authorizer: Arc::new(TrustedLocal),
+            permission_mode: PermissionMode::Full,
             model_adapter: None,
             provider_trace: crate::ProviderTraceMode::Auto,
             tools: Vec::new(),

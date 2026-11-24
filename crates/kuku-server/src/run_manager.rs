@@ -1,6 +1,7 @@
 //! Own open SDK Sessions independently of HTTP requests and observers.
 
 mod commands;
+mod permissions;
 mod values;
 
 pub(crate) use commands::{INTERNAL_CREATE_PREFIX, input_status};
@@ -13,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use kuku::permission::PermissionMode;
 use kuku::session::{
     HistoryPoint, Input, Session, SessionHistory, SessionOptions, TurnIndex, TurnSummary,
 };
@@ -32,6 +34,7 @@ pub struct RunManager {
 
 struct Registry {
     slots: Mutex<HashMap<PathBuf, Arc<Slot>>>,
+    workspace_permissions: Mutex<HashMap<PathBuf, Option<PermissionMode>>>,
     closed_history: Mutex<VecDeque<Arc<CachedHistory>>>,
     catalog_reads: Arc<Semaphore>,
     changed: watch::Sender<()>,
@@ -126,6 +129,7 @@ impl RunManager {
         Self {
             inner: Arc::new(Registry {
                 slots: Mutex::new(HashMap::new()),
+                workspace_permissions: Mutex::new(HashMap::new()),
                 closed_history: Mutex::new(VecDeque::new()),
                 catalog_reads: Arc::new(Semaphore::new(1)),
                 changed: watch::channel(()).0,
@@ -372,6 +376,10 @@ impl RunManager {
         if let Some(entry) = open.as_mut() {
             entry.release_idle_permits();
         } else {
+            let mut options = options;
+            if let Some(mode) = self.workspace_permission(&options.data_dir, &options.workspace)? {
+                options.permission_mode = mode;
+            }
             let exists = path.is_file();
             if request.replay_only
                 && (!exists || Session::read_receipt(path, request.command_id)?.is_none())
@@ -388,7 +396,7 @@ impl RunManager {
                 None if exists => Session::open(options).await?,
                 None => return Err(ApiError::session_not_found()),
             };
-            *slot.session.lock().unwrap() = Some(session.clone());
+            self.publish_session_permissions(slot, &session);
             *open = Some(OpenSession {
                 session,
                 permits: permit

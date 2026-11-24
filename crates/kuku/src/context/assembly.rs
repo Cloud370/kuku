@@ -162,51 +162,45 @@ fn render_project_policy(
         .iter()
         .any(|tool| matches!(tool.name.as_str(), "create_agent" | "fetch_web"));
     let model_tiers_text = if !can_select_model {
-        String::new()
+        None
     } else if input.model_tiers.is_empty() {
-        "No model tiers configured.".to_string()
+        Some("No model tiers configured.".to_string())
     } else {
-        input
-            .model_tiers
-            .iter()
-            .map(|info| {
-                format!(
-                    "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, output text)",
-                    info.name,
-                    info.purpose,
-                    info.model,
-                    info.reasoning_effort
-                        .as_deref()
-                        .unwrap_or("provider default"),
-                    if info.reasoning_choices.is_empty() { "use default".into() } else { info.reasoning_choices.join(", ") },
-                    info.service_tier.as_deref().unwrap_or("provider default"),
-                    match &info.service_choices {
-                        None => "unknown".into(),
-                        Some(choices) if choices.is_empty() => "none".into(),
-                        Some(choices) => choices.join(", "),
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        Some(
+            input
+                .model_tiers
+                .iter()
+                .map(|info| {
+                    format!(
+                        "{} — {} (model {}, thinking {}, thinking options {}, service {}, service options {}, output text)",
+                        info.name,
+                        info.purpose,
+                        info.model,
+                        info.reasoning_effort.as_deref().unwrap_or("provider default"),
+                        if info.reasoning_choices.is_empty() {
+                            "use default".into()
+                        } else {
+                            info.reasoning_choices.join(", ")
+                        },
+                        info.service_tier.as_deref().unwrap_or("provider default"),
+                        match &info.service_choices {
+                            None => "unknown".into(),
+                            Some(choices) if choices.is_empty() => "none".into(),
+                            Some(choices) => choices.join(", "),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     };
 
     // ---- Layer 2: project_policy ----
     let project_policy = catalog.blocks.get("project-policy").ok_or_else(|| {
         crate::error::Error::PromptRender("missing project-policy template".into())
     })?;
-    let without_models;
-    let template = if can_select_model {
-        &project_policy.text
-    } else {
-        without_models = project_policy.text.replace(
-            "\n<kuku_models>\n{{model_tiers_rendered}}\n</kuku_models>\n",
-            "",
-        );
-        &without_models
-    };
     render_project_context(
-        template,
+        &project_policy.text,
         &ProjectContextInput {
             workspace_root: input.environment.workspace_path.clone(),
             platform: input.environment.platform.clone(),

@@ -30,6 +30,7 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
         .route("/sessions", get(sessions::list))
         .route("/sessions/{id}", delete(sessions::delete))
         .route("/sessions/{id}/agents", get(sessions::agents))
+        .route("/sessions/{id}/permissions", get(sessions::permissions))
         .route("/sessions/{id}/snapshot", get(sessions::snapshot))
         .route("/sessions/{id}/history", get(events::history))
         .route(
@@ -66,6 +67,14 @@ pub(crate) fn interactive() -> Router<Arc<AppState>> {
         .route("/models/resolve", get(models::resolve))
         .route("/workspaces", get(workspaces::list))
         .route("/workspaces/resolve", get(workspaces::resolve))
+        .route(
+            "/workspaces/permissions",
+            get(workspaces::permission).put(workspaces::set_permission),
+        )
+        .route(
+            "/workspaces/permissions/observe",
+            get(events::observe_workspace_permissions),
+        )
         .route("/workspaces/files", get(workspaces::files))
         .route("/workspaces/skills", get(workspaces::skills))
 }
