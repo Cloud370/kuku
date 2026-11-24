@@ -11,6 +11,8 @@ Contributions that are likely to be accepted:
 
 For new features, significant refactors, or API changes, please open an issue to discuss with maintainers before writing code.
 
+Issues are welcome in Chinese (中文) or English.
+
 ## Code Style
 
 kuku enforces code style automatically. Before committing, run:
