@@ -56,6 +56,8 @@ Keep the implementation small: no service requirement, broad workflow framework,
 
 ## Main commands
 
+The workspace uses Rust Edition 2024 and the stable toolchain in `rust-toolchain.toml`. When a test requires process-wide settings, pass them to an isolated test process at launch.
+
 ```bash
 cargo check
 make build

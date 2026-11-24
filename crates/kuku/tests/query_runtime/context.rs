@@ -1,10 +1,18 @@
 #[tokio::test(flavor = "current_thread")]
 async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
-    let env = TestEnv::new();
-    std::fs::write(env.home.path().join("memory.md"), "captured-session-memory").unwrap();
-
-    let runtime_home = tempfile::tempdir().unwrap();
-    std::fs::write(runtime_home.path().join("memory.md"), "runtime-memory").unwrap();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(provider_step_uses_captured_kuku_home_for_memory_sources),
+    ) else {
+        return;
+    };
+    let captured_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        captured_home.path().join("memory.md"),
+        "captured-session-memory",
+    )
+    .unwrap();
+    std::fs::write(env.home.join("memory.md"), "runtime-memory").unwrap();
 
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
@@ -23,6 +31,7 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
     });
 
     let mut run = query("summarize memory")
+        .kuku_home(captured_home.path())
         .provider(Provider::Anthropic)
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
@@ -31,8 +40,6 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
         .start()
         .await
         .unwrap();
-
-    std::env::set_var("KUKU_HOME", runtime_home.path());
 
     let mut event = run.next().await.unwrap().expect("event");
     while !matches!(event, UiEvent::Done { .. }) {
@@ -48,10 +55,15 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked_files() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked_files),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
-    std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
+    std::fs::write(env.workspace.as_path().join("AGENTS.md"), "version one").unwrap();
 
     server.mock(|when, then| {
         when.method(httpmock::Method::POST)
@@ -81,7 +93,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
         .unwrap();
     assert_eq!(first.text, "first ok");
 
-    std::fs::write(env.workspace.path().join("AGENTS.md"), "version two").unwrap();
+    std::fs::write(env.workspace.as_path().join("AGENTS.md"), "version two").unwrap();
 
     let second_server = MockServer::start();
     let specific = second_server.mock(|when, then| {
@@ -120,11 +132,16 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
 
 #[tokio::test(flavor = "current_thread")]
 async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_notice() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_notice),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
-    std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
-    std::fs::write(env.workspace.path().join("notes.md"), "hello\n").unwrap();
+    std::fs::write(env.workspace.as_path().join("AGENTS.md"), "version one").unwrap();
+    std::fs::write(env.workspace.as_path().join("notes.md"), "hello\n").unwrap();
 
     server.mock(|when, then| {
         when.method(httpmock::Method::POST)
@@ -174,7 +191,7 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
         .unwrap();
     assert_eq!(first.text, "first ok");
 
-    std::fs::remove_file(env.workspace.path().join("AGENTS.md")).unwrap();
+    std::fs::remove_file(env.workspace.as_path().join("AGENTS.md")).unwrap();
 
     let second_server = MockServer::start();
     second_server.mock(|when, then| {
@@ -209,18 +226,23 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
 
 #[tokio::test(flavor = "current_thread")]
 async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(model_request_persists_prompt_assets_and_loaded_source_hashes),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     std::fs::write(
-        env.workspace.path().join("AGENTS.md"),
+        env.workspace.as_path().join("AGENTS.md"),
         "follow repo instructions",
     )
     .unwrap();
-    std::fs::write(env.home.path().join("memory.md"), "global memory entry").unwrap();
+    std::fs::write(env.home.as_path().join("memory.md"), "global memory entry").unwrap();
 
-    let workspace = std::fs::canonicalize(env.workspace.path()).unwrap();
-    let project_home = kuku::session::project_home(env.home.path(), &workspace).unwrap();
+    let workspace = std::fs::canonicalize(env.workspace.as_path()).unwrap();
+    let project_home = kuku::session::project_home(env.home.as_path(), &workspace).unwrap();
     std::fs::create_dir_all(&project_home).unwrap();
     std::fs::write(project_home.join("memory.md"), "project memory entry").unwrap();
 

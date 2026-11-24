@@ -14,6 +14,8 @@ pub(crate) mod notice;
 pub mod permission;
 pub mod plugin;
 pub mod prompt;
+#[cfg(any(test, feature = "test_support"))]
+mod test_process;
 #[cfg(feature = "test_support")]
 pub mod test_support;
 pub use prompt::{builtin_prompt_catalog, PromptCatalog};
@@ -59,9 +61,3 @@ pub use session::{
     SessionObserver, SessionOptions, TurnSummary, UsageTotals, Withdrawal, MAX_INPUT_VALUES,
     MAX_VALUE_NAME_BYTES,
 };
-
-#[cfg(test)]
-pub(crate) fn env_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
-}

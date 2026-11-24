@@ -198,7 +198,7 @@ fn build_matcher_vars(input: &HookInput) -> std::collections::HashMap<String, St
             }
             vars.insert(key.clone(), json_to_string(value));
             if key == "args" {
-                if let serde_json::Value::Object(ref args_map) = value {
+                if let serde_json::Value::Object(args_map) = value {
                     for (arg_key, arg_val) in args_map {
                         vars.insert(format!("args.{arg_key}"), json_to_string(arg_val));
                     }

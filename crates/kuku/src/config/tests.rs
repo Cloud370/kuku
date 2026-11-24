@@ -228,8 +228,6 @@ api_key = "sk-ant-secret123"
 
 #[test]
 fn show_redacted_preserves_env_var_reference() {
-    let _guard = crate::env_lock().lock().unwrap();
-    std::env::set_var("_KUKU_TEST_SHOW_KEY", "test-value");
     let config = r#"
 default_model = "balanced"
 
@@ -267,7 +265,6 @@ api_key = "$_KUKU_TEST_SHOW_KEY"
 
     let output = show_redacted(&path).unwrap();
     assert!(output.contains("$_KUKU_TEST_SHOW_KEY"));
-    std::env::remove_var("_KUKU_TEST_SHOW_KEY");
 }
 
 #[test]

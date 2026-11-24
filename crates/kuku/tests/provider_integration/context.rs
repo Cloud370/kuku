@@ -1,8 +1,13 @@
 #[tokio::test(flavor = "current_thread")]
 async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(second_turn_request_wraps_drift_notice_inside_runtime_context),
+    ) else {
+        return;
+    };
     let first_server = MockServer::start();
-    std::fs::write(env.workspace.path().join("AGENTS.md"), "version one").unwrap();
+    std::fs::write(env.workspace.as_path().join("AGENTS.md"), "version one").unwrap();
 
     first_server.mock(|when, then| {
         when.method(POST)
@@ -33,7 +38,7 @@ async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
         .unwrap();
     assert_eq!(first.text, "bootstrap ok");
 
-    std::fs::write(env.workspace.path().join("AGENTS.md"), "version two").unwrap();
+    std::fs::write(env.workspace.as_path().join("AGENTS.md"), "version two").unwrap();
 
     let second_server = MockServer::start();
     let second_request = second_server.mock(|when, then| {
@@ -76,7 +81,12 @@ async fn second_turn_request_wraps_drift_notice_inside_runtime_context() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn provider_request_uses_snapshot_then_history_then_current_input_frame() {
-    let _env = TestEnv::new();
+    let Some(_env) = TestEnv::enter(
+        module_path!(),
+        stringify!(provider_request_uses_snapshot_then_history_then_current_input_frame),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let bootstrap = server.mock(|when, then| {
@@ -141,17 +151,22 @@ async fn provider_request_uses_snapshot_then_history_then_current_input_frame() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn first_turn_request_includes_budgeted_skill_block_and_hints() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(first_turn_request_includes_budgeted_skill_block_and_hints),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let skill_dir = env
         .workspace
-        .path()
+        .as_path()
         .join(".claude")
         .join("skills")
         .join("tdd");
     let mut config = test_config();
     config.discovery.auto_discover = false;
-    config.discovery.extra_project_paths = vec![env.workspace.path().join(".claude")];
+    config.discovery.extra_project_paths = vec![env.workspace.as_path().join(".claude")];
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(
         skill_dir.join("SKILL.md"),

@@ -22,7 +22,7 @@ Use the checks below for objective rules. Apply the defaults consistently in new
 ## Everyday defaults
 
 - Keep business logic together by responsibility. Use named functions for coherent steps and share the existing implementation when behavior matches. Consider splitting a long file at an ownership boundary. Use comments for invariants, platform requirements and decisions the code alone cannot express.
-- Prefer `?` for propagation and `let ... else` for a guard with an early exit. Use `if let` for a local branch, `matches!` for a predicate and `match` when branches describe different outcomes. Use the standard library for well-defined operations such as UTF-8 byte truncation with `floor_char_boundary`.
+- Prefer `?` for propagation and `let ... else` for a guard with an early exit. Use `if let` for a local branch, `matches!` for a predicate and `match` when branches describe different outcomes. Use a Rust 2024 let chain when a binding and its condition describe one check. Use the standard library for well-defined operations such as UTF-8 byte truncation with `floor_char_boundary`.
 - Group imports by standard library, external crates and local crate. Prefer explicit imports. A test module may import its parent's items with `use super::*`. Use names that describe the domain and consistent naming within a module.
 - Place a unit test near the implementation and exercise public contracts through their actual entry points. Name assertions by adding context where a failure would be unclear. Reuse the existing fixtures and keep paid calls opt-in. [Testing](testing.md)
 

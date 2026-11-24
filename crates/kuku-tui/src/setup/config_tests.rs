@@ -315,10 +315,19 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
     const PROVIDER: &str = "_KUKU_SETUP_TEST_PROVIDER";
     const MODEL: &str = "_KUKU_SETUP_TEST_MODEL";
     const FORMAT: &str = "_KUKU_SETUP_TEST_FORMAT";
-    std::env::set_var(TIER, "balanced");
-    std::env::set_var(PROVIDER, "anthropic");
-    std::env::set_var(MODEL, "fixture-env-model");
-    std::env::set_var(FORMAT, "anthropic");
+    if !kuku::test_support::isolate_test(
+        module_path!(),
+        "saving_uses_sdk_environment_expansion_and_preserves_references",
+        |command| {
+            command
+                .env(TIER, "balanced")
+                .env(PROVIDER, "anthropic")
+                .env(MODEL, "fixture-env-model")
+                .env(FORMAT, "anthropic");
+        },
+    ) {
+        return;
+    }
 
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
@@ -355,10 +364,6 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
     assert_eq!("anthropic", parsed.model["strong"].provider);
     assert_eq!("fixture-env-model", parsed.model["strong"].model);
     assert_eq!("anthropic", parsed.provider["anthropic"].format.as_str());
-
-    for name in [TIER, PROVIDER, MODEL, FORMAT] {
-        std::env::remove_var(name);
-    }
 }
 
 #[tokio::test]

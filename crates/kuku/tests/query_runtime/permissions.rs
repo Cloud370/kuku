@@ -1,6 +1,11 @@
 #[tokio::test(flavor = "current_thread")]
 async fn run_emits_permission_requested_for_gated_tool() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(run_emits_permission_requested_for_gated_tool),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -92,7 +97,12 @@ async fn run_emits_permission_requested_for_gated_tool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(session_scope_allow_is_reused_on_later_turn_in_same_session),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -231,7 +241,12 @@ async fn session_scope_allow_is_reused_on_later_turn_in_same_session() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_cancel_writes_cancelled_result_without_deny() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_cancel_writes_cancelled_result_without_deny),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -301,7 +316,12 @@ async fn pending_permission_cancel_writes_cancelled_result_without_deny() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(run_convenience_path_auto_denies_and_continues_when_approval_is_needed),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -390,8 +410,13 @@ async fn run_convenience_path_auto_denies_and_continues_when_approval_is_needed(
 
 #[tokio::test(flavor = "current_thread")]
 async fn queued_deny_path_emits_permission_requested_before_deny() {
-    let env = TestEnv::new();
-    std::fs::write(env.workspace.path().join("notes.md"), "hello\n").unwrap();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(queued_deny_path_emits_permission_requested_before_deny),
+    ) else {
+        return;
+    };
+    std::fs::write(env.workspace.as_path().join("notes.md"), "hello\n").unwrap();
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -474,7 +499,12 @@ async fn queued_deny_path_emits_permission_requested_before_deny() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_with_permission_choice_allows_gated_tool_and_continues() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(run_with_permission_choice_allows_gated_tool_and_continues),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {

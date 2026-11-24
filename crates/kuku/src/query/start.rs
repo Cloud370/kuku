@@ -300,7 +300,7 @@ impl Query {
             }
         };
 
-        if let (None, Some(ref plugin_reg)) = (&resumed_permission, &plugin_registry_opt) {
+        if let (None, Some(plugin_reg)) = (&resumed_permission, &plugin_registry_opt) {
             let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::SessionStart);
             if !hooks.is_empty() {
                 let input = crate::plugin::executor::HookInput {

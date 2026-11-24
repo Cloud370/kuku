@@ -1,6 +1,11 @@
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_reemits_request_before_new_turn() {
-    let _env = TestEnv::new();
+    let Some(_env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_resume_reemits_request_before_new_turn),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -59,7 +64,12 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn interrupted_open_tool_blocks_resume_without_fake_result() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(interrupted_open_tool_blocks_resume_without_fake_result),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let provider_mock = server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
@@ -155,7 +165,12 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_resume_does_not_append_new_turn_before_decision),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -224,7 +239,12 @@ async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_does_not_resolve_config_or_append_facts_before_reemit() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_resume_does_not_resolve_config_or_append_facts_before_reemit),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -285,7 +305,12 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_request_id() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_resume_decide_continues_without_duplicate_turn_or_request_id),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {
@@ -379,7 +404,12 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_allow_executes_original_tool() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_resume_allow_executes_original_tool),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let final_mock = server.mock(|when, then| {
@@ -479,7 +509,12 @@ async fn pending_permission_resume_allow_executes_original_tool() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_deny_records_real_deny() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_resume_deny_records_real_deny),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let final_mock = server.mock(|when, then| {
@@ -573,7 +608,12 @@ async fn pending_permission_resume_deny_records_real_deny() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_permission_resume_preserves_sibling_queued_permission() {
-    let _env = TestEnv::new();
+    let Some(_env) = TestEnv::enter(
+        module_path!(),
+        stringify!(pending_permission_resume_preserves_sibling_queued_permission),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     server.mock(|when, then| {

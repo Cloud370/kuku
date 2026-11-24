@@ -458,36 +458,21 @@ mod tests {
         )
     }
     use super::super::test_helpers::workspace;
-    use super::*;
-
-    fn with_kuku_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
-        let _guard = crate::env_lock().lock().unwrap();
-        let previous = std::env::var_os("KUKU_HOME");
-        std::env::set_var("KUKU_HOME", home);
-        let result = f();
-        match previous {
-            Some(value) => std::env::set_var("KUKU_HOME", value),
-            None => std::env::remove_var("KUKU_HOME"),
-        }
-        result
-    }
 
     #[test]
     fn remember_memory_creates_expected_memory_file_and_appends_bullet() {
         let dir = workspace();
         let home = tempfile::tempdir().unwrap();
 
-        let result = with_kuku_home(home.path(), || {
-            remember_memory_with_home(
-                &serde_json::json!({
-                    "scope": "project",
-                    "kind": "how_to_work",
-                    "text": "Keep answers concise"
-                }),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let result = remember_memory_with_home(
+            &serde_json::json!({
+                "scope": "project",
+                "kind": "how_to_work",
+                "text": "Keep answers concise"
+            }),
+            dir.path(),
+            home.path(),
+        );
 
         assert_eq!(result.status, "ok");
         assert_eq!(result.structured.as_ref().unwrap()["kind"], "memory_write");
@@ -541,17 +526,15 @@ mod tests {
         )
         .unwrap();
 
-        let remember = with_kuku_home(home.path(), || {
-            remember_memory_with_home(
-                &serde_json::json!({
-                    "scope": "global",
-                    "kind": "what_is_true",
-                    "text": "The user prefers concise answers"
-                }),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let remember = remember_memory_with_home(
+            &serde_json::json!({
+                "scope": "global",
+                "kind": "what_is_true",
+                "text": "The user prefers concise answers"
+            }),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(remember.status, "ok");
         assert!(std::fs::read_to_string(&global_path)
             .unwrap()
@@ -561,16 +544,14 @@ mod tests {
             "# memory\n\n## how_to_work\n- Project only\n\n## what_is_true\n\n## where_to_look\n"
         );
 
-        let forget = with_kuku_home(home.path(), || {
-            forget_memory_with_home(
-                &serde_json::json!({
-                    "scope": "project",
-                    "text": "Project only"
-                }),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let forget = forget_memory_with_home(
+            &serde_json::json!({
+                "scope": "project",
+                "text": "Project only"
+            }),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(forget.status, "ok");
         assert_eq!(forget.structured.as_ref().unwrap()["kind"], "forget_memory");
         assert_eq!(forget.structured.as_ref().unwrap()["scope"], "project");
@@ -601,26 +582,22 @@ mod tests {
             "# memory\n\n## how_to_work\n- Duplicate\n\n## what_is_true\n- Duplicate\n\n## where_to_look\n- Somewhere else\n",
         )
         .unwrap();
-        let cross_section = with_kuku_home(home.path(), || {
-            forget_memory_with_home(
-                &serde_json::json!({"scope": "project", "text": "Duplicate"}),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let cross_section = forget_memory_with_home(
+            &serde_json::json!({"scope": "project", "text": "Duplicate"}),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(cross_section.status, "error");
         assert!(cross_section.model_content.contains("matched multiple"));
 
         // Same-section duplicates
         let same_section_content = "# memory\n\n## how_to_work\n- Duplicate\n- Duplicate\n\n## what_is_true\n\n## where_to_look\n";
         std::fs::write(&project_path, same_section_content).unwrap();
-        let same_section = with_kuku_home(home.path(), || {
-            forget_memory_with_home(
-                &serde_json::json!({"scope": "project", "text": "Duplicate"}),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let same_section = forget_memory_with_home(
+            &serde_json::json!({"scope": "project", "text": "Duplicate"}),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(same_section.status, "error");
         assert!(same_section
             .model_content
@@ -631,13 +608,11 @@ mod tests {
         );
 
         // Zero matches
-        let zero = with_kuku_home(home.path(), || {
-            forget_memory_with_home(
-                &serde_json::json!({"scope": "project", "text": "Missing"}),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let zero = forget_memory_with_home(
+            &serde_json::json!({"scope": "project", "text": "Missing"}),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(zero.status, "error");
         assert!(zero.model_content.contains("no matching bullet"));
     }
@@ -647,41 +622,35 @@ mod tests {
         let dir = workspace();
         let home = tempfile::tempdir().unwrap();
 
-        let invalid_scope = with_kuku_home(home.path(), || {
-            remember_memory_with_home(
-                &serde_json::json!({
-                    "scope": "session",
-                    "kind": "how_to_work",
-                    "text": "Keep answers concise"
-                }),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let invalid_scope = remember_memory_with_home(
+            &serde_json::json!({
+                "scope": "session",
+                "kind": "how_to_work",
+                "text": "Keep answers concise"
+            }),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(invalid_scope.status, "error");
         assert_eq!(invalid_scope.structured.as_ref().unwrap()["kind"], "error");
 
-        let invalid_kind = with_kuku_home(home.path(), || {
-            remember_memory_with_home(
-                &serde_json::json!({
-                    "scope": "project",
-                    "kind": "preferences",
-                    "text": "Keep answers concise"
-                }),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let invalid_kind = remember_memory_with_home(
+            &serde_json::json!({
+                "scope": "project",
+                "kind": "preferences",
+                "text": "Keep answers concise"
+            }),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(invalid_kind.status, "error");
         assert_eq!(invalid_kind.structured.as_ref().unwrap()["kind"], "error");
 
-        let invalid_text = with_kuku_home(home.path(), || {
-            forget_memory_with_home(
-                &serde_json::json!({"scope": "project", "text": "   "}),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let invalid_text = forget_memory_with_home(
+            &serde_json::json!({"scope": "project", "text": "   "}),
+            dir.path(),
+            home.path(),
+        );
         assert_eq!(invalid_text.status, "error");
         assert_eq!(invalid_text.structured.as_ref().unwrap()["kind"], "error");
     }
@@ -691,17 +660,15 @@ mod tests {
         let dir = workspace();
         let home = tempfile::tempdir().unwrap();
 
-        let result = with_kuku_home(home.path(), || {
-            remember_memory_with_home(
-                &serde_json::json!({
-                    "scope": "project",
-                    "kind": "how_to_work",
-                    "text": "Keep answers\nconcise"
-                }),
-                dir.path(),
-                home.path(),
-            )
-        });
+        let result = remember_memory_with_home(
+            &serde_json::json!({
+                "scope": "project",
+                "kind": "how_to_work",
+                "text": "Keep answers\nconcise"
+            }),
+            dir.path(),
+            home.path(),
+        );
 
         assert_eq!(result.status, "error");
         assert!(result.model_content.contains("line breaks"));

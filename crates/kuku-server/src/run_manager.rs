@@ -196,8 +196,7 @@ impl RunManager {
 
     pub(crate) fn open_session(&self, path: &Path) -> Option<Session> {
         let slots = self.inner.slots.lock().unwrap();
-        let session = slots.get(path)?.session.lock().unwrap().clone();
-        session
+        slots.get(path)?.session.lock().unwrap().clone()
     }
 
     pub(crate) async fn catalog_permit(&self) -> OwnedSemaphorePermit {

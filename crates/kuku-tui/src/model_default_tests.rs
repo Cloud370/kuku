@@ -173,10 +173,18 @@ fn matched_tier_retains_its_existing_route_settings() {
 fn inline_tables_environment_references_comments_and_provider_options_survive() {
     const TIER: &str = "KUKU_ISSUE100_DEFAULT_TIER";
     const FORMAT: &str = "KUKU_ISSUE100_PROVIDER_FORMAT";
-    let old_tier = std::env::var_os(TIER);
-    let old_format = std::env::var_os(FORMAT);
-    std::env::set_var(TIER, "balanced");
-    std::env::set_var(FORMAT, "openai-responses");
+
+    if !kuku::test_support::isolate_test(
+        module_path!(),
+        stringify!(inline_tables_environment_references_comments_and_provider_options_survive),
+        |command| {
+            command.env(TIER, "balanced");
+            command.env(FORMAT, "openai-responses");
+        },
+    ) {
+        return;
+    }
+
     let input = r#"# keep this note
 default_model = "$KUKU_ISSUE100_DEFAULT_TIER"
 provider = { openai = { format = "$KUKU_ISSUE100_PROVIDER_FORMAT", base_url = "https://api.openai.com/v1", api_key = "$OPENAI_API_KEY", options = { profile = "openai", reasoning_efforts = ["low", "medium"] } } }
@@ -184,16 +192,6 @@ model = { strong = { provider = "openai", model = "strong-model" }, balanced = {
 "#;
     let (tier, output) =
         edit_with_server_plan(input, &route("balanced-model"), "balanced", false).unwrap();
-    if let Some(value) = old_tier {
-        std::env::set_var(TIER, value);
-    } else {
-        std::env::remove_var(TIER);
-    }
-    if let Some(value) = old_format {
-        std::env::set_var(FORMAT, value);
-    } else {
-        std::env::remove_var(FORMAT);
-    }
     let output = String::from_utf8(output).unwrap();
     assert_eq!(tier, "balanced");
     assert!(output.contains("# keep this note"));
@@ -209,21 +207,25 @@ fn client_environment_does_not_override_the_service_validated_tier_or_expand_raw
     const TIER: &str = "KUKU_ISSUE100_CLIENT_DEFAULT_TIER";
     const PROVIDER: &str = "KUKU_ISSUE100_CLIENT_PROVIDER";
     const MODEL: &str = "KUKU_ISSUE100_CLIENT_MODEL";
-    let old = [TIER, PROVIDER, MODEL].map(std::env::var_os);
-    std::env::set_var(TIER, "client-tier");
-    std::env::set_var(PROVIDER, "client-provider");
-    std::env::set_var(MODEL, "client-model");
+
+    if !kuku::test_support::isolate_test(
+        module_path!(),
+        stringify!(
+            client_environment_does_not_override_the_service_validated_tier_or_expand_raw_refs
+        ),
+        |command| {
+            command.env(TIER, "client-tier");
+            command.env(PROVIDER, "client-provider");
+            command.env(MODEL, "client-model");
+        },
+    ) {
+        return;
+    }
+
     let input = format!(
         "# preserve refs\ndefault_model = \"${TIER}\"\n[model.balanced]\nprovider = \"${PROVIDER}\"\nmodel = \"${MODEL}\"\n"
     );
     let edited = edit_with_server_plan(&input, &route("service-model"), "balanced", false);
-    for (name, value) in [TIER, PROVIDER, MODEL].into_iter().zip(old) {
-        if let Some(value) = value {
-            std::env::set_var(name, value);
-        } else {
-            std::env::remove_var(name);
-        }
-    }
     let output = String::from_utf8(edited.unwrap().1).unwrap();
     assert!(output.contains("default_model = \"balanced\""));
     assert!(output.contains("provider = \"$KUKU_ISSUE100_CLIENT_PROVIDER\""));

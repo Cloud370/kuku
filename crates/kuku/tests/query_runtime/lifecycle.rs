@@ -1,6 +1,11 @@
 #[tokio::test(flavor = "current_thread")]
 async fn start_creates_session_events_under_kuku_home() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(start_creates_session_events_under_kuku_home),
+    ) else {
+        return;
+    };
 
     let run = query("inspect this project")
         .config(test_config())
@@ -76,7 +81,12 @@ async fn start_creates_session_events_under_kuku_home() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn standalone_query_records_turn_and_user_input() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(standalone_query_records_turn_and_user_input),
+    ) else {
+        return;
+    };
 
     let run = query("inspect this project")
         .config(test_config())
@@ -103,7 +113,12 @@ async fn standalone_query_records_turn_and_user_input() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn start_persists_session_scoped_log_without_event_payload() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(start_persists_session_scoped_log_without_event_payload),
+    ) else {
+        return;
+    };
 
     let run = query("inspect this project")
         .config(test_config())
@@ -114,7 +129,7 @@ async fn start_persists_session_scoped_log_without_event_payload() {
 
     let session_log_path = env
         .home
-        .path()
+        .as_path()
         .join("logs")
         .join("session")
         .join(format!("{session_id}.jsonl"));
@@ -142,7 +157,12 @@ async fn start_persists_session_scoped_log_without_event_payload() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_without_config_fails_before_writing_events() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(run_without_config_fails_before_writing_events),
+    ) else {
+        return;
+    };
 
     let error = query("summarize")
         .session("s_run_fixed")
@@ -158,7 +178,12 @@ async fn run_without_config_fails_before_writing_events() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn builder_only_provider_config_starts_without_file_config() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(builder_only_provider_config_starts_without_file_config),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let request = server.mock(|when, then| {
         when.method(httpmock::Method::POST)
@@ -203,7 +228,12 @@ async fn builder_only_provider_config_starts_without_file_config() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn explicit_session_start_appends_turn_without_duplicate_meta() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(explicit_session_start_appends_turn_without_duplicate_meta),
+    ) else {
+        return;
+    };
 
     query("first")
         .session("s_continue")
@@ -283,7 +313,12 @@ async fn explicit_session_start_appends_turn_without_duplicate_meta() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn resume_marks_unterminated_main_turn_interrupted() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(resume_marks_unterminated_main_turn_interrupted),
+    ) else {
+        return;
+    };
     let session_id = "s_resume_marks_interrupted";
     let events_path = env.events_path(session_id);
     std::fs::create_dir_all(events_path.parent().unwrap()).unwrap();
@@ -348,7 +383,9 @@ async fn resume_marks_unterminated_main_turn_interrupted() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn workspace_is_not_polluted() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(module_path!(), stringify!(workspace_is_not_polluted)) else {
+        return;
+    };
 
     let _ = query("no pollution")
         .config(test_config())
@@ -363,7 +400,12 @@ async fn workspace_is_not_polluted() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn invalid_session_ids_fail_before_creating_session_path() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(invalid_session_ids_fail_before_creating_session_path),
+    ) else {
+        return;
+    };
 
     for session_id in [
         "../bad",
@@ -386,5 +428,5 @@ async fn invalid_session_ids_fail_before_creating_session_path() {
         assert!(matches!(error, Error::InvalidSessionId(ref value) if value == session_id));
     }
 
-    assert!(!env.home.path().join("p").exists());
+    assert!(!env.home.as_path().join("p").exists());
 }

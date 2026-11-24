@@ -4,7 +4,12 @@ async fn standalone_run_cancellation_interrupts_initial_stream_preflight() {
     use std::net::TcpListener;
     use std::time::Duration;
 
-    let _env = TestEnv::new();
+    let Some(_env) = TestEnv::enter(
+        module_path!(),
+        stringify!(standalone_run_cancellation_interrupts_initial_stream_preflight),
+    ) else {
+        return;
+    };
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let (headers_tx, headers_rx) = tokio::sync::oneshot::channel();
@@ -63,7 +68,12 @@ async fn standalone_run_cancellation_interrupts_initial_stream_preflight() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_flush() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_flush),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
@@ -83,7 +93,7 @@ async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_f
         .unwrap();
 
     let session_id = run.session_id().to_string();
-    let log_dir = env.home.path().join("logs").join("runtime");
+    let log_dir = env.home.as_path().join("logs").join("runtime");
     assert!(matches!(
         run.next().await.unwrap(),
         Some(UiEvent::TurnStart { turn: 1 })
@@ -136,7 +146,12 @@ async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_f
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_convenience_path_persists_buffered_runtime_info_logs_on_completion() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(run_convenience_path_persists_buffered_runtime_info_logs_on_completion),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
@@ -161,7 +176,7 @@ async fn run_convenience_path_persists_buffered_runtime_info_logs_on_completion(
         .await
         .unwrap();
 
-    let log_dir = env.home.path().join("logs").join("runtime");
+    let log_dir = env.home.as_path().join("logs").join("runtime");
     let records: Vec<kuku::log::LogRecord> = std::fs::read_dir(&log_dir)
         .unwrap()
         .flat_map(|entry| {
@@ -182,7 +197,12 @@ async fn run_convenience_path_persists_buffered_runtime_info_logs_on_completion(
 
 #[tokio::test(flavor = "current_thread")]
 async fn runtime_log_preserves_turn_model_log_event_order() {
-    let _env = TestEnv::new();
+    let Some(_env) = TestEnv::enter(
+        module_path!(),
+        stringify!(runtime_log_preserves_turn_model_log_event_order),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
@@ -218,7 +238,12 @@ async fn runtime_log_preserves_turn_model_log_event_order() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn provider_start_failure_still_delivers_runtime_model_request_log() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(provider_start_failure_still_delivers_runtime_model_request_log),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let mut run = query("provider fails")
@@ -231,7 +256,7 @@ async fn provider_start_failure_still_delivers_runtime_model_request_log() {
         .await
         .unwrap();
     let session_id = run.session_id().to_string();
-    let log_dir = env.home.path().join("logs").join("runtime");
+    let log_dir = env.home.as_path().join("logs").join("runtime");
 
     assert!(matches!(
         run.next().await.unwrap(),
@@ -272,7 +297,12 @@ async fn provider_start_failure_still_delivers_runtime_model_request_log() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn context_too_large_failure_still_delivers_runtime_model_request_log() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(context_too_large_failure_still_delivers_runtime_model_request_log),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
@@ -314,7 +344,12 @@ async fn context_too_large_failure_still_delivers_runtime_model_request_log() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn truncated_provider_stream_is_recorded_as_failed_turn() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(truncated_provider_stream_is_recorded_as_failed_turn),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
@@ -362,7 +397,12 @@ async fn truncated_provider_stream_is_recorded_as_failed_turn() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn provider_error_writes_single_terminal_event() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(provider_error_writes_single_terminal_event),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");
@@ -391,7 +431,12 @@ async fn provider_error_writes_single_terminal_event() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_render_error_writes_single_terminal_event() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(prompt_render_error_writes_single_terminal_event),
+    ) else {
+        return;
+    };
     let prompts_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(prompts_dir.path().join("blocks")).unwrap();
     std::fs::write(
@@ -408,7 +453,7 @@ async fn prompt_render_error_writes_single_terminal_event() {
         .unwrap_err();
 
     assert!(matches!(error, Error::PromptRender(_)));
-    let session_entries = list_event_files(env.home.path());
+    let session_entries = list_event_files(env.home.as_path());
     assert_eq!(session_entries.len(), 1);
     let events = EventStore::replay(&session_entries[0]).unwrap();
     assert!(events
@@ -419,7 +464,12 @@ async fn prompt_render_error_writes_single_terminal_event() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn duplicate_terminal_writes_for_same_turn_are_ignored() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(duplicate_terminal_writes_for_same_turn_are_ignored),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(httpmock::Method::POST).path("/v1/messages");

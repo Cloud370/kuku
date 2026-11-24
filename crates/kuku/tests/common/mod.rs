@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
-use tempfile::TempDir;
 
 use kuku::session::session_events_path;
 
@@ -155,113 +153,68 @@ pub fn openai_sse_response(completion: Value) -> String {
     sse
 }
 
-// ---------- Env isolation ----------
-
-pub fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
+#[path = "../../src/test_process.rs"]
 #[allow(
     dead_code,
-    reason = "this shared fixture is used by a subset of integration binaries"
+    reason = "only tests that need process settings launch an isolated child"
 )]
-pub fn restore_env(key: &str, value: Option<OsString>) {
-    match value {
-        Some(value) => std::env::set_var(key, value),
-        None => std::env::remove_var(key),
-    }
-}
-
-// ---------- TestEnv for integration tests ----------
+pub(crate) mod process;
 
 #[allow(
     dead_code,
-    reason = "this shared fixture is used by a subset of integration binaries"
-)]
-const PROVIDER_ENV_KEYS: &[&str] = &[
-    "KUKU_PROVIDER",
-    "KUKU_ANTHROPIC_API_KEY",
-    "KUKU_OPENAI_API_KEY",
-    "KUKU_API_KEY",
-];
-
-#[allow(
-    dead_code,
-    reason = "this shared fixture is used by a subset of integration binaries"
+    reason = "only environment-dependent tests use this fixture"
 )]
 pub struct TestEnv {
-    pub _guard: MutexGuard<'static, ()>,
-    pub home: TempDir,
-    pub workspace: TempDir,
-    previous_kuku_home: Option<OsString>,
-    previous_cwd: PathBuf,
-    previous_provider_env: Vec<(&'static str, Option<OsString>)>,
+    pub home: PathBuf,
+    pub workspace: PathBuf,
 }
 
 impl TestEnv {
     #[allow(
         dead_code,
-        reason = "this shared fixture is used by a subset of integration binaries"
+        reason = "only environment-dependent tests use this fixture"
     )]
-    pub fn new() -> Self {
-        let guard = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous_kuku_home = std::env::var_os("KUKU_HOME");
-        let previous_cwd = std::env::current_dir().unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-
-        let previous_provider_env: Vec<_> = PROVIDER_ENV_KEYS
-            .iter()
-            .map(|&key| (key, std::env::var_os(key)))
-            .collect();
-        for &key in PROVIDER_ENV_KEYS {
-            std::env::remove_var(key);
-        }
-
-        std::env::set_var("KUKU_HOME", home.path());
-        std::env::set_current_dir(workspace.path()).unwrap();
-
-        Self {
-            _guard: guard,
-            home,
-            workspace,
-            previous_kuku_home,
-            previous_cwd,
-            previous_provider_env,
-        }
+    pub fn enter(module: &str, name: &str) -> Option<Self> {
+        let in_child = process::isolate_test(module, name, |command| {
+            let home = tempfile::tempdir().unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            for key in [
+                "KUKU_PROVIDER",
+                "KUKU_ANTHROPIC_API_KEY",
+                "KUKU_OPENAI_API_KEY",
+                "KUKU_API_KEY",
+                "KUKU_PROVIDER_TRACE",
+            ] {
+                command.env_remove(key);
+            }
+            command
+                .env("KUKU_HOME", home.path())
+                .current_dir(workspace.path());
+            (home, workspace)
+        });
+        in_child.then(|| Self {
+            home: std::env::var_os("KUKU_HOME")
+                .expect("fixture sets KUKU_HOME")
+                .into(),
+            workspace: std::env::current_dir().expect("fixture sets the working directory"),
+        })
     }
 
     #[allow(
         dead_code,
-        reason = "this shared fixture is used by a subset of integration binaries"
+        reason = "integration targets use different fixture helpers"
     )]
     pub fn workspace_path(&self) -> &Path {
-        self.workspace.path()
+        &self.workspace
     }
 
     #[allow(
         dead_code,
-        reason = "this shared fixture is used by a subset of integration binaries"
+        reason = "integration targets use different fixture helpers"
     )]
     pub fn events_path(&self, session_id: &str) -> PathBuf {
-        let workspace = std::fs::canonicalize(self.workspace.path()).unwrap();
-        session_events_path(self.home.path(), &workspace, session_id).unwrap()
-    }
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        for (key, value) in &self.previous_provider_env {
-            restore_env(key, value.clone());
-        }
-        std::env::set_current_dir(&self.previous_cwd).unwrap();
-        match &self.previous_kuku_home {
-            Some(value) => std::env::set_var("KUKU_HOME", value),
-            None => std::env::remove_var("KUKU_HOME"),
-        }
+        let workspace = std::fs::canonicalize(&self.workspace).unwrap();
+        session_events_path(&self.home, &workspace, session_id).unwrap()
     }
 }
 

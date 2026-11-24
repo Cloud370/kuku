@@ -56,6 +56,8 @@
 
 ## 主要命令
 
+工作区使用 Rust Edition 2024 和 `rust-toolchain.toml` 中的 stable 工具链。测试需要进程级设置时，在启动独立测试子进程时传入。
+
 ```bash
 cargo check
 make build

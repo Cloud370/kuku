@@ -2,7 +2,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{openai_sse_response, restore_env, test_config, TestEnv};
+use common::{openai_sse_response, test_config, TestEnv};
 use httpmock::prelude::*;
 use kuku::{query, Provider};
 use serde_json::Value;
@@ -46,9 +46,12 @@ fn assert_redacted_trace(raw: &str, provider: &str, secret: &str) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn openai_adapters_write_redacted_provider_traces() {
-    let env = TestEnv::new();
-    let previous_trace = std::env::var_os("KUKU_PROVIDER_TRACE");
-    std::env::set_var("KUKU_PROVIDER_TRACE", "1");
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(openai_adapters_write_redacted_provider_traces),
+    ) else {
+        return;
+    };
 
     let server = MockServer::start();
     server.mock(|when, then| {
@@ -80,6 +83,7 @@ async fn openai_adapters_write_redacted_provider_traces() {
 
     query("chat trace")
         .session("s_trace_chat")
+        .provider_trace(kuku::ProviderTraceMode::Full)
         .provider(Provider::OpenAiCompatible)
         .model("test-chat")
         .base_url(server.base_url())
@@ -91,6 +95,7 @@ async fn openai_adapters_write_redacted_provider_traces() {
 
     query("responses trace")
         .session("s_trace_responses")
+        .provider_trace(kuku::ProviderTraceMode::Full)
         .provider(Provider::OpenAiResponses)
         .model("test-responses")
         .base_url(server.base_url())
@@ -101,17 +106,16 @@ async fn openai_adapters_write_redacted_provider_traces() {
         .unwrap();
 
     assert_redacted_trace(
-        &trace_contents(env.home.path(), "s_trace_chat"),
+        &trace_contents(env.home.as_path(), "s_trace_chat"),
         "openai-compatible",
         "chat-secret",
     );
     assert_redacted_trace(
-        &trace_contents(env.home.path(), "s_trace_responses"),
+        &trace_contents(env.home.as_path(), "s_trace_responses"),
         "openai-responses",
         "responses-secret",
     );
 
-    std::env::remove_var("KUKU_PROVIDER_TRACE");
     let request = server.mock(|when, then| {
         when.method(POST)
             .path("/chat/completions")
@@ -143,12 +147,12 @@ async fn openai_adapters_write_redacted_provider_traces() {
             .is_err());
     }
     request.assert_hits(2);
-    let raw = trace_contents(env.home.path(), "s_trace_diagnostic");
-    let auto = trace_contents(env.home.path(), "s_preview_trace");
+    let raw = trace_contents(env.home.as_path(), "s_trace_diagnostic");
+    let auto = trace_contents(env.home.as_path(), "s_preview_trace");
     assert_eq!(!auto.is_empty(), env!("KUKU_BUILD_IS_PREVIEW") == "true");
-    std::env::set_var("KUKU_PROVIDER_TRACE", "0");
     assert!(query("REQUEST_SECRET")
         .session("s_trace_disabled")
+        .provider_trace(kuku::ProviderTraceMode::Off)
         .provider(Provider::OpenAiCompatible)
         .model("test-chat")
         .base_url(server.base_url())
@@ -157,7 +161,7 @@ async fn openai_adapters_write_redacted_provider_traces() {
         .run()
         .await
         .is_err());
-    assert!(trace_contents(env.home.path(), "s_trace_disabled").is_empty());
+    assert!(trace_contents(env.home.as_path(), "s_trace_disabled").is_empty());
     assert!(!raw.contains("SECRET"), "{raw}");
     let records = raw
         .lines()
@@ -178,5 +182,4 @@ async fn openai_adapters_write_redacted_provider_traces() {
     );
     assert_eq!(records[6]["failure_kind"], "invalid_response");
     assert_eq!(records[6]["after_sequence"], 4);
-    restore_env("KUKU_PROVIDER_TRACE", previous_trace);
 }

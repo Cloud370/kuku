@@ -229,8 +229,17 @@ think = "off"
     #[test]
     fn uses_the_service_environment_and_prefers_a_usable_matching_default() {
         const MODEL: &str = "KUKU_MODEL_DEFAULT_SERVICE_MODEL";
-        let old_model = std::env::var_os(MODEL);
-        std::env::set_var(MODEL, "server-model");
+
+        if !kuku::test_support::isolate_test(
+            module_path!(),
+            stringify!(uses_the_service_environment_and_prefers_a_usable_matching_default),
+            |command| {
+                command.env(MODEL, "server-model");
+            },
+        ) {
+            return;
+        }
+
         let input = CONFIG.replace(
             "model = \"gpt-4\"",
             "model = \"$KUKU_MODEL_DEFAULT_SERVICE_MODEL\"",
@@ -241,11 +250,6 @@ think = "off"
             &request(alternate.as_bytes(), "server-model"),
         )
         .unwrap();
-        if let Some(value) = old_model {
-            std::env::set_var(MODEL, value);
-        } else {
-            std::env::remove_var(MODEL);
-        }
         assert_eq!("balanced", plan.tier);
         assert!(!plan.overwrite_user_default);
     }

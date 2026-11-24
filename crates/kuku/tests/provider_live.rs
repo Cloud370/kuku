@@ -15,12 +15,8 @@ fn require_live_tests() {
 async fn anthropic_live_smoke_reads_a_real_file_via_tool_loop() {
     require_live_tests();
 
-    let previous_home = std::env::var_os("KUKU_HOME");
-    let previous_cwd = std::env::current_dir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
-    std::env::set_var("KUKU_HOME", home.path());
-    std::env::set_current_dir(workspace.path()).unwrap();
 
     std::fs::write(workspace.path().join("AGENTS.md"), "version one\n").unwrap();
     std::fs::write(
@@ -31,6 +27,8 @@ async fn anthropic_live_smoke_reads_a_real_file_via_tool_loop() {
 
     let session_id =
         query("Read README.md with tools and reply with exactly: LIVE_PROMPT_CONTEXT_OK")
+            .kuku_home(home.path())
+            .workspace(workspace.path())
             .provider(Provider::Anthropic)
             .model(std::env::var("KUKU_ANTHROPIC_MODEL").expect("KUKU_ANTHROPIC_MODEL required"))
             .base_url(
@@ -52,7 +50,9 @@ async fn anthropic_live_smoke_reads_a_real_file_via_tool_loop() {
         "If you receive a <kuku_system_notice> about changed context, reply with exactly: DRIFT_NOTICED. Otherwise reply with exactly: NO_NOTICE.",
     )
     .session(&session_id)
-    .provider(Provider::Anthropic)
+    .kuku_home(home.path())
+        .workspace(workspace.path())
+        .provider(Provider::Anthropic)
     .model(std::env::var("KUKU_ANTHROPIC_MODEL").expect("KUKU_ANTHROPIC_MODEL required"))
     .base_url(
         std::env::var("KUKU_ANTHROPIC_BASE_URL").expect("KUKU_ANTHROPIC_BASE_URL required"),
@@ -79,12 +79,6 @@ async fn anthropic_live_smoke_reads_a_real_file_via_tool_loop() {
         EventPayload::ToolCall { ref tool, .. } if tool == "read_file"
     )));
     assert!(drift_output.text.contains("DRIFT_NOTICED"));
-
-    std::env::set_current_dir(previous_cwd).unwrap();
-    match previous_home {
-        Some(value) => std::env::set_var("KUKU_HOME", value),
-        None => std::env::remove_var("KUKU_HOME"),
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]
