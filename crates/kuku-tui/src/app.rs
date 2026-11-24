@@ -243,20 +243,6 @@ impl Pane {
         }
     }
 
-    pub(crate) fn next_model_label(&self, width: usize) -> Option<String> {
-        if self.next_thinking().is_some() {
-            return None;
-        }
-        let model = self.snapshot.as_ref()?.pending_selection.as_ref()?;
-        let route = crate::text::single_line(&format!("{}/{}", model.connection, model.model));
-        let effort = crate::text::effort_label(model.settings.reasoning_effort.as_deref());
-        let prefix = "Next model request · ";
-        Some(format!(
-            "{prefix}{}",
-            crate::text::with_suffix(&route, &effort, width.saturating_sub(prefix.len()))
-        ))
-    }
-
     fn model_route_changed(&self, config: &AgentConfig) -> bool {
         let current = self.config();
         (&config.tier, &config.connection, &config.model)

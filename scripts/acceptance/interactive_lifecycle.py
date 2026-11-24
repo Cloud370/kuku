@@ -653,7 +653,8 @@ def persistent_model_default(client):
         terminal.press("\x1b")
         models = terminal.expect("d Default + switch", also=(chosen,))["screen"]
         terminal.press("d")
-        saved = terminal.expect(f"Saved {chosen} as default and switched")["screen"]
+        saved = terminal.expect("Settings saved for the next safe model boundary", also=(chosen,))["screen"]
+        assert client.request("GET", "/models").as_json()["default_tier"] == "light"
         eventually("the current Session uses light",
                    lambda: client.snapshot(workspace, session)["config"].get("tier") == "light")
         terminal.exit_cleanly()

@@ -216,7 +216,7 @@ def composer_actions(client):
         custom_speed = terminal.expect("Custom service tier", also=("Probe and use", "Skip probe and use", draft))["screen"]
         assert position(custom_speed, "Skip probe and use")[0] < position(custom_speed, draft)[0], custom_speed
         terminal.press("\x1b[B\r")
-        terminal.expect("main · Service tier · turbo", also=(draft,))
+        terminal.expect("Next service tier · Turbo", also=(draft,))
         eventually("turbo applies on the next turn",
                    lambda: (snapshot().get("pending_selection") or {}).get("settings", {}).get("service_tier") == "turbo")
         catalog = client.request("GET", "/models").as_json()

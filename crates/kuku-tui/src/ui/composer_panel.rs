@@ -48,7 +48,11 @@ pub(super) fn render(
     };
     let height = height.min(editor.y.saturating_sub(frame.area().y));
     let area = Rect::new(editor.x, editor.y - height, editor.width, height);
-    let inner = render_panel(frame, area, text_x);
+    let max_width = match modal {
+        Modal::Picker(picker) if picker.kind == PickerKind::Models => area.width,
+        _ => MAX_WIDTH,
+    };
+    let inner = render_panel(frame, area, text_x, max_width);
     match modal {
         Modal::ExitConfirmation => {
             let line = Line::styled("Exit kuku? Y exit · Esc edit", emphasis(ACCENT));
@@ -125,7 +129,7 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
     inner
 }
 
-fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
+fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16, max_width: u16) -> Rect {
     let indent = text_x.saturating_sub(area.x).min(area.width);
     let mut padding = compact_padding(2, area.height >= 5);
     let mut block = Block::new().style(surface());
@@ -139,7 +143,7 @@ fn render_panel(frame: &mut Frame<'_>, area: Rect, text_x: u16) -> Rect {
     let block = block.padding(padding);
     frame.render_widget(Clear, area);
     let mut inner = block.inner(area);
-    inner.width = inner.width.min(MAX_WIDTH);
+    inner.width = inner.width.min(max_width);
     frame.render_widget(block, area);
     inner
 }
@@ -338,15 +342,11 @@ fn choice_line(picker: &Picker, choice: &Choice, width: usize, active: bool) -> 
     if detail.is_empty() || label.width() + 3 >= width {
         return picker_line(&label, width, active, style);
     }
-    let aligned = match picker.kind {
-        PickerKind::Commands => Some(15),
-        PickerKind::Models | PickerKind::ModelActions => Some(30.min(width / 2)),
-        _ => None,
+    let separator = if picker.kind == PickerKind::Commands {
+        " ".repeat(15usize.saturating_sub(label.width()).max(2))
+    } else {
+        " · ".to_owned()
     };
-    let separator = aligned.map_or_else(
-        || " · ".to_owned(),
-        |column| " ".repeat(column.saturating_sub(label.width()).max(2)),
-    );
     let info = format!("{separator}{}", crate::text::single_line(detail));
     let info = shorten(&info, width - label.width());
     let padding = " ".repeat(width - label.width() - info.width());

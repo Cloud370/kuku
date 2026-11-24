@@ -168,7 +168,10 @@ fn model_choices(
             detail.push_str(" · Default");
         }
         if let Some(purpose) = tier.purpose.as_ref().filter(|purpose| {
-            !purpose.is_empty() && *purpose != &tier.name && *purpose != &tier.model
+            account.is_none()
+                && !purpose.is_empty()
+                && *purpose != &tier.name
+                && *purpose != &tier.model
         }) {
             detail.push_str(&format!(" · {purpose}"));
         }

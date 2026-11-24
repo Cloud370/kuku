@@ -597,3 +597,25 @@ fn model_picker_letters_are_actions_until_search_is_focused() {
     ));
     assert_eq!(Some("deep"), app.pane().config().tier.as_deref());
 }
+
+#[test]
+fn models_fit_the_account_and_route_markers_without_a_fixed_column() {
+    use crate::menu::{Choice, ChoiceKind};
+
+    let mut app = connected_app();
+    app.picker(
+        PickerKind::Models,
+        vec![Choice::new(
+            "gpt-6.2-sol",
+            "ChatGPT · team-operations · ali***e@exa***.com · Current · Default",
+            ChoiceKind::Close,
+        )],
+    );
+    let screen = lines(&frame(&mut app, 94)).join("\n");
+    assert!(
+        screen.contains(
+            "gpt-6.2-sol · ChatGPT · team-operations · ali***e@exa***.com · Current · Default"
+        ),
+        "{screen}"
+    );
+}
