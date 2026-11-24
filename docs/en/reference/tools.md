@@ -51,7 +51,7 @@ When the default skill tool surface is enabled, the runtime exposes `list_skills
 
 `create_agent` creates a stable, flat Session-local address with independent context; an optional `preset` supplies the contact card. Supply the instructions and task material the recipient needs. `send_message` addresses an existing Agent and returns a durable delivery receipt, not its final work result. Its `wake` defaults to true; false queues the input for explicit advancement. `list_agents` returns a compact status list. Pass `wait_for` with one Agent address to wait up to 30 seconds for its current execution and retrieve its settled reply. A timeout returns the current state. A settled reply can include `last_request` with the model and the requested and provider-reported service tiers. Fields without available evidence are omitted.
 
-Model-facing creation takes the address, role instructions, tool allowlist, preset, tier and working directory. The host owns explicit provider settings through its SDK configuration.
+Model-facing creation takes the address, role instructions, tool allowlist, preset, tier and working directory. Agents created with this tool receive `send_message` and `list_agents` alongside their selected or preset tools. An empty `tools` array selects only those two tools. The creation receipt reports the effective tool list. Hosts use the SDK to set an exact tool list and explicit provider settings.
 
 `ask_user` persists a question and yields at the current tool-batch boundary. The host replies to its exact request identity through the SDK, CLI `reply`, or server response endpoint. Question and authorization waiting semantics are defined in [Sessions](../how-it-works/sessions.md#waiting-and-replies).
 

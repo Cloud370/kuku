@@ -51,7 +51,7 @@ Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模�
 
 `create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。已结束的回复可以附带 `last_request`，其中包含请求所用的模型、请求指定的服务档位和供应商回报的服务档位。缺少依据的字段省略。
 
-模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。宿主通过 SDK 配置供应商参数。
+模型创建 Agent 时指定地址，并按需选择角色指令、工具白名单、preset、tier 和工作目录。通过此工具创建的子 Agent 会在显式选择或预设工具之外获得 `send_message` 和 `list_agents`。传入空的 `tools` 数组时只提供这两个工具。创建回执会报告实际工具列表。宿主通过 SDK 指定精确的工具列表与供应商参数。
 
 `ask_user` 持久化问题，并在当前工具批次边界让出执行。宿主通过 SDK、CLI `reply` 或 server 回复端点，使用精确请求标识作答。问题和授权的等待语义见 [Session](../how-it-works/sessions.md#等待与回复)。
 
