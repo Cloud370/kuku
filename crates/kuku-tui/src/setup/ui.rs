@@ -195,6 +195,13 @@ fn render_step(
         }
         SetupStep::Connection => {
             line(frame, area, &mut row, "Choose a provider", ACCENT);
+            line(
+                frame,
+                area,
+                &mut row,
+                "Add a ChatGPT account with kuku auth login chatgpt.",
+                MUTED,
+            );
             let available = area.height.saturating_sub(row + 3) as usize;
             let first = state.selected.saturating_sub(available / 2);
             let last = (first + available).min(state.choices.len());
@@ -342,6 +349,7 @@ fn render_step(
         | SetupStep::RecoveryDefault
         | SetupStep::DefaultModel
         | SetupStep::Thinking
+        | SetupStep::Service
         | SetupStep::Output
         | SetupStep::Pricing
         | SetupStep::Rates
@@ -405,7 +413,16 @@ fn render_review(
     if models.len() > 1 && state.intent == SetupIntent::Default {
         summary_row(frame, area, row, "Default", &model, None);
     }
-    if let Ok(url) = state.request_url() {
+    if state.subscription.is_some() {
+        summary_row(
+            frame,
+            area,
+            row,
+            "Account",
+            &state.connection_label(settings),
+            None,
+        );
+    } else if let Ok(url) = state.request_url() {
         summary_row(
             frame,
             area,
@@ -520,8 +537,10 @@ fn render_review_settings(
         kuku::config::RequestedOutput::Text => "Text",
         kuku::config::RequestedOutput::Image => "Image requested",
     };
+    let service = crate::text::service_tier_label(state.displayed_service(settings));
     review_menu(frame, area, row, state, mode, |action| match action {
         ReviewAction::Thinking => Some(effort.unwrap_or("Provider default")),
+        ReviewAction::Service => Some(service.as_str()),
         ReviewAction::Output => Some(output),
         ReviewAction::Pricing => Some(state.pricing_label()),
         _ => None,

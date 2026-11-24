@@ -99,6 +99,9 @@ fn prepare(
     if let Some(media) = media {
         super::openai_responses::attach_tool_images(&mut body, images, media.limit, media.load);
     }
+    if let Some(account) = &config.options.subscription {
+        super::subscription::apply_request_shape(account.channel(), &mut body);
+    }
     Ok(PreparedProviderRequest {
         kind: config.kind,
         connection_name: config.connection_name.clone(),
@@ -111,6 +114,11 @@ fn prepare(
 }
 
 pub(crate) fn request_url(config: &ResolvedProvider) -> Result<String, ProviderFailure> {
+    if let Some(account) = &config.options.subscription {
+        account
+            .validate_connection(config.kind.format(), &config.base_url, &config.options)
+            .map_err(|error| invalid_request(&error.to_string()))?;
+    }
     crate::config::resolve_request_url(
         config.kind.format(),
         &config.base_url,

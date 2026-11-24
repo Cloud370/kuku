@@ -8,6 +8,7 @@ mod recovery;
 mod repair;
 mod repair_backend;
 mod state;
+mod subscription;
 mod ui;
 
 use std::io;
@@ -29,6 +30,7 @@ pub(crate) use repair_backend::{
     PreparedCredentialRepair, SavedCredentialRepair,
 };
 pub(crate) use state::SetupIntent;
+pub use subscription::SubscriptionSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupMode {

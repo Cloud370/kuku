@@ -10,7 +10,7 @@ mod config {
     pub use kuku::config::{
         resolve_request_url, ApiKey, LogsConfig, MediaAdapterSupport, ModelPricing,
         ModelThinkingTest, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions,
-        ProviderProfile, ProviderProxy, RequestedOutput, ResolvedThinking, ThinkLevel,
+        ProviderProfile, ProviderProxy, RequestedOutput, ResolvedThinking, SubscriptionChannel, ThinkLevel,
     };
 }
 
@@ -53,6 +53,24 @@ mod provider {
     pub mod discovery {
         #[derive(Default)]
         pub struct CachedCatalog;
+    }
+
+    mod subscription {
+        use kuku::config::{ProviderProxy, SubscriptionAccount, SubscriptionChannel};
+
+        pub(super) fn apply_request_shape(
+            _channel: SubscriptionChannel,
+            _body: &mut serde_json::Value,
+        ) {
+            panic!("subscription wire behavior is tested inside the SDK");
+        }
+
+        pub(super) async fn authorization_token(
+            _account: &SubscriptionAccount,
+            _proxy: &ProviderProxy,
+        ) -> kuku::Result<String> {
+            panic!("subscription authentication is tested inside the SDK");
+        }
     }
 
     #[allow(dead_code)]

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use kuku::adapter::inspect_model;
 use kuku::config::ThinkLevel;
 use kuku::session::AgentConfig;
@@ -8,12 +8,16 @@ use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions};
 use ratatui::Frame;
 
+use crate::editor::Editor;
 use crate::local_settings::{active_service, ensure_same_service};
 use crate::model_default::ResolvedModel;
 
 use super::config::{self, Settings};
 use super::state::{SetupIntent, SetupState};
 use super::{Finish, SetupMode};
+
+const MAX_MODEL_BYTES: usize = 256;
+const MAX_KEY_BYTES: usize = 4096;
 
 pub(crate) struct ModelEditor {
     settings: Settings,
@@ -285,4 +289,68 @@ async fn wait_for_catalog(connection: Option<&Connection>, config: &kuku::config
     })
     .await
     .is_ok()
+}
+
+pub(super) fn valid_model_id(input: &str) -> Result<String, String> {
+    let model = input.trim();
+    if model.is_empty() {
+        return Err("Enter a model ID.".into());
+    }
+    if model.len() > MAX_MODEL_BYTES
+        || model
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err("Model IDs must be a single line of at most 256 bytes.".into());
+    }
+    if model.starts_with('$') {
+        return Err("Enter a literal model ID, not an environment-variable reference.".into());
+    }
+    Ok(model.to_owned())
+}
+
+pub(super) fn valid_env_name(input: &str) -> Result<String, String> {
+    let name = input.trim();
+    let mut characters = name.chars();
+    if !characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        || !characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    {
+        return Err("Use a portable environment-variable name, such as ANTHROPIC_API_KEY.".into());
+    }
+    Ok(name.to_owned())
+}
+
+pub(super) fn valid_stored_key(input: &str) -> Result<String, String> {
+    if input.chars().any(char::is_control) {
+        return Err("Keys must be a single line of at most 4096 bytes.".into());
+    }
+    let key = input.trim();
+    if key.is_empty() {
+        return Err("Enter a key or leave blank to keep the saved key.".into());
+    }
+    if key.len() > MAX_KEY_BYTES {
+        return Err("Keys must be a single line of at most 4096 bytes.".into());
+    }
+    Ok(key.to_owned())
+}
+
+pub(super) fn edit_field(editor: &mut Editor, key: KeyEvent) {
+    match key.code {
+        KeyCode::Left => editor.left(),
+        KeyCode::Right => editor.right(),
+        KeyCode::Home => editor.home(),
+        KeyCode::End => editor.end(),
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            editor.insert(&character.to_string());
+        }
+        _ => {}
+    }
 }

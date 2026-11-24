@@ -3,8 +3,8 @@ mod config {
         resolve_request_url, ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig,
         MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
         PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat,
-        ProviderOptions, ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel,
-        TierConfig, UpdateConfig,
+        ProviderOptions, ProviderProfile, RequestedOutput, ResolvedThinking, SubscriptionChannel,
+        ThinkLevel, TierConfig, UpdateConfig,
     };
 }
 

@@ -19,6 +19,8 @@ $KUKU_HOME/
 - **`logs/`** — 可观测性日志，以及 `logs/provider-trace/` 下的轮转 [Provider Trace](environment-variables.md#provider-trace-日志)。Session 事实只保存在各 Session 的 `events.jsonl` 中。
 - **`credentials/`** — 交互式配置写入的仅所有者可读明文密钥文件，配置中以 `api_key = "file:<绝对路径>"` 引用，密钥不会写进 `config.toml`，也不会被 `kuku config show` 打印。共用同一数据目录的工作区共享此目录（同一系统用户下的进程可读取）。Unix 下目录权限为 `0700`、文件为 `0600`；Windows 下要求受保护 ACL 仅允许当前用户访问。遇到符号链接或权限不安全的路径会直接拒绝，不自动修复。文件未加密，修改配置时也不会自动删除旧文件。
 
+订阅账号独立保存到 `credentials/subscriptions/<渠道>/<账号>.json`。上级私有文件 `host.json` 保存稳定的主机 ID，以及从已授权邮箱派生不透明账号标识的本地密钥。每份账号记录保存脱敏邮箱、注册信息和当前令牌。凭据以仅所有者可访问的明文保存，遵循与已保存密钥相同的平台权限规则。续期和退出在跨进程锁内原子发布整份记录。退出清除令牌并保留注册信息。
+
 ## 项目级目录
 
 kuku 按工作区解析后的规范路径定位 Session、项目 Memory 和权限策略（经由符号链接进入同一目录会命中同一份数据）。以 `/code/my-app` 为例：

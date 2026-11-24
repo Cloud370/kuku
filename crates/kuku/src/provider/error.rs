@@ -7,10 +7,29 @@ const QUOTA_ERROR_CODES: &[&str] = &[
     "insufficient_balance",
     "credit_balance_too_low",
     "billing_hard_limit_reached",
+    "subscription_sharing_usage_limit_exceeded",
 ];
 
+const CHATGPT_QUOTA_CODE: &str = "subscription_sharing_usage_limit_exceeded";
+const CHATGPT_UNSUPPORTED_CAPABILITY: &str = "subscription_sharing_unsupported_capability";
+
+fn chatgpt_quota_message() -> String {
+    format!(
+        "ChatGPT plan usage limit reached. Manage usage: {}",
+        crate::config::SubscriptionChannel::ChatGpt.usage_url()
+    )
+}
+
 pub(crate) fn classify_http_error(status: u16, body_snippet: &str) -> ProviderFailure {
-    let structured_kind = structured_error_kind(body_snippet);
+    let structured = serde_json::from_str::<serde_json::Value>(body_snippet).ok();
+    let error = structured
+        .as_ref()
+        .map(|value| value.get("error").unwrap_or(value));
+    let code = error.and_then(extract_error_code);
+    let parameter = error
+        .and_then(|error| error.get("param"))
+        .and_then(serde_json::Value::as_str);
+    let structured_kind = code.and_then(provider_error_code_kind);
     let kind = match status {
         401 => ProviderFailureKind::Authentication,
         402 => ProviderFailureKind::QuotaExhausted,
@@ -29,7 +48,13 @@ pub(crate) fn classify_http_error(status: u16, body_snippet: &str) -> ProviderFa
 
     ProviderFailure {
         kind,
-        message: sanitize_http_message(status, body_snippet),
+        message: match (code, parameter) {
+            (Some(CHATGPT_QUOTA_CODE), _) => chatgpt_quota_message(),
+            (Some(CHATGPT_UNSUPPORTED_CAPABILITY), Some("service_tier")) => {
+                "ChatGPT declined the requested speed for this account and model. Choose a different service tier.".into()
+            }
+            _ => sanitize_http_message(status, body_snippet),
+        },
         status: Some(status),
         provider_request_id: None,
         retry_after: None,
@@ -45,16 +70,11 @@ fn structured_permanent_kind(kind: Option<ProviderFailureKind>) -> Option<Provid
     kind.filter(|kind| !kind.is_retryable())
 }
 
-fn structured_error_kind(body: &str) -> Option<ProviderFailureKind> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-        return None;
-    };
-    let error = value.get("error").unwrap_or(&value);
+fn extract_error_code(error: &serde_json::Value) -> Option<&str> {
     select_provider_error_code(
         error.get("code").and_then(serde_json::Value::as_str),
         error.get("type").and_then(serde_json::Value::as_str),
     )
-    .and_then(provider_error_code_kind)
 }
 
 pub(crate) fn select_provider_error_code<'a>(
@@ -82,7 +102,11 @@ pub(crate) fn classify_stream_error(code: &str, message: &str) -> ProviderFailur
     let kind = provider_error_code_kind(code).unwrap_or(ProviderFailureKind::Unknown);
     ProviderFailure {
         kind,
-        message: sanitize_provider_message(message),
+        message: if code == CHATGPT_QUOTA_CODE {
+            chatgpt_quota_message()
+        } else {
+            sanitize_provider_message(message)
+        },
         status: None,
         provider_request_id: None,
         retry_after: None,
@@ -110,9 +134,10 @@ fn provider_error_code_kind(code: &str) -> Option<ProviderFailureKind> {
         | "context_window_exceeded"
         | "request_too_large"
         | "prompt_too_large" => ProviderFailureKind::ContextTooLarge,
-        "invalid_request" | "invalid_request_error" | "bad_request" => {
-            ProviderFailureKind::InvalidRequest
-        }
+        "invalid_request"
+        | "invalid_request_error"
+        | "bad_request"
+        | CHATGPT_UNSUPPORTED_CAPABILITY => ProviderFailureKind::InvalidRequest,
         "invalid_response" | "malformed_response" => ProviderFailureKind::InvalidResponse,
         "server_error"
         | "overloaded_error"

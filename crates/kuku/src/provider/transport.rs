@@ -48,7 +48,18 @@ async fn send(
             "prepared request belongs to a different connection, endpoint, protocol, or model",
         ));
     }
-    let api_key = config.api_key.resolve().map_err(|error| ProviderFailure {
+    let subscription = config.options.subscription.as_ref();
+    let credential = match subscription {
+        Some(account) => {
+            Box::pin(super::subscription::authorization_token(
+                account,
+                &config.options.proxy,
+            ))
+            .await
+        }
+        None => config.api_key.resolve(),
+    };
+    let api_key = credential.map_err(|error| ProviderFailure {
         kind: ProviderFailureKind::Authentication,
         message: format!("could not resolve connection credentials: {error}"),
         status: None,
@@ -58,7 +69,7 @@ async fn send(
     })?;
     let headers = request_headers(config, prepared, &api_key)?;
     let trace = ProviderTrace::from_request(
-        trace_metadata,
+        trace_metadata.filter(|_| subscription.is_none()),
         config.connection_name.clone(),
         prepared.model.clone(),
     );
@@ -83,7 +94,7 @@ async fn send(
         .post(&prepared.url)
         .headers(headers)
         .body(prepared.body.as_bytes().clone());
-    if trial_error_body.is_some() {
+    if trial_error_body.is_some() || subscription.is_some() {
         request = request.redirect(wreq::redirect::Policy::none());
     }
     let response = request.send().await.map_err(|error| {

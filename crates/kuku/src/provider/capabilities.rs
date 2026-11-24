@@ -1,6 +1,7 @@
 use crate::config::{
     MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry,
-    ProtocolCapabilityDeclaration, ProviderFormat, ProviderOptions, ProviderProfile, ThinkLevel,
+    ProtocolCapabilityDeclaration, ProviderFormat, ProviderOptions, ProviderProfile,
+    SubscriptionChannel, ThinkLevel,
 };
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
@@ -61,6 +62,14 @@ pub(crate) fn resolve_capabilities(
         ProviderProfile::Auto | ProviderProfile::Compatible | ProviderProfile::OpenRouter => {
             (&[], &[])
         }
+    };
+    let services = match options
+        .subscription
+        .as_ref()
+        .map(|account| account.channel())
+    {
+        Some(SubscriptionChannel::ChatGpt) => &["auto", "default", "fast", "ultrafast"][..],
+        None => services,
     };
     let declaration = options.model_capabilities.get(model);
     let protocol = kind.discovery_protocol();
@@ -281,16 +290,23 @@ pub(crate) fn resolve_settings(
             think.and_then(|level| portable_reasoning(level, capabilities)),
         ),
     };
-    let native_service = service
-        .as_deref()
-        .filter(|_| capabilities.profile == ProviderProfile::OpenRouter)
-        .map(|tier| normalized_tier(Some(tier)))
-        .filter(|tier| {
-            capabilities
-                .service_tiers
+    let native_service = service.as_deref().and_then(|tier| {
+        let allowed = &capabilities.service_tiers;
+        match capabilities.profile {
+            ProviderProfile::OpenRouter => {
+                let normalized = normalized_tier(Some(tier));
+                allowed
+                    .iter()
+                    .any(|value| normalized_tier(Some(value)) == normalized)
+                    .then_some(normalized)
+            }
+            ProviderProfile::OpenAi if matches!(tier, "fast" | "priority") => allowed
                 .iter()
-                .any(|allowed| normalized_tier(Some(allowed)) == *tier)
-        });
+                .any(|value| matches!(value.as_str(), "fast" | "priority"))
+                .then_some(tier),
+            _ => None,
+        }
+    });
     if native_service.is_none() {
         validate_choice(
             connection,

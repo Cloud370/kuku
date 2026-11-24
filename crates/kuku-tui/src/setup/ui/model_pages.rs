@@ -268,6 +268,28 @@ pub(super) fn render_model_settings(
                 option(frame, area, row, label, index == state.models.cursor);
             }
         }
+        SetupStep::Service => {
+            line(frame, area, row, "Service tier", ACCENT);
+            let subscription = state.subscription.is_some();
+            if subscription {
+                let account = crate::text::shorten_middle(
+                    &state.connection_label(settings),
+                    area.width.into(),
+                );
+                line(frame, area, row, &account, MUTED);
+            }
+            for (index, tier) in state.service_choices(settings).iter().enumerate() {
+                let tier = tier.as_deref();
+                let mut label = tier.map_or_else(
+                    || "Provider default".to_owned(),
+                    |tier| crate::text::service_tier_label(Some(tier)),
+                );
+                if subscription && matches!(tier, Some("fast" | "priority" | "ultrafast")) {
+                    label.push_str(" · Availability unconfirmed");
+                }
+                option(frame, area, row, &label, index == state.models.cursor);
+            }
+        }
         SetupStep::Output => {
             line(frame, area, row, "Agent requested output", ACCENT);
             option(frame, area, row, "Text", state.models.cursor == 0);

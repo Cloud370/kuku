@@ -17,6 +17,8 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 你可以选预设、复用已有连接，或填写自定义 URL、代理方式（跟随环境代理、直连、HTTP、SOCKS5、SOCKS5H）和 API Key。对于自定义 Base URL，选好模型后向导会自动探测协议（优先 `Responses`，其次 `Chat Completions`、`Messages`），结果不明确时再让你手动挑；如果目录不可读，也可以直接手填模型 ID。
 
+选择一次 **Find and test models**，即可允许本次设置查询模型目录并发送简短的文本或图片试跑。API Key 试跑可能消耗 API 余额，请求输出上限为 4096 token。ChatGPT 试跑使用你的订阅方案。每次试跑的超时为 30 秒。选择 **Edit config file** 会显示配置路径，供应商请求数为零。
+
 在模型列表里可以直接打字搜索、按 `Space` 多选、`Enter` 确认。试跑结果可以在 **Model tests** 里逐项查看，也可以进 **Settings** 调整思考档位、输出上限、能力标记与费率。想确认工具调用是否正常，点 **Settings → Test tools** 测一次合成工具调用——能正常回文本不代表支持工具调用；如果某条 Chat 线路需要走 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测再保存。
 
 在 Session 里随时可以输入 `/model` 或按 `Ctrl+L` 添加/修改连接，选择 **Use in this Session** 切换当前 Agent 的线路，或 **Set as default** 存为新 Session 的默认线路。[终端控制](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
@@ -31,6 +33,18 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 密钥推荐使用环境变量引用（`api_key = "$VARIABLE_NAME"`）或独立密钥文件（`api_key = "file:<绝对路径>"`）。在交互向导里粘贴的密钥会以仅所有者可读的明文文件存到 `$KUKU_HOME/credentials/`，TOML 里只写 `file:` 路径；文件未加密。[配置参考](../reference/config.md) · [文件布局](../reference/file-layout.md)
 
 环境变量由服务端进程读取，而不是终端客户端。如果本地服务启动后你才在终端里改了环境变量，等服务空闲后运行 `kuku server restart` 才会生效；连远程服务时请在服务端机器上配置密钥。`config.toml` 里其他字符串字段同样支持在加载时展开 `$ENV_VAR_NAME`（例如 `base_url = "$KUKU_ANTHROPIC_BASE_URL"`）。
+
+### 在无头主机登录订阅
+
+在运行 kuku 的主机上执行 `kuku auth login chatgpt [名称] --proxy URL`。用自己的浏览器打开完整授权链接，然后把地址栏里的完整回调 URL 粘贴到正在等待的终端。如果浏览器无法连接本地回调页面，从错误页的地址栏复制。粘贴的 URL 不回显。用已保存的名称续签现有账号。省略名称时，从授权身份派生名称，也可以为各账号或工作区自行命名。在 `kuku init` 或 `/model` 里选择已保存的连接。
+
+登录前设置该账号的代理。kuku 发出的订阅请求都使用该连接的代理，包括令牌交换、续期、模型发现和推理。代理缺失或失败时，请求停止。之后可以更新连接的代理。浏览器使用自身的网络设置。
+
+添加或编辑 ChatGPT 模型时，用所选账号的访问令牌刷新模型目录。设置界面会显示账号别名，并在可用时显示脱敏邮箱。同一个邮箱有多个工作区时，可以用不同别名区分。OpenAI 的公开登录 API 没有定义 Plus、Pro 等套餐名称字段。
+
+在模型编辑器中，通过 **Settings → Service tier** 请求 Fast 或 Ultrafast。档位是否可用取决于账号和模型，因此选择页会将两档标为待验证。**Model tests** 会显示 OpenAI 为试跑回报的实际档位，或者显示请求失败时返回的错误。
+
+ChatGPT 的方案和应用额度可在[管理用量](https://chatgpt.com/settings/usage)查看。kuku 可以显示 ChatGPT 返回的额度错误，以及已完成请求回报的 token 数。其他订阅渠道提供剩余额度接口时，可以显示该渠道实际回报的数值。
 
 ### 认证失败后的恢复
 

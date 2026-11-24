@@ -77,11 +77,15 @@ impl RequestPricing {
         Self {
             model: model.into(),
             requested_tier: requested_tier.map(str::to_owned),
-            pricing: options
-                .model_pricing
-                .get(model)
-                .cloned()
-                .unwrap_or_default(),
+            pricing: if options.subscription.is_some() {
+                ModelPricing::UsageOnly
+            } else {
+                options
+                    .model_pricing
+                    .get(model)
+                    .cloned()
+                    .unwrap_or_default()
+            },
             gateway: official || options.profile == crate::config::ProviderProfile::OpenRouter,
             catalog_url,
             catalog,

@@ -52,6 +52,7 @@ On Chat and Responses, omitting `max_output_tokens` uses the upstream default. N
 | `model_price_catalogs` | table | Public OpenRouter quotes saved during setup |
 | `model_capabilities` | table | Discovered/manual capability overrides keyed by exact model ID |
 | `api_key` | string | `$ENV_VAR_NAME`, literal key, or `file:<absolute-path>` |
+| `subscription` | table | Subscription account reference with `channel` and absolute `credential_file` |
 | `auth` | `bearer`\|`x-api-key` | Override auth header independently of `format` |
 | `profile` | string | `auto` (default), `openai`, `anthropic`, `deepseek`, `openrouter`, or `compatible` |
 | `reasoning_efforts` | string[] | Override declared native reasoning values for this connection |
@@ -104,6 +105,8 @@ cache_read = 0.1
 - **`prompt_cache_scope`** (Responses only): `workspace` (default) hashes the normalized workspace path + connection + endpoint + model so Sessions in the same workspace share a key without leaking paths; `session` isolates by Session + Agent + connection + endpoint + model; `off` omits `prompt_cache_key`. Does not affect OpenRouter `session_id`.
 - **`api_key`**: `$NAME` reads only that env var; `file:/absolute/path` validates and reads only that file at request time (no relative paths, no URL syntax, no fallback between sources). Setup writes unencrypted keys under `<data-dir>/credentials/`; `kuku config show` prints only the reference. [File layout](file-layout.md)
 - Any other string config value starting with `$` resolves that env var before validation.
+
+A subscription connection uses its account reference as the credential source. ChatGPT subscriptions use the official OpenAI Responses and models endpoints and require an explicit HTTP or SOCKS5H proxy. The connection's proxy also applies to the account's authentication requests. [Subscription sign-in](../start/configuration.md#sign-in-to-a-subscription-on-a-headless-host)
 
 ## `discovery`
 

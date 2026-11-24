@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use kuku_client::local::BuildPolicy;
 use kuku_client::{Client, Connection, ConnectionOptions, Error};
 
@@ -106,6 +106,8 @@ pub enum Command {
     Config(ConfigArgs),
     /// Open interactive provider settings
     Init,
+    /// Sign in to or manage model subscription accounts
+    Auth(SubscriptionAuthArgs),
     /// Show or export embedded prompt assets
     Prompts(PromptsArgs),
     /// List or inspect available agent contact cards
@@ -120,6 +122,77 @@ pub enum Command {
     /// Internal entry point used to launch the managed service.
     #[command(name = "__managed-server", hide = true)]
     ManagedServer(ServerCommandArgs),
+}
+
+/// Subscription account operations.
+#[derive(Args)]
+pub struct SubscriptionAuthArgs {
+    #[command(subcommand)]
+    pub command: SubscriptionAuthCommand,
+}
+
+/// A supported subscription authorization channel.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum SubscriptionChannelArg {
+    #[value(name = "chatgpt")]
+    ChatGpt,
+}
+
+impl From<SubscriptionChannelArg> for kuku::config::SubscriptionChannel {
+    fn from(value: SubscriptionChannelArg) -> Self {
+        match value {
+            SubscriptionChannelArg::ChatGpt => Self::ChatGpt,
+        }
+    }
+}
+
+/// Settings for an explicit subscription proxy.
+#[derive(Args)]
+pub struct SubscriptionProxyArgs {
+    /// HTTP or SOCKS5H proxy URL. A saved account can reuse its configured proxy.
+    #[arg(long)]
+    pub proxy: Option<String>,
+    /// Username for the proxy.
+    #[arg(long, requires = "proxy")]
+    pub proxy_user: Option<String>,
+    /// Name of the environment variable containing the proxy password.
+    #[arg(long, requires = "proxy_user", conflicts_with = "proxy_password_file")]
+    pub proxy_password_env: Option<String>,
+    /// Absolute path to the private proxy password file.
+    #[arg(long, requires = "proxy_user")]
+    pub proxy_password_file: Option<PathBuf>,
+}
+
+/// Manage saved subscriptions on the service host.
+#[derive(Subcommand)]
+pub enum SubscriptionAuthCommand {
+    /// Authorize a channel in your browser and paste its callback in the terminal.
+    Login {
+        channel: SubscriptionChannelArg,
+        /// Name a new account or reauthorize the existing account with this name.
+        name: Option<String>,
+        #[command(flatten)]
+        proxy: SubscriptionProxyArgs,
+    },
+    /// Show saved account names and sign-in state.
+    List,
+    /// Sign out of one saved account.
+    Logout {
+        channel: SubscriptionChannelArg,
+        name: String,
+    },
+    /// Change the proxy for a saved account.
+    Proxy {
+        channel: SubscriptionChannelArg,
+        name: String,
+        #[command(flatten)]
+        proxy: SubscriptionProxyArgs,
+    },
+    /// List the models available for the saved account.
+    Models {
+        channel: SubscriptionChannelArg,
+        name: String,
+    },
 }
 
 /// Arguments for starting or managing the service.

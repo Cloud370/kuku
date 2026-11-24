@@ -139,6 +139,7 @@ pub struct ProviderEntry {
     pub format: ProviderFormat,
     #[serde(default)]
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
     #[serde(default, flatten)]
     pub options: super::provider::ProviderOptions,
@@ -491,6 +492,15 @@ impl Config {
             }
             if let Some(models) = &provider.options.models_url {
                 out.push_str(&format!("models_url = {models:?}\n"));
+            }
+            if let Some(account) = &provider.options.subscription {
+                out.push_str(&format!(
+                    "subscription = {{ channel = {:?}, credential_file = {} }}\n",
+                    account.channel().as_str(),
+                    toml_edit::value(account.credential_file().display().to_string())
+                ));
+                out.push('\n');
+                continue;
             }
             match &provider.api_key {
                 ApiKey::Plaintext(_) => out.push_str("api_key = \"<redacted>\"\n"),

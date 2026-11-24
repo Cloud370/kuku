@@ -66,7 +66,18 @@ fn runtime_clients() -> Arc<RuntimeClients> {
 }
 
 fn api_builder() -> wreq::ClientBuilder {
-    Client::builder().user_agent(concat!("kuku/", env!("CARGO_PKG_VERSION")))
+    let builder = Client::builder().user_agent(concat!("kuku/", env!("CARGO_PKG_VERSION")));
+    #[cfg(test)]
+    let builder = match TEST_TRUST.try_with(Clone::clone) {
+        Ok(store) => builder.cert_store(store),
+        Err(_) => builder,
+    };
+    builder
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(super) static TEST_TRUST: wreq::tls::CertStore;
 }
 
 pub(crate) fn api_client(settings: &ProviderProxy) -> Result<Client> {

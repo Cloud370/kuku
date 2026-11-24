@@ -213,6 +213,14 @@ impl SetupState {
     }
 
     pub(super) fn connection(&self, settings: &Settings) -> Result<ProviderConfig, String> {
+        if self.subscription.is_some() {
+            return Ok(ProviderConfig {
+                format: self.protocol,
+                base_url: self.address_parts().0,
+                api_key: ApiKey::Plaintext(String::new()),
+                options: self.connection_options(settings),
+            });
+        }
         let api_key = match self.credential_source {
             CredentialSource::Environment => {
                 ApiKey::Env(super::state::valid_env_name(self.environment.text())?)
@@ -237,7 +245,14 @@ impl SetupState {
         self.step = SetupStep::ModelSource;
         self.models.cursor = 0;
         if !self.authorized || !self.credential_ready() {
-            self.problem = Some("Supply a credential to find models, or enter a model ID.".into());
+            self.problem = Some(match &self.subscription {
+                Some(account) => format!(
+                    "Sign in with kuku auth login {} {}, then reopen settings.",
+                    account.channel().as_str(),
+                    account.name().unwrap_or("ACCOUNT")
+                ),
+                None => "Supply a credential to find models, or enter a model ID.".into(),
+            });
             return;
         }
         let targets = self.connection(settings).and_then(|connection| {
@@ -488,7 +503,12 @@ impl SetupState {
             } else {
                 existing.and_then(|(_, effort)| effort.clone())
             };
-            TrialSelection { model, effort, service_tier: existing.and_then(|(route, _)| route.service_tier.clone()) }
+            let service_tier = if primary.as_ref() == Some(&model) {
+                self.service_override(&model).map(|tier| tier.map(str::to_owned))
+            } else {
+                None
+            }.unwrap_or_else(|| existing.and_then(|(route, _)| route.service_tier.clone()));
+            TrialSelection { model, effort, service_tier }
         });
         plan_model_trials(Arc::new(connection), models)
     }

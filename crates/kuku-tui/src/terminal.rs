@@ -1,11 +1,13 @@
-use std::io::{self, Stdout, Write};
+use std::io::{self, IsTerminal, Stdout, Write};
 use std::time::{Duration, Instant, SystemTime};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use crossterm::cursor::{Hide, MoveTo, Show};
 #[cfg(not(windows))]
 use crossterm::event::EventStream;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::style::Colored;
 use crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
@@ -32,6 +34,115 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(25);
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_millis(33);
 const MAX_RENDER_COOLDOWN: Duration = Duration::from_millis(60);
 const UPDATE_BATCH: usize = 32;
+
+/// Read from a terminal with echo disabled and restore its input mode before returning.
+pub fn read_hidden_line(prompt: &str, max_bytes: usize) -> io::Result<String> {
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "hidden input requires a terminal",
+        ));
+    }
+    let mode = HiddenInput::enter()?;
+    let mut output = io::stderr().lock();
+    write!(output, "{prompt}")?;
+    output.flush()?;
+    let result = read_hidden_events(max_bytes);
+    drop(output);
+    drop(mode);
+    result
+}
+
+struct HiddenInput {
+    bracketed: bool,
+    _raw: RawMode,
+}
+
+impl HiddenInput {
+    fn enter() -> io::Result<Self> {
+        let raw = RawMode::enter()?;
+        let bracketed = io::stderr().is_terminal()
+            && std::env::var("TERM").as_deref() != Ok("dumb")
+            && execute!(io::stderr(), EnableBracketedPaste).is_ok();
+        Ok(Self {
+            bracketed,
+            _raw: raw,
+        })
+    }
+}
+
+impl Drop for HiddenInput {
+    fn drop(&mut self) {
+        let mut output = io::stderr();
+        if self.bracketed {
+            let _ = execute!(output, DisableBracketedPaste);
+        }
+        let _ = output.write_all(b"\r\n");
+        let _ = output.flush();
+    }
+}
+
+struct RawMode;
+
+impl RawMode {
+    fn enter() -> io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+fn read_hidden_events(max_bytes: usize) -> io::Result<String> {
+    let mut value = String::new();
+    let mut too_long = false;
+    loop {
+        match event::read()? {
+            Event::Paste(text) => value.push_str(&text),
+            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
+                KeyCode::Enter if too_long => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "input is too long",
+                    ));
+                }
+                KeyCode::Enter => return Ok(value),
+                KeyCode::Esc => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "input cancelled",
+                    ))
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "input cancelled",
+                    ));
+                }
+                KeyCode::Char(character)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    value.push(character);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        too_long |= value.len() > max_bytes;
+        if too_long {
+            value.clear();
+        }
+    }
+}
 
 struct PaintSchedule {
     dirty: bool,
@@ -369,16 +480,18 @@ impl<W: Write> Backend for FrameBackend<W> {
 
 struct Restore {
     enhanced_keyboard: bool,
+    #[cfg(not(windows))]
+    _raw: RawMode,
     #[cfg(windows)]
     _modes: windows::ConsoleModes,
 }
 
 impl Restore {
     fn new() -> io::Result<Self> {
-        #[cfg(not(windows))]
-        crossterm::terminal::enable_raw_mode()?;
         Ok(Self {
             enhanced_keyboard: false,
+            #[cfg(not(windows))]
+            _raw: RawMode::enter()?,
             #[cfg(windows)]
             _modes: windows::ConsoleModes::enter()?,
         })
@@ -434,8 +547,6 @@ impl Drop for Restore {
         let _ = execute!(stdout, DisableBracketedPaste);
         let _ = execute!(stdout, LeaveAlternateScreen);
         let _ = execute!(stdout, Show);
-        #[cfg(not(windows))]
-        let _ = crossterm::terminal::disable_raw_mode();
     }
 }
 

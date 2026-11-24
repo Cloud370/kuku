@@ -275,6 +275,18 @@ impl ConfigFile {
                 super::resolve_models_url(entry.format, &entry.base_url, &entry.options)
                     .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
             }
+            if let Some(account) = &entry.options.subscription {
+                let validate = || -> Result<()> {
+                    if !entry.api_key.trim().is_empty() {
+                        return Err(Error::ConfigLoad(
+                            "a subscription connection cannot also use an API key".into(),
+                        ));
+                    }
+                    account.validate_connection(entry.format, &entry.base_url, &entry.options)
+                };
+                validate()
+                    .map_err(|error| Error::ConfigLoad(format!("provider '{name}': {error}")))?;
+            }
             entry
                 .options
                 .proxy
@@ -288,7 +300,7 @@ impl ConfigFile {
                 }
             }
             let api_key = entry.api_key.trim();
-            if api_key.is_empty() {
+            if api_key.is_empty() && entry.options.subscription.is_none() {
                 return Err(Error::ConfigLoad(format!(
                     "provider '{name}': api_key is required"
                 )));

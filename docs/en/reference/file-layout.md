@@ -19,6 +19,8 @@ $KUKU_HOME/
 - **`logs/`** — observability logs and rotating [provider traces](environment-variables.md#provider-trace-logs) under `logs/provider-trace/`. Session facts live only in each Session's `events.jsonl`.
 - **`credentials/`** — owner-only plaintext key files written by interactive setup and referenced via `api_key = "file:<absolute-path>"`. Secrets are never copied into `config.toml` or printed by `kuku config show`. All workspaces sharing the same data directory share this folder (accessible to processes running as the same OS user). On Unix, the directory is `0700` and files are `0600`; on Windows, a protected ACL restricts access to the current user. Symlinks and insecure permissions are rejected rather than auto-repaired. Files are unencrypted and are not auto-deleted when config changes.
 
+Subscription accounts are stored separately under `credentials/subscriptions/<channel>/<account>.json`. The private parent file `host.json` holds a stable host ID and a local key for deriving opaque account identifiers from authorized emails. The account record holds the masked email, registration, and current token set. Credentials are owner-only plaintext and follow the same platform rules as saved keys. Renewal and sign-out serialize updates to that account across processes and publish the whole record atomically. Signing out clears the tokens and retains the account's registration.
+
 ## Project-scoped layout
 
 kuku keys Sessions, project Memory, and policy by the canonical path of the workspace (opening via a symlink hits the same data). For `/code/my-app`:

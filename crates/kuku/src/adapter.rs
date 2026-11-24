@@ -22,6 +22,10 @@ pub use crate::provider::{
 use crate::{ProviderCapabilities, ProviderSettings, Result};
 
 pub use crate::provider::chunk::ProviderChunk as ModelEvent;
+pub use crate::provider::subscription::{
+    sign_out_subscription, subscription_account_info, SubscriptionAccountInfo, SubscriptionLogin,
+    SubscriptionLoginResult, SubscriptionStatus,
+};
 
 /// An asynchronous host operation which retains its borrowed adapter until completion.
 pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;

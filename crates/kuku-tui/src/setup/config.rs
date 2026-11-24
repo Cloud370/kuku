@@ -1,20 +1,26 @@
+use std::collections::BTreeMap;
 use std::env::VarError;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use super::state::{valid_env_name, valid_stored_key, SetupState};
 use super::{ConnectionChoice, CredentialSource, ProviderPreset};
-use kuku::adapter::inspect_model;
+use kuku::adapter::{inspect_model, SubscriptionAccountInfo};
 use kuku::config::{
     generate_default, parse_config_text_with_env, ApiKey, Config, ConfigFile, ProviderFormat,
-    ProviderProfile, RequestedOutput, ThinkLevel,
+    ProviderProfile, ProviderProxy, RequestedOutput, ThinkLevel,
 };
 use kuku::session::AgentConfig;
-use kuku::util::{is_valid_private_key, private_directory, sync_private_file};
+use kuku::util::{is_valid_private_key, private_directory};
 use kuku_client::ConnectionOptions;
-use tempfile::Builder;
 use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
+
+mod credential;
+
+use credential::stage_key;
+#[cfg(test)]
+use credential::stage_key_with_sync;
 
 type EnvironmentLookup<'a> = &'a (dyn Fn(&str) -> Result<String, VarError> + Sync);
 
@@ -29,6 +35,7 @@ pub(super) struct Settings {
     pub(super) resolved: Config,
     pub(super) default_tier: String,
     pub(super) existing: bool,
+    pub(super) subscription_info: BTreeMap<String, SubscriptionAccountInfo>,
     storage_error: Option<&'static str>,
 }
 
@@ -109,6 +116,7 @@ impl Settings {
         let credentials_dir = data_dir.join("credentials");
         let loaded = load_document(&config_path, &data_dir, environment)?;
         let default_tier = loaded.resolved.default_tier.clone();
+        let subscription_info = super::subscription::account_info(&loaded.resolved);
         let mut settings = Self {
             config_path,
             data_dir,
@@ -120,6 +128,7 @@ impl Settings {
             resolved: loaded.resolved,
             default_tier,
             existing: loaded.existing,
+            subscription_info,
             storage_error: None,
         };
         settings.storage_error = settings.check_storage(false).err().map(|_| {
@@ -183,6 +192,17 @@ impl Settings {
     pub(super) fn choice_label(&self, choice: &ConnectionChoice) -> String {
         match choice {
             ConnectionChoice::Existing(name) => {
+                if let Some(account) = self.subscription_for(choice) {
+                    let alias = account.name().unwrap_or(name);
+                    let email = self
+                        .subscription_info
+                        .get(name)
+                        .and_then(|info| info.masked_email.as_deref());
+                    return email.map_or_else(
+                        || format!("ChatGPT plan · {alias}"),
+                        |email| format!("ChatGPT plan · {alias} · {email}"),
+                    );
+                }
                 format!(
                     "Existing · {}",
                     super::connection_name::existing(self, name)
@@ -254,16 +274,24 @@ impl Settings {
         &self,
         resolve: impl FnOnce(&ApiKey) -> Option<String>,
     ) -> bool {
-        let Some(key) = self
+        let Some((tier, provider)) = self
             .resolved
             .tiers
             .get(&self.default_tier)
-            .and_then(|tier| self.resolved.providers.get(&tier.provider))
-            .map(|provider| &provider.api_key)
+            .and_then(|tier| {
+                self.resolved
+                    .providers
+                    .get(&tier.provider)
+                    .map(|provider| (tier, provider))
+            })
         else {
             return false;
         };
-        resolve(key).is_some_and(|value| !value.trim().is_empty())
+        if provider.options.subscription.is_some() {
+            self.subscription_available(&ConnectionChoice::Existing(tier.provider.clone()))
+        } else {
+            resolve(&provider.api_key).is_some_and(|value| !value.trim().is_empty())
+        }
     }
 
     pub(super) fn file_reference_in_current_store(&self, path: &Path) -> bool {
@@ -337,7 +365,7 @@ struct LoadedDocument {
     existing: bool,
 }
 
-fn parse_service_config(
+pub(super) fn parse_service_config(
     raw: &str,
     data_dir: &Path,
     environment: EnvironmentLookup<'_>,
@@ -473,73 +501,76 @@ fn save_with_lookup(
     let choice = state.choice();
     let existing_key = settings.key_for(choice).cloned();
     let mut staged = None;
-    let key_reference = match state.credential_source {
-        CredentialSource::Environment => {
-            let name = valid_env_name(state.environment.text())
-                .map_err(|_| invalid_config("invalid environment-variable name"))?;
-            format!("${name}")
-        }
-        CredentialSource::StoredKey => {
-            let entered =
-                if state.stored_key.text().trim().is_empty() {
+    let key_reference = if settings.subscription_for(choice).is_some() {
+        None
+    } else {
+        Some(match state.credential_source {
+            CredentialSource::Environment => {
+                let name = valid_env_name(state.environment.text())
+                    .map_err(|_| invalid_config("invalid environment-variable name"))?;
+                format!("${name}")
+            }
+            CredentialSource::StoredKey => {
+                let entered = if state.stored_key.text().trim().is_empty() {
                     None
                 } else {
                     Some(valid_stored_key(state.stored_key.text()).map_err(|_| {
                         invalid_config("stored keys must be a non-empty single line")
                     })?)
                 };
-            if entered.is_some() && !settings.can_store_key() {
-                return Err(invalid_config(settings.storage_problem()));
-            }
-            let contents = match (entered, existing_key.as_ref()) {
-                (Some(key), _) => Some(key),
-                (None, Some(ApiKey::Plaintext(key))) => Some(key.clone()),
-                (None, Some(ApiKey::File(path))) => {
-                    if !is_valid_private_key(path) {
+                if entered.is_some() && !settings.can_store_key() {
+                    return Err(invalid_config(settings.storage_problem()));
+                }
+                let contents = match (entered, existing_key.as_ref()) {
+                    (Some(key), _) => Some(key),
+                    (None, Some(ApiKey::Plaintext(key))) => Some(key.clone()),
+                    (None, Some(ApiKey::File(path))) => {
+                        if !is_valid_private_key(path) {
+                            return Err(invalid_config(
+                                "the saved credential file is unavailable or unsafe",
+                            ));
+                        }
+                        if settings.file_reference_in_current_store(path) {
+                            None
+                        } else {
+                            Some(
+                                existing_key
+                                    .as_ref()
+                                    .expect("file key source")
+                                    .resolve()
+                                    .map_err(|_| {
+                                        invalid_config(
+                                            "the saved credential file is unavailable or unsafe",
+                                        )
+                                    })?,
+                            )
+                        }
+                    }
+                    (None, _) => {
                         return Err(invalid_config(
-                            "the saved credential file is unavailable or unsafe",
+                            "enter a key; Environment is a separate source",
                         ));
                     }
-                    if settings.file_reference_in_current_store(path) {
-                        None
-                    } else {
-                        Some(
-                            existing_key
-                                .as_ref()
-                                .expect("file key source")
-                                .resolve()
-                                .map_err(|_| {
-                                    invalid_config(
-                                        "the saved credential file is unavailable or unsafe",
-                                    )
-                                })?,
-                        )
-                    }
+                };
+                if let Some(contents) = contents {
+                    staged = Some(stage_key(settings, &contents)?);
+                    let path = staged.as_ref().expect("staged key").path();
+                    format!(
+                        "file:{}",
+                        path.to_str()
+                            .ok_or_else(|| invalid_config("credential path is not valid UTF-8"))?
+                    )
+                } else if let Some(ApiKey::File(path)) = existing_key.as_ref() {
+                    format!(
+                        "file:{}",
+                        path.to_str()
+                            .ok_or_else(|| invalid_config("credential path is not valid UTF-8"))?
+                    )
+                } else {
+                    return Err(invalid_config("saved credential source is unavailable"));
                 }
-                (None, _) => {
-                    return Err(invalid_config(
-                        "enter a key; Environment is a separate source",
-                    ));
-                }
-            };
-            if let Some(contents) = contents {
-                staged = Some(stage_key(settings, &contents)?);
-                let path = staged.as_ref().expect("staged key").path();
-                format!(
-                    "file:{}",
-                    path.to_str()
-                        .ok_or_else(|| invalid_config("credential path is not valid UTF-8"))?
-                )
-            } else if let Some(ApiKey::File(path)) = existing_key.as_ref() {
-                format!(
-                    "file:{}",
-                    path.to_str()
-                        .ok_or_else(|| invalid_config("credential path is not valid UTF-8"))?
-                )
-            } else {
-                return Err(invalid_config("saved credential source is unavailable"));
             }
-        }
+        })
     };
 
     let mut document = settings.document.clone();
@@ -587,16 +618,7 @@ fn save_with_lookup(
         );
     }
     if original.is_none_or(|old| old.options.proxy != connection.options.proxy) {
-        if connection.options.proxy.follows_environment() {
-            provider.remove("proxy");
-        } else {
-            let proxy = toml_edit::ser::to_document(&connection.options.proxy)
-                .map_err(|_| invalid_config("could not encode proxy settings"))?;
-            provider.insert(
-                "proxy",
-                Item::Value(Value::InlineTable(proxy.into_table().into_inline_table())),
-            );
-        }
+        set_connection_proxy(provider, &connection.options.proxy)?;
     }
     if original.is_none_or(|old| old.options.model_pricing != connection.options.model_pricing)
         && !connection.options.model_pricing.is_empty()
@@ -632,8 +654,10 @@ fn save_with_lookup(
             provider.insert("profile", value(profile));
         }
     }
-    if provider.get("api_key").and_then(Item::as_str) != Some(&key_reference) {
-        provider.insert("api_key", value(key_reference));
+    if let Some(key_reference) = key_reference {
+        if provider.get("api_key").and_then(Item::as_str) != Some(&key_reference) {
+            provider.insert("api_key", value(key_reference));
+        }
     }
     if original
         .is_none_or(|old| old.options.model_capabilities != connection.options.model_capabilities)
@@ -681,7 +705,10 @@ fn save_with_lookup(
         let old = settings.resolved.tier(&tier);
         let fields = entry(&mut document, "model", &tier)?;
         if old.is_none_or(|route| route.provider != provider_name || route.model != model)
-            || (is_primary && (state.reasoning_changed || state.output_changed))
+            || (is_primary
+                && (state.reasoning_changed
+                    || state.output_changed
+                    || state.service_override(&model).is_some()))
         {
             validate_routes.push(tier);
         }
@@ -776,7 +803,9 @@ fn save_route(
                 .flatten(),
         );
     }
-    if changed {
+    if let Some(tier) = primary.then(|| state.service_override(model)).flatten() {
+        set_optional(fields, "service_tier", tier);
+    } else if changed {
         fields.remove("service_tier");
     }
     if changed || (primary && state.output_changed) {
@@ -838,6 +867,23 @@ pub(super) fn set_optional(table: &mut dyn toml_edit::TableLike, name: &str, tex
     }
 }
 
+pub(super) fn set_connection_proxy(
+    provider: &mut dyn toml_edit::TableLike,
+    settings: &ProviderProxy,
+) -> io::Result<()> {
+    if settings.follows_environment() {
+        provider.remove("proxy");
+    } else {
+        let proxy = toml_edit::ser::to_document(settings)
+            .map_err(|_| invalid_config("could not encode proxy settings"))?;
+        provider.insert(
+            "proxy",
+            Item::Value(Value::InlineTable(proxy.into_table().into_inline_table())),
+        );
+    }
+    Ok(())
+}
+
 fn is_environment_reference(item: Option<&Item>) -> bool {
     item.and_then(Item::as_str)
         .is_some_and(|value| value.starts_with('$'))
@@ -857,79 +903,7 @@ fn unique_route(routes: &dyn toml_edit::TableLike, provider: &str, model: &str) 
         .expect("a unique model route")
 }
 
-struct StagedKey {
-    path: PathBuf,
-    keep: bool,
-}
-
-impl StagedKey {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for StagedKey {
-    fn drop(&mut self) {
-        if !self.keep {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-fn stage_key(settings: &Settings, key: &str) -> io::Result<StagedKey> {
-    stage_key_with_sync(settings, key, |file_path, directory_created| {
-        sync_private_file(file_path)?;
-        #[cfg(unix)]
-        if directory_created {
-            let directory = file_path
-                .parent()
-                .ok_or_else(|| invalid_config("credential file has no parent directory"))?;
-            sync_private_file(directory)?;
-        }
-        #[cfg(not(unix))]
-        let _ = directory_created;
-        Ok(())
-    })
-}
-
-fn stage_key_with_sync(
-    settings: &Settings,
-    key: &str,
-    sync_publication: impl FnOnce(&Path, bool) -> io::Result<()>,
-) -> io::Result<StagedKey> {
-    let directory_created = match fs::symlink_metadata(&settings.credentials_dir) {
-        Ok(_) => false,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
-        Err(_) => {
-            return Err(invalid_config(
-                "cannot create a private credential directory",
-            ))
-        }
-    };
-    settings.check_storage(true).map_err(|_| {
-        invalid_config("stored keys are unavailable; use Environment or a different --data-dir")
-    })?;
-    let mut file = Builder::new()
-        .prefix("key-")
-        .suffix(".credential")
-        .tempfile_in(&settings.credentials_dir)
-        .map_err(|_| invalid_config("cannot create a private credential file"))?;
-    #[cfg(windows)]
-    kuku::util::set_config_temp_security(None, file.path(), file.as_file())
-        .map_err(|_| invalid_config("cannot secure the private credential file"))?;
-    file.write_all(key.as_bytes())
-        .and_then(|()| file.as_file().sync_all())
-        .map_err(|_| invalid_config("cannot save the private credential file"))?;
-    let (_, path) = file
-        .keep()
-        .map_err(|_| invalid_config("cannot save the private credential file"))?;
-    let staged = StagedKey { path, keep: false };
-    sync_publication(&staged.path, directory_created)
-        .map_err(|_| invalid_config("cannot sync private credential storage"))?;
-    Ok(staged)
-}
-
-fn write_config(
+pub(super) fn write_config(
     settings: &Settings,
     bytes: &[u8],
     before_compare: impl FnOnce(),

@@ -16,6 +16,7 @@ mod setup_api;
 mod setup_probes;
 mod setup_reasoning;
 pub(crate) mod sse;
+pub(crate) mod subscription;
 pub(crate) mod trace;
 pub(crate) mod transport;
 mod trial;

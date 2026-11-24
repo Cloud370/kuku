@@ -1,7 +1,7 @@
 mod config {
     pub use kuku::config::{
         ApiKey, MediaAdapterSupport, ModelThinkingTest, ProviderFormat, ProviderOptions,
-        ProviderProfile, RequestedOutput, ResolvedThinking, ThinkLevel,
+        ProviderProfile, RequestedOutput, ResolvedThinking, SubscriptionChannel, ThinkLevel,
     };
 }
 
@@ -59,6 +59,30 @@ fn exhausted_quota_and_temporary_rate_limit_remain_distinct() {
         assert!(!classify_http_error(503, body).retryable);
     }
     assert!(classify_http_error(429, r#"{"error":{"code":"rate_limit_exceeded"}}"#).retryable);
+}
+
+#[test]
+fn a_chatgpt_plan_limit_links_to_usage_without_retrying() {
+    let failure = classify_http_error(
+        429,
+        r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}"#,
+    );
+    assert_eq!(ProviderFailureKind::QuotaExhausted, failure.kind);
+    assert!(!failure.retryable);
+    assert!(failure
+        .message
+        .contains("https://chatgpt.com/settings/usage"));
+}
+
+#[test]
+fn a_chatgpt_service_tier_rejection_identifies_the_account_and_model_scope() {
+    let failure = classify_http_error(
+        400,
+        r#"{"error":{"code":"subscription_sharing_unsupported_capability","param":"service_tier"}}"#,
+    );
+    assert_eq!(ProviderFailureKind::InvalidRequest, failure.kind);
+    assert!(!failure.retryable);
+    assert!(failure.message.contains("this account and model"));
 }
 
 #[test]

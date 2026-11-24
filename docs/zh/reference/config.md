@@ -52,6 +52,7 @@ Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值；原生 
 | `model_price_catalogs` | table | 配置流程保存的 OpenRouter 公开报价 |
 | `model_capabilities` | table | 按精确模型 ID 配置的能力发现与手工覆盖 |
 | `api_key` | string | `$ENV_VAR_NAME`、明文密钥或 `file:<绝对路径>` |
+| `subscription` | table | 订阅账号引用，包含 `channel` 和绝对路径 `credential_file` |
 | `auth` | `bearer`\|`x-api-key` | 独立于 `format` 覆盖认证头方式 |
 | `profile` | string | `auto`（默认）、`openai`、`anthropic`、`deepseek`、`openrouter` 或 `compatible` |
 | `reasoning_efforts` | string[] | 覆盖该连接声明的原生推理取值列表 |
@@ -104,6 +105,8 @@ cache_read = 0.1
 - **`prompt_cache_scope`**（仅 Responses）：`workspace`（默认）对规范化工作区路径+连接+端点+模型做哈希，同工作区多 Session 可共享缓存键且不外泄路径；`session` 按 Session+Agent+连接+端点+模型隔离；`off` 不发 `prompt_cache_key`。不影响 OpenRouter `session_id`。
 - **`api_key`**：`$NAME` 仅读环境变量；`file:/绝对路径` 在请求时校验并读取文件（不接受相对路径、非 URL 语法、两类来源不互退）。交互式配置将明文密钥写入 `<data-dir>/credentials/`，`kuku config show` 只展示引用。[文件布局](file-layout.md)
 - 配置中其余以 `$` 开头的字符串值均会在校验前展开环境变量。
+
+订阅连接通过账号引用读取凭据。ChatGPT 订阅使用 OpenAI 官方 Responses 和模型目录地址，要求显式配置 HTTP 或 SOCKS5H 代理。账号认证请求也使用该连接的代理。[订阅登录](../start/configuration.md#在无头主机登录订阅)
 
 ## `discovery`
 

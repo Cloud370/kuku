@@ -29,6 +29,9 @@ mod theme;
 mod transcript;
 mod ui;
 
+pub use setup::SubscriptionSettings;
+pub use terminal::read_hidden_line;
+
 /// Run the interactive Session client using the supplied connection and workspace selection.
 pub async fn run(options: ConnectionOptions, build: &'static str) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
