@@ -21,6 +21,8 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 在模型列表里可以直接打字搜索、按 `Space` 多选、`Enter` 确认。试跑结果可以在 **Model tests** 里逐项查看，也可以进 **Settings** 调整思考档位、输出上限、能力标记与费率。想确认工具调用是否正常，点 **Settings → Test tools** 测一次合成工具调用——能正常回文本不代表支持工具调用；如果某条 Chat 线路需要走 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测再保存。
 
+选择自定义连接、已有连接或预设。使用 API Key 时，填写供应商 URL、网络路径和密钥。自定义连接以 URL 的域名和非默认端口命名。同一域名和端口下的连接会用编号区分。已有连接和预设沿用其协议，标准请求 URL 可直接识别。选择模型后，新自定义 Base URL 会并发验证候选协议。优先使用 Responses，确认上游不支持时依次尝试采用 Chat Completions、Messages 的结果。无法确定时会显示 API 类型选项。网络可选择跟随代理环境变量、直连，或使用 HTTP、SOCKS5、SOCKS5H。裸域名有多个标准候选路径时，设置会并发查询，逐条显示进度和结果，找到可用目录就自动打开模型列表。目录无法读取时，可以直接填写已知的模型 ID。
+
 在 Session 里随时可以输入 `/model` 或按 `Ctrl+L` 添加/修改连接，选择 **Use in this Session** 切换当前 Agent 的线路，或 **Set as default** 存为新 Session 的默认线路。[终端控制](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
 ## Provider 与凭据
@@ -36,7 +38,9 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 ### 在无头主机登录订阅
 
-在运行 kuku 的主机上执行 `kuku auth login chatgpt [名称] --proxy URL`。用自己的浏览器打开完整授权链接，然后把地址栏里的完整回调 URL 粘贴到正在等待的终端。如果浏览器无法连接本地回调页面，从错误页的地址栏复制。粘贴的 URL 不回显。用已保存的名称续签现有账号。省略名称时，从授权身份派生名称，也可以为各账号或工作区自行命名。在 `kuku init` 或 `/model` 里选择已保存的连接。
+在 `kuku init` 或 `/model` 的 **Add model** 中选择 **Preset · ChatGPT subscription**。填入代理，可选填账号别名。用自己的浏览器打开完整授权链接，再把地址栏里的回调 URL 粘贴到 kuku。如果浏览器无法连接回调页面，从错误页的地址栏复制。粘贴的 URL 不回显。登录后账号会保存，设置界面随即查询该账号的模型。
+
+也可以在运行 kuku 的主机上执行 `kuku auth login chatgpt [名称] --proxy URL`。重新授权时使用已保存的账号别名。省略名称时，从授权身份派生别名。
 
 登录前设置该账号的代理。kuku 发出的订阅请求都使用该连接的代理，包括令牌交换、续期、模型发现和推理。代理缺失或失败时，请求停止。之后可以更新连接的代理。浏览器使用自身的网络设置。
 

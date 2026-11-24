@@ -169,9 +169,7 @@ impl SetupState {
     pub(super) fn default_base_url(&self) -> &'static str {
         match self.choice() {
             ConnectionChoice::Preset(preset) => preset.base_url(self.protocol),
-            ConnectionChoice::Existing(_) | ConnectionChoice::Custom => {
-                self.protocol.default_base_url()
-            }
+            _ => self.protocol.default_base_url(),
         }
     }
 
@@ -202,7 +200,9 @@ impl SetupState {
                 profile: preset.profile(),
                 ..ProviderOptions::default()
             },
-            ConnectionChoice::Custom => ProviderOptions::default(),
+            ConnectionChoice::Subscription(_) | ConnectionChoice::Custom => {
+                ProviderOptions::default()
+            }
         };
         options.endpoint_url = self.address_parts().1;
         options.proxy = self.proxy.clone();

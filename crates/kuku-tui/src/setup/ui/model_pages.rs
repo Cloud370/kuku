@@ -5,7 +5,7 @@ use crate::theme::{ACCENT, MUTED, WARNING};
 use super::super::models::{protocol_label, PROTOCOLS};
 use super::super::recovery::text_problem;
 use super::super::state::{SetupState, SetupStep};
-use super::{field, line, option, Settings};
+use super::{field, line, option, trial_usage, Settings};
 
 pub(super) fn render_model_settings(
     frame: &mut Frame<'_>,
@@ -122,6 +122,7 @@ pub(super) fn render_model_settings(
         }
         SetupStep::Discover => {
             line(frame, area, row, "Choose models", ACCENT);
+            trial_usage(frame, area, row, state);
             if state.discovery.pending() {
                 let progress = super::super::probes::progress(&state.discovery);
                 line(
@@ -431,6 +432,7 @@ pub(super) fn render_model_settings(
         SetupStep::Consent
         | SetupStep::ManualConfig
         | SetupStep::Connection
+        | SetupStep::SubscriptionSignIn
         | SetupStep::Model
         | SetupStep::CredentialSource
         | SetupStep::Credential

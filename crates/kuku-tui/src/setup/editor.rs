@@ -6,7 +6,7 @@ use kuku::config::ThinkLevel;
 use kuku::session::AgentConfig;
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions};
-use ratatui::Frame;
+use ratatui::{layout::Rect, Frame};
 
 use crate::editor::Editor;
 use crate::local_settings::{active_service, ensure_same_service};
@@ -107,13 +107,25 @@ impl ModelEditor {
         super::ui::render(frame, &self.settings, &mut self.state, mode);
     }
 
+    pub(crate) fn authorization_link(
+        &self,
+        area: Rect,
+    ) -> Option<crate::terminal::AuthorizationLink> {
+        super::ui::authorization_link(&self.state, area)
+    }
+
     pub(crate) fn probe_deadline(&self) -> Option<std::time::Instant> {
-        self.state.probe_deadline()
+        self.state
+            .probe_deadline()
+            .into_iter()
+            .chain(self.state.subscription_deadline())
+            .min()
     }
 
     pub(crate) fn poll_probes(&mut self) -> bool {
         let mode = self.mode();
-        self.state.poll_probes(&self.settings, mode)
+        let registration = self.state.poll_subscription(&mut self.settings);
+        self.state.poll_probes(&self.settings, mode) || registration
     }
 
     pub(crate) fn failed(&mut self, problem: String) {

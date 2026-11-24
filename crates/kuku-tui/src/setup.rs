@@ -13,7 +13,7 @@ mod ui;
 
 use std::io;
 
-use kuku::config::{ProviderFormat, ProviderProfile};
+use kuku::config::{ProviderFormat, ProviderProfile, SubscriptionChannel};
 use kuku_client::ConnectionOptions;
 
 pub(crate) use editor::{
@@ -137,6 +137,7 @@ impl ProviderPreset {
 pub(crate) enum ConnectionChoice {
     Existing(String),
     Preset(ProviderPreset),
+    Subscription(SubscriptionChannel),
     Custom,
 }
 
@@ -147,12 +148,16 @@ pub(crate) async fn first_run_required(options: ConnectionOptions) -> io::Result
 }
 
 pub(crate) async fn run(options: ConnectionOptions) -> io::Result<bool> {
-    let settings = config::Settings::load(options).await?;
+    let mut settings = config::Settings::load(options).await?;
     let mut state = state::SetupState::new(&settings);
     let finish = loop {
-        let finish = ui::run(&settings, &mut state, SetupMode::Init).await?;
+        let finish = ui::run(&mut settings, &mut state, SetupMode::Init).await?;
         if finish == Finish::Cancel {
-            println!("Setup canceled. No files were changed.");
+            if state.subscription_saved {
+                println!("ChatGPT account saved. Model setup canceled.");
+            } else {
+                println!("Setup canceled.");
+            }
             return Ok(false);
         }
         match config::save(&settings, &state) {
@@ -163,6 +168,7 @@ pub(crate) async fn run(options: ConnectionOptions) -> io::Result<bool> {
     };
     println!("Saved settings to {}.", settings.config_path.display());
     match state.credential_source {
+        _ if state.subscription.is_some() => {}
         CredentialSource::Environment => {
             if let Some(name) = state
                 .environment_name()

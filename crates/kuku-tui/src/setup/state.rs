@@ -18,6 +18,7 @@ pub(super) enum SetupStep {
     Consent,
     ManualConfig,
     Connection,
+    SubscriptionSignIn,
     Protocol,
     Address,
     AddressKind,
@@ -148,6 +149,8 @@ pub(super) struct SetupState {
     pub(super) stored_key: Editor,
     pub(super) credential_source: CredentialSource,
     pub(super) subscription: Option<SubscriptionAccount>,
+    pub(super) enrollment: Option<super::subscription::enrollment::Enrollment>,
+    pub(super) subscription_saved: bool,
     pub(super) review_selection: usize,
     pub(super) finish: Option<Finish>,
     pub(super) problem: Option<String>,
@@ -209,6 +212,8 @@ impl SetupState {
             stored_key: Editor::default(),
             credential_source: CredentialSource::Environment,
             subscription: None,
+            enrollment: None,
+            subscription_saved: false,
             review_selection: 0,
             finish: None,
             problem: None,
@@ -290,6 +295,10 @@ impl SetupState {
 
     pub(super) fn handle(&mut self, event: Event, settings: &Settings, mode: SetupMode) {
         if self.finish.is_some() {
+            return;
+        }
+        if self.step == SetupStep::SubscriptionSignIn {
+            self.subscription_input(event, settings);
             return;
         }
         let previous = self.step;
@@ -388,6 +397,7 @@ impl SetupState {
                 KeyCode::Tab | KeyCode::Enter => self.advance(settings),
                 _ => {}
             },
+            SetupStep::SubscriptionSignIn => unreachable!("handled as private sign-in input"),
             SetupStep::Protocol => self.choose_protocol(key, settings),
             SetupStep::Address => self.edit_address(key, settings),
             SetupStep::AddressKind => self.choose_address_kind(key, settings),
@@ -514,7 +524,9 @@ impl SetupState {
         match self.step {
             SetupStep::Connection => {
                 self.models.cursor = 0;
-                if self.subscription.is_some()
+                if let ConnectionChoice::Subscription(channel) = self.choice() {
+                    self.open_subscription(*channel);
+                } else if self.subscription.is_some()
                     || (self.intent == SetupIntent::Add
                         && matches!(self.choice(), ConnectionChoice::Existing(_)))
                 {
@@ -567,6 +579,7 @@ impl SetupState {
                 }
             }
             SetupStep::Consent
+            | SetupStep::SubscriptionSignIn
             | SetupStep::ManualConfig
             | SetupStep::Protocol
             | SetupStep::Address
@@ -616,6 +629,7 @@ impl SetupState {
         self.step = match self.step {
             SetupStep::Consent => return,
             SetupStep::ManualConfig | SetupStep::Connection => SetupStep::Consent,
+            SetupStep::SubscriptionSignIn => SetupStep::Connection,
             SetupStep::Protocol if self.protocol_picker_from_review => SetupStep::ReviewSettings,
             SetupStep::Protocol => SetupStep::CheckingApi,
             SetupStep::Address if matches!(self.intent, SetupIntent::Edit(_)) => SetupStep::Consent,
@@ -735,7 +749,7 @@ impl SetupState {
             ConnectionChoice::Existing(name) => {
                 settings.resolved.providers[name].options.proxy.clone()
             }
-            ConnectionChoice::Preset(_) | ConnectionChoice::Custom => ProviderProxy::Environment,
+            _ => ProviderProxy::Environment,
         };
         self.model_pricing = match &choice {
             ConnectionChoice::Existing(name) => settings.resolved.providers[name]

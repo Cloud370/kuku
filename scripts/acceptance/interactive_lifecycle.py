@@ -165,7 +165,7 @@ def first_run_credential_repair(binary, bridge, directory):
         prompt = "Verify the repaired first-run settings"
         with client.terminal(workspace) as terminal:
             terminal.open_first_model_settings()
-            terminal.expect("Find and test models", also=("may cost money",))
+            terminal.expect("Find and test models")
             client.provider.assert_idle()
             terminal.press("\r")
             terminal.expect("Choose a provider", also=("Existing · test-anthropic",))
@@ -509,7 +509,7 @@ def setup_probe_progress(binary, bridge, directory):
             config.write_text("")
             with client.terminal(client.workspace("work-probe-progress")) as terminal:
                 terminal.open_first_model_settings()
-                terminal.expect("Find and test models", also=("Edit config file", "may cost money"))
+                terminal.expect("Find and test models", also=("Edit config file",))
                 terminal.press("\x1b[B\r")
                 terminal.expect("Manual configuration", also=("config.toml",))
                 assert not slow_catalog_started.is_set() and not trials

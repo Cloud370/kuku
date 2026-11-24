@@ -21,6 +21,8 @@ Choose **Find and test models** once to allow model discovery and short text or 
 
 Use the model picker to search and select one or more models (`Space` to multi-select, `Enter` to confirm), then review test outcomes in **Model tests** or adjust thinking, output limits, capabilities, and pricing under **Settings**. Run **Settings → Test tools** to verify synthetic tool calls on the route — a working text reply alone does not confirm tool support. If a Chat route requires Responses for tools, switch under **Settings → API type → Responses** and re-test before saving.
 
+Choose a custom connection, saved connection, or preset. For API-key connections, enter the provider URL, network path, and key. A custom connection takes its name from the URL host and any non-default port. Connections with the same host and port get distinct names. Setup uses the protocol from a saved connection, preset, or standard request URL. After model selection, setup tests the eligible protocols for a new custom base URL in parallel. It prefers Responses, then Chat Completions, then Messages when the preceding protocols are unsupported. An ambiguous result opens the API type picker. The network choices are the proxy environment, a direct connection, or an HTTP, SOCKS5, or SOCKS5H proxy. When a bare address has more than one standard candidate path, the editor checks them concurrently and opens the first usable model list automatically. The screen lists each request and its outcome. An unreadable catalog still allows a known model ID to be entered directly.
+
 Inside an active Session, run `/model` (or press `Ctrl+L`) to add or edit connections, switch the current Agent's route (**Use in this Session**), or save a new default (**Set as default**). [Terminal controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
 
 ## Providers and credentials
@@ -36,7 +38,9 @@ Environment variables are resolved by the server process, not the terminal clien
 
 ### Sign in to a subscription on a headless host
 
-Run `kuku auth login chatgpt [name] --proxy URL` on the host running kuku. Open the full authorization link in your own browser, then paste the full callback URL from its address bar into the waiting terminal. If the browser cannot reach the local callback page, copy the address from the error page. The pasted URL is entered without echo. Reauthorize an existing account by choosing its saved name. Omit the name to derive one from the authorized identity, or name each account or workspace yourself. Choose the saved connection in `kuku init` or `/model`.
+In `kuku init` or **Add model** in `/model`, choose **Preset · ChatGPT subscription**. Enter your proxy and optionally name the account. Open the full authorization link in your own browser, then paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The pasted URL stays hidden. After sign-in, the account is saved and setup starts finding models for that account.
+
+From a shell you can also run `kuku auth login chatgpt [name] --proxy URL` on the host running kuku. To reauthorize a saved account, use its saved name. Omit the name to derive one from the authorized identity.
 
 Choose the account's proxy before sign-in. All subscription requests from kuku use that connection's proxy, including token exchange, renewal, model discovery, and inference. If the proxy is missing or fails, the request stops. You can change the connection's proxy later. The browser follows its own network settings.
 

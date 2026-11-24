@@ -56,6 +56,7 @@ pub(super) fn for_save(
 ) -> String {
     let base = match choice {
         ConnectionChoice::Existing(name) => return name.clone(),
+        ConnectionChoice::Subscription(_) => unreachable!("sign-in selects the saved connection"),
         ConnectionChoice::Preset(preset) if !settings.existing => {
             return preset.connection().into()
         }

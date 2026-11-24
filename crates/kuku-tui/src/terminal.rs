@@ -312,6 +312,16 @@ impl Screen {
         app: &mut App,
         activity: ActivityFrame,
     ) -> io::Result<(CompletedFrame<'_>, bool)> {
+        let authorization_link = match &app.model_editor {
+            Some(editor) => {
+                let size = self.terminal.size()?;
+                editor.authorization_link(Rect::new(0, 0, size.width, size.height))
+            }
+            None => None,
+        };
+        self.terminal
+            .backend_mut()
+            .set_authorization_link(authorization_link);
         let target_changed = self.painted_target != app.active;
         if target_changed {
             self.painted_target.clone_from(&app.active);
@@ -378,23 +388,66 @@ impl WideCells {
     }
 }
 
-struct FrameBackend<W> {
+pub(crate) struct AuthorizationLink {
+    url: String,
+    area: Rect,
+}
+
+impl AuthorizationLink {
+    pub(crate) fn new(url: &str, area: Rect) -> Self {
+        Self {
+            url: url.to_owned(),
+            area,
+        }
+    }
+
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (u16, &str)> {
+        self.url
+            .as_bytes()
+            .chunks(usize::from(self.area.width.max(1)))
+            .take(usize::from(self.area.height))
+            .enumerate()
+            .map(|(row, text)| {
+                (
+                    self.area.y + row as u16,
+                    std::str::from_utf8(text).expect("encoded URL is ASCII"),
+                )
+            })
+    }
+
+    fn draw(&self, commands: &mut Vec<u8>) -> io::Result<()> {
+        write!(commands, "\x1b]8;;{}\x1b\\", self.url)?;
+        for (y, text) in self.rows() {
+            queue!(commands, MoveTo(self.area.x, y))?;
+            commands.write_all(text.as_bytes())?;
+        }
+        commands.write_all(b"\x1b]8;;\x1b\\")
+    }
+}
+
+pub(crate) struct FrameBackend<W> {
     output: W,
     commands: Vec<u8>,
     position: Position,
     visible: bool,
     painted_cursor: Option<Position>,
+    authorization_link: Option<AuthorizationLink>,
 }
 
 impl<W: Write> FrameBackend<W> {
-    fn new(output: W) -> Self {
+    pub(crate) fn new(output: W) -> Self {
         Self {
             output,
             commands: Vec::new(),
             position: Position::ORIGIN,
             visible: false,
             painted_cursor: None,
+            authorization_link: None,
         }
+    }
+
+    pub(crate) fn set_authorization_link(&mut self, link: Option<AuthorizationLink>) {
+        self.authorization_link = link;
     }
 
     fn begin(&mut self) -> io::Result<()> {
@@ -466,6 +519,9 @@ impl<W: Write> Backend for FrameBackend<W> {
         }
         self.begin()?;
         let bytes = &mut self.commands;
+        if let Some(link) = &self.authorization_link {
+            link.draw(bytes)?;
+        }
         if let Some(Position { x, y }) = cursor {
             queue!(bytes, MoveTo(x, y), Show)?;
         }
@@ -576,9 +632,10 @@ impl Clipboard {
 mod tests {
     use ratatui::backend::{Backend, ClearType};
     use ratatui::buffer::Cell;
+    use ratatui::layout::Rect;
 
     use super::{
-        strip_cell_colors, Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL,
+        strip_cell_colors, AuthorizationLink, Duration, FrameBackend, Instant, PaintSchedule, FRAME_INTERVAL,
     };
 
     #[test]
@@ -644,6 +701,25 @@ mod tests {
             "{:?}",
             String::from_utf8_lossy(&bytes)
         );
+    }
+
+    #[test]
+    fn a_wrapped_authorization_link_uses_the_complete_target() {
+        let url = "https://example.test/authorize?state=example";
+        let mut backend = FrameBackend::new(Vec::new());
+        backend.set_authorization_link(Some(AuthorizationLink::new(url, Rect::new(1, 3, 20, 3))));
+        let mut cell = Cell::EMPTY;
+        cell.set_symbol("X");
+        backend.draw([(1, 1, &cell)].into_iter()).unwrap();
+        backend.flush().unwrap();
+        let output = String::from_utf8(backend.output).unwrap();
+        let wrapped = format!(
+            "\x1b]8;;{url}\x1b\\\x1b[4;2H{}\x1b[5;2H{}\x1b[6;2H{}\x1b]8;;\x1b\\",
+            &url[..20],
+            &url[20..40],
+            &url[40..]
+        );
+        assert!(output.contains(&wrapped));
     }
 
     #[test]

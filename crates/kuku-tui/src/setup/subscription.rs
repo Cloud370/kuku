@@ -12,6 +12,8 @@ use toml_edit::{value, Item, Value};
 use super::config::{entry, parse_service_config, set_connection_proxy, write_config, Settings};
 use super::ConnectionChoice;
 
+pub(super) mod enrollment;
+
 /// Local subscription settings using the same configuration snapshot as provider setup.
 pub struct SubscriptionSettings {
     settings: Settings,
@@ -27,21 +29,50 @@ impl SubscriptionSettings {
 
     /// Return the active service's data directory after verifying the private storage boundary.
     pub fn private_data_dir(&self) -> io::Result<&Path> {
-        if !self.settings.can_store_key() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                self.settings.storage_problem(),
-            ));
-        }
-        Ok(&self.settings.data_dir)
+        self.settings.private_data_dir()
     }
 
     /// List subscription connections by their configured model connection names.
     pub fn connections(
         &self,
     ) -> impl Iterator<Item = (&str, &SubscriptionAccount, &ProviderConfig)> {
-        self.settings
-            .resolved
+        self.settings.subscription_connections()
+    }
+
+    /// Find the model connection associated with a named subscription account.
+    pub fn connection(
+        &self,
+        channel: SubscriptionChannel,
+        name: &str,
+    ) -> Option<(&str, &SubscriptionAccount, &ProviderConfig)> {
+        self.settings.subscription_connection(channel, name)
+    }
+
+    /// Save a subscription connection or change its proxy through guarded config publication.
+    pub fn save_connection(
+        &self,
+        account: &SubscriptionAccount,
+        proxy: &ProviderProxy,
+    ) -> kuku::Result<String> {
+        self.settings.save_subscription_connection(account, proxy)
+    }
+}
+
+impl Settings {
+    pub(super) fn private_data_dir(&self) -> io::Result<&Path> {
+        if !self.can_store_key() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                self.storage_problem(),
+            ));
+        }
+        Ok(&self.data_dir)
+    }
+
+    fn subscription_connections(
+        &self,
+    ) -> impl Iterator<Item = (&str, &SubscriptionAccount, &ProviderConfig)> {
+        self.resolved
             .providers
             .iter()
             .filter_map(|(name, connection)| {
@@ -53,19 +84,17 @@ impl SubscriptionSettings {
             })
     }
 
-    /// Find the model connection associated with a named subscription account.
-    pub fn connection(
+    pub(super) fn subscription_connection(
         &self,
         channel: SubscriptionChannel,
         name: &str,
     ) -> Option<(&str, &SubscriptionAccount, &ProviderConfig)> {
-        self.connections().find(|(_, account, _)| {
+        self.subscription_connections().find(|(_, account, _)| {
             account.channel() == channel && account.name().is_ok_and(|saved| saved == name)
         })
     }
 
-    /// Save a subscription connection or change its proxy through guarded config publication.
-    pub fn save_connection(
+    pub(super) fn save_subscription_connection(
         &self,
         account: &SubscriptionAccount,
         proxy: &ProviderProxy,
@@ -77,8 +106,8 @@ impl SubscriptionSettings {
                 "subscription account belongs to a different data directory".into(),
             ));
         }
-        let existing = self.connection(account.channel(), name);
-        let mut document = self.settings.document.clone();
+        let existing = self.subscription_connection(account.channel(), name);
+        let mut document = self.document.clone();
         let connection_name = if let Some((connection_name, previous, _)) = existing {
             if previous != account {
                 return Err(kuku::Error::InvalidArgument(
@@ -88,7 +117,7 @@ impl SubscriptionSettings {
             connection_name.to_owned()
         } else {
             let connection_name = format!("{}-{name}", account.channel().as_str());
-            if self.settings.raw.provider.contains_key(&connection_name) {
+            if self.raw.provider.contains_key(&connection_name) {
                 return Err(kuku::Error::InvalidArgument(format!(
                     "model connection '{connection_name}' already exists"
                 )));
@@ -115,16 +144,11 @@ impl SubscriptionSettings {
         let connection = entry(&mut document, "provider", &connection_name)?;
         set_connection_proxy(connection, proxy)?;
         let output = document.to_string();
-        parse_service_config(&output, &self.settings.data_dir, &|name| {
-            std::env::var(name)
-        })?
-        .resolve()?;
-        write_config(&self.settings, output.as_bytes(), || {})?;
+        parse_service_config(&output, &self.data_dir, &|name| std::env::var(name))?.resolve()?;
+        write_config(self, output.as_bytes(), || {})?;
         Ok(connection_name)
     }
-}
 
-impl Settings {
     pub(super) fn subscription_for(
         &self,
         choice: &ConnectionChoice,
@@ -166,19 +190,106 @@ pub(super) fn account_info(config: &Config) -> BTreeMap<String, SubscriptionAcco
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Duration;
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use kuku::adapter::{SubscriptionAccountInfo, SubscriptionStatus};
     use kuku::config::{
         generate_default, load_config, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
     };
     use kuku_client::ConnectionOptions;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
     use super::SubscriptionSettings;
     use crate::setup::config::{save, Settings};
-    use crate::setup::state::{SetupIntent, SetupState};
+    use crate::setup::state::{SetupIntent, SetupState, SetupStep};
     use crate::setup::{ui, ConnectionChoice, SetupMode};
+
+    #[tokio::test]
+    async fn subscription_preset_displays_full_authorization_and_hides_an_invalid_callback() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("workspace")).unwrap();
+        let mut settings = Settings::load(ConnectionOptions {
+            workspace: Some(root.path().join("workspace")),
+            data_dir: Some(root.path().join("data")),
+            ..ConnectionOptions::default()
+        })
+        .await
+        .unwrap();
+        let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut state = SetupState::new(&settings);
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .unwrap();
+        assert!(!terminal
+            .backend()
+            .to_string()
+            .contains("Tests may cost money"));
+
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        terminal
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .unwrap();
+        let picker = terminal.backend().to_string();
+        assert!(picker.contains("Preset · ChatGPT subscription"));
+        assert!(!picker.contains("Add a ChatGPT account with"));
+
+        state.handle(key(KeyCode::Up), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        assert_eq!(SetupStep::SubscriptionSignIn, state.step);
+        state.handle(
+            Event::Paste(format!("http://{}", proxy.local_addr().unwrap())),
+            &settings,
+            SetupMode::Init,
+        );
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        poll_registration(&mut state, &mut settings).await;
+
+        let url = ui::authorization_link(&state, Rect::new(0, 0, 60, 20)).unwrap();
+        let url = url.rows().map(|(_, text)| text).collect::<String>();
+        let url = url::Url::parse(&url).unwrap();
+        assert_eq!(Some("auth.openai.com"), url.host_str());
+        let parameters = url
+            .query_pairs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!("kuku", parameters["agent_name_hint"]);
+        let bad_callback = format!(
+            "{}?code=fixture-callback-secret&state=wrong",
+            parameters["redirect_uri"]
+        );
+        state.handle(Event::Paste(bad_callback), &settings, SetupMode::Init);
+        terminal
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Callback received"));
+        assert!(!screen.contains("fixture-callback-secret"));
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        poll_registration(&mut state, &mut settings).await;
+        assert!(state
+            .problem
+            .as_deref()
+            .unwrap()
+            .contains("does not match this sign-in"));
+        assert!(!settings.config_path.exists());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), proxy.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    async fn poll_registration(state: &mut SetupState, settings: &mut Settings) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !state.poll_subscription(settings) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn registration_and_proxy_changes_preserve_existing_model_settings() {

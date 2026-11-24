@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::editor::Editor;
+use crate::terminal::{AuthorizationLink, FrameBackend};
 use crate::text::{shorten_middle, single_line};
 use crate::theme::{compact_padding, emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
 
@@ -28,15 +28,21 @@ const MIN_HEIGHT: u16 = 20;
 const MAX_CONTENT_WIDTH: u16 = 88;
 
 pub(super) async fn run(
-    settings: &Settings,
+    settings: &mut Settings,
     state: &mut SetupState,
     mode: SetupMode,
 ) -> io::Result<Finish> {
     let _restore = TerminalRestore::new()?;
-    let backend = CrosstermBackend::new(io::stdout());
+    let backend = FrameBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     loop {
+        state.poll_subscription(settings);
         state.poll_probes(settings, mode);
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        terminal
+            .backend_mut()
+            .set_authorization_link(authorization_link(state, area));
         terminal.draw(|frame| render(frame, settings, state, mode))?;
         if let Some(finish) = state.finish {
             if finish == Finish::Cancel {
@@ -65,6 +71,16 @@ pub(super) async fn run(
     }
 }
 
+pub(super) fn authorization_link(state: &SetupState, outer: Rect) -> Option<AuthorizationLink> {
+    if state.step != SetupStep::SubscriptionSignIn || !usable(outer.width, outer.height) {
+        return None;
+    }
+    let mut area = outer.inner(Margin::new(1, 1));
+    area.height = area.height.saturating_sub(1);
+    area.width = area.width.min(MAX_CONTENT_WIDTH);
+    state.enrollment.as_ref()?.link(area)
+}
+
 pub(super) fn usable(width: u16, height: u16) -> bool {
     width >= MIN_WIDTH && height >= MIN_HEIGHT
 }
@@ -84,7 +100,12 @@ fn is_cancel(event: &Event) -> bool {
 }
 
 pub(super) fn handle_small_terminal_event(state: &mut SetupState, event: &Event) -> bool {
-    if is_cancel(event) {
+    if is_cancel(event)
+        && !state
+            .enrollment
+            .as_ref()
+            .is_some_and(|flow| flow.verifying())
+    {
         state.finish = Some(Finish::Cancel);
         true
     } else {
@@ -124,6 +145,15 @@ pub(super) fn render(
     render_step(frame, chunks[0], settings, state, mode);
     let (escape, keys) = match state.step {
         SetupStep::Consent => ("Esc exit", " · ↑/↓ move · Enter choose"),
+        SetupStep::SubscriptionSignIn
+            if state
+                .enrollment
+                .as_ref()
+                .is_some_and(|flow| flow.verifying()) =>
+        {
+            ("", "")
+        }
+        SetupStep::SubscriptionSignIn => ("Esc previous step", " · Ctrl+C exit"),
         SetupStep::TrialResults => ("Esc previous step", " · ↑/↓ scroll · Enter returns"),
         _ => (
             "Esc previous step",
@@ -161,7 +191,6 @@ fn render_step(
     match state.step {
         SetupStep::Consent => {
             line(frame, area, &mut row, "Set up a model", ACCENT);
-            line(frame, area, &mut row, "Tests may cost money.", WARNING);
             for (index, name) in ["Find and test models", "Edit config file"]
                 .iter()
                 .enumerate()
@@ -195,13 +224,6 @@ fn render_step(
         }
         SetupStep::Connection => {
             line(frame, area, &mut row, "Choose a provider", ACCENT);
-            line(
-                frame,
-                area,
-                &mut row,
-                "Add a ChatGPT account with kuku auth login chatgpt.",
-                MUTED,
-            );
             let available = area.height.saturating_sub(row + 3) as usize;
             let first = state.selected.saturating_sub(available / 2);
             let last = (first + available).min(state.choices.len());
@@ -220,6 +242,11 @@ fn render_step(
                     &mut row,
                     Line::styled(format!("{marker}{label}"), style),
                 );
+            }
+        }
+        SetupStep::SubscriptionSignIn => {
+            if let Some(flow) = &mut state.enrollment {
+                flow.render(frame, area, &mut row);
             }
         }
         SetupStep::Model => {
@@ -243,6 +270,7 @@ fn render_step(
                 &format!("Connection: {}", state.connection_label(settings)),
                 MUTED,
             );
+            trial_usage(frame, area, &mut row, state);
         }
         SetupStep::CredentialSource => {
             line(frame, area, &mut row, "API key source", ACCENT);
@@ -358,6 +386,17 @@ fn render_step(
     }
     if let Some(problem) = &state.problem {
         line(frame, area, &mut row, problem, WARNING);
+    }
+}
+
+fn trial_usage(frame: &mut Frame<'_>, area: Rect, row: &mut u16, state: &SetupState) {
+    if state.authorized {
+        let message = if state.subscription.is_some() {
+            "Model tests use your ChatGPT plan."
+        } else {
+            "Model tests may use API balance."
+        };
+        line(frame, area, row, message, MUTED);
     }
 }
 
@@ -648,7 +687,7 @@ fn render_line(frame: &mut Frame<'_>, area: Rect, row: &mut u16, text: Line<'sta
     }
 }
 
-fn field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &mut Editor) {
+pub(super) fn field(frame: &mut Frame<'_>, area: Rect, row: &mut u16, editor: &mut Editor) {
     let width = usize::from(area.width.saturating_sub(3));
     let view = editor.project(width, 1);
     let line = view.lines.first().cloned().unwrap_or_default();

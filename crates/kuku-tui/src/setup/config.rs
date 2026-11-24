@@ -9,7 +9,7 @@ use super::{ConnectionChoice, CredentialSource, ProviderPreset};
 use kuku::adapter::{inspect_model, SubscriptionAccountInfo};
 use kuku::config::{
     generate_default, parse_config_text_with_env, ApiKey, Config, ConfigFile, ProviderFormat,
-    ProviderProfile, ProviderProxy, RequestedOutput, ThinkLevel,
+    ProviderProfile, ProviderProxy, RequestedOutput, SubscriptionChannel, ThinkLevel,
 };
 use kuku::session::AgentConfig;
 use kuku::util::{is_valid_private_key, private_directory};
@@ -113,6 +113,22 @@ impl Settings {
         }
         let config_path = active_config.unwrap_or_else(|| service.config_path().to_owned());
         let data_dir = service.data_dir().to_owned();
+        Self::at_paths(config_path, data_dir, environment)
+    }
+
+    pub(super) fn reload(&self) -> io::Result<Self> {
+        Self::at_paths(
+            self.config_path.clone(),
+            self.data_dir.clone(),
+            &|name| std::env::var(name),
+        )
+    }
+
+    fn at_paths(
+        config_path: PathBuf,
+        data_dir: PathBuf,
+        environment: EnvironmentLookup<'_>,
+    ) -> io::Result<Self> {
         let credentials_dir = data_dir.join("credentials");
         let loaded = load_document(&config_path, &data_dir, environment)?;
         let default_tier = loaded.resolved.default_tier.clone();
@@ -153,6 +169,7 @@ impl Settings {
                 .into_iter()
                 .map(ConnectionChoice::Preset),
         );
+        choices.push(ConnectionChoice::Subscription(SubscriptionChannel::ChatGpt));
         choices
     }
 
@@ -160,6 +177,9 @@ impl Settings {
         match choice {
             ConnectionChoice::Existing(name) => self.resolved.providers[name].format,
             ConnectionChoice::Preset(preset) => preset.format(),
+            ConnectionChoice::Subscription(SubscriptionChannel::ChatGpt) => {
+                ProviderFormat::OpenAiResponses
+            }
             ConnectionChoice::Custom => ProviderFormat::OpenAiChat,
         }
     }
@@ -209,6 +229,9 @@ impl Settings {
                 )
             }
             ConnectionChoice::Preset(preset) => format!("Preset · {}", preset.label()),
+            ConnectionChoice::Subscription(SubscriptionChannel::ChatGpt) => {
+                "Preset · ChatGPT subscription".into()
+            }
             ConnectionChoice::Custom => "New custom connection".into(),
         }
     }
@@ -216,7 +239,7 @@ impl Settings {
     pub(super) fn model_for(&self, choice: &ConnectionChoice) -> String {
         match choice {
             ConnectionChoice::Preset(preset) => preset.default_model().into(),
-            ConnectionChoice::Custom => String::new(),
+            ConnectionChoice::Custom | ConnectionChoice::Subscription(_) => String::new(),
             ConnectionChoice::Existing(name) => self
                 .resolved
                 .tiers
@@ -238,6 +261,7 @@ impl Settings {
             _ => match choice {
                 ConnectionChoice::Preset(preset) => preset.default_env().into(),
                 ConnectionChoice::Custom => "KUKU_CUSTOM_API_KEY".into(),
+                ConnectionChoice::Subscription(_) => String::new(),
                 ConnectionChoice::Existing(name) => {
                     format!("{}_API_KEY", name.to_ascii_uppercase())
                 }
@@ -311,7 +335,9 @@ impl Settings {
             ConnectionChoice::Existing(name) => {
                 self.resolved.providers.get(name).map(|p| &p.api_key)
             }
-            ConnectionChoice::Preset(_) | ConnectionChoice::Custom => None,
+            ConnectionChoice::Preset(_)
+            | ConnectionChoice::Subscription(_)
+            | ConnectionChoice::Custom => None,
         }
     }
 
@@ -586,7 +612,9 @@ fn save_with_lookup(
     }
     let original = match choice {
         ConnectionChoice::Existing(name) => settings.resolved.provider(name),
-        ConnectionChoice::Preset(_) | ConnectionChoice::Custom => None,
+        ConnectionChoice::Preset(_)
+        | ConnectionChoice::Subscription(_)
+        | ConnectionChoice::Custom => None,
     };
     let provider = entry(&mut document, "provider", &provider_name)?;
     if original.is_none_or(|old| old.format != connection.format) {
