@@ -11,7 +11,7 @@ Contributions that are likely to be accepted:
 
 For new features, significant refactors, or API changes, please open an issue to discuss with maintainers before writing code.
 
-Issues are welcome in Chinese (中文) or English.
+Chinese (中文) is preferred for issues and pull requests. English is also welcome. Use [Conventional Commits](docs/en/contributing/development.md#git-and-platform-rules) for commit messages.
 
 ## Code Style
 
