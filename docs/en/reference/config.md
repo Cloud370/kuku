@@ -34,6 +34,7 @@ First-run setup, `kuku init`, and TUI `/model` all edit this file. [Configuratio
 | `max_output_tokens` | positive integer, optional | Generation ceiling (including reasoning tokens when counted as output) |
 | `purpose` | string | Route description shown to humans and delegated Agents |
 | `output` | `text`\|`image` | Requested Agent output (defaults to `text`) |
+| `request` | table | Model route overrides for [request headers and body](#request-headers-and-body) |
 
 Set `default_model` to a tier name, or omit it when only one tier is configured. Legacy `strong`, `balanced`, and `light` tiers still resolve. In the TUI, **Set current model as default** reuses a matching tier or writes a normal `user-default` tier selected via `default_model`.
 
@@ -61,6 +62,7 @@ On Chat and Responses, omitting `max_output_tokens` uses the upstream default. N
 | `service_tiers` | string[] | Override declared native service values for this connection |
 | `routing` | table | OpenRouter upstream routing options |
 | `prompt_cache_scope` | `workspace`\|`session`\|`off` | Responses prompt-cache key scope (defaults to `workspace`) |
+| `request` | table | Connection-level [request headers and body](#request-headers-and-body) |
 
 ### Endpoints and proxies
 
@@ -104,11 +106,52 @@ Each model capability entry may also contain a `custom_service_tiers` table. Its
 - **Provider specifics**: Messages defaults to `x-api-key`; OpenRouter uses Bearer auth across all three protocols. DeepSeek Messages sends `thinking.type` (`enabled`/`disabled`), omits unsupported cache controls, and rejects service tiers. DeepSeek Responses stays stateless and never sends `previous_response_id`. [DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_mode/) · [DeepSeek Messages](https://api-docs.deepseek.com/guides/anthropic_api/) · [DeepSeek Responses](https://api-docs.deepseek.com/guides/responses_api/) · [OpenRouter Messages auth](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-a-message)
 - **OpenRouter routing**: `routing.order` / `routing.only` list endpoint tags; `allow_fallbacks` controls fallback; `require_parameters` defaults to `true`; `routing.max_price.prompt` / `.completion` cap per-million-token prices (not total spend). OpenRouter gets a stable per-Session/Agent/connection correlation ID (affinity does not guarantee cache retention). [OpenRouter routing](https://openrouter.ai/docs/guides/routing/provider-selection) · [Prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
 
+### Request headers and body
+
+`request.headers` maps HTTP header names to strings. `request.body` maps top-level JSON keys to TOML values, including arrays and tables. These settings apply to built-in inference. Connections also use their request settings during model trials.
+
+Bundled TOML presets, connection settings, and matching model route settings apply in that order. Headers match case-insensitively. A body key replaces the whole value, including nested objects such as OpenRouter's `provider`. Set `request.inherit = false` at either level to start with empty request fields at that level.
+
+```toml
+[provider.openrouter.request.headers]
+"X-Title" = "My workspace"
+
+[provider.openrouter.request.body.provider]
+order = ["anthropic"]
+allow_fallbacks = false
+require_parameters = true
+data_collection = "deny"
+zdr = true
+
+[model.haiku.request.body]
+cache_control = { type = "ephemeral", ttl = "1h" }
+```
+
+Add these tables to an existing OpenRouter connection and model route. The `request.body.provider` object takes precedence over the connection's `routing` table. OpenRouter defines the native routing and data policy fields. [OpenRouter provider routing](https://openrouter.ai/docs/guides/routing/provider-selection)
+
+- `"{{session_id}}"` resolves to an opaque value stable for the Session, Agent, and connection. `"{{prompt_cache_key}}"` resolves to the key selected by `prompt_cache_scope`. Fields whose values are unavailable are omitted.
+- `"{{request_id}}"` is a header-only placeholder for a fresh HTTP attempt identifier. Placeholders replace complete string values, including strings nested inside body objects.
+- Header values can be `"$NAME"` references. The service reads them when preparing a request. Provider request traces redact configured header values and custom body fields. Strings in `request.body` are literal apart from the placeholders above.
+- The adapter owns credential and HTTP framing headers, model and message content, tool definitions, streaming, stateful replay fields, and resolved reasoning, service tier, and output-limit settings. Configuring one of these reserved fields produces a configuration error.
+
 ### Prompt caching and credentials
 
-- **`prompt_cache_scope`** (Responses only): `workspace` (default) hashes the normalized workspace path + connection + endpoint + model so Sessions in the same workspace share a key without leaking paths; `session` isolates by Session + Agent + connection + endpoint + model; `off` omits `prompt_cache_key`. Does not affect OpenRouter `session_id`.
+| Channel | Request defaults and cache behavior |
+|---|---|
+| ChatGPT subscription | Requests send a stable `session-id` to help find the cache and a fresh `X-Client-Request-Id` to track each HTTP attempt. Requests carry `prompt_cache_key` or `x-session-id` only if the connection or model route explicitly adds them. [Codex session routing](https://github.com/openai/codex/pull/44862) |
+| OpenAI API-key Responses | Prefix caching is automatic. Models before GPT-5.6 receive `prompt_cache_key` when available to help cache routing. On GPT-5.6 and later, a configured key groups cache accounting. [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching) |
+| OpenRouter | Body `session_id` helps keep the selected upstream stable. Cache behavior follows that upstream and model. Claude routes also receive top-level `cache_control`. [OpenRouter prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching) |
+| Native Anthropic Messages | Top-level `cache_control = { type = "ephemeral" }` enables automatic caching. The breakpoint advances as the conversation grows. [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) |
+
+Reuse requires a matching prefix and a reachable cache entry. Keep the model, tools, system instructions, and already submitted messages stable, then append new input. Cold requests, expired entries, and changes to the prefix or serving route can produce zero cache reads. An occasional zero is also possible during a successful turn with the same session and prefix. [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching) · [Codex cache observations](https://github.com/openai/codex/issues/44716)
+
+Read `usage.input_tokens_details.cached_tokens` for Responses, `usage.prompt_tokens_details.cached_tokens` for Chat Completions, and `usage.cache_read_input_tokens` for Anthropic Messages. Messages reports newly written tokens separately as `usage.cache_creation_input_tokens`. An omitted usage field leaves the read count unknown.
+
+Anthropic's default cache lifetime is five minutes. Haiku 5.5 cache writes cost 1.25 times the base input price at five minutes and 2 times at one hour. Cache reads cost 0.1 times the base input price for either lifetime. [Anthropic prompt caching prices](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
+- **`prompt_cache_scope`** (Responses only) controls the `{{prompt_cache_key}}` placeholder. `workspace` (default) hashes the normalized workspace path, connection, endpoint and model. `session` hashes Session, Agent, connection, endpoint and model. `off` leaves the placeholder unresolved.
 - **`api_key`**: `$NAME` reads only that env var; `file:/absolute/path` validates and reads only that file at request time (no relative paths, no URL syntax, no fallback between sources). Setup writes unencrypted keys under `<data-dir>/credentials/`; `kuku config show` prints only the reference. [File layout](file-layout.md)
-- Any other string config value starting with `$` resolves that env var before validation.
+- See [Environment variables](environment-variables.md) for when `$NAME` references resolve.
 
 A subscription connection uses its account reference as the credential source. ChatGPT subscriptions use the official OpenAI Responses and models endpoints. The connection's network mode also applies to the account's authentication requests. Explicit SOCKS proxies use `socks5h://` for proxy-side DNS. [Subscription sign-in](../start/configuration.md#sign-in-to-a-subscription-on-a-headless-host)
 

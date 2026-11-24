@@ -12,6 +12,7 @@ mod openrouter_catalog;
 pub(crate) mod prepare;
 pub(crate) mod replay;
 pub(crate) mod report;
+mod request_fields;
 mod setup_api;
 mod setup_probes;
 mod setup_reasoning;

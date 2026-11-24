@@ -141,6 +141,7 @@ fn resolve_plan(
     fallback.model.insert(
         "user-default".into(),
         ModelEntry {
+            request: None,
             provider: request.connection.clone(),
             model: request.model.clone(),
             think: None,

@@ -132,6 +132,8 @@ pub struct ModelEntry {
     /// Requested media output for Agents using this route.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<super::RequestedOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<super::RequestFields>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -298,6 +300,7 @@ pub struct TierConfig {
     pub purpose: String,
     /// Requested media output inherited by Agents on this route.
     pub output: super::RequestedOutput,
+    pub request: Option<super::RequestFields>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

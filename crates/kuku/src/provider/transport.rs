@@ -3,7 +3,7 @@ use wreq::header::{HeaderMap, HeaderValue};
 use crate::config::ProviderAuth;
 
 use super::error::{classify_http_error, transport_error};
-use super::prepare::{authentication, invalid_request, is_official_openrouter};
+use super::prepare::{authentication, invalid_request};
 use super::trace::{ProviderTrace, ProviderTraceMetadata};
 use super::types::{
     PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ProviderKind, ResolvedProvider,
@@ -76,6 +76,11 @@ async fn send(
     if let Some(trace) = &trace {
         let body = trace.full().then(|| {
             let mut body = prepared.body.as_json().clone();
+            for key in &prepared.fields.private_body_keys {
+                if let Some(field) = body.get_mut(key) {
+                    *field = serde_json::json!("<redacted>");
+                }
+            }
             if prepared.kind == ProviderKind::OpenAiResponses {
                 super::openai_responses::redact_tool_images(&mut body);
             }
@@ -94,7 +99,11 @@ async fn send(
         .post(&prepared.url)
         .headers(headers)
         .body(prepared.body.as_bytes().clone());
-    if trial_error_body.is_some() || subscription.is_some() {
+    if trial_error_body.is_some()
+        || subscription.is_some()
+        || !prepared.fields.headers.is_empty()
+        || !prepared.fields.private_body_keys.is_empty()
+    {
         request = request.redirect(wreq::redirect::Policy::none());
     }
     let response = request.send().await.map_err(|error| {
@@ -121,11 +130,23 @@ async fn send(
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         let body = read_error_body(response).await;
-        let body = if api_key.is_empty() {
+        let mut body = if api_key.is_empty() {
             body
         } else {
             body.replace(&api_key, "<redacted>")
         };
+        for value in prepared
+            .fields
+            .headers
+            .values()
+            .filter(|value| value.is_sensitive())
+        {
+            if let Ok(value) = value.to_str() {
+                if !value.is_empty() {
+                    body = body.replace(value, "<redacted>");
+                }
+            }
+        }
         let mut failure = classify_http_error(status.as_u16(), &body);
         failure.retry_after = retry_after;
         if let Some(delay) = retry_after {
@@ -163,22 +184,13 @@ fn request_headers(
     if prepared.kind == ProviderKind::Anthropic {
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     }
-    if config.capabilities.profile == crate::config::ProviderProfile::OpenRouter
-        && url::Url::parse(&prepared.url).is_ok_and(|url| is_official_openrouter(&url))
-        && !matches!(
-            config.options.model_pricing.get(&prepared.model),
-            Some(crate::config::ModelPricing::UsageOnly)
-        )
-    {
-        headers.insert("x-openrouter-metadata", HeaderValue::from_static("enabled"));
-    }
-    if let Some(correlation) = &prepared.correlation_id {
-        headers.insert(
-            "x-session-id",
-            HeaderValue::from_str(correlation).map_err(|_| {
-                invalid_request("transport correlation is not a valid HTTP header value")
-            })?,
-        );
+    headers.extend(prepared.fields.headers.clone());
+    if !prepared.fields.request_id_headers.is_empty() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let value = HeaderValue::from_str(&id).expect("UUID fits an HTTP header");
+        for name in &prepared.fields.request_id_headers {
+            headers.insert(name, value.clone());
+        }
     }
     Ok(headers)
 }
@@ -220,7 +232,19 @@ mod tests {
             body: PreparedBody::from_json(json!({})),
             settings: Default::default(),
             correlation_id: None,
+            fields: Default::default(),
         }
+    }
+
+    fn with_preset(config: &ResolvedProvider, request: &mut PreparedProviderRequest) {
+        request.fields = super::super::request_fields::prepare(
+            config,
+            &request.url,
+            &mut json!({}),
+            request.correlation_id.as_deref(),
+            || None,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -255,10 +279,12 @@ mod tests {
         let mut config = ResolvedProvider::default();
         config.capabilities.profile = ProviderProfile::OpenRouter;
         let mut request = prepared(&config);
+        with_preset(&config, &mut request);
         assert!(!request_headers(&config, &request, "test-key")
             .unwrap()
             .contains_key("x-openrouter-metadata"));
         request.url = "https://eu.openrouter.ai/api/v1/messages".into();
+        with_preset(&config, &mut request);
         assert_eq!(
             "enabled",
             request_headers(&config, &request, "test-key").unwrap()["x-openrouter-metadata"]
@@ -267,9 +293,34 @@ mod tests {
             .options
             .model_pricing
             .insert(config.model.clone(), crate::config::ModelPricing::UsageOnly);
+        with_preset(&config, &mut request);
         assert!(!request_headers(&config, &request, "test-key")
             .unwrap()
             .contains_key("x-openrouter-metadata"));
+    }
+
+    #[test]
+    fn chatgpt_uses_one_stable_session_header_and_a_per_dispatch_request_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = ResolvedProvider::default();
+        config.options.subscription = Some(
+            crate::config::SubscriptionAccount::new(
+                directory.path(),
+                crate::config::SubscriptionChannel::ChatGpt,
+                "fixture",
+            )
+            .unwrap(),
+        );
+        let mut request = prepared(&config);
+        request.correlation_id = Some("kuku-anonymous-id".into());
+        with_preset(&config, &mut request);
+        let first = request_headers(&config, &request, "fixture-token").unwrap();
+        let retry = request_headers(&config, &request, "fixture-token").unwrap();
+        assert_eq!(first["session-id"], "kuku-anonymous-id");
+        assert_eq!(first["session-id"], retry["session-id"]);
+        assert!(!first.contains_key("x-session-id"));
+        assert!(!first.contains_key("session_id"));
+        assert_ne!(first["x-client-request-id"], retry["x-client-request-id"]);
     }
 
     #[test]

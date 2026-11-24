@@ -94,6 +94,9 @@ pub struct ProviderOptions {
     /// Scope for Responses prompt caching; ignored by other protocols.
     #[serde(default)]
     pub prompt_cache_scope: PromptCacheScope,
+    /// Additional request headers and JSON fields for this connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<super::RequestFields>,
 }
 
 /// How the HTTP transport reaches a provider connection.

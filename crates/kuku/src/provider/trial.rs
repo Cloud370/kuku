@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_stream::StreamExt;
 
-use crate::config::{ProviderConfig, ProviderProfile};
+use crate::config::ProviderConfig;
 use crate::event::ModelStopReason;
 use crate::{Error, Result};
 
@@ -195,10 +195,9 @@ async fn trial_request(
     body.as_object_mut()
         .expect("trial body")
         .remove("stream_options");
-    if config.capabilities.profile == ProviderProfile::OpenRouter {
-        body["provider"] = serde_json::to_value(config.options.routing.clone().unwrap_or_default())
-            .map_err(|_| Error::InvalidArgument("Invalid routing for the model trial.".into()))?;
-    }
+    let url = request_url(&config).map_err(trial_error)?;
+    let fields = super::request_fields::prepare(&config, &url, &mut body, None, || None)
+        .map_err(trial_error)?;
     if let Some(account) = &config.options.subscription {
         super::subscription::apply_request_shape(account.channel(), &mut body);
     }
@@ -206,10 +205,11 @@ async fn trial_request(
         kind: config.kind,
         connection_name: config.connection_name.clone(),
         model: model.into(),
-        url: request_url(&config).map_err(trial_error)?,
+        url,
         body: PreparedBody::from_json(body),
         settings: config.settings.clone(),
         correlation_id: None,
+        fields,
     };
     let response = receive_trial(&config, &prepared).await?;
     let pricing = RequestPricing::new(

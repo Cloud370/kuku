@@ -9,6 +9,7 @@ pub use model_capabilities::{
     ModelThinkingTest, ProtocolCapabilityDeclaration, RequestedOutput,
 };
 mod provider;
+mod request;
 mod resolve;
 pub(crate) mod subscription;
 pub(crate) mod types;
@@ -19,6 +20,7 @@ pub use provider::{
     OpenRouterPrice, OpenRouterRouting, PromptCacheScope, ProviderAuth, ProviderOptions,
     ProviderProfile, ProviderProxy, ProxyAuth,
 };
+pub use request::RequestFields;
 pub use resolve::{load_config, parse_config_text, parse_config_text_with_env, show_redacted};
 pub use subscription::{SubscriptionAccount, SubscriptionChannel};
 pub use types::{

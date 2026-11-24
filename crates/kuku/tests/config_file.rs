@@ -3,8 +3,8 @@ mod config {
         load_and_patch_config, load_config, resolve_request_url, ApiKey, Config, CustomServiceTier,
         MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
         ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat, ProviderOptions,
-        ProviderProfile, RequestedOutput, ResolvedThinking, SubscriptionChannel, ThinkLevel,
-        TierConfig,
+        ProviderProfile, RequestFields, RequestedOutput, ResolvedThinking, SubscriptionChannel,
+        ThinkLevel, TierConfig,
     };
 }
 

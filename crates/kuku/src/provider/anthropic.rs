@@ -46,7 +46,6 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         "model": request.model,
         "messages": messages,
         "stream": false,
-        "cache_control": cache_control_ephemeral(),
         "system": [{
             "type": "text",
             "text": request.assembly.system_prompt,
@@ -87,10 +86,6 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
             .collect::<Vec<_>>());
     }
     body
-}
-
-fn cache_control_ephemeral() -> Value {
-    json!({"type": "ephemeral"})
 }
 
 fn convert_canonical_message(message: &CanonicalMessage) -> Value {
@@ -656,14 +651,6 @@ mod tests {
         let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
         assert!(body.get("thinking").is_none());
         assert!(body.get("output_config").is_none());
-    }
-
-    #[test]
-    fn render_body_includes_cache_control() {
-        let catalog = crate::prompt::builtin_prompt_catalog();
-        let body = render_body(&minimal_request(crate::config::ThinkLevel::Off, &catalog));
-        assert_eq!(body["cache_control"]["type"], "ephemeral");
-        assert!(body["system"][0].get("cache_control").is_none());
     }
 
     #[test]

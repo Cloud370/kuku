@@ -86,19 +86,13 @@ fn prepare(
     body["stream"] = json!(true);
     apply_settings(config, &mut body);
     let correlation_id = correlation.map(correlation_id);
-    if let Some(cache_key) = prompt_cache_key(config, correlation, &url) {
-        body["prompt_cache_key"] = json!(cache_key);
-    }
-    if config.capabilities.profile == ProviderProfile::OpenRouter {
-        if let Some(value) = &correlation_id {
-            body["session_id"] = json!(value);
-        }
-        body["provider"] = serde_json::to_value(config.options.routing.clone().unwrap_or_default())
-            .map_err(|_| invalid_request("could not encode OpenRouter routing options"))?;
-    }
     if let Some(media) = media {
         super::openai_responses::attach_tool_images(&mut body, images, media.limit, media.load);
     }
+    let fields =
+        super::request_fields::prepare(config, &url, &mut body, correlation_id.as_deref(), || {
+            prompt_cache_key(config, correlation, &url)
+        })?;
     if let Some(account) = &config.options.subscription {
         super::subscription::apply_request_shape(account.channel(), &mut body);
     }
@@ -110,6 +104,7 @@ fn prepare(
         body: PreparedBody::from_json(body),
         settings: config.settings.clone(),
         correlation_id,
+        fields,
     })
 }
 
@@ -194,11 +189,6 @@ pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value) {
         "service_tier",
     ] {
         object.remove(key);
-    }
-    if config.capabilities.profile == ProviderProfile::DeepSeek {
-        object.remove("cache_control");
-    } else if config.capabilities.prompt_cache_control {
-        body["cache_control"] = json!({"type": "ephemeral"});
     }
     if let Some(effort) = config.settings.reasoning_effort.as_deref() {
         match config.kind {
@@ -557,17 +547,119 @@ mod tests {
     }
 
     #[test]
+    fn route_request_fields_override_connection_fields_and_provider_defaults() {
+        let mut config = provider_config(
+            ProviderKind::OpenAiResponses,
+            ProviderProfile::OpenRouter,
+            "openai/gpt-6.2-sol",
+        );
+        config.options.request = Some(
+            toml::from_str(
+                r#"
+[headers]
+"X-Title" = "connection title"
+"HTTP-Referer" = "https://example.invalid"
+[body.provider]
+order = ["openai"]
+data_collection = "deny"
+allow_fallbacks = false
+"#,
+            )
+            .unwrap(),
+        );
+        config.route_request = Some(
+            toml::from_str(
+                r#"
+[headers]
+"x-title" = "route title"
+[body]
+metadata = { scope = "{{session_id}}", number = 7 }
+"#,
+            )
+            .unwrap(),
+        );
+        let correlation = ProviderCorrelation {
+            session_id: "session".into(),
+            agent_address: "main".into(),
+            connection_name: "router".into(),
+            workspace: std::path::PathBuf::from("."),
+        };
+        let request = prepared_request(&config, Some(&correlation));
+        let body = request.body.as_json();
+        assert_eq!("route title", request.fields.headers["x-title"]);
+        assert_eq!(
+            "https://example.invalid",
+            request.fields.headers["http-referer"]
+        );
+        assert_eq!("enabled", request.fields.headers["x-openrouter-metadata"]);
+        assert!(!request.fields.headers.contains_key("x-session-id"));
+        assert_eq!(
+            body["provider"],
+            json!({"order":["openai"],"data_collection":"deny","allow_fallbacks":false})
+        );
+        assert_eq!(body["metadata"]["scope"], body["session_id"]);
+        assert_eq!(body["metadata"]["number"], 7);
+        assert!(body.get("prompt_cache_key").is_none());
+        assert!(body.get("cache_control").is_none());
+
+        config.route_request.as_mut().unwrap().inherit = false;
+        let request = prepared_request(&config, Some(&correlation));
+        assert!(!request.fields.headers.contains_key("http-referer"));
+        assert!(request.body.as_json().get("session_id").is_none());
+        assert!(request.body.as_json().get("provider").is_none());
+    }
+
+    #[test]
+    fn modern_openai_responses_only_sends_cache_key_when_configured() {
+        let mut config = provider_config(
+            ProviderKind::OpenAiResponses,
+            ProviderProfile::OpenAi,
+            "gpt-6.2-sol",
+        );
+        let correlation = ProviderCorrelation {
+            session_id: "session".into(),
+            agent_address: "main".into(),
+            connection_name: "router".into(),
+            workspace: std::path::PathBuf::from("."),
+        };
+        let request = prepared_request(&config, Some(&correlation));
+        assert!(request.body.as_json().get("prompt_cache_key").is_none());
+        assert!(request.fields.headers.is_empty());
+        config.options.request =
+            Some(toml::from_str("[body]\nprompt_cache_key = \"{{prompt_cache_key}}\"").unwrap());
+        let request = prepared_request(&config, Some(&correlation));
+        assert_eq!(
+            64,
+            request.body.as_json()["prompt_cache_key"]
+                .as_str()
+                .unwrap()
+                .len()
+        );
+    }
+
+    #[test]
     fn anthropic_messages_cache_control_is_retained_and_deepseek_omits_it() {
-        let openrouter = provider_config(
+        let mut openrouter = provider_config(
             ProviderKind::Anthropic,
             ProviderProfile::OpenRouter,
             "anthropic/claude-sonnet-5.5",
         );
-        let prepared = prepared_request(&openrouter, None);
-        assert_eq!(
-            json!({"type": "ephemeral"}),
-            prepared.body.as_json()["cache_control"]
+        openrouter.capabilities.prompt_cache_control = true;
+        let direct = provider_config(
+            ProviderKind::Anthropic,
+            ProviderProfile::Anthropic,
+            "claude-haiku-5-5",
         );
+        for config in [&openrouter, &direct] {
+            let prepared = prepared_request(config, None);
+            assert_eq!(
+                json!({"type": "ephemeral"}),
+                prepared.body.as_json()["cache_control"]
+            );
+            assert!(prepared.body.as_json()["system"][0]
+                .get("cache_control")
+                .is_none());
+        }
 
         for (kind, model) in [
             (ProviderKind::OpenAiCompatible, "deepseek-chat"),
@@ -685,13 +777,14 @@ mod tests {
     fn workspace_cache_key_is_stable_across_sessions_and_agents_but_scoped_to_route() {
         let workspace = tempfile::tempdir().unwrap();
         let other_workspace = tempfile::tempdir().unwrap();
-        let config = ResolvedProvider {
+        let mut config = ResolvedProvider {
             kind: ProviderKind::OpenAiResponses,
             connection_name: "openai".into(),
             model: "gpt-test".into(),
             base_url: "https://api.openai.com/v1".into(),
             ..Default::default()
         };
+        config.capabilities.profile = ProviderProfile::OpenAi;
         let main = response_correlation(workspace.path(), "session-one", "main");
         let dotted_workspace = workspace.path().join(".");
         let explore = response_correlation(&dotted_workspace, "session-two", "explore");
@@ -725,7 +818,7 @@ mod tests {
     fn session_cache_key_is_per_session_and_agent_and_off_omits_it() {
         let workspace = tempfile::tempdir().unwrap();
         let main = response_correlation(workspace.path(), "session-one", "main");
-        let config = ResolvedProvider {
+        let mut config = ResolvedProvider {
             kind: ProviderKind::OpenAiResponses,
             connection_name: "openai".into(),
             model: "gpt-test".into(),
@@ -736,6 +829,7 @@ mod tests {
             },
             ..Default::default()
         };
+        config.capabilities.profile = ProviderProfile::OpenAi;
         let first = response_cache_key(&config, Some(&main)).unwrap();
         assert_ne!(
             first,

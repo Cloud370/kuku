@@ -3,8 +3,8 @@ mod config {
         resolve_request_url, ApiKey, Config, CustomServiceTier, DiscoveryConfig, HandoffConfig,
         LogsConfig, MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry,
         ModelThinkingTest, PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig,
-        ProviderFormat, ProviderOptions, ProviderProfile, RequestedOutput, ResolvedThinking,
-        SubscriptionChannel, ThinkLevel, TierConfig, UpdateConfig,
+        ProviderFormat, ProviderOptions, ProviderProfile, RequestFields, RequestedOutput,
+        ResolvedThinking, SubscriptionChannel, ThinkLevel, TierConfig, UpdateConfig,
     };
 }
 
@@ -62,6 +62,7 @@ fn default_config() -> Config {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),
@@ -266,6 +267,7 @@ fn explicit_tier_selects_different_tier() {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),
@@ -280,6 +282,7 @@ fn explicit_tier_selects_different_tier() {
     tiers.insert(
         "light".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),

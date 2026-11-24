@@ -158,6 +158,7 @@ pub fn make_test_config(mock_port: u16) -> kuku::config::Config {
     tiers.insert(
         "balanced".to_string(),
         TierConfig {
+            request: None,
             reasoning_effort: None,
             service_tier: None,
             provider: "anthropic".to_string(),

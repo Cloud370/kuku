@@ -1,0 +1,16 @@
+[chatgpt.headers]
+session-id = "{{session_id}}"
+x-client-request-id = "{{request_id}}"
+
+[openrouter.body]
+session_id = "{{session_id}}"
+provider = { require_parameters = true }
+
+[openrouter_reports.headers]
+x-openrouter-metadata = "enabled"
+
+[anthropic.body]
+cache_control = { type = "ephemeral" }
+
+[openai_legacy.body]
+prompt_cache_key = "{{prompt_cache_key}}"

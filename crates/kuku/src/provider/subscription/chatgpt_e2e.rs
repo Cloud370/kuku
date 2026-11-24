@@ -212,6 +212,7 @@ impl FixtureProxy {
             "expires_in": 3600
         })).await;
 
+        let mut dispatch_ids = std::collections::BTreeSet::new();
         for _ in 0..2 {
             let (mut stream, line, headers, bytes) = self.exchange("api.openai.com").await;
             assert_eq!("Bearer rotated-access", headers["authorization"]);
@@ -226,12 +227,15 @@ impl FixtureProxy {
                 .await;
             } else {
                 assert!(line.starts_with("POST /v1/responses "));
+                assert!(dispatch_ids.insert(headers["x-client-request-id"].clone()));
+                assert!(!headers.contains_key("x-session-id"));
                 let body: Value = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(true, body["stream"]);
                 assert_eq!(false, body["store"]);
                 assert_eq!("fast", body["service_tier"]);
                 assert_eq!("kuku", body["tools"][0]["name"]);
                 assert!(body.get("max_output_tokens").is_none());
+                assert!(body.get("prompt_cache_key").is_none());
                 reply_sse(
                     &mut stream,
                     json!({"output":[{
@@ -245,6 +249,7 @@ impl FixtureProxy {
         let (mut stream, headers, bytes) =
             self.request("api.openai.com", "POST /v1/responses").await;
         assert_eq!("Bearer rotated-access", headers["authorization"]);
+        assert!(dispatch_ids.insert(headers["x-client-request-id"].clone()));
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!("fast", body["service_tier"]);
         let result = &body["input"][2];
@@ -258,6 +263,7 @@ impl FixtureProxy {
         let (mut stream, headers, bytes) =
             self.request("api.openai.com", "POST /v1/responses").await;
         assert_eq!("Bearer rotated-access", headers["authorization"]);
+        assert!(dispatch_ids.insert(headers["x-client-request-id"].clone()));
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!("ultrafast", body["service_tier"]);
         reply_sse(

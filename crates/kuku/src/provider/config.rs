@@ -74,6 +74,9 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         options.endpoint_url.as_deref(),
     )?;
     let capabilities = resolve_capabilities(&endpoint, &model, kind, &options);
+    let route_request = tier
+        .filter(|tier| tier.provider == name && tier.model == model)
+        .and_then(|tier| tier.request.clone());
     let settings_tier =
         tier.filter(|tier| input.tier.is_some() || (tier.provider == name && tier.model == model));
     let think = settings_tier.map(|tier| tier.think);
@@ -151,6 +154,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         think_level: think.unwrap_or(ThinkLevel::Off),
         thinking: Default::default(),
         options,
+        route_request,
         settings,
         capabilities,
     })

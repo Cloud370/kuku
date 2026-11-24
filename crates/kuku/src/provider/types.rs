@@ -117,6 +117,7 @@ pub(crate) struct ResolvedProvider {
     pub(crate) think_level: crate::config::ThinkLevel,
     pub(crate) thinking: crate::config::ResolvedThinking,
     pub(crate) options: ProviderOptions,
+    pub(crate) route_request: Option<crate::config::RequestFields>,
     pub(crate) settings: ProviderSettings,
     pub(crate) capabilities: ProviderCapabilities,
 }
@@ -135,6 +136,7 @@ impl Default for ResolvedProvider {
             think_level: crate::config::ThinkLevel::Off,
             thinking: Default::default(),
             options: Default::default(),
+            route_request: None,
             settings: Default::default(),
             capabilities: Default::default(),
         }
@@ -257,6 +259,14 @@ pub(crate) struct PreparedProviderRequest {
     pub(crate) body: PreparedBody,
     pub(crate) settings: ProviderSettings,
     pub(crate) correlation_id: Option<String>,
+    pub(super) fields: PreparedRequestFields,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct PreparedRequestFields {
+    pub(super) headers: wreq::header::HeaderMap,
+    pub(super) request_id_headers: Vec<wreq::header::HeaderName>,
+    pub(super) private_body_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

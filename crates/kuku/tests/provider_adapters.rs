@@ -10,8 +10,8 @@ mod config {
     pub use kuku::config::{
         resolve_request_url, ApiKey, CustomServiceTier, LogsConfig, MediaAdapterSupport,
         ModelPricing, ModelThinkingTest, PromptCacheScope, ProviderAuth, ProviderFormat,
-        ProviderOptions, ProviderProfile, ProviderProxy, RequestedOutput, ResolvedThinking,
-        SubscriptionChannel, ThinkLevel,
+        ProviderOptions, ProviderProfile, ProviderProxy, RequestFields, RequestedOutput,
+        ResolvedThinking, SubscriptionAccount, SubscriptionChannel, ThinkLevel,
     };
 }
 
@@ -103,6 +103,13 @@ mod provider {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/provider/http_client.rs"
+        ));
+    }
+
+    pub mod request_fields {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/request_fields.rs"
         ));
     }
 
@@ -467,8 +474,6 @@ fn anthropic_render_body_preserves_layer_order() {
         .as_str()
         .unwrap()
         .contains("You are the agent running inside kuku"));
-    assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
-    assert!(body["system"][0].get("cache_control").is_none());
     assert!(body["messages"][0]["content"][0]["text"]
         .as_str()
         .unwrap()
@@ -600,10 +605,10 @@ fn anthropic_recovery_keeps_original_request_as_exact_prefix() {
 }
 
 #[test]
-fn anthropic_render_body_uses_top_level_automatic_cache_control() {
+fn anthropic_request_preset_uses_top_level_automatic_cache_control() {
     let catalog = test_catalog();
-    let body = render_anthropic_body(&ProviderRequest {
-        stream: false,
+    let request = ProviderRequest {
+        stream: true,
         assembly: sample_assembly(),
         catalog: &catalog,
         current_input: current_input(),
@@ -612,7 +617,16 @@ fn anthropic_render_body_uses_top_level_automatic_cache_control() {
         temperature: None,
         think_level: kuku::config::ThinkLevel::Off,
         thinking: ResolvedThinking::default(),
-    });
+    };
+    let mut config = provider::types::ResolvedProvider {
+        kind: provider::types::ProviderKind::Anthropic,
+        model: request.model.clone(),
+        base_url: "https://api.anthropic.com".into(),
+        ..Default::default()
+    };
+    config.capabilities.profile = kuku::config::ProviderProfile::Anthropic;
+    let prepared = provider::prepare::prepare_provider_request(&config, &request, None).unwrap();
+    let body = prepared.body.as_json();
 
     assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
     assert!(body["system"][0].get("cache_control").is_none());
