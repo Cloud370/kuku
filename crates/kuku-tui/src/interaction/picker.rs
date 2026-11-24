@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
+use crate::app::speed::SpeedAction;
 use crate::app::{App, Modal};
 use crate::keys::Shortcut;
 use crate::menu::{ChoiceKind, PickerKind};
@@ -42,6 +43,15 @@ impl App {
                 match (&picker.kind, picker.selected_choice()) {
                     (PickerKind::Commands, Some(ChoiceKind::Command(command))) => {
                         self.complete_command(command);
+                    }
+                    (
+                        PickerKind::Speed,
+                        Some(ChoiceKind::Speed(
+                            SpeedAction::Apply(Some(tier)) | SpeedAction::Custom(tier),
+                        )),
+                    ) if picker.query.text() != tier => {
+                        picker.query.set_text(tier);
+                        self.picker_query_changed();
                     }
                     (PickerKind::Commands, Some(choice @ ChoiceKind::Skill(_)))
                     | (PickerKind::Paths(_), Some(choice @ ChoiceKind::Path(_))) => {

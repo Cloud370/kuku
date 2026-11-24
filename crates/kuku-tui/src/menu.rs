@@ -266,7 +266,7 @@ impl PickerKind {
     }
 
     pub(crate) fn completes_text(&self) -> bool {
-        matches!(self, Self::Commands | Self::Paths(_))
+        matches!(self, Self::Commands | Self::Paths(_) | Self::Speed)
     }
 
     pub(crate) fn composer_anchored(&self) -> bool {

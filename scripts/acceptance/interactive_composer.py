@@ -97,7 +97,11 @@ def agent_setup(client):
 
         terminal.press("/speed\r")
         terminal.expect("reviewer · review-model", also=("Follow model default", "flex"))
-        terminal.press("flex\r")
+        terminal.press("fl")
+        terminal.expect("›flex", also=("Tab Complete",))
+        terminal.press("\t")
+        terminal.expect("/ flex", also=("›flex",))
+        terminal.press("\r")
         terminal.expect("review-model high flex", absent=("Cache may miss",))
         assert client.snapshot(workspace, session)["config"].get("service_tier") == original_main_tier
 

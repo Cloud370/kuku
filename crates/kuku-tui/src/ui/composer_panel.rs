@@ -292,7 +292,7 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
     } else if matches!(picker.kind, PickerKind::Thinking | PickerKind::CustomSpeed) {
         THINKING_HELP
     } else if picker.kind == PickerKind::Speed {
-        "↑↓ Move · Enter Apply · Type to filter or add a tier"
+        "↑↓ Move · Tab Complete · Enter Apply · Type to add"
     } else if picker.kind == PickerKind::Models {
         if picker.search_focused {
             "Enter Switch · Esc Back to list"

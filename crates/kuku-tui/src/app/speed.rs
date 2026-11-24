@@ -129,6 +129,23 @@ impl SpeedTarget {
                 })
                 .map(|tier| self.choice(tier)),
         );
+        if !query.is_empty() {
+            let search = query.to_lowercase();
+            choices.retain(|choice| {
+                let label = choice.label.to_lowercase();
+                if matches!(choice.kind, ChoiceKind::Speed(SpeedAction::Apply(None))) {
+                    search
+                        .split_whitespace()
+                        .all(|part| label.split_whitespace().any(|word| word.starts_with(part)))
+                } else {
+                    label.contains(&search)
+                }
+            });
+            choices.sort_by_key(|choice| {
+                let label = choice.label.to_lowercase();
+                (label != search, !label.starts_with(&search))
+            });
+        }
         if valid_tier(query)
             && !COMMON_TIERS.contains(&query)
             && !caps.service_tiers.iter().any(|value| value == query)

@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Update};
-use crate::menu::PickerKind;
+use crate::menu::{ChoiceKind, PickerKind};
 use crate::setup::ThinkingDefaults;
 
 use super::tests::{connected_app, insert_message, press};
@@ -497,7 +497,10 @@ fn speed_uses_the_composer_and_applies_declared_tiers_without_probing() {
         .iter()
         .all(|job| !matches!(job, Job::CustomSpeed(..))));
 
-    app.paste("provider-custom");
+    app.paste("provider-cu");
+    press(&mut app, KeyCode::Tab);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.query.text() == "provider-custom"));
     press(&mut app, KeyCode::Enter);
     assert!(app
         .effects
@@ -531,7 +534,7 @@ fn reviewer_speed_fixture() -> App {
 #[test]
 fn speed_commands_configure_the_selected_agent() {
     for (command, tier) in [
-        ("speed", "provider-custom"),
+        ("speed", "ultrafast"),
         ("fast", "fast"),
         ("ultrafast", "ultrafast"),
         ("ultra", "ultrafast"),
@@ -542,7 +545,11 @@ fn speed_commands_configure_the_selected_agent() {
         if command == "speed" {
             assert!(matches!(&app.modal, Some(Modal::Picker(picker))
                 if picker.kind == PickerKind::Speed && picker.header == "reviewer · reviewer-model"));
-            app.paste(tier);
+            app.paste("ul");
+            assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+                if matches!(picker.selected_choice(),
+                    Some(ChoiceKind::Speed(crate::app::speed::SpeedAction::Apply(Some(ref tier))))
+                    if tier == "ultrafast")));
             press(&mut app, KeyCode::Enter);
         }
         let mut changes = app.effects.iter().filter_map(|job| match job {
