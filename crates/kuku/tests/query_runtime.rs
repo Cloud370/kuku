@@ -25,6 +25,7 @@ async fn next_permission_request(run: &mut Run) -> PermissionRequest {
     }
 }
 
+#[cfg(unix)]
 async fn next_tool_end(run: &mut Run, tool_call_id: &str) -> UiEvent {
     loop {
         let event = run.next().await.unwrap().expect("event");
