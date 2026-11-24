@@ -2,6 +2,8 @@
 
 In the TUI, use `/resume` to reopen a Session in the current workspace and `/agents` to pick which Agent receives your next message. Each window keeps its own draft. [Terminal interface](../reference/cli.md#terminal-interface)
 
+In the picker, type to filter and press Enter to open the highlighted Session. Opening a Session does not send a model request.
+
 ## Rewind or branch from history
 
 When an Agent is idle in the TUI, press **Ctrl+G** to open its conversation history. If you roll back from Turn 100 to Turn 90 and continue from there, opening the same list later still lets you jump back to the saved Turn 100 — both branches stay in the same Session. [History controls](../reference/cli.md#rewinding-and-branching)
