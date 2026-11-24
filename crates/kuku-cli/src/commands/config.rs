@@ -1,7 +1,7 @@
+use kuku::Error;
 use kuku::adapter::inspect_model;
 use kuku::config::{load_config, set_value, show_redacted};
 use kuku::session::AgentConfig;
-use kuku::Error;
 
 use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs, PolicySubcommand};
 

@@ -1,7 +1,7 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, RewindGroup, RewindGroupPage};
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use super::tests::{connected_app, press};
 use crate::app::{Address, App, KeyboardFocus, Modal};
@@ -52,11 +52,7 @@ pub(super) fn open_messages_with_f2(app: &mut App) {
     let count = match current {
         Some(current) => {
             let steps = (messages + controls.len() - current) % controls.len();
-            if steps == 0 {
-                controls.len()
-            } else {
-                steps
-            }
+            if steps == 0 { controls.len() } else { steps }
         }
         None => messages + 1,
     };
@@ -146,9 +142,11 @@ fn f2_messages_separates_rewound_choices_and_preserves_restored_draft() {
         .position(|choice| matches!(choice.kind, ChoiceKind::RewindSection))
         .expect("read-only section is shown");
     assert_eq!(active_count, section);
-    assert!(choices[section + 1..]
-        .iter()
-        .all(|choice| matches!(choice.kind, ChoiceKind::RewindGroup { .. })));
+    assert!(
+        choices[section + 1..]
+            .iter()
+            .all(|choice| matches!(choice.kind, ChoiceKind::RewindGroup { .. }))
+    );
     assert!(!choices.iter().any(|choice| matches!(
         &choice.kind,
         ChoiceKind::MessageEntry(message) if message.id == MessageId::Event(2)
@@ -195,12 +193,13 @@ fn messages_with_only_rewound_groups_selects_the_toggle_not_the_section() {
         })
     ));
     press(&mut app, KeyCode::Enter);
-    assert!(app
-        .pane()
-        .transcript
-        .rewind_group_choices()
-        .iter()
-        .any(|group| group.rewind_event_id == 50 && group.expanded));
+    assert!(
+        app.pane()
+            .transcript
+            .rewind_group_choices()
+            .iter()
+            .any(|group| group.rewind_event_id == 50 && group.expanded)
+    );
 }
 
 #[test]
@@ -259,16 +258,18 @@ fn messages_revalidates_group_selection_and_routes_retry_and_more() {
         action,
     };
     app.choose(PickerKind::Messages, stale, ticket);
-    assert!(!app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::RewindGroupHistory(_, _))));
-    assert!(app
-        .pane()
-        .transcript
-        .rewind_group_choices()
-        .iter()
-        .all(|group| !group.expanded));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::RewindGroupHistory(_, _)))
+    );
+    assert!(
+        app.pane()
+            .transcript
+            .rewind_group_choices()
+            .iter()
+            .all(|group| !group.expanded)
+    );
 
     open_messages_with_f2(&mut app);
     choose_group_action(&mut app, RewindGroupAction::Toggle);
@@ -284,10 +285,11 @@ fn messages_revalidates_group_selection_and_routes_retry_and_more() {
         })
         .expect("first page request");
     app.effects.clear();
-    assert!(app
-        .pane_mut()
-        .transcript
-        .apply_rewind_group_page(&request, Err("offline".into())));
+    assert!(
+        app.pane_mut()
+            .transcript
+            .apply_rewind_group_page(&request, Err("offline".into()))
+    );
 
     open_messages_with_f2(&mut app);
     choose_group_action(&mut app, RewindGroupAction::Retry);
@@ -366,10 +368,11 @@ fn messages_rewind_group_choice_activates_on_a_mouse_click() {
             buffer,
         );
     }
-    assert!(app
-        .pane()
-        .transcript
-        .rewind_group_choices()
-        .iter()
-        .any(|group| group.rewind_event_id == 50 && group.expanded));
+    assert!(
+        app.pane()
+            .transcript
+            .rewind_group_choices()
+            .iter()
+            .any(|group| group.rewind_event_id == 50 && group.expanded)
+    );
 }

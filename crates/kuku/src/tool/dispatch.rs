@@ -6,7 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::event::{EventPayload, StoredEvent};
-use crate::tool::{builtin, ToolResultEnvelope};
+use crate::tool::{ToolResultEnvelope, builtin};
 
 pub(crate) fn is_workspace_file(name: &str) -> bool {
     matches!(
@@ -613,9 +613,11 @@ mod tests {
             .await
         });
         assert_eq!(result.status, "ok");
-        assert!(std::fs::read_to_string(&expected_path)
-            .unwrap()
-            .contains("Keep answers concise"));
+        assert!(
+            std::fs::read_to_string(&expected_path)
+                .unwrap()
+                .contains("Keep answers concise")
+        );
         assert!(!unexpected_path.exists());
     }
 }

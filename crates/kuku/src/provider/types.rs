@@ -132,7 +132,9 @@ impl ResolvedProvider {
                 .as_ref()
                 .is_some_and(|account| account.channel() == SubscriptionChannel::ChatGpt)
         {
-            return Err("ChatGPT sign-in cannot enforce max_output_tokens. Choose a connection that supports output limits or remove the explicit ceiling.");
+            return Err(
+                "ChatGPT sign-in cannot enforce max_output_tokens. Choose a connection that supports output limits or remove the explicit ceiling.",
+            );
         }
         Ok(())
     }

@@ -5,13 +5,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{Notify, oneshot};
 
 use crate::event::{EventPayload, EventStore};
-use crate::permission::{authorize_action, ActionAuthorization, ToolAuthorization, ToolAuthorizer};
-use crate::tool::builtin::common::{changed_file_target, prepare_file_target, ExecutorObservation};
+use crate::permission::{ActionAuthorization, ToolAuthorization, ToolAuthorizer, authorize_action};
+use crate::tool::builtin::common::{ExecutorObservation, changed_file_target, prepare_file_target};
 use crate::tool::run_js::{
     self, ScriptCall, ScriptExecution, ScriptFuture, ScriptHost, ScriptOperation, WorkspaceActions,
 };

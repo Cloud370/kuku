@@ -8,12 +8,12 @@ use crate::markup::{
     file_source, number_gutter, number_line, render_literal, wrap_bounded, wrap_with_indent,
 };
 use crate::text::{cap, shorten, shorten_middle, single_line};
-use crate::theme::{TranscriptTone, ERROR, MUTED, SUCCESS, WARNING};
+use crate::theme::{ERROR, MUTED, SUCCESS, TranscriptTone, WARNING};
 use crate::transcript::MAX_VISUAL_ROWS;
 
 use super::{
-    tool_operation_color, Row, Tool, ToolDetails, ToolView, MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS,
-    MAX_PREVIEW_BYTES,
+    MAX_CHANGE_ROWS, MAX_INSPECTION_ROWS, MAX_PREVIEW_BYTES, Row, Tool, ToolDetails, ToolView,
+    tool_operation_color,
 };
 
 mod diff;
@@ -298,11 +298,7 @@ impl FileChange {
 
     fn line_number_width(&self, width: usize) -> usize {
         let digits = self.preview.lines().count().to_string().len();
-        if width >= digits + 7 {
-            digits
-        } else {
-            0
-        }
+        if width >= digits + 7 { digits } else { 0 }
     }
 
     pub(super) fn stats(&self) -> String {
@@ -360,11 +356,7 @@ impl FileChange {
 }
 
 fn plural(count: u64, one: &'static str, many: &'static str) -> &'static str {
-    if count == 1 {
-        one
-    } else {
-        many
-    }
+    if count == 1 { one } else { many }
 }
 
 #[derive(Debug, Clone)]

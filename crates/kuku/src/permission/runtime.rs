@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::context::ToolSchema;
 use crate::session::InputSource;
-use crate::Result;
 
-use super::{decide_tool_call, GateDecisionKind, GateSource, PermissionPolicy};
+use super::{GateDecisionKind, GateSource, PermissionPolicy, decide_tool_call};
 
 /// Final action and trusted provenance presented to an embedding host.
 #[derive(Debug, Clone)]

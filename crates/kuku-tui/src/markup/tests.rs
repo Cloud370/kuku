@@ -62,15 +62,18 @@ fn gfm_table_keeps_unicode_inline_code_and_escaped_pipes_in_aligned_columns() {
     let body: Vec<_> = plain.iter().filter(|line| line.starts_with('│')).collect();
     assert_eq!(3, body.len());
     assert_eq!(vec![0, 7, 16, 23], column_edges(body[0]));
-    assert!(body
-        .iter()
-        .all(|line| column_edges(line) == column_edges(body[0])));
+    assert!(
+        body.iter()
+            .all(|line| column_edges(line) == column_edges(body[0]))
+    );
     assert_eq!("│ 中文 │  a|b   │    7 │", body[1]);
     assert_eq!("│ 一   │  x|y   │  100 │", body[2]);
-    assert!(lines
-        .iter()
-        .flat_map(|line| &line.spans)
-        .any(|span| { span.content == "a|b" && span.style.fg == Some(ACCENT) }));
+    assert!(
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| { span.content == "a|b" && span.style.fg == Some(ACCENT) })
+    );
     assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
         span.content == "项目" && span.style.add_modifier.contains(Modifier::BOLD)
     }));
@@ -150,9 +153,11 @@ fn arriving_delimiters_reflow_partial_markdown_without_losing_text() {
     let before_fence = rows(&render_markdown(&source, width, LIMIT));
     assert!(before_fence.iter().any(|line| line.starts_with('┌')));
     assert!(before_fence.iter().any(|line| line.contains("中文 │ a|b")));
-    assert!(before_fence
-        .iter()
-        .any(|line| line.starts_with("│ let 值 ")));
+    assert!(
+        before_fence
+            .iter()
+            .any(|line| line.starts_with("│ let 值 "))
+    );
     assert!(before_fence.iter().any(|line| line.starts_with('╰')));
 
     source.push_str(" = 1;\n```\n\nFinished.");
@@ -179,9 +184,11 @@ fn pipe_text_and_fenced_code_keep_their_markdown_meaning() {
     let fenced = format!("```text\n{RICH_TABLE}\n```\n\nOrdinary\nparagraph.");
     let plain = rows(&render_markdown(&fenced, 60, LIMIT));
     assert!(plain[0].starts_with("╭─ text "));
-    assert!(plain
-        .iter()
-        .any(|line| line.starts_with("│ | 项目 | Result | Cost | ")));
+    assert!(
+        plain
+            .iter()
+            .any(|line| line.starts_with("│ | 项目 | Result | Cost | "))
+    );
     assert!(plain.iter().any(|line| line == "Ordinary paragraph."));
     assert!(plain.iter().all(|line| !line.starts_with('┌')));
 }
@@ -249,10 +256,11 @@ fn fence_labels_and_highlights_lexical_scopes_across_lines() {
     assert!(plain[6].trim_matches('│').trim().is_empty());
     assert!(plain[7].starts_with('╰'));
     assert!(lines[..8].iter().all(|line| line.width() == 48));
-    assert!(lines[..8].iter().all(|line| line
-        .spans
-        .iter()
-        .all(|span| { line.style.patch(span.style).bg == Some(CODE_BACKGROUND) })));
+    assert!(lines[..8].iter().all(|line| {
+        line.spans
+            .iter()
+            .all(|span| line.style.patch(span.style).bg == Some(CODE_BACKGROUND))
+    }));
     for (row, part, color) in [
         (2, "let", CODE_KEYWORD),
         (2, "let 中文", CODE_STRING),
@@ -300,15 +308,19 @@ fn unknown_fences_and_long_lines_keep_plain_code_and_independent_scopes() {
     let lines = render_markdown(&source, 80, LIMIT);
     assert!(lines[0].to_string().starts_with("╭─ unknown_lang "));
     for word in ["let unknown", "let after_long"] {
-        assert!(lines
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| { span.content.contains(word) && span.style.fg == Some(CODE_TEXT) })
+        );
+    }
+    assert!(
+        lines
             .iter()
             .flat_map(|line| &line.spans)
-            .any(|span| { span.content.contains(word) && span.style.fg == Some(CODE_TEXT) }));
-    }
-    assert!(lines
-        .iter()
-        .flat_map(|line| &line.spans)
-        .any(|span| { span.content == "return" && span.style.fg == Some(CODE_KEYWORD) }));
+            .any(|span| { span.content == "return" && span.style.fg == Some(CODE_KEYWORD) })
+    );
 }
 
 #[test]
@@ -337,10 +349,12 @@ fn headings_use_spacing_and_typography() {
         ["First part", "", "中文 config", "", "Body", ""],
         rows(&lines).as_slice()
     );
-    assert!(lines[0]
-        .spans
-        .iter()
-        .all(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .all(|span| span.style.add_modifier.contains(Modifier::BOLD))
+    );
     assert!(lines[2].spans.iter().all(|span| {
         span.style.add_modifier.contains(Modifier::BOLD)
             && !span.style.add_modifier.contains(Modifier::ITALIC)
@@ -364,10 +378,12 @@ fn emphasis_keeps_the_transcript_background_in_wrapped_quotes() {
         assert!(emphasized.contains("中文强调"));
         assert!(emphasized.contains("more"));
         if crossterm::style::Colored::ansi_color_disabled_memoized() {
-            assert!(spans
-                .iter()
-                .filter(|span| span.style.fg == Some(MARKDOWN_EMPHASIS))
-                .all(|span| span.style.add_modifier.contains(Modifier::UNDERLINED)));
+            assert!(
+                spans
+                    .iter()
+                    .filter(|span| span.style.fg == Some(MARKDOWN_EMPHASIS))
+                    .all(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
+            );
         }
         assert!(spans.iter().all(|span| {
             span.style.bg.is_none()
@@ -530,9 +546,11 @@ fn ordinary_code_and_a_second_document_layer_keep_their_literal_content() {
             .count()
     );
     assert!(plain.iter().any(|line| line.contains("│ ```markdown ")));
-    assert!(plain
-        .iter()
-        .any(|line| line.contains("│ # Source, not a heading ")));
+    assert!(
+        plain
+            .iter()
+            .any(|line| line.contains("│ # Source, not a heading "))
+    );
     assert!(plain.iter().any(|line| line == "Rendered heading"));
     assert!(plain.iter().any(|line| line.contains("│ # Inner source ")));
 }
@@ -544,10 +562,12 @@ fn nested_document_uses_the_reply_highlighting_and_row_budgets() {
         "let before = 1;\n".repeat(128)
     );
     let lines = render_markdown(&source, 40, 160);
-    assert!(lines
-        .iter()
-        .flat_map(|line| &line.spans)
-        .any(|span| { span.content == "let" && span.style.fg == Some(CODE_KEYWORD) }));
+    assert!(
+        lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| { span.content == "let" && span.style.fg == Some(CODE_KEYWORD) })
+    );
     assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
         span.content.contains("let inside = 7;") && span.style.fg == Some(CODE_TEXT)
     }));

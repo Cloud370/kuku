@@ -71,7 +71,7 @@ fn event_conversation(event: &StoredEvent) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{active_turn, conversation_events, TurnState};
+    use super::{TurnState, active_turn, conversation_events};
     use crate::conversation::address::ConversationAddress;
     use crate::event::{EventPayload, StoredEvent};
 

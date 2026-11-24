@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::execution::{CommandTermination, OutputReference, WorkspaceActionDetails};
 use crate::tool::builtin::run_command::output::validate_output_id;
@@ -146,9 +146,9 @@ fn output_reference(value: &Value) -> Option<OutputReference> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
-    use super::{append_recovery_evidence, MAX_RECOVERY_ROW_BYTES};
+    use super::{MAX_RECOVERY_ROW_BYTES, append_recovery_evidence};
     use crate::{
         WorkspaceScriptActionFacts, WorkspaceScriptActionStatus, WorkspaceScriptOperation,
     };

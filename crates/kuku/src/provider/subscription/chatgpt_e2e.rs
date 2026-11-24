@@ -8,22 +8,22 @@ use boring2::pkey::PKey;
 use boring2::rsa::Rsa;
 use boring2::ssl::{Ssl, SslAcceptor, SslMethod};
 use boring2::x509::extension::{BasicConstraints, SubjectAlternativeName};
-use boring2::x509::{X509Name, X509};
+use boring2::x509::{X509, X509Name};
 use jsonwebtoken::encode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_boring2::SslStream;
 use wreq::tls::CertStore;
 
 use crate::adapter::{
-    discover_models, sign_out_subscription, trial_model, ModelTrial, SubscriptionStatus,
+    ModelTrial, SubscriptionStatus, discover_models, sign_out_subscription, trial_model,
 };
 use crate::config::{ApiKey, ProviderConfig, ProviderFormat, ProviderOptions, ProviderProxy};
 use crate::provider::http_client::TEST_TRUST;
 
 use super::{
-    now, test_signer, SubscriptionChannel, SubscriptionLogin, SubscriptionLoginProgress, ISSUER,
+    ISSUER, SubscriptionChannel, SubscriptionLogin, SubscriptionLoginProgress, now, test_signer,
 };
 
 #[tokio::test]
@@ -319,9 +319,11 @@ impl FixtureProxy {
         Vec<u8>,
     ) {
         let (mut socket, _) = self.listener.accept().await.unwrap();
-        assert!(request_header(&mut socket)
-            .await
-            .starts_with(&format!("CONNECT {host}:443 ")));
+        assert!(
+            request_header(&mut socket)
+                .await
+                .starts_with(&format!("CONNECT {host}:443 "))
+        );
         socket
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
@@ -366,7 +368,10 @@ async fn reply_with_status(
     content_type: &str,
     body: &str,
 ) {
-    let header = format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
     stream.write_all(header.as_bytes()).await.unwrap();
     stream.write_all(body.as_bytes()).await.unwrap();
     stream.shutdown().await.unwrap();

@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use kuku_client::{Action, Error, HistoryDestinations, HistoryEntry, HistoryKind, HistoryPage};
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use crate::app::{Address, App, Modal};
 use crate::jobs::{Job, Selection, Update};
@@ -475,9 +475,11 @@ fn a_bounded_message_window_keeps_the_selection_and_can_reach_the_oldest_page() 
     earliest(&mut app);
     assert_eq!(1, selected(&app));
     assert!(app.effects.is_empty());
-    assert!(picker(&app)
-        .header
-        .contains("reopen rewind for recent messages"));
+    assert!(
+        picker(&app)
+            .header
+            .contains("reopen rewind for recent messages")
+    );
     press(&mut app, KeyCode::Enter);
     finish_source(&mut app, "message 1");
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
@@ -549,11 +551,13 @@ fn an_oversized_history_item_uses_the_service_error_without_silently_truncating_
     );
     assert_eq!(vec![100, 101, 102], ids(&app));
     assert!(!picker(&app).loading);
-    assert!(picker(&app)
-        .problem
-        .as_ref()
-        .unwrap()
-        .contains("history_entry_too_large"));
+    assert!(
+        picker(&app)
+            .problem
+            .as_ref()
+            .unwrap()
+            .contains("history_entry_too_large")
+    );
     assert!(picker(&app).problem.as_ref().unwrap().contains("retries"));
     assert!(app.pending.is_empty());
 }
@@ -591,11 +595,13 @@ fn nonadvancing_pages_keep_the_cursor_available_for_explicit_retry() {
     let first = request(&mut app);
     reply(&mut app, first, Ok(page(&[99], Some(100))));
     assert_eq!(vec![100, 101, 102], ids(&app));
-    assert!(picker(&app)
-        .problem
-        .as_ref()
-        .unwrap()
-        .contains("did not advance"));
+    assert!(
+        picker(&app)
+            .problem
+            .as_ref()
+            .unwrap()
+            .contains("did not advance")
+    );
     press(&mut app, KeyCode::Up);
     assert_eq!(100, request(&mut app).2);
 }
@@ -617,10 +623,11 @@ fn escape_preserves_the_draft_and_closed_or_reopened_picker_ignores_old_pages() 
     assert_eq!(draft, app.pane().draft.text());
     assert_eq!(cursor, app.pane().draft.cursor());
     assert!(app.pending.is_empty());
-    assert!(!app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::Save(_) | Job::Send(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Save(_) | Job::Send(_)))
+    );
     app.effects.clear();
     app.open_rewind_picker();
     top(&mut app);
@@ -775,9 +782,11 @@ fn rewind_confirmation_keeps_file_effects_visible_while_scrolling_the_message() 
     assert!(restoring.contains("write_file and edit_file"));
     assert!(restoring.contains("Script and shell changes"));
     assert!(restoring.contains("Enter Edit and restore files"));
-    assert!(!restoring
-        .lines()
-        .any(|line| line.trim_end().ends_with("original message line 1")));
+    assert!(
+        !restoring
+            .lines()
+            .any(|line| line.trim_end().ends_with("original message line 1"))
+    );
     assert!(app.pending.is_empty());
 }
 
@@ -809,11 +818,13 @@ fn source_escape_and_reopened_retry_preserve_drafts_and_ignore_old_results() {
     );
     assert!(!picker(&app).loading);
     assert_eq!(102, selected(&app));
-    assert!(picker(&app)
-        .problem
-        .as_ref()
-        .unwrap()
-        .contains("Enter retries"));
+    assert!(
+        picker(&app)
+            .problem
+            .as_ref()
+            .unwrap()
+            .contains("Enter retries")
+    );
     press(&mut app, KeyCode::Enter);
     let retry = source_request(&mut app);
     assert_ne!(current.1, retry.1);

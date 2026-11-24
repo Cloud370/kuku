@@ -4,7 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{replace_tabs, shorten, terminal_text};
-use crate::theme::{emphasis, CardFrame, MODEL, MUTED};
+use crate::theme::{CardFrame, MODEL, MUTED, emphasis};
 
 use super::{AnchorLine, DetailKey, Key, Row, Transcript};
 

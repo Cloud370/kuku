@@ -4,7 +4,7 @@ use kuku_client::{
     Acknowledgement, HistoryPage, Observation, Receipt, RetryFailureKind, RetryPhase, RetrySource,
     RetryStopReason, Snapshot, Timing,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{Activity, App, HistoryEntry, InputStatus, ServiceStatus, SubmissionStatus};
 use crate::app::Address;
@@ -126,14 +126,18 @@ fn only_observed_reasoning_sets_thinking_and_visible_text_sets_streaming() {
     think(&mut app, 9, json!({"type":"tool_arguments"}));
     assert_eq!(Activity::ToolArguments, app.pane().activity());
     let screen = app.pane_mut().transcript.project(80, 12);
-    assert!(screen
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("First tokens")));
-    assert!(!screen
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("legacy reasoning marker")));
+    assert!(
+        screen
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens"))
+    );
+    assert!(
+        !screen
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("legacy reasoning marker"))
+    );
     committed(
         &mut app,
         10,
@@ -284,13 +288,14 @@ fn retry_snapshot_and_replay_keep_typed_progress_until_output_or_terminal_failur
             .retry_metadata()
             .and_then(|item| item.stop_reason)
     );
-    assert!(app
-        .pane_mut()
-        .transcript
-        .project(80, 10)
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("First tokens")));
+    assert!(
+        app.pane_mut()
+            .transcript
+            .project(80, 10)
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens"))
+    );
     committed(
         &mut app,
         12,
@@ -306,13 +311,14 @@ fn retry_snapshot_and_replay_keep_typed_progress_until_output_or_terminal_failur
             .retry_metadata()
             .and_then(|item| item.stop_reason)
     );
-    assert!(app
-        .pane_mut()
-        .transcript
-        .project(80, 10)
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("First tokens")));
+    assert!(
+        app.pane_mut()
+            .transcript
+            .project(80, 10)
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens"))
+    );
     committed(
         &mut app,
         13,
@@ -325,13 +331,14 @@ fn retry_snapshot_and_replay_keep_typed_progress_until_output_or_terminal_failur
             .retry_metadata()
             .and_then(|item| item.stop_reason)
     );
-    assert!(app
-        .pane_mut()
-        .transcript
-        .project(80, 10)
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("First tokens")));
+    assert!(
+        app.pane_mut()
+            .transcript
+            .project(80, 10)
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens"))
+    );
 
     let stopped_retry = json!({
         "source":"runtime.model_retry","phase":"stopped","attempt":2,
@@ -355,13 +362,14 @@ fn retry_snapshot_and_replay_keep_typed_progress_until_output_or_terminal_failur
             .retry_metadata()
             .and_then(|item| item.stop_reason)
     );
-    assert!(app
-        .pane_mut()
-        .transcript
-        .project(80, 10)
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("First tokens")));
+    assert!(
+        app.pane_mut()
+            .transcript
+            .project(80, 10)
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens"))
+    );
 
     let mut reattached = connected();
     reattached.select(reattached.active.clone(), true, String::new());

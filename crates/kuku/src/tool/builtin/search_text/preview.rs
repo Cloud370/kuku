@@ -1,8 +1,8 @@
 use std::io;
 use std::path::Path;
 
-use super::{trim_search_line, FileSearch, SearchMatch};
-use crate::tool::builtin::common::{is_cancellation, StableFile, WorkspaceFiles};
+use super::{FileSearch, SearchMatch, trim_search_line};
+use crate::tool::builtin::common::{StableFile, WorkspaceFiles, is_cancellation};
 
 struct ContextRow {
     before_match: usize,

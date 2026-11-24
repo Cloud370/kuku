@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-use super::manifest::{parse_manifest, PackageManifest};
+use super::manifest::{PackageManifest, parse_manifest};
 
 /// Package installation tier: user-global or per-project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,12 +136,14 @@ command = "hooks/a.sh"
 
         let pkgs = discover_packages(&home, &workspace).unwrap();
         assert_eq!(pkgs.len(), 2);
-        assert!(pkgs
-            .iter()
-            .any(|p| p.name == "user-pkg" && p.tier == Tier::User));
-        assert!(pkgs
-            .iter()
-            .any(|p| p.name == "proj-pkg" && p.tier == Tier::Project));
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "user-pkg" && p.tier == Tier::User)
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "proj-pkg" && p.tier == Tier::Project)
+        );
     }
 
     #[test]

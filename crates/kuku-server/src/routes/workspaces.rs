@@ -2,15 +2,15 @@ use std::collections::BTreeSet;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Params;
 use super::WorkspaceQuery;
-use crate::error_mapping::{ApiError, Result};
 use crate::AppState;
+use crate::error_mapping::{ApiError, Result};
 
 const COMPLETION_LIMIT: usize = 40;
 

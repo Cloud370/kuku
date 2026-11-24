@@ -1,10 +1,10 @@
-use super::{fixture, options, settled, tool, EventPayload, MockServer, Session};
+use super::{EventPayload, MockServer, Session, fixture, options, settled, tool};
 use kuku::event::ModelStopReason;
 use kuku::{
     AdapterFuture, AgentConfig, AgentStatus, Input, ModelAdapter, ModelEvent, ModelRequest,
     ModelStream,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -157,9 +157,11 @@ async fn malformed_tool_batch_reports_its_cause_without_dispatching_calls() {
     assert!(events.iter().any(|event| matches!(&event.payload,
         EventPayload::Unknown(value) if value["kind"] == "runtime.model_retry"
             && value["message"] == expected && value["will_retry"] == false)));
-    assert!(!events
-        .iter()
-        .any(|event| matches!(&event.payload, EventPayload::ToolCall { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(&event.payload, EventPayload::ToolCall { .. }))
+    );
     model.assert_hits_async(1).await;
     session.close().await.unwrap();
 }

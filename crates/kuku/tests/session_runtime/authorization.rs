@@ -67,9 +67,11 @@ async fn exact_authorization_survives_close_and_rejects_stale_replies() {
         waiting.last_error
     );
     let request = waiting.permission.unwrap();
-    assert!(session
-        .reply_permission("wrong", "main", "unrelated", true)
-        .is_err());
+    assert!(
+        session
+            .reply_permission("wrong", "main", "unrelated", true)
+            .is_err()
+    );
     let mut reopen = original;
     reopen.session_id = Some(session.id().into());
     session.close().await.unwrap();
@@ -83,9 +85,11 @@ async fn exact_authorization_survives_close_and_rejects_stale_replies() {
             .reply_permission_receipt("reply", "main", &request.id, true)
             .unwrap()
     );
-    assert!(session
-        .reply_permission_receipt("reply", "main", &request.id, false)
-        .is_err());
+    assert!(
+        session
+            .reply_permission_receipt("reply", "main", &request.id, false)
+            .is_err()
+    );
     assert_eq!(
         receipt,
         session
@@ -100,9 +104,11 @@ async fn exact_authorization_survives_close_and_rejects_stale_replies() {
             if tool_call_id == "command" && status == "ok" && facts["exit_code"] == 0
             && facts["output_preview"].as_str().is_some_and(|s| s.trim() == "authorized")
     )));
-    assert!(session
-        .reply_permission("stale", "main", &request.id, true)
-        .is_err());
+    assert!(
+        session
+            .reply_permission("stale", "main", &request.id, true)
+            .is_err()
+    );
     session.close().await.unwrap();
     first.assert_hits_async(1).await;
     last.assert_hits_async(1).await;
@@ -165,9 +171,11 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
             .reply_question_receipt("answer", "main", &question.id, "blue-answer")
             .unwrap()
     );
-    assert!(session
-        .reply_question_receipt("answer", "main", &question.id, "different-answer")
-        .is_err());
+    assert!(
+        session
+            .reply_question_receipt("answer", "main", &question.id, "different-answer")
+            .is_err()
+    );
     assert_eq!(
         receipt,
         session
@@ -193,9 +201,11 @@ async fn question_reply_waits_in_inbox_until_prior_authorization_is_settled() {
     assert_eq!(Some("answer accepted"), done.last_output.as_deref());
     assert_eq!(Some(task), done.admitted_task.as_deref());
     assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == "blue-answer")));
-    assert!(session
-        .reply_question("stale", "main", &question.id, "ignored")
-        .is_err());
+    assert!(
+        session
+            .reply_question("stale", "main", &question.id, "ignored")
+            .is_err()
+    );
     session.close().await.unwrap();
     first.assert_hits_async(1).await;
     last.assert_hits_async(1).await;
@@ -305,12 +315,16 @@ async fn cancelling_a_durable_wait_expires_both_question_and_authorization() {
     let permission = waiting.permission.unwrap();
     session.cancel("main").await.unwrap();
     assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
-    assert!(session
-        .reply_question("late-answer", "main", &question.id, "too late")
-        .is_err());
-    assert!(session
-        .reply_permission("late-allow", "main", &permission.id, true)
-        .is_err());
+    assert!(
+        session
+            .reply_question("late-answer", "main", &question.id, "too late")
+            .is_err()
+    );
+    assert!(
+        session
+            .reply_permission("late-allow", "main", &permission.id, true)
+            .is_err()
+    );
     assert!(session.events(0, 256).unwrap().iter().any(|event| matches!(&event.payload, EventPayload::ToolResult { tool_call_id, status, .. } if tool_call_id == "command" && status == "cancelled")));
     reopen.session_id = Some(session.id().into());
     session.close().await.unwrap();

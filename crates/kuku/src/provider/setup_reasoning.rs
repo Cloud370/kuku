@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::config::ProviderConfig;
 use crate::event::ModelStopReason;
 
-use super::trial::{run_trial, TrialProblem};
+use super::trial::{TrialProblem, run_trial};
 use super::{ModelTrial, TrialResult};
 
 const DISCOVERY_VALUE: &str = "__kuku_unknown_effort__";
@@ -74,7 +74,7 @@ pub(super) async fn check_reasoning(
         ReasoningCheck::Discover => DISCOVERY_VALUE,
         ReasoningCheck::Level(level) if valid_level(level) => level,
         ReasoningCheck::Level(_) => {
-            return Err(crate::Error::InvalidArgument("Invalid thinking value.".into()).into())
+            return Err(crate::Error::InvalidArgument("Invalid thinking value.".into()).into());
         }
     };
     let result = run_trial(

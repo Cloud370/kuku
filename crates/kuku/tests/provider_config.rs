@@ -1,10 +1,10 @@
 mod config {
     pub use kuku::config::{
-        resolve_request_url, ApiKey, Config, CustomServiceTier, DiscoveryConfig, HandoffConfig,
-        LogsConfig, MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry,
-        ModelThinkingTest, PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig,
-        ProviderFormat, ProviderOptions, ProviderProfile, RequestFields, RequestedOutput,
-        ResolvedThinking, SubscriptionChannel, ThinkLevel, TierConfig, UpdateConfig,
+        ApiKey, Config, CustomServiceTier, DiscoveryConfig, HandoffConfig, LogsConfig,
+        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
+        PluginConfig, ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat,
+        ProviderOptions, ProviderProfile, RequestFields, RequestedOutput, ResolvedThinking,
+        SubscriptionChannel, ThinkLevel, TierConfig, UpdateConfig, resolve_request_url,
     };
 }
 
@@ -60,10 +60,10 @@ mod common;
 use std::collections::BTreeMap;
 
 use config::{ApiKey, Config, ProviderConfig, ProviderFormat, ThinkLevel, TierConfig};
+use kuku::Error;
 use kuku::adapter::inspect_model;
 use kuku::session::AgentConfig;
-use kuku::Error;
-use provider::config::{resolve_config, ResolveConfigInput};
+use provider::config::{ResolveConfigInput, resolve_config};
 use provider::types::{Provider, ProviderKind};
 
 fn default_config() -> Config {
@@ -231,11 +231,13 @@ fn unsupported_portable_thinking_preserves_the_request_without_a_native_value() 
             resolved.settings.requested_reasoning_effort.as_deref()
         );
         assert_eq!(None, resolved.settings.reasoning_effort);
-        assert!(!resolved
-            .capabilities
-            .reasoning_efforts
-            .iter()
-            .any(|effort| effort == native));
+        assert!(
+            !resolved
+                .capabilities
+                .reasoning_efforts
+                .iter()
+                .any(|effort| effort == native)
+        );
 
         let error = inspect_model(
             &cfg,
@@ -647,11 +649,13 @@ fn deepseek_tier_mapping_is_separate_from_explicit_native_settings() {
             ..Default::default()
         },
     ] {
-        assert!(resolve_config(ResolveConfigInput {
-            config: Some(cfg.clone()),
-            ..input
-        })
-        .is_err());
+        assert!(
+            resolve_config(ResolveConfigInput {
+                config: Some(cfg.clone()),
+                ..input
+            })
+            .is_err()
+        );
     }
 }
 

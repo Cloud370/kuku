@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 
 use kuku::config::{ApiKey, ProviderAuth, ProviderProfile};
 use kuku::event::{EventPayload, EventStore, StoredEvent};

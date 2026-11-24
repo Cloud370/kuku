@@ -198,7 +198,9 @@ pub(crate) fn require_version(
         if !matches {
             return Err(ToolResultEnvelope::error_with_reason(
                 format!("failed: expected_version does not match {relative}"),
-                format!("expected_version does not match the current file. Before modifying it, read {relative} again."),
+                format!(
+                    "expected_version does not match the current file. Before modifying it, read {relative} again."
+                ),
                 ToolErrorReason::SnapshotStale,
             ));
         }

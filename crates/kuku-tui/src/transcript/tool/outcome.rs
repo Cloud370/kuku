@@ -4,13 +4,13 @@ use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
 
 use crate::text::cap;
-use crate::theme::{TranscriptTone, ACCENT, ERROR, MUTED, SUCCESS, WARNING};
+use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS, TranscriptTone, WARNING};
 
 use super::command::CommandPreview;
 use super::file_change::FileChange;
 use super::script::ScriptPreview;
 use super::session::Observation;
-use super::{capped, Row, MAX_DETAIL_BYTES, MAX_LABEL_BYTES};
+use super::{MAX_DETAIL_BYTES, MAX_LABEL_BYTES, Row, capped};
 
 #[derive(Debug, Clone, Default)]
 pub(super) enum State {

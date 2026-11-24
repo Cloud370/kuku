@@ -1,15 +1,15 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::markup::{render_literal, wrap};
 use crate::menu::{Choice, ChoiceKind, Picker};
 use crate::model_default::SAVE_SCOPE;
 use crate::text::shorten;
-use crate::theme::{focused_row, panel, ERROR, MUTED};
+use crate::theme::{ERROR, MUTED, focused_row, panel};
 
 use super::picker_line;
 

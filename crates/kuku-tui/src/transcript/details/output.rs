@@ -5,7 +5,7 @@ use crate::theme::{ERROR, MUTED};
 
 use super::{DetailKey, DetailKind, Details, Key, Record, Row, Transcript, VisibleDetail};
 use crate::transcript::ToolView;
-use crate::transcript::{render_rows, Anchor, AnchorLine, Layout, Reading};
+use crate::transcript::{Anchor, AnchorLine, Layout, Reading, render_rows};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::transcript) enum OutputTarget {

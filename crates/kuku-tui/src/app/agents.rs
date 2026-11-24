@@ -363,7 +363,7 @@ mod tests {
     use std::path::PathBuf;
 
     use kuku_client::{AgentProgress, HistoryPage, Observation, Snapshot};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{Activity, AgentActivity, PREVIEW_BYTES};
     use crate::app::{Address, App};

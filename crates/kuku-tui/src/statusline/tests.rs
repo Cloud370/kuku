@@ -1,21 +1,21 @@
-use std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
 use kuku_client::{
     Acknowledgement, Error, HistoryPage, InputStatus, Receipt, Snapshot, Timing, UsageTotals,
 };
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use serde_json::{json, Value};
+use ratatui::backend::TestBackend;
+use serde_json::{Value, json};
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    compact_token_count, render_segments, Field, Priority, Segment, StatusLine, GROUP_GAP,
-    SEPARATOR,
+    Field, GROUP_GAP, Priority, SEPARATOR, Segment, StatusLine, compact_token_count,
+    render_segments,
 };
 use crate::app::{Address, App};
 use crate::config::StatusLineSettings;
 use crate::jobs::{Job, Update};
-use crate::theme::{horizontal_gutter, ERROR, MODEL, WARNING};
+use crate::theme::{ERROR, MODEL, WARNING, horizontal_gutter};
 use crate::ui;
 
 fn connected_app() -> App {
@@ -439,10 +439,12 @@ fn default_model_field_keeps_the_resolved_identifier_first_at_every_width() {
     }
     let configured = StatusLine::parse("model,connection").unwrap();
     let rows = screen(&mut app, &configured, 140, 20);
-    assert!(rows[19]
-        .trim()
-        .strip_prefix("openai/gpt-6-luna xhigh ultrafast (configured-model-gateway)")
-        .is_some_and(|remaining| remaining.trim_start().starts_with('·')));
+    assert!(
+        rows[19]
+            .trim()
+            .strip_prefix("openai/gpt-6-luna xhigh ultrafast (configured-model-gateway)")
+            .is_some_and(|remaining| remaining.trim_start().starts_with('·'))
+    );
     let lines = layout.render_rows(&app, 80, 20, app.pane().activity());
     assert_eq!(Some(MODEL), lines[0].spans[0].style.fg);
 
@@ -511,7 +513,10 @@ fn selected_agent_metrics_change_with_the_address_and_custom_order() {
         .map(|row| row.trim())
         .collect::<Vec<_>>()
         .join(" · ");
-    assert_eq!("Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace", fields);
+    assert_eq!(
+        "Agent main · 18.4 TPS · Context 89% used · 210K out · Cache hit 75% · 129M in · /workspace",
+        fields
+    );
     assert!(rows[16].contains("Enter steer"));
 
     let assert_wide_footer = |app: &mut App, agent, expected| {

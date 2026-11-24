@@ -7,9 +7,9 @@ use crate::query::{PermissionChoice, UiEvent};
 use crate::{Error, Result};
 
 use super::boundary::TurnWork;
-use super::record::{timestamp, Record, State};
+use super::record::{Record, State, timestamp};
 use super::usage::UnfinishedSummary;
-use super::{ensure_open, Activation, AgentStatus, InputSource, Session, Worker};
+use super::{Activation, AgentStatus, InputSource, Session, Worker, ensure_open};
 
 enum DriveFailure {
     Execution(Error),
@@ -619,7 +619,7 @@ mod tests {
     use crate::{
         AdapterFuture, AgentConfig, Error, ModelAdapter, ModelRequest, ModelStream, Session,
     };
-    use tokio::sync::{watch, Notify};
+    use tokio::sync::{Notify, watch};
 
     use super::super::{AgentStatus, Input, SessionOptions, Worker};
     use super::Record;
@@ -745,14 +745,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pending["status"], "pending");
-        assert!(session
-            .wait_for_delivery("unknown", "main", first.event_id, instant)
-            .await
-            .is_err());
-        assert!(session
-            .wait_for_delivery("reviewer", "wrong-recipient", first.event_id, instant)
-            .await
-            .is_err());
+        assert!(
+            session
+                .wait_for_delivery("unknown", "main", first.event_id, instant)
+                .await
+                .is_err()
+        );
+        assert!(
+            session
+                .wait_for_delivery("reviewer", "wrong-recipient", first.event_id, instant)
+                .await
+                .is_err()
+        );
         let admit = |ids: &[&str]| {
             let ids = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
             session
@@ -862,9 +866,11 @@ mod tests {
     async fn wait_for_agent_reports_missing_or_empty_worker_completion() {
         let (_directory, session, _) = running_session().await;
         let missing = session.wait_for_agent("main").await.unwrap_err();
-        assert!(missing
-            .to_string()
-            .contains("running agent has no active worker"));
+        assert!(
+            missing
+                .to_string()
+                .contains("running agent has no active worker")
+        );
         session.close().await.unwrap();
 
         let (_directory, session, epoch) = running_session().await;
@@ -883,9 +889,11 @@ mod tests {
         );
 
         let empty = session.wait_for_agent("main").await.unwrap_err();
-        assert!(empty
-            .to_string()
-            .contains("agent worker ended without publishing a completion result"));
+        assert!(
+            empty
+                .to_string()
+                .contains("agent worker ended without publishing a completion result")
+        );
         session.close().await.unwrap();
     }
 
@@ -1064,15 +1072,19 @@ mod tests {
             .await
             .expect("waiter did not return promptly");
         let error = waiter.unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("injected event journal write failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected event journal write failure")
+        );
         assert_eq!(AgentStatus::Running, session.agent("main").unwrap().status);
 
         let close_error = session.close().await.unwrap_err();
-        assert!(close_error
-            .to_string()
-            .contains("injected event journal write failure"));
+        assert!(
+            close_error
+                .to_string()
+                .contains("injected event journal write failure")
+        );
         assert_eq!(AgentStatus::Running, session.agent("main").unwrap().status);
         let events = session.events(0, 256).unwrap();
         assert!(!events.iter().any(|event| matches!(

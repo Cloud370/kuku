@@ -7,17 +7,17 @@ use kuku::adapter::{
 };
 use kuku::config::{ProviderProxy, SubscriptionChannel};
 use ratatui::{
-    layout::{Position, Rect},
     Frame,
+    layout::{Position, Rect},
 };
 use tokio::task::JoinHandle;
 
 use crate::editor::Editor;
-use crate::terminal::{send_to_terminal_clipboard, AuthorizationLink};
+use crate::terminal::{AuthorizationLink, send_to_terminal_clipboard};
 use crate::theme::{ACCENT, MUTED, WARNING};
 
 use super::super::config::Settings;
-use super::super::state::{edit_field, SetupState, SetupStep};
+use super::super::state::{SetupState, SetupStep, edit_field};
 use super::super::ui::{field, line};
 use super::super::{ConnectionChoice, Finish};
 

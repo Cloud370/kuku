@@ -276,7 +276,7 @@ fn matching_tool_mut<'a>(
 mod tests {
     use serde_json::json;
 
-    use super::{reduce_lifecycle, OpenToolKind};
+    use super::{OpenToolKind, reduce_lifecycle};
     use crate::event::{EventPayload, StoredEvent};
 
     fn event(id: u64, payload: EventPayload) -> StoredEvent {
@@ -555,13 +555,17 @@ mod tests {
             tool_result(5, 1, "shared"),
         ]);
 
-        assert!(state
-            .pending_permissions
-            .iter()
-            .any(|pending| pending.tool_call.id == "explore-only"));
-        assert!(!state
-            .pending_permissions
-            .iter()
-            .any(|pending| pending.tool_call.id == "shared"));
+        assert!(
+            state
+                .pending_permissions
+                .iter()
+                .any(|pending| pending.tool_call.id == "explore-only")
+        );
+        assert!(
+            !state
+                .pending_permissions
+                .iter()
+                .any(|pending| pending.tool_call.id == "shared")
+        );
     }
 }

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::index::FileFact;
 use super::{
-    existing_path, read_index, read_source, EventStore, ReadSource, SeekFrom, StoredEvent,
+    EventStore, ReadSource, SeekFrom, StoredEvent, existing_path, read_index, read_source,
 };
 use crate::{Error, Result};
 

@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use kuku_client::local::LocalError;
 use kuku_client::Error;
+use kuku_client::local::LocalError;
 
-use super::{push, Jobs, Message, Update};
+use super::{Jobs, Message, Update, push};
 
 const BUILD_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 

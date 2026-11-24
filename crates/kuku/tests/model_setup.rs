@@ -1,8 +1,8 @@
 mod common;
 
-use httpmock::prelude::{MockServer, GET, POST};
+use httpmock::prelude::{GET, MockServer, POST};
 use kuku::adapter::{discover_models, inspect_model};
-use kuku::config::{parse_config_text, MediaAdapterSupport, RequestedOutput};
+use kuku::config::{MediaAdapterSupport, RequestedOutput, parse_config_text};
 use kuku::{AgentConfig, AgentStatus, CapabilitySource, Input, Session, SessionOptions};
 use serde_json::json;
 
@@ -101,14 +101,16 @@ think = "provider-default"
     assert_eq!(None, selection.capabilities.reasoning_source);
     assert_eq!(None, selection.capabilities.input_modalities);
     assert_eq!(None, selection.settings.reasoning_effort);
-    assert!(inspect_model(
-        &config,
-        &AgentConfig {
-            reasoning_effort: Some("low".into()),
-            ..AgentConfig::default()
-        }
-    )
-    .is_err());
+    assert!(
+        inspect_model(
+            &config,
+            &AgentConfig {
+                reasoning_effort: Some("low".into()),
+                ..AgentConfig::default()
+            }
+        )
+        .is_err()
+    );
 
     raw.provider
         .get_mut("gateway")

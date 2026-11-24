@@ -16,7 +16,7 @@ mod message_rewind;
 
 #[cfg(test)]
 pub(crate) use apply::apply_message_rewind_files;
-pub(crate) use apply::{apply_verified_file_rewind, FileRevertTransaction};
+pub(crate) use apply::{FileRevertTransaction, apply_verified_file_rewind};
 pub(crate) use message_rewind::event_owner_with;
 pub use message_rewind::event_owners;
 use message_rewind::{event_owner, event_turn_owners};

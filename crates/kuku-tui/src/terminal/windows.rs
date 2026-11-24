@@ -7,24 +7,24 @@ use std::thread::{self, JoinHandle};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use termina::Parser;
 use termina::event::{
     KeyCode as VirtualKey, KeyEventKind as VirtualKeyKind, Modifiers, MouseButton as VirtualButton,
     MouseEventKind as VirtualMouseKind,
 };
-use termina::Parser;
 use tokio::sync::mpsc;
 use windows_sys::Win32::Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Console::{
-    GetConsoleMode, GetConsoleScreenBufferInfo, ReadConsoleInputW, SetConsoleMode,
     CONSOLE_SCREEN_BUFFER_INFO, COORD, DOUBLE_CLICK, ENABLE_ECHO_INPUT, ENABLE_EXTENDED_FLAGS,
     ENABLE_LINE_INPUT, ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_PROCESSED_OUTPUT,
     ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    ENABLE_WINDOW_INPUT, FOCUS_EVENT, FROM_LEFT_1ST_BUTTON_PRESSED, INPUT_RECORD, KEY_EVENT,
-    LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED, MOUSE_EVENT, MOUSE_EVENT_RECORD, MOUSE_MOVED,
-    MOUSE_WHEELED, RIGHT_ALT_PRESSED, RIGHT_CTRL_PRESSED, SHIFT_PRESSED, WINDOW_BUFFER_SIZE_EVENT,
+    ENABLE_WINDOW_INPUT, FOCUS_EVENT, FROM_LEFT_1ST_BUTTON_PRESSED, GetConsoleMode,
+    GetConsoleScreenBufferInfo, INPUT_RECORD, KEY_EVENT, LEFT_ALT_PRESSED, LEFT_CTRL_PRESSED,
+    MOUSE_EVENT, MOUSE_EVENT_RECORD, MOUSE_MOVED, MOUSE_WHEELED, RIGHT_ALT_PRESSED,
+    RIGHT_CTRL_PRESSED, ReadConsoleInputW, SHIFT_PRESSED, SetConsoleMode, WINDOW_BUFFER_SIZE_EVENT,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, SetEvent, WaitForMultipleObjects, INFINITE,
+    CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_MENU;
 
@@ -455,9 +455,9 @@ mod tests {
     };
 
     use super::{
-        mouse_event, Decoder, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
-        COORD, FROM_LEFT_1ST_BUTTON_PRESSED, INPUT_RECORD, KEY_EVENT, MOUSE_EVENT,
-        MOUSE_EVENT_RECORD, MOUSE_MOVED, MOUSE_WHEELED, SHIFT_PRESSED, VK_MENU,
+        COORD, Decoder, Event, FROM_LEFT_1ST_BUTTON_PRESSED, INPUT_RECORD, KEY_EVENT, KeyCode,
+        KeyEvent, KeyModifiers, MOUSE_EVENT, MOUSE_EVENT_RECORD, MOUSE_MOVED, MOUSE_WHEELED,
+        MouseButton, MouseEventKind, SHIFT_PRESSED, VK_MENU, mouse_event,
     };
 
     fn input(decoder: &mut Decoder, text: &str) {

@@ -1,18 +1,18 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::WorkspaceIoLimits;
 use crate::context::revert::RewindVisibility;
 use crate::conversation::address::ConversationAddress;
 use crate::event::history::{event_conversation, event_turn};
 use crate::event::store::HistoryMarks;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::ToolResultEnvelope;
-use crate::WorkspaceIoLimits;
 
 use super::common::{
-    charge_entry, ensure_active, file_read_error, is_io_limit, FileCancellation, ScanDeadline,
+    FileCancellation, ScanDeadline, charge_entry, ensure_active, file_read_error, is_io_limit,
 };
 
 const MAX_RESULT_CHARS: usize = 8_000;

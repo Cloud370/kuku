@@ -2,9 +2,9 @@
 
 use std::io::ErrorKind;
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde_json::json;
 
 pub(crate) type Result<T> = std::result::Result<T, ApiError>;

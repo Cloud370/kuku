@@ -2,14 +2,14 @@ mod common;
 
 use std::time::Duration;
 
-use common::{anthropic_sse_response, openai_sse_response, test_config, TestEnv};
+use common::{TestEnv, anthropic_sse_response, openai_sse_response, test_config};
 
-use httpmock::prelude::{HttpMockRequest, MockServer, Regex, POST};
 use httpmock::When;
+use httpmock::prelude::{HttpMockRequest, MockServer, POST, Regex};
 use kuku::config::{ApiKey, ProviderProfile};
 use kuku::event::{EventPayload, EventStore, ModelStopReason};
 use kuku::query::Run;
-use kuku::{query, Error, Provider, UiEvent};
+use kuku::{Error, Provider, UiEvent, query};
 
 // ---------------------------------------------------------------------------
 // helpers

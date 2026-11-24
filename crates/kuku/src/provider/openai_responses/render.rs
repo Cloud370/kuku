@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
@@ -109,10 +109,12 @@ fn convert_to_input_items(
 }
 
 fn input_text_parts(text_parts: &[String]) -> Value {
-    json!(text_parts
-        .iter()
-        .map(|text| json!({"type": "input_text", "text": text}))
-        .collect::<Vec<_>>())
+    json!(
+        text_parts
+            .iter()
+            .map(|text| json!({"type": "input_text", "text": text}))
+            .collect::<Vec<_>>()
+    )
 }
 
 #[cfg(test)]
@@ -181,19 +183,21 @@ pub(crate) fn render_body_with_images(
         });
     }
     if !request.assembly.tools.is_empty() {
-        body["tools"] = json!(request
-            .assembly
-            .tools
-            .iter()
-            .map(|schema| {
-                json!({
-                    "type": "function",
-                    "name": schema.name,
-                    "description": schema.description,
-                    "parameters": schema.input_schema,
+        body["tools"] = json!(
+            request
+                .assembly
+                .tools
+                .iter()
+                .map(|schema| {
+                    json!({
+                        "type": "function",
+                        "name": schema.name,
+                        "description": schema.description,
+                        "parameters": schema.input_schema,
+                    })
                 })
-            })
-            .collect::<Vec<_>>());
+                .collect::<Vec<_>>()
+        );
     }
 
     body

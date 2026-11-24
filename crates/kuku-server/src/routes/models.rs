@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use kuku::adapter::{inspect_model, subscription_account_info, subscription_display_label};
 use kuku::session::AgentConfig;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Params;
-use crate::error_mapping::{ApiError, Result};
 use crate::AppState;
+use crate::error_mapping::{ApiError, Result};
 
 pub(super) async fn list(State(state): State<Arc<AppState>>) -> Json<Value> {
     let config = state.config.load_full();

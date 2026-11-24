@@ -1,10 +1,10 @@
 mod config {
     pub use kuku::config::{
-        load_and_patch_config, load_config, resolve_request_url, ApiKey, Config, CustomServiceTier,
-        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
-        ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat, ProviderOptions,
-        ProviderProfile, RequestFields, RequestedOutput, ResolvedThinking, SubscriptionChannel,
-        ThinkLevel, TierConfig,
+        ApiKey, Config, CustomServiceTier, MediaAdapterSupport, ModelCapabilityDeclaration,
+        ModelCapabilityEntry, ModelThinkingTest, ProtocolCapabilityDeclaration, ProviderConfig,
+        ProviderFormat, ProviderOptions, ProviderProfile, RequestFields, RequestedOutput,
+        ResolvedThinking, SubscriptionChannel, ThinkLevel, TierConfig, load_and_patch_config,
+        load_config, resolve_request_url,
     };
 }
 
@@ -57,8 +57,8 @@ mod provider {
 
 mod common;
 
-use config::{load_config, ApiKey, Config, ThinkLevel};
-use provider::config::{resolve_config, ResolveConfigInput};
+use config::{ApiKey, Config, ThinkLevel, load_config};
+use provider::config::{ResolveConfigInput, resolve_config};
 
 fn config_from_toml(toml: &str) -> Config {
     let dir = tempfile::tempdir().unwrap();

@@ -8,15 +8,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::routing::post;
-use axum::Router;
-use common::mock_provider::{self, text_response, tool_response, ControlledProvider};
 use common::TestServer;
+use common::mock_provider::{self, ControlledProvider, text_response, tool_response};
 use httpmock::Method;
 use kuku::event::{EventPayload, EventStore};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -582,11 +582,13 @@ async fn jobs_are_scoped_cancellable_and_readable_after_server_restart() {
     assert!(history["entries"].as_array().unwrap().contains(entry));
     let (status, history) = job_request(&server, get.clone(), id, "history", "main").await;
     assert_eq!(200, status, "{history}");
-    assert!(history["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|entry| entry["type"] != "job_finished"));
+    assert!(
+        history["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["type"] != "job_finished")
+    );
     let (status, list) = job_request(&server, get.clone(), id, "jobs", "reviewer").await;
     assert_eq!(200, status, "{list}");
     assert_eq!("cancelled", list["jobs"][0]["status"]);
@@ -708,9 +710,11 @@ async fn a_later_steer_reaches_the_current_turn_after_a_real_tool_boundary() {
     assert_eq!(Some(6), in_progress.output_tokens);
     assert_eq!(Some(50.0), in_progress.context_percent());
     assert_eq!(Some(20.0), in_progress.cache_hit_percent());
-    assert!(in_progress
-        .output_tokens_per_second()
-        .is_some_and(|rate| rate.is_finite() && rate > 0.0));
+    assert!(
+        in_progress
+            .output_tokens_per_second()
+            .is_some_and(|rate| rate.is_finite() && rate > 0.0)
+    );
     assert!(waiting.get("progress").is_none());
     let progress = server
         .session_request(id, "snapshot", &[("agent", "main"), ("progress", "true")])

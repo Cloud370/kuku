@@ -8,7 +8,7 @@ use std::process::ExitStatus;
 #[cfg(unix)]
 use tokio::process::{Child, Command};
 #[cfg(target_os = "macos")]
-use tokio::signal::unix::{signal, Signal, SignalKind};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 
 #[cfg(unix)]
 pub(super) struct ProcessTree {
@@ -223,15 +223,15 @@ mod windows {
     use tokio::process::{Child, Command};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_JOB_MEMORY,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
     };
 
     pub(crate) struct ProcessTree {
@@ -376,7 +376,7 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     use tokio::process::Command;
-    use tokio::time::{sleep, timeout, Duration};
+    use tokio::time::{Duration, sleep, timeout};
 
     use super::ProcessTree;
     #[cfg(target_os = "macos")]

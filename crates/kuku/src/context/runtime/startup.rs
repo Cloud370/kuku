@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
-use super::{belongs, SnapshotCache, MAX_SELECTION_BYTES_FACTOR};
+use super::{MAX_SELECTION_BYTES_FACTOR, SnapshotCache, belongs};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct StartupCache {
@@ -450,7 +450,7 @@ fn json_array_bytes(entries: usize, content_bytes: usize) -> usize {
 mod tests {
     use serde_json::json;
 
-    use super::{trim_snapshot_cache, EventPayload, SnapshotCache, StoredEvent};
+    use super::{EventPayload, SnapshotCache, StoredEvent, trim_snapshot_cache};
     use crate::context::runtime::{FileSnapshot, SnapshotKey};
 
     #[test]

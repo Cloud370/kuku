@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{replace_tabs, shorten, terminal_text};
-use crate::theme::{append_line_count, ACCENT, ERROR, MARKDOWN_EMPHASIS, MUTED, SUCCESS};
+use crate::theme::{ACCENT, ERROR, MARKDOWN_EMPHASIS, MUTED, SUCCESS, append_line_count};
 
 mod code;
 mod document;

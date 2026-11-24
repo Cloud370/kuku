@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::event::StoredEvent;
 use crate::session::runtime::JobControl;
@@ -190,7 +190,7 @@ pub(super) fn spawn_command_slot(
 
             let r = match output {
                 Some(mut output) => {
-                    use crate::tool::builtin::run_command::{run_command_to, CommandCapture};
+                    use crate::tool::builtin::run_command::{CommandCapture, run_command_to};
 
                     let result = run_command_to(
                         &args,

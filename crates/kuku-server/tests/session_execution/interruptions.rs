@@ -1,16 +1,16 @@
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::routing::post;
-use axum::Router;
 use kuku::event::{EventPayload, EventStore};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
-    activity_snapshot, agent_summary, mock_provider, observe_agent_activity, seek_frame,
-    text_response, TestServer,
+    TestServer, activity_snapshot, agent_summary, mock_provider, observe_agent_activity,
+    seek_frame, text_response,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -173,23 +173,29 @@ async fn cancelling_preserves_only_visible_text_once_and_keeps_it_out_of_the_nex
         .unwrap();
     assert_eq!(
         json!(["user", "status"]),
-        json!(history["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["type"].clone())
-            .collect::<Vec<_>>())
+        json!(
+            history["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["type"].clone())
+                .collect::<Vec<_>>()
+        )
     );
     assert_eq!(*entry, history["entries"][1]);
     let journal = EventStore::replay(server.events_path(id)).unwrap();
     assert!(journal.iter().any(|event| matches!(&event.payload,
         EventPayload::TurnCancelled { stop_event_id: Some(stop_id), .. } if Some(*stop_id) == entry["id"].as_u64())));
-    assert!(!journal
-        .iter()
-        .any(|event| event.payload.kind_name() == "runtime.tool_dispatched"));
-    assert!(!serde_json::to_string(&journal)
-        .unwrap()
-        .contains(private_reason));
+    assert!(
+        !journal
+            .iter()
+            .any(|event| event.payload.kind_name() == "runtime.tool_dispatched")
+    );
+    assert!(
+        !serde_json::to_string(&journal)
+            .unwrap()
+            .contains(private_reason)
+    );
 
     server.submit(id, json!({"type":"send","command_id":"fresh","agent":"reviewer","text":"start a new reply"})).await;
     let (request, next) = next_request(&server, id, &mut requests).await;

@@ -19,7 +19,7 @@ use super::helpers::{
     current_date_string, load_memory_sources, load_project_instruction_sources, now_timestamp,
     platform_label,
 };
-use super::request::{estimated_message_tokens, OwnedRequestBase};
+use super::request::{OwnedRequestBase, estimated_message_tokens};
 use super::types::PendingRun;
 
 mod admission;
@@ -815,14 +815,16 @@ mod snapshot_tests {
             query_model: Some("test-model".into()),
             query_tier: Some("balanced".into()),
         };
-        assert!(check_route_snapshot(
-            "main",
-            &segment,
-            segment.configuration + 1,
-            &resolved,
-            &selectors,
-        )
-        .unwrap());
+        assert!(
+            check_route_snapshot(
+                "main",
+                &segment,
+                segment.configuration + 1,
+                &resolved,
+                &selectors,
+            )
+            .unwrap()
+        );
     }
 
     #[test]

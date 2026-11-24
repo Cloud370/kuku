@@ -5,11 +5,11 @@ use ratatui::text::Line;
 
 use crate::markup::render_literal;
 use crate::text::shorten;
-use crate::theme::{emphasis, CardFrame, TranscriptTone, ACCENT, MUTED};
+use crate::theme::{ACCENT, CardFrame, MUTED, TranscriptTone, emphasis};
 
 use super::{
-    inspection_composition, render_rows, GroupHeading, GroupKind, GroupSummary, Record, Row,
-    GROUP_DETAIL_ROWS,
+    GROUP_DETAIL_ROWS, GroupHeading, GroupKind, GroupSummary, Record, Row, inspection_composition,
+    render_rows,
 };
 
 const ATTENTION_PREVIEW_LIMIT: usize = 3;
@@ -140,11 +140,13 @@ pub(super) fn heading(
     } else {
         &summary.composition
     };
-    let mut rows = vec![Row::plain(Line::styled(
-        shorten(label, frame.content_width()),
-        emphasis(ACCENT),
-    ))
-    .framed_title(frame)];
+    let mut rows = vec![
+        Row::plain(Line::styled(
+            shorten(label, frame.content_width()),
+            emphasis(ACCENT),
+        ))
+        .framed_title(frame),
+    ];
     if workspace && open && !summary.composition.is_empty() {
         let counts = Row::caption(&summary.composition, "", MUTED, frame.content_width());
         rows.push(counts.framed(frame));

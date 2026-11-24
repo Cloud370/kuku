@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use crate::markup::render_literal;
 use crate::theme::{CardFrame, ERROR, WARNING};
 
-use super::{message, render_rows, Body, Row, MAX_VISUAL_ROWS};
+use super::{Body, MAX_VISUAL_ROWS, Row, message, render_rows};
 
 pub(super) fn interruption_execution(entry: &HistoryEntry) -> Option<u64> {
     if entry.kind == HistoryKind::Status

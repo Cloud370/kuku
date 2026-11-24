@@ -6,7 +6,7 @@ pub(crate) mod values;
 
 use crate::context::ToolSchema;
 use crate::event::{EventPayload, EventStore};
-use crate::permission::{authorize_action, ActionAuthorization};
+use crate::permission::{ActionAuthorization, authorize_action};
 use crate::session::runtime::JobControl;
 use crate::tool::builtin::common::{changed_file_target, prepare_file_target};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
@@ -47,14 +47,14 @@ pub(super) async fn advance(
                 pending,
                 queued,
                 ToolResultEnvelope::blocked(&reason, &reason),
-            )
+            );
         }
         Err(error) => {
             return finish_inline(
                 pending,
                 queued,
                 ToolResultEnvelope::error("tool preparation failed", error.to_string()),
-            )
+            );
         }
         Ok(None) => {}
     }
@@ -121,7 +121,7 @@ pub(super) async fn advance(
                     "host authorization failed; action was not dispatched",
                     error.to_string(),
                 ),
-            )
+            );
         }
     };
     match decision {
@@ -515,7 +515,11 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
         jobs::list_definition(),
         jobs::wait_definition(),
         jobs::cancel_definition(),
-        definition("ask_user", "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.", serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
+        definition(
+            "ask_user",
+            "Persist a question and yield after the current tool batch. Wait for the host to reply to the returned request identity before continuing.",
+            serde_json::json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]}),
+        ),
         definition(
             "create_agent",
             "Create an idle Agent with a standing role and tool settings. Read its successful creation receipt before calling send_message in a later step to assign work. Resolve creation errors before dispatch.",
@@ -535,8 +539,16 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                 "required": ["address"]
             }),
         ),
-        definition("send_message", "Deliver a task or follow-up and any selected value references to an existing Agent. For a new Agent, first confirm its creation receipt. Delivery wakes an idle recipient by default. The receipt confirms delivery. Pass its event_id as receipt with wait_for in list_agents to retrieve the result for this delivery.", serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true and wakes an idle recipient. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]})),
-        definition("list_agents", "List compact Agent states. To retrieve a specific delegated result, set wait_for to the recipient address and receipt to the event_id returned by send_message. Waits up to 30 seconds while the recipient is running. Without receipt, wait_for returns the latest execution by address.", serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1},"receipt":{"type":"integer","minimum":1,"description":"event_id from your send_message delivery receipt."}}})),
+        definition(
+            "send_message",
+            "Deliver a task or follow-up and any selected value references to an existing Agent. For a new Agent, first confirm its creation receipt. Delivery wakes an idle recipient by default. The receipt confirms delivery. Pass its event_id as receipt with wait_for in list_agents to retrieve the result for this delivery.",
+            serde_json::json!({"type":"object","properties":{"to":{"type":"string"},"message":{"type":"string"},"wake":{"type":"boolean","description":"Defaults true and wakes an idle recipient. False only enqueues the message."},"values":values::handoff_schema()},"required":["to","message"]}),
+        ),
+        definition(
+            "list_agents",
+            "List compact Agent states. To retrieve a specific delegated result, set wait_for to the recipient address and receipt to the event_id returned by send_message. Waits up to 30 seconds while the recipient is running. Without receipt, wait_for returns the latest execution by address.",
+            serde_json::json!({"type":"object","properties":{"wait_for":{"type":"string","minLength":1},"receipt":{"type":"integer","minimum":1,"description":"event_id from your send_message delivery receipt."}}}),
+        ),
     ]
 }
 
@@ -569,11 +581,13 @@ pub(super) async fn execute(
             receipt["workspace"] =
                 serde_json::json!(session.workspace_for(&config).to_string_lossy());
             if let Ok(selection) = session.selection_for_config(&address, config) {
-                receipt["effective_tools"] = serde_json::json!(selection
-                    .tools
-                    .iter()
-                    .map(|tool| &tool.name)
-                    .collect::<Vec<_>>());
+                receipt["effective_tools"] = serde_json::json!(
+                    selection
+                        .tools
+                        .iter()
+                        .map(|tool| &tool.name)
+                        .collect::<Vec<_>>()
+                );
                 receipt["model_selection"] = serde_json::json!({
                     "preset": preset, "model": selection.model,
                     "reasoning_effort": selection.settings.reasoning_effort.or_else(|| selection.capabilities.reasoning_default.map(|level| level.value)),
@@ -664,7 +678,7 @@ pub(super) async fn execute(
             return Err(Error::InvalidArgument(format!(
                 "unknown session operation {}",
                 call.name
-            )))
+            )));
         }
     };
     Ok(ToolResultEnvelope::ok(

@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use crate::error::Result;
 use crate::event::ModelStopReason;
+use crate::provider::ProviderChunkStream;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::error::classify_stream_error;
 use crate::provider::types::{ProviderFailure, ProviderFailureKind};
-use crate::provider::ProviderChunkStream;
 use crate::query::types::PendingRun;
 
 pub(super) const MAX_PROVIDER_ATTEMPTS: u8 = 6;

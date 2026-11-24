@@ -1,7 +1,7 @@
-use std::future::{ready, Future};
+use std::future::{Future, ready};
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Notify;
@@ -10,10 +10,10 @@ use tokio_stream::StreamExt;
 use crate::tool::ToolResultEnvelope;
 use crate::{OutputReference, OutputStream};
 
-use super::run_command::output::{
-    framed_bytes, OutputDraft, OutputLimits, OutputWriter, MAX_FRAME_BYTES,
-};
 use super::run_command::ModelOutputAccess;
+use super::run_command::output::{
+    MAX_FRAME_BYTES, OutputDraft, OutputLimits, OutputWriter, framed_bytes,
+};
 
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_URL_BYTES: usize = 8192;
@@ -384,7 +384,9 @@ fn retained_body_hint(
         return format!("The body is retained with output ID {output_id}.");
     }
     let selector = json!({"id": output_id});
-    let raw = format!("Read the body with read_output({selector}). Use next_offset while has_more. Optional search filters text by a literal. Segments include raw_bytes when display text differs.");
+    let raw = format!(
+        "Read the body with read_output({selector}). Use next_offset while has_more. Optional search filters text by a literal. Segments include raw_bytes when display text differs."
+    );
     if access != ModelOutputAccess::Script
         || headers.content_type_truncated
         || bytes > crate::tool::run_js::MAX_OUTPUT_TEXT_BYTES as u64
@@ -401,10 +403,14 @@ fn retained_body_hint(
     if media_type == "application/json"
         || (media_type.starts_with("application/") && media_type.ends_with("+json"))
     {
-        return format!("To extract fields in run_js, use JSON.parse(await tools.output_text({selector})) and return the needed values. {raw}");
+        return format!(
+            "To extract fields in run_js, use JSON.parse(await tools.output_text({selector})) and return the needed values. {raw}"
+        );
     }
     if media_type.starts_with("text/") && bytes > MAX_FRAME_BYTES as u64 {
-        return format!("To process the text in run_js, use await tools.output_text({selector}) and return the needed excerpt. {raw}");
+        return format!(
+            "To process the text in run_js, use await tools.output_text({selector}) and return the needed excerpt. {raw}"
+        );
     }
     raw
 }

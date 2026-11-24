@@ -2,10 +2,10 @@ use std::io::ErrorKind;
 use std::process::Command;
 use std::sync::Arc;
 
+use kuku::context::FileSource;
 use kuku::context::provenance::{
     PromptCapabilityMetadata, PromptRendererIdentity, ToolRegistryProvenance,
 };
-use kuku::context::FileSource;
 use kuku::error::Error;
 use kuku::event::{EventPayload, EventStore, StoredEvent};
 
@@ -402,7 +402,9 @@ fn fact_only_events_roundtrip_without_observability_fields() {
 
     match &replayed[3].payload {
         EventPayload::ModelError { kind, message, .. } => {
-            panic!("expected model.response before model.error, got model.error kind={kind} message={message}");
+            panic!(
+                "expected model.response before model.error, got model.error kind={kind} message={message}"
+            );
         }
         EventPayload::ModelResponse {
             text,
@@ -708,9 +710,11 @@ fn paged_reads_resume_by_id_across_sparse_checkpoints_and_reopen() {
     assert_eq!(2, store.read_after(0, 1).unwrap()[0].id);
     assert_eq!(1201, store.append(session_created()).unwrap().id);
     drop(store);
-    assert!(std::fs::read(&path)
-        .unwrap()
-        .starts_with(contents.as_bytes()));
+    assert!(
+        std::fs::read(&path)
+            .unwrap()
+            .starts_with(contents.as_bytes())
+    );
     let reopened = EventStore::open(&path).unwrap();
     assert_eq!(
         vec![1198, 1200, 1201],

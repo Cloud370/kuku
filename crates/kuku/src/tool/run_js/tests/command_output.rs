@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::tool::builtin::run_command::{output::OutputLimits, run_command_to, CommandCapture};
-use crate::tool::ToolResultEnvelope;
 use crate::OutputRead;
+use crate::tool::ToolResultEnvelope;
+use crate::tool::builtin::run_command::{CommandCapture, output::OutputLimits, run_command_to};
 
 use super::{
-    facts, run, ScriptCall, ScriptExecution, ScriptOperation, TestHost, WorkspaceScriptLimits,
+    ScriptCall, ScriptExecution, ScriptOperation, TestHost, WorkspaceScriptLimits, facts, run,
 };
 
 #[tokio::test]
@@ -169,33 +169,43 @@ async fn command_failures_throw_and_incomplete_or_invalid_captures_reject_reader
     assert_eq!("program_missing", returned[0]["termination"]);
     assert_eq!("missing", returned[0]["program"]);
     assert_eq!("capture", returned[0]["id"]);
-    assert!(returned[0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("could not start missing program"));
+    assert!(
+        returned[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not start missing program")
+    );
     assert_eq!("cancelled", returned[1]["status"]);
     assert_eq!("cancelled", returned[1]["termination"]);
     assert!(returned[1].get("program").is_none());
-    assert!(returned[1]["message"]
-        .as_str()
-        .unwrap()
-        .contains("command cancelled"));
-    for index in [2, 3] {
-        assert!(returned[index]["message"]
+    assert!(
+        returned[1]["message"]
             .as_str()
             .unwrap()
-            .contains("capture is incomplete"));
+            .contains("command cancelled")
+    );
+    for index in [2, 3] {
+        assert!(
+            returned[index]["message"]
+                .as_str()
+                .unwrap()
+                .contains("capture is incomplete")
+        );
         assert_eq!("capture", returned[index]["id"]);
     }
     assert_eq!("SyntaxError", returned[4]["name"]);
-    assert!(returned[5]["message"]
-        .as_str()
-        .unwrap()
-        .contains("could not be decoded losslessly"));
-    assert!(returned[6]["message"]
-        .as_str()
-        .unwrap()
-        .contains("tools.read_output is required"));
+    assert!(
+        returned[5]["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not be decoded losslessly")
+    );
+    assert!(
+        returned[6]["message"]
+            .as_str()
+            .unwrap()
+            .contains("tools.read_output is required")
+    );
     assert_eq!("capture", returned[6]["id"]);
     for (key, bytes, complete) in [
         ("partial", 4, false),
@@ -268,9 +278,11 @@ async fn returned_inline_command_text_counts_against_the_script_result_budget() 
     )
     .await;
     assert_eq!("error", result.status);
-    assert!(result
-        .model_content
-        .contains("script result exceeds 128 bytes"));
+    assert!(
+        result
+            .model_content
+            .contains("script result exceeds 128 bytes")
+    );
     assert_eq!(1, facts(&result).actions.len());
     assert_eq!(
         "capture",
@@ -311,14 +323,18 @@ async fn complete_readers_reject_oversized_text_and_lines() {
     .await;
     assert_eq!("ok", result.status, "{}", result.model_content);
     let returned = facts(&result).value;
-    assert!(returned["textFailure"]
-        .as_str()
-        .unwrap()
-        .contains("text exceeds 1048576 bytes"));
-    assert!(returned["lineFailure"]
-        .as_str()
-        .unwrap()
-        .contains("line exceeds 131072 bytes"));
+    assert!(
+        returned["textFailure"]
+            .as_str()
+            .unwrap()
+            .contains("text exceeds 1048576 bytes")
+    );
+    assert!(
+        returned["lineFailure"]
+            .as_str()
+            .unwrap()
+            .contains("line exceeds 131072 bytes")
+    );
 }
 
 #[test]
@@ -340,9 +356,11 @@ fn nested_command_title_rejection_points_to_the_outer_tool_call() {
     )
     .unwrap_err();
     assert!(rejected.model_content.contains("run_js({title, code})"));
-    assert!(command
-        .description
-        .contains("Set title on the outer run_js call"));
+    assert!(
+        command
+            .description
+            .contains("Set title on the outer run_js call")
+    );
     crate::tool::builtin::run_command::prepare_command_args(&mut args, workspace.path(), &direct)
         .unwrap();
     assert_eq!("Check fixture", args["title"]);
@@ -355,13 +373,17 @@ fn model_definition_advertises_only_selected_script_methods() {
     tools.push(super::super::definition());
     super::super::describe_selected_tools(&mut tools);
     let script = tools.iter().find(|tool| tool.name == "run_js").unwrap();
-    assert!(script
-        .description
-        .contains("read_file({path,offset?,limit?}) returns result.raw_text"));
+    assert!(
+        script
+            .description
+            .contains("read_file({path,offset?,limit?}) returns result.raw_text")
+    );
     assert!(script.description.contains("r.result.raw_text : r.error"));
-    assert!(script
-        .description
-        .contains("create_output({}) returns result.id"));
+    assert!(
+        script
+            .description
+            .contains("create_output({}) returns result.id")
+    );
     assert!(!script.description.contains("run_command"));
     assert!(!script.description.contains("output_lines"));
     assert!(!script.description.contains("output_text"));

@@ -12,15 +12,15 @@ use kuku_client::{
     InputSource, InputStatus, InputTiming, Observation, QueuedInput, Receipt, Snapshot, Target,
     Timing,
 };
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use ratatui::Terminal;
 use serde_json::json;
 use unicode_width::UnicodeWidthStr;
 
-use super::{render, render_at, ActivityFrame};
+use super::{ActivityFrame, render, render_at};
 use crate::app::{Address, App, KeyboardFocus, Modal};
 use crate::jobs::{Job, Update};
 use crate::menu::{Choice, ChoiceKind, MessageAction, PickerKind};
@@ -257,9 +257,11 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
         Ok(queued_receipt(&second, 54)),
     ));
     let accepted = screen(&mut app, 92, 25);
-    assert!(accepted
-        .lines()
-        .any(|line| line.contains("You") && line.contains("Turn 1")));
+    assert!(
+        accepted
+            .lines()
+            .any(|line| line.contains("You") && line.contains("Turn 1"))
+    );
     assert!(!accepted.contains("Pending inputs"));
     assert_eq!(2, accepted.matches(text).count());
 }
@@ -320,12 +322,13 @@ fn clicking_the_queue_focuses_its_inline_editor_and_saves_the_exact_replacement(
         if input_command_id == "original" && text == "edit\n第三行")
     );
     assert_eq!("independent draft", app.pane().draft.text());
-    assert!(app
-        .pane()
-        .deliveries
-        .rows()
-        .iter()
-        .any(|row| row.id == "original"));
+    assert!(
+        app.pane()
+            .deliveries
+            .rows()
+            .iter()
+            .any(|row| row.id == "original")
+    );
 
     app.update(Update::Saved(replacement.clone(), Ok(())));
     app.update(Update::Sent(
@@ -365,9 +368,11 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
                     .all(|cell| cell.bg == ratatui::style::Color::Reset)
             );
         }
-        assert!(rows[9]
-            .trim_start()
-            .starts_with("Enter sends your first prompt"));
+        assert!(
+            rows[9]
+                .trim_start()
+                .starts_with("Enter sends your first prompt")
+        );
         let shortcuts_row = 10 + usize::from(width == 64);
         assert!(rows[shortcuts_row - 1].contains("/resume opens a saved session"));
         assert_eq!(
@@ -527,10 +532,11 @@ fn source_action_completes_on_tab_and_toggles_one_pane_without_changing_copy() {
     assert!(source.contains("main draft"));
 
     message_action(&mut app, 1, MessageAction::Copy);
-    assert!(app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::Copy(text) if text == raw)));
+    assert!(
+        app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Copy(text) if text == raw))
+    );
     app.select(reviewer, true, "Example".into());
     let other = screen(&mut app, 100, 24);
     assert!(other.contains("Reviewer reply") && other.contains("reviewer draft"));
@@ -674,10 +680,11 @@ fn waiting_request_is_explicit_and_escape_preserves_message_draft() {
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!("my independent draft", app.pane().draft.text());
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Save(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::Save(_)))
+    );
     let control_count = app.contextual_controls().len();
     for _ in 0..control_count {
         key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
@@ -739,10 +746,11 @@ fn generic_tool_details_render_control_bytes_visibly_and_copy_original_reply() {
     key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
     assert!(screen(&mut app, 72, 25).contains("before␛[2Jafter"));
     message_action(&mut app, 2, MessageAction::Copy);
-    assert!(app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(text) if text == reply)));
+    assert!(
+        app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::Copy(text) if text == reply))
+    );
 }
 
 #[test]

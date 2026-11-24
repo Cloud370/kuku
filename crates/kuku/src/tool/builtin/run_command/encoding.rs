@@ -54,7 +54,7 @@ fn decode(bytes: &[u8], mut starts_line: bool, ends_stream: bool) -> (Cow<'_, st
 
 #[cfg(windows)]
 fn decode_oem(bytes: &[u8]) -> Option<String> {
-    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP, MB_ERR_INVALID_CHARS};
+    use windows_sys::Win32::Globalization::{CP_OEMCP, MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 
     if bytes
         .iter()

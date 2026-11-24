@@ -106,10 +106,11 @@ fn stale_preparation_cannot_reopen_confirmation_for_another_target() {
     app.generation = app.generation.wrapping_add(1);
     app.prepared_model_default(ticket, old_selection, Err("ignored".into()));
     assert!(app.modal.is_none());
-    assert!(!app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::SaveDefault { .. })));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::SaveDefault { .. }))
+    );
 }
 
 #[test]
@@ -125,10 +126,11 @@ fn confirmed_default_save_queues_file_persistence_not_agent_configuration() {
     });
     app.confirm_model_default(ticket);
     assert!(matches!(app.effects.last(), Some(Job::SaveDefault { .. })));
-    assert!(!app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::Save(_) | Job::Send(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Save(_) | Job::Send(_)))
+    );
 }
 
 #[test]
@@ -159,9 +161,11 @@ fn resolved_pending_selection_is_saved_without_changing_current_execution() {
     let Some(Modal::Picker(picker)) = &app.modal else {
         panic!("prepared default must open its confirmation");
     };
-    assert!(picker
-        .header
-        .contains("Connection/model: anthropic/model-b"));
+    assert!(
+        picker
+            .header
+            .contains("Connection/model: anthropic/model-b")
+    );
     assert!(!picker.header.contains("Connection/model: openai/model-a"));
     app.confirm_model_default(ticket);
     let Some(Job::SaveDefault { plan, .. }) = app.effects.last() else {
@@ -277,8 +281,9 @@ fn escape_closes_prepared_default_confirmation_without_queuing_a_write() {
     );
     assert!(app.modal.is_none());
     assert!(app.pending_model_default.is_none());
-    assert!(!app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::SaveDefault { .. })));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::SaveDefault { .. }))
+    );
 }

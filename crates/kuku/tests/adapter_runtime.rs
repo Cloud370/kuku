@@ -279,13 +279,15 @@ async fn optional_output_limit_is_omitted_from_ordinary_provider_requests() {
                 assert!(body.get(field).is_none(), "{base_url}, {field}");
             }
         }
-        assert!(session
-            .events(0, 256)
-            .unwrap()
-            .iter()
-            .any(|event| matches!(&event.payload,
+        assert!(
+            session
+                .events(0, 256)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(&event.payload,
             EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared"
-                && value["max_output_tokens"].is_null())));
+                && value["max_output_tokens"].is_null()))
+        );
         session.close().await.unwrap();
     }
 }
@@ -390,15 +392,17 @@ async fn command_memory_failure_leaves_an_independent_sdk_session_running() {
         tokio::join!(settled(&limited, "main"), settled(&peer, "main"));
     assert_eq!(AgentStatus::Idle, limited_state.status);
     assert_eq!(AgentStatus::Idle, peer_state.status);
-    assert!(limited
-        .events(0, 256)
-        .unwrap()
-        .iter()
-        .any(|event| matches!(&event.payload,
-            EventPayload::ToolResult { tool_call_id, structured: Some(value), .. }
-            if tool_call_id == "command" && value["exit_code"] == 73
-                && value["memory_limit_bytes"] == memory_bytes
-        )));
+    assert!(
+        limited
+            .events(0, 256)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(&event.payload,
+                EventPayload::ToolResult { tool_call_id, structured: Some(value), .. }
+                if tool_call_id == "command" && value["exit_code"] == 73
+                    && value["memory_limit_bytes"] == memory_bytes
+            ))
+    );
     assert_eq!(
         "actual host tool output",
         std::fs::read_to_string(work.path().join("allowed.txt")).unwrap()
@@ -477,10 +481,12 @@ async fn external_model_and_tool_use_final_selection_authority_and_durable_bound
             },
         )
         .unwrap();
-    assert!(output
-        .segments
-        .iter()
-        .any(|segment| segment.text.contains("END_OF_RETAINED_OUTPUT")));
+    assert!(
+        output
+            .segments
+            .iter()
+            .any(|segment| segment.text.contains("END_OF_RETAINED_OUTPUT"))
+    );
     session
         .create_agent(
             "create-child",

@@ -8,9 +8,9 @@ use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    expected_version, file_read_error, file_version, remove_observed_file, required_path,
-    resolve_remove_path, snapshot_stale_error, ExecutorObservation, FileCancellation,
-    WorkspaceCommitError, WriteEvidence, WriteSnapshotLookup,
+    ExecutorObservation, FileCancellation, WorkspaceCommitError, WriteEvidence,
+    WriteSnapshotLookup, expected_version, file_read_error, file_version, remove_observed_file,
+    required_path, resolve_remove_path, snapshot_stale_error,
 };
 
 pub(crate) fn remove_file(
@@ -172,12 +172,16 @@ mod tests {
         assert!(cheap.get("content_hash").is_none());
         let no_observation =
             remove_file_for_executor(&args, workspace.path(), &[], u64::MAX, &|| false);
-        assert!(no_observation
-            .model_content
-            .contains("tools.stat_file({path, version: true})"));
-        assert!(no_observation
-            .model_content
-            .contains("pass it as expected_version to tools.remove_file"));
+        assert!(
+            no_observation
+                .model_content
+                .contains("tools.stat_file({path, version: true})")
+        );
+        assert!(
+            no_observation
+                .model_content
+                .contains("pass it as expected_version to tools.remove_file")
+        );
         assert_eq!(
             "snapshot_required",
             no_observation.structured.unwrap()["reason_code"]
@@ -199,9 +203,11 @@ mod tests {
 
         std::fs::write(&path, b"\xff\x00").unwrap();
         let stale = remove_file_for_executor(&pinned, workspace.path(), &[], u64::MAX, &|| false);
-        assert!(stale
-            .model_content
-            .contains("Confirm removal is still intended before retrying."));
+        assert!(
+            stale
+                .model_content
+                .contains("Confirm removal is still intended before retrying.")
+        );
         assert_eq!("snapshot_stale", stale.structured.unwrap()["reason_code"]);
         let stale_bare =
             remove_file_for_executor(&bare, workspace.path(), &[], u64::MAX, &|| false);
@@ -241,12 +247,16 @@ mod tests {
             u64::MAX,
             &|| false,
         );
-        assert!(result
-            .model_content
-            .starts_with("Use stat_file({path, version: true})"));
-        assert!(result
-            .model_content
-            .contains("content_hash as expected_version"));
+        assert!(
+            result
+                .model_content
+                .starts_with("Use stat_file({path, version: true})")
+        );
+        assert!(
+            result
+                .model_content
+                .contains("content_hash as expected_version")
+        );
         assert_eq!(b"\xff\0", std::fs::read(path).unwrap().as_slice());
     }
 }

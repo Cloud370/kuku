@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 
-use kuku::adapter::{subscription_account_info, SubscriptionAccountInfo, SubscriptionStatus};
+use kuku::adapter::{SubscriptionAccountInfo, SubscriptionStatus, subscription_account_info};
 use kuku::config::{
     Config, ProviderConfig, ProviderFormat, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
 };
 use kuku_client::ConnectionOptions;
-use toml_edit::{value, Item, Value};
+use toml_edit::{Item, Value, value};
 
-use super::config::{entry, parse_service_config, set_connection_proxy, write_config, Settings};
 use super::ConnectionChoice;
+use super::config::{Settings, entry, parse_service_config, set_connection_proxy, write_config};
 
 pub(super) mod enrollment;
 
@@ -226,20 +226,20 @@ mod tests {
         DiscoveredModel, ModelTrial, Probe, SubscriptionAccountInfo, SubscriptionStatus,
     };
     use kuku::config::{
-        generate_default, load_config, ModelCapabilityDeclaration, ProviderProxy,
-        SubscriptionAccount, SubscriptionChannel,
+        ModelCapabilityDeclaration, ProviderProxy, SubscriptionAccount, SubscriptionChannel,
+        generate_default, load_config,
     };
     use kuku_client::ConnectionOptions;
     use ratatui::{
+        Terminal,
         backend::TestBackend,
         layout::{Position, Rect},
-        Terminal,
     };
 
     use super::SubscriptionSettings;
-    use crate::setup::config::{save, Settings};
+    use crate::setup::config::{Settings, save};
     use crate::setup::state::{ReviewAction, SetupIntent, SetupState, SetupStep};
-    use crate::setup::{ui, ConnectionChoice, SetupMode};
+    use crate::setup::{ConnectionChoice, SetupMode, ui};
 
     #[tokio::test]
     async fn subscription_preset_displays_full_authorization_and_hides_an_invalid_callback() {
@@ -259,10 +259,12 @@ mod tests {
         terminal
             .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
             .unwrap();
-        assert!(!terminal
-            .backend()
-            .to_string()
-            .contains("Tests may cost money"));
+        assert!(
+            !terminal
+                .backend()
+                .to_string()
+                .contains("Tests may cost money")
+        );
 
         state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
         terminal
@@ -343,11 +345,13 @@ mod tests {
         assert!(!screen.contains("fixture-callback-secret"));
         state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
         poll_registration(&mut state, &mut settings).await;
-        assert!(state
-            .problem
-            .as_deref()
-            .unwrap()
-            .contains("does not match this sign-in"));
+        assert!(
+            state
+                .problem
+                .as_deref()
+                .unwrap()
+                .contains("does not match this sign-in")
+        );
         assert!(!settings.config_path.exists());
         assert!(
             tokio::time::timeout(Duration::from_millis(50), proxy.accept())
@@ -407,9 +411,11 @@ mod tests {
                 .1
         );
         let collision = SubscriptionAccount::new(&data_dir, channel, "chatgpt").unwrap();
-        assert!(settings
-            .save_connection(&collision, &ProviderProxy::Direct)
-            .is_err());
+        assert!(
+            settings
+                .save_connection(&collision, &ProviderProxy::Direct)
+                .is_err()
+        );
         assert_eq!(
             "chatgpt",
             settings

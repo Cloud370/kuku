@@ -12,10 +12,10 @@ mod session {
 
 mod config {
     pub use kuku::config::{
-        resolve_request_url, ApiKey, CustomServiceTier, LogsConfig, MediaAdapterSupport,
-        ModelPricing, ModelThinkingTest, PromptCacheScope, ProviderAuth, ProviderFormat,
-        ProviderOptions, ProviderProfile, ProviderProxy, RequestFields, RequestedOutput,
-        ResolvedThinking, SubscriptionAccount, SubscriptionChannel, ThinkLevel,
+        ApiKey, CustomServiceTier, LogsConfig, MediaAdapterSupport, ModelPricing,
+        ModelThinkingTest, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderOptions,
+        ProviderProfile, ProviderProxy, RequestFields, RequestedOutput, ResolvedThinking,
+        SubscriptionAccount, SubscriptionChannel, ThinkLevel, resolve_request_url,
     };
 }
 
@@ -50,11 +50,11 @@ mod execution {
         ));
     }
 
-    pub(crate) use media::{ImageMime, ModelImage, MAX_MODEL_IMAGE_BYTES};
+    pub(crate) use media::{ImageMime, MAX_MODEL_IMAGE_BYTES, ModelImage};
 }
 
 mod prompt {
-    pub use kuku::prompt::{builtin_prompt_catalog, PromptCatalog};
+    pub use kuku::prompt::{PromptCatalog, builtin_prompt_catalog};
 }
 
 mod provider {
@@ -262,7 +262,7 @@ mod provider {
     }
 }
 
-use config::{resolve_request_url, ProviderFormat, ResolvedThinking};
+use config::{ProviderFormat, ResolvedThinking, resolve_request_url};
 use context::{
     CanonicalMessage, ContextAssembly, FileSource, InstructionSource, MemorySource, MessageBlock,
     Role, ToolResult, ToolSchema, ToolUse,
@@ -286,10 +286,10 @@ fn sample_assembly() -> ContextAssembly {
                 .to_string(),
         prelude_messages: vec![
             CanonicalMessage::user_text(
-                "<kuku_execution_context>\n- Workspace root: /workspace\n- Platform: linux\n- Current date: 2026-05-14\n</kuku_execution_context>\n\n<kuku_project_instructions>\nfollow project instructions\n</kuku_project_instructions>\n\n<kuku_memory>\n<kuku_global_memory>\n- remember the user prefers concise answers\n</kuku_global_memory>\n<kuku_project_memory>\n- No project memory.\n</kuku_project_memory>\n</kuku_memory>"
+                "<kuku_execution_context>\n- Workspace root: /workspace\n- Platform: linux\n- Current date: 2026-05-14\n</kuku_execution_context>\n\n<kuku_project_instructions>\nfollow project instructions\n</kuku_project_instructions>\n\n<kuku_memory>\n<kuku_global_memory>\n- remember the user prefers concise answers\n</kuku_global_memory>\n<kuku_project_memory>\n- No project memory.\n</kuku_project_memory>\n</kuku_memory>",
             ),
             CanonicalMessage::user_text(
-                "<kuku_tool_guidance>Example guidance for this request.</kuku_tool_guidance>"
+                "<kuku_tool_guidance>Example guidance for this request.</kuku_tool_guidance>",
             ),
         ],
         history: vec![
@@ -397,10 +397,10 @@ fn assembly_with_tool_history() -> ContextAssembly {
                 .to_string(),
         prelude_messages: vec![
             CanonicalMessage::user_text(
-                "## Environment\n- Workspace: /workspace\n- Platform: linux\n\n## Project Instructions\nNo project instructions found.\n\n## Memory\n- Global memory: No global memory.\n- Project memory: No project memory."
+                "## Environment\n- Workspace: /workspace\n- Platform: linux\n\n## Project Instructions\nNo project instructions found.\n\n## Memory\n- Global memory: No global memory.\n- Project memory: No project memory.",
             ),
             CanonicalMessage::user_text(
-                "Use specialized tools when they match the task.\n\nGuidelines:\n\n- Use file discovery tools to find files instead of guessing paths."
+                "Use specialized tools when they match the task.\n\nGuidelines:\n\n- Use file discovery tools to find files instead of guessing paths.",
             ),
         ],
         history: vec![
@@ -484,18 +484,24 @@ fn anthropic_render_body_keeps_drift_notice_between_context_and_tool_guidance() 
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][1]["role"], "user");
     assert_eq!(body["messages"][2]["role"], "user");
-    assert!(body["messages"][0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("<kuku_execution_context>"));
-    assert!(body["messages"][1]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("<kuku_system_notice>"));
-    assert!(body["messages"][2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("<kuku_tool_guidance>"));
+    assert!(
+        body["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<kuku_execution_context>")
+    );
+    assert!(
+        body["messages"][1]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<kuku_system_notice>")
+    );
+    assert!(
+        body["messages"][2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<kuku_tool_guidance>")
+    );
 }
 
 #[test]
@@ -519,18 +525,24 @@ fn anthropic_render_body_preserves_layer_order() {
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][1]["role"], "user");
     assert!(body.get("stop").is_none());
-    assert!(body["system"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("You are the agent running inside kuku"));
-    assert!(body["messages"][0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("<kuku_execution_context>"));
-    assert!(body["messages"][1]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Example guidance for this request."));
+    assert!(
+        body["system"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("You are the agent running inside kuku")
+    );
+    assert!(
+        body["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<kuku_execution_context>")
+    );
+    assert!(
+        body["messages"][1]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Example guidance for this request.")
+    );
 }
 
 #[test]
@@ -609,9 +621,11 @@ fn anthropic_render_body_keeps_current_user_as_multiple_text_blocks() {
     assert!(current[2].get("cache_control").is_none());
     assert!(current[0].get("cache_control").is_none());
     assert!(current[1].get("cache_control").is_none());
-    assert!(!serde_json::to_string(&body)
-        .unwrap()
-        .contains("<kuku_turn_frame>"));
+    assert!(
+        !serde_json::to_string(&body)
+            .unwrap()
+            .contains("<kuku_turn_frame>")
+    );
 }
 
 #[test]
@@ -679,9 +693,11 @@ fn anthropic_request_preset_uses_top_level_automatic_cache_control() {
 
     assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
     assert!(body["system"][0].get("cache_control").is_none());
-    assert!(body["messages"][0]["content"][0]
-        .get("cache_control")
-        .is_none());
+    assert!(
+        body["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_none()
+    );
     let last_message = body["messages"].as_array().unwrap().last().unwrap();
     let last_block = last_message["content"].as_array().unwrap().last().unwrap();
     assert!(last_block.get("cache_control").is_none());
@@ -752,18 +768,24 @@ fn openai_render_body_keeps_drift_notice_between_context_and_tool_guidance() {
     assert_eq!(body["messages"][1]["role"], "user");
     assert_eq!(body["messages"][2]["role"], "user");
     assert_eq!(body["messages"][3]["role"], "user");
-    assert!(body["messages"][1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("<kuku_execution_context>"));
-    assert!(body["messages"][2]["content"]
-        .as_str()
-        .unwrap()
-        .contains("<kuku_system_notice>"));
-    assert!(body["messages"][3]["content"]
-        .as_str()
-        .unwrap()
-        .contains("<kuku_tool_guidance>"));
+    assert!(
+        body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<kuku_execution_context>")
+    );
+    assert!(
+        body["messages"][2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<kuku_system_notice>")
+    );
+    assert!(
+        body["messages"][3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<kuku_tool_guidance>")
+    );
 }
 
 #[test]
@@ -787,10 +809,12 @@ fn openai_render_body_preserves_layer_order() {
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][1]["role"], "user");
     assert_eq!(body["messages"][2]["role"], "user");
-    assert!(body["messages"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("You are the agent running inside kuku"));
+    assert!(
+        body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("You are the agent running inside kuku")
+    );
     assert!(body.get("max_completion_tokens").is_none());
 }
 
@@ -943,9 +967,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"stat
         .collect();
     assert_eq!("Hello world", text);
 
-    assert!(chunks
-        .iter()
-        .any(|c| matches!(c, ProviderChunk::ContentBlockStop { index: 0 })));
+    assert!(
+        chunks
+            .iter()
+            .any(|c| matches!(c, ProviderChunk::ContentBlockStop { index: 0 }))
+    );
     assert!(chunks
         .iter()
         .any(|c| matches!(c, ProviderChunk::StopReason { reason } if reason == &kuku::event::ModelStopReason::EndTurn)));
@@ -958,9 +984,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"stat
             cache_creation_input_tokens: None
         }
     )));
-    assert!(chunks
-        .last()
-        .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));
+    assert!(
+        chunks
+            .last()
+            .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd))
+    );
 }
 
 #[test]
@@ -1011,17 +1039,21 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fc\",\"status
         .collect();
     assert_eq!("{\"location\":\"Boston\"}", args);
 
-    assert!(chunks
-        .iter()
-        .any(|c| matches!(c, ProviderChunk::ToolCallStop { index: 0 })));
+    assert!(
+        chunks
+            .iter()
+            .any(|c| matches!(c, ProviderChunk::ToolCallStop { index: 0 }))
+    );
     assert!(chunks.iter().any(|c| matches!(
         c,
         ProviderChunk::StopReason { reason }
             if reason == &kuku::event::ModelStopReason::ToolUse
     )));
-    assert!(chunks
-        .last()
-        .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd)));
+    assert!(
+        chunks
+            .last()
+            .is_some_and(|c| matches!(c, ProviderChunk::StreamEnd))
+    );
 }
 
 #[test]
@@ -1034,9 +1066,11 @@ event: response.output_text.delta
 data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial text\"}
 ";
     let chunks = parse_responses_sse(sse);
-    assert!(!chunks
-        .iter()
-        .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+    assert!(
+        !chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+    );
 }
 
 #[test]
@@ -1049,9 +1083,11 @@ event: response.output_text.delta
 data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial text\"}
 ";
     let chunks = parse_responses_sse(sse);
-    assert!(!chunks
-        .iter()
-        .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+    assert!(
+        !chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+    );
 }
 
 #[path = "provider_adapters/responses.rs"]

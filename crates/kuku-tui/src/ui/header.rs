@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, ServiceStatus, StartupSkills};
@@ -10,7 +10,7 @@ use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::text::{shorten, shorten_middle, single_line, single_line_path};
-use crate::theme::{emphasis, ACCENT, KUKU_MARK, MODEL, MUTED, TURN_CARD, WARNING};
+use crate::theme::{ACCENT, KUKU_MARK, MODEL, MUTED, TURN_CARD, WARNING, emphasis};
 
 const BRAND: &str = "kuku";
 const SEPARATOR: &str = " · ";

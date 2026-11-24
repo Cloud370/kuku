@@ -7,7 +7,7 @@ use kuku_client::{Connection, ConnectionOptions, Error, ModelCatalog, SessionSta
 use crate::menu::{Choice, ChoiceKind};
 use crate::model_default::ResolvedModel;
 
-use super::{busy, job_detail, value_choice, Search};
+use super::{Search, busy, job_detail, value_choice};
 
 const SEARCH_DELAY: Duration = Duration::from_millis(70);
 
@@ -91,7 +91,7 @@ pub(super) async fn find(
                 client.models().await?,
                 tier.as_deref(),
                 route.as_ref(),
-            ))
+            ));
         }
         Search::Values(target) => {
             let choices: Vec<_> = client
@@ -258,15 +258,26 @@ async fn service_status(
             .remote_connection()?
             .expect("explicit remote client");
         let health = client.health().await?;
-        return Ok(format!("Remote {}\nWorkspace {}\nBuild {} · service protocol {} · client protocol {SESSION_PROTOCOL_VERSION}",
-            client.endpoint(), workspace.display(), health.version, health.protocol_version));
+        return Ok(format!(
+            "Remote {}\nWorkspace {}\nBuild {} · service protocol {} · client protocol {SESSION_PROTOCOL_VERSION}",
+            client.endpoint(),
+            workspace.display(),
+            health.version,
+            health.protocol_version
+        ));
     }
     let service = options.local_service()?;
     if let Some(record) = service.status().await? {
         let status = record.status();
-        return Ok(format!("Local {}\nWorkspace {}\nConfig {}\nBuild {} · service protocol {} · client protocol {SESSION_PROTOCOL_VERSION}\n{}",
-            record.endpoint(), workspace.display(), status.config_path.as_deref().unwrap_or("Unavailable"), status.version,
-            status.protocol_version, busy(&status.busy, status.draining)));
+        return Ok(format!(
+            "Local {}\nWorkspace {}\nConfig {}\nBuild {} · service protocol {} · client protocol {SESSION_PROTOCOL_VERSION}\n{}",
+            record.endpoint(),
+            workspace.display(),
+            status.config_path.as_deref().unwrap_or("Unavailable"),
+            status.version,
+            status.protocol_version,
+            busy(&status.busy, status.draining)
+        ));
     }
     Ok(format!(
         "Local service stopped\nWorkspace {}\nData {}",

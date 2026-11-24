@@ -4,17 +4,17 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::state::{valid_env_name, valid_stored_key, SetupState};
+use super::state::{SetupState, valid_env_name, valid_stored_key};
 use super::{ConnectionChoice, CredentialSource, ProviderPreset};
-use kuku::adapter::{inspect_model, SubscriptionAccountInfo};
+use kuku::adapter::{SubscriptionAccountInfo, inspect_model};
 use kuku::config::{
-    generate_default, parse_config_text_with_env, ApiKey, Config, ConfigFile, ProviderFormat,
-    ProviderProfile, ProviderProxy, RequestedOutput, SubscriptionChannel, ThinkLevel,
+    ApiKey, Config, ConfigFile, ProviderFormat, ProviderProfile, ProviderProxy, RequestedOutput,
+    SubscriptionChannel, ThinkLevel, generate_default, parse_config_text_with_env,
 };
 use kuku::session::AgentConfig;
 use kuku::util::{is_valid_private_key, private_directory};
 use kuku_client::ConnectionOptions;
-use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, Value, value};
 
 mod credential;
 
@@ -411,7 +411,7 @@ fn load_document(
         Ok(_) => {
             return Err(invalid_config(
                 "the configuration path is not a regular file",
-            ))
+            ));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(_) => return Err(invalid_config("cannot inspect the configuration path")),

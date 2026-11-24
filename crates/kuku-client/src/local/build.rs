@@ -1,6 +1,6 @@
 use semver::Version;
 
-use super::{ephemeral_address, LocalConnection, LocalError, LocalService, RestartOutcome};
+use super::{LocalConnection, LocalError, LocalService, RestartOutcome, ephemeral_address};
 
 /// Which local build the installed client expects and whether it can replace an idle instance.
 #[derive(Clone, Copy)]

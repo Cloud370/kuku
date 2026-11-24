@@ -1,4 +1,4 @@
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -8,23 +8,22 @@ use std::path::Path;
 use std::ptr::{self, addr_of};
 
 use windows_sys::Win32::Foundation::{
-    LocalFree, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+    ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, HANDLE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows_sys::Win32::Security::{
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
     EqualSid, GetAce, GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-    GetSecurityDescriptorOwner, GetTokenInformation, IsValidSid, TokenUser, ACCESS_ALLOWED_ACE,
-    ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
-    TOKEN_USER,
+    GetSecurityDescriptorOwner, GetTokenInformation, INHERIT_ONLY_ACE, INHERITED_ACE, IsValidSid,
+    OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
+    SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateDirectoryW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -489,7 +488,7 @@ fn invalid_identity() -> io::Error {
 mod config_temp_tests {
     use std::os::windows::io::AsRawHandle;
 
-    use super::{is_private_file, set_config_temp_security, AccountSid};
+    use super::{AccountSid, is_private_file, set_config_temp_security};
 
     #[test]
     fn config_temp_acl_is_private_and_copied_from_existing_file() {

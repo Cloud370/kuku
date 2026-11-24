@@ -18,7 +18,7 @@ use httpmock::{Method::POST, MockServer};
 use kuku::event::EventPayload;
 use kuku::execution::{CommandExecutionFacts, CommandTermination};
 use kuku::{Activation, AgentConfig, AgentStatus, Input, OutputRead, Session, SessionOptions};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 type AnyError = Box<dyn std::error::Error>;
 const SAMPLE_WINDOW: Duration = Duration::from_secs(1);
@@ -188,10 +188,12 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
         && last_output.hits_async().await == 1
         && concurrent.hits_async().await == workers;
     report["passed"] = json!(result.is_ok() && close.is_ok() && selected);
-    report["error"] = json!(result
-        .err()
-        .map(|error| error.to_string())
-        .or_else(|| close.err().map(|error| error.to_string())));
+    report["error"] = json!(
+        result
+            .err()
+            .map(|error| error.to_string())
+            .or_else(|| close.err().map(|error| error.to_string()))
+    );
     phase(&phase_file, "completed")?;
     tokio::time::sleep(Duration::from_millis(250)).await;
     Ok(report)
@@ -374,11 +376,13 @@ async fn measure(
     }
     report["measurements"]["concurrent_agents_wall_us"] = json!(micros(start));
     report["final_agents"] = json!(session.agents().len());
-    report["final_pending_inputs"] = json!(session
-        .agents()
-        .iter()
-        .map(|agent| agent.pending_inputs)
-        .sum::<usize>());
+    report["final_pending_inputs"] = json!(
+        session
+            .agents()
+            .iter()
+            .map(|agent| agent.pending_inputs)
+            .sum::<usize>()
+    );
     Ok(())
 }
 

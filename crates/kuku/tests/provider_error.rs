@@ -76,9 +76,11 @@ fn a_chatgpt_plan_limit_links_to_usage_without_retrying() {
     );
     assert_eq!(ProviderFailureKind::QuotaExhausted, failure.kind);
     assert!(!failure.retryable);
-    assert!(failure
-        .message
-        .contains("https://chatgpt.com/settings/usage"));
+    assert!(
+        failure
+            .message
+            .contains("https://chatgpt.com/settings/usage")
+    );
 }
 
 #[test]

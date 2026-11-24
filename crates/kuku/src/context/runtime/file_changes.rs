@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::Result;
 use crate::event::EventPayload;
 use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
-use crate::Result;
 
 const PREVIEW_BYTES: usize = 8 * 1024;
 const CHUNK_BYTES: usize = 64 * 1024;

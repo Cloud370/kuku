@@ -6,14 +6,14 @@ use crate::text::shorten;
 use super::agent::AgentCard;
 use super::tool::Tool;
 use super::{
-    render_rows, Key, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails, Transcript,
-    MAX_RECORDS,
+    Key, MAX_RECORDS, Record, RewindGroupAction, RewindGroupChoice, Row, ToolDetails, Transcript,
+    render_rows,
 };
 
 mod activity;
 pub(super) use activity::footer as activity_footer;
 mod groups;
-pub(super) use groups::{compact_file_rows, groups, GroupHeading};
+pub(super) use groups::{GroupHeading, compact_file_rows, groups};
 use groups::{GroupKind, GroupSummary};
 mod inspection;
 mod output;

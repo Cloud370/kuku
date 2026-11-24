@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::path::{Path, MAIN_SEPARATOR};
+use std::path::{MAIN_SEPARATOR, Path};
 
 use kuku_client::UsageTotals;
 use ratatui::style::{Color, Style};
@@ -11,7 +11,7 @@ use crate::text::{
     compact_token_count, effort_label, shorten, shorten_middle, single_line, single_line_path,
     tail_start,
 };
-use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING};
+use crate::theme::{ACCENT, ERROR, EXECUTION, MODEL, MUTED, USAGE, WARNING, emphasis};
 
 mod editor;
 

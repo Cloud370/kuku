@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 
 use super::json::{
     bool_field, optional_json_field, optional_stop_reason_field, optional_string_field,
-    optional_u64_field, string_field, u32_field, u64_field, u8_field, usize_field,
+    optional_u64_field, string_field, u8_field, u32_field, u64_field, usize_field,
     vec_string_field,
 };
 use super::turn::PartialReply;

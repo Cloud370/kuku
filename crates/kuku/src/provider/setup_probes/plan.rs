@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use crate::config::{ModelPricing, ProviderConfig};
 use crate::CapabilitySource;
+use crate::config::{ModelPricing, ProviderConfig};
 
-use super::{openrouter_quote_url, ModelTrial, Probe, ReasoningCheck};
+use super::{ModelTrial, Probe, ReasoningCheck, openrouter_quote_url};
 use crate::provider::setup_reasoning::bounded_levels;
 
 /// A selected model with the settings to check at its actual endpoint.

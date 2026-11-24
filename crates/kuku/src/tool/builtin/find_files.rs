@@ -4,13 +4,13 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::tool::ToolResultEnvelope;
 use crate::WorkspaceIoLimits;
+use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    bounded_lines, charge_entry, ensure_active, file_read_error, glob_match,
-    is_default_excluded_dir, is_io_limit, relative_path, resolve_path, verify_directory,
-    workspace_path_blocked, FileCancellation, ScanDeadline,
+    FileCancellation, ScanDeadline, bounded_lines, charge_entry, ensure_active, file_read_error,
+    glob_match, is_default_excluded_dir, is_io_limit, relative_path, resolve_path,
+    verify_directory, workspace_path_blocked,
 };
 
 const FIND_FILES_MAX_BYTES: usize = 8_000;
@@ -110,8 +110,12 @@ pub(crate) fn find_files(
             "entries in the search"
         };
         let hint = match &budget_reason {
-            None => format!("Found {entry_count} {scope}. Listing shortened. Narrow the path or pattern."),
-            Some(reason) => format!("Directory scan incomplete ({reason}). Found {entry_count} {scope} so far. List a smaller folder with path."),
+            None => format!(
+                "Found {entry_count} {scope}. Listing shortened. Narrow the path or pattern."
+            ),
+            Some(reason) => format!(
+                "Directory scan incomplete ({reason}). Found {entry_count} {scope} so far. List a smaller folder with path."
+            ),
         };
         visible = bounded_lines(&entries, FIND_FILES_MAX_BYTES - hint.len() - 1);
         if visible.is_empty() {
@@ -289,12 +293,16 @@ mod tests {
             },
             &|| false,
         );
-        assert!(result
-            .model_content
-            .starts_with("Directory scan incomplete"));
-        assert!(result
-            .model_content
-            .contains("List a smaller folder with path"));
+        assert!(
+            result
+                .model_content
+                .starts_with("Directory scan incomplete")
+        );
+        assert!(
+            result
+                .model_content
+                .contains("List a smaller folder with path")
+        );
         assert_eq!(result.structured.unwrap()["scan_complete"], false);
     }
 
@@ -307,9 +315,11 @@ mod tests {
         let lines: Vec<_> = result.model_content.lines().collect();
         assert!(lines.contains(&"docs/"), "dirs with trailing /: {lines:?}");
         assert!(lines.contains(&"README.md"));
-        assert!(lines
-            .iter()
-            .all(|entry| !entry.trim_end_matches('/').contains('/')));
+        assert!(
+            lines
+                .iter()
+                .all(|entry| !entry.trim_end_matches('/').contains('/'))
+        );
         assert!(!result.model_content.contains(".git"));
         let structured = result.structured.unwrap();
         assert_eq!(structured["entry_count"], lines.len());
@@ -415,9 +425,11 @@ mod tests {
         let result = find_files(&serde_json::json!({}), dir.path());
         assert!(result.truncated);
         assert!(result.model_content.len() <= FIND_FILES_MAX_BYTES);
-        assert!(result
-            .model_content
-            .ends_with("Found 180 direct entries. Listing shortened. Narrow the path or pattern."));
+        assert!(
+            result.model_content.ends_with(
+                "Found 180 direct entries. Listing shortened. Narrow the path or pattern."
+            )
+        );
         let data = result.structured.unwrap();
         assert_eq!(data["entry_count"], 180);
         assert_eq!(

@@ -1,4 +1,4 @@
-use kuku_client::{new_id, Acknowledgement, Action, Command, Error, InputStatus, Target, Timing};
+use kuku_client::{Acknowledgement, Action, Command, Error, InputStatus, Target, Timing, new_id};
 
 use crate::jobs::Job;
 

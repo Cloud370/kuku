@@ -9,13 +9,13 @@ use crate::app::Activity;
 use crate::markup::{render_literal, render_markdown};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, CardFrame, ACCENT, ACTIVITY_EXCERPT_CELLS, ERROR, MODEL, MUTED, SUCCESS,
-    SURFACE_TEXT, WARNING,
+    ACCENT, ACTIVITY_EXCERPT_CELLS, CardFrame, ERROR, MODEL, MUTED, SUCCESS, SURFACE_TEXT, WARNING,
+    emphasis,
 };
 
 use super::{
-    body_inset, capped, render_rows, Body, Key, Row, ToolDetails, Transcript, MAX_BODY_BYTES,
-    MAX_RECORDS, MAX_VISUAL_ROWS,
+    Body, Key, MAX_BODY_BYTES, MAX_RECORDS, MAX_VISUAL_ROWS, Row, ToolDetails, Transcript,
+    body_inset, capped, render_rows,
 };
 
 const MAX_ACTIVITY_BYTES: usize = 4 * 1024;
@@ -572,7 +572,7 @@ fn render_section(
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use crate::app::Activity;
 
@@ -773,9 +773,11 @@ mod tests {
                 "args":{"address":"reviewer","instructions":"Check the report"}
             }),
         );
-        assert!(!lines(&transcript.project(40, 15))
-            .join("\n")
-            .contains("Open →"));
+        assert!(
+            !lines(&transcript.project(40, 15))
+                .join("\n")
+                .contains("Open →")
+        );
         apply(
             &mut transcript,
             2,
@@ -792,17 +794,23 @@ mod tests {
                 transcript.agent_link_at(heading, columns.start, width),
                 Some("reviewer")
             );
-            assert!(transcript
-                .agent_link_at(heading, columns.start - 1, width)
-                .is_none());
-            assert!(transcript
-                .agent_link_at(heading + 1, columns.start, width)
-                .is_none());
+            assert!(
+                transcript
+                    .agent_link_at(heading, columns.start - 1, width)
+                    .is_none()
+            );
+            assert!(
+                transcript
+                    .agent_link_at(heading + 1, columns.start, width)
+                    .is_none()
+            );
             let clipped = transcript.project(width, 3);
-            assert!(clipped
-                .lines
-                .iter()
-                .all(|line| !line.to_string().contains(label)));
+            assert!(
+                clipped
+                    .lines
+                    .iter()
+                    .all(|line| !line.to_string().contains(label))
+            );
             assert!(transcript.agent_link_at(0, columns.start, width).is_none());
         }
     }
@@ -834,9 +842,11 @@ mod tests {
         assert!(!rows.iter().any(|row| row.contains("最终限制")));
         let detail = transcript.detail_at(label).unwrap().clone();
         assert!(transcript.toggle_detail(&detail));
-        assert!(lines(&transcript.project(32, 20))
-            .iter()
-            .any(|row| row.contains("最终限制")));
+        assert!(
+            lines(&transcript.project(32, 20))
+                .iter()
+                .any(|row| row.contains("最终限制"))
+        );
     }
 
     #[test]

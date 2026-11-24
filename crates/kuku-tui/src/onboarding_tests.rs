@@ -53,12 +53,14 @@ async fn existing_config_and_remote_or_token_options_skip_first_run_setup() {
         ..ConnectionOptions::default()
     };
     assert!(!super::required(&options).await.unwrap());
-    assert!(!options
-        .data_dir
-        .as_ref()
-        .unwrap()
-        .join("credentials")
-        .exists());
+    assert!(
+        !options
+            .data_dir
+            .as_ref()
+            .unwrap()
+            .join("credentials")
+            .exists()
+    );
 
     let remote = ConnectionOptions {
         remote: Some("https://service.invalid".into()),

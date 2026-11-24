@@ -252,9 +252,10 @@ mod tests {
             .unwrap(),
         ));
         assert!(app.credential_failure().is_none());
-        assert!(!app
-            .contextual_controls()
-            .iter()
-            .any(|control| { matches!(control, ContextControl::RepairCredentials { .. }) }));
+        assert!(
+            !app.contextual_controls()
+                .iter()
+                .any(|control| { matches!(control, ContextControl::RepairCredentials { .. }) })
+        );
     }
 }

@@ -268,7 +268,7 @@ mod tests {
     use kuku_client::{HistoryEntry, HistoryPage, Snapshot};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use crate::jobs::{Job, Update};
 

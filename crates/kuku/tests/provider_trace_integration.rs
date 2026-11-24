@@ -2,9 +2,9 @@ mod common;
 
 use std::path::Path;
 
-use common::{openai_sse_response, test_config, TestEnv};
+use common::{TestEnv, openai_sse_response, test_config};
 use httpmock::prelude::*;
-use kuku::{query, Provider};
+use kuku::{Provider, query};
 use serde_json::Value;
 
 fn trace_contents(home: &Path, session_id: &str) -> String {
@@ -35,12 +35,16 @@ fn assert_redacted_trace(raw: &str, provider: &str, secret: &str) {
             && record["direction"] == "request"
             && record["headers"]["authorization"] == "<redacted>"
     }));
-    assert!(records
-        .iter()
-        .any(|record| record["provider"] == provider && record["direction"] == "event"));
-    assert!(records
-        .iter()
-        .any(|record| record["provider"] == provider && record["direction"] == "response"));
+    assert!(
+        records
+            .iter()
+            .any(|record| record["provider"] == provider && record["direction"] == "event")
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record["provider"] == provider && record["direction"] == "response")
+    );
     assert!(!raw.contains(secret));
 }
 
@@ -134,33 +138,37 @@ async fn openai_adapters_write_redacted_provider_traces() {
         ("s_preview_trace", kuku::ProviderTraceMode::Auto),
         ("s_trace_diagnostic", kuku::ProviderTraceMode::Diagnostic),
     ] {
-        assert!(query("REQUEST_SECRET")
-            .session(session)
-            .provider(Provider::OpenAiCompatible)
-            .model("test-chat")
-            .base_url(server.base_url())
-            .api_key("HEADER_SECRET")
-            .config(test_config())
-            .provider_trace(mode)
-            .run()
-            .await
-            .is_err());
+        assert!(
+            query("REQUEST_SECRET")
+                .session(session)
+                .provider(Provider::OpenAiCompatible)
+                .model("test-chat")
+                .base_url(server.base_url())
+                .api_key("HEADER_SECRET")
+                .config(test_config())
+                .provider_trace(mode)
+                .run()
+                .await
+                .is_err()
+        );
     }
     request.assert_hits(2);
     let raw = trace_contents(env.home.as_path(), "s_trace_diagnostic");
     let auto = trace_contents(env.home.as_path(), "s_preview_trace");
     assert_eq!(!auto.is_empty(), env!("KUKU_BUILD_IS_PREVIEW") == "true");
-    assert!(query("REQUEST_SECRET")
-        .session("s_trace_disabled")
-        .provider_trace(kuku::ProviderTraceMode::Off)
-        .provider(Provider::OpenAiCompatible)
-        .model("test-chat")
-        .base_url(server.base_url())
-        .api_key("HEADER_SECRET")
-        .config(test_config())
-        .run()
-        .await
-        .is_err());
+    assert!(
+        query("REQUEST_SECRET")
+            .session("s_trace_disabled")
+            .provider_trace(kuku::ProviderTraceMode::Off)
+            .provider(Provider::OpenAiCompatible)
+            .model("test-chat")
+            .base_url(server.base_url())
+            .api_key("HEADER_SECRET")
+            .config(test_config())
+            .run()
+            .await
+            .is_err()
+    );
     assert!(trace_contents(env.home.as_path(), "s_trace_disabled").is_empty());
     assert!(!raw.contains("SECRET"), "{raw}");
     let records = raw

@@ -1,9 +1,9 @@
 use crate::transcript::tests::card_text;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::transcript::Transcript;
 
-use super::{Outcome, State, Tool, MAX_DETAIL_BYTES};
+use super::{MAX_DETAIL_BYTES, Outcome, State, Tool};
 
 #[test]
 fn remediation_truncated_edit_preview_is_not_full_inline_output() {
@@ -119,10 +119,11 @@ fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
         (" of ", Some(crate::theme::MUTED)),
         ("231", Some(crate::theme::USAGE)),
     ] {
-        assert!(read
-            .spans
-            .iter()
-            .any(|span| span.content.contains(field) && span.style.fg == color));
+        assert!(
+            read.spans
+                .iter()
+                .any(|span| span.content.contains(field) && span.style.fg == color)
+        );
     }
     for (field, spans) in [
         (
@@ -229,11 +230,13 @@ fn closed_script_card_previews_an_action_and_the_return_shape() {
     assert_eq!(transcript.detail_at(title), transcript.detail_at(body));
     let action = transcript.detail_at(body).unwrap().clone();
     assert!(transcript.toggle_in_view(&action, 96, 20));
-    assert!(transcript
-        .project(96, 20)
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("Input · JavaScript")));
+    assert!(
+        transcript
+            .project(96, 20)
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("Input · JavaScript"))
+    );
 }
 
 #[test]
@@ -255,31 +258,38 @@ fn script_details_show_source_inside_the_tool_card() {
         .iter()
         .position(|line| line.to_string().contains(label))
         .unwrap();
-    assert!(!view
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("const marker")));
-    assert!(view
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("Output · Saved JSON")));
+    assert!(
+        !view
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("const marker"))
+    );
+    assert!(
+        view.lines
+            .iter()
+            .any(|line| line.to_string().contains("Output · Saved JSON"))
+    );
     let heading = view.lines[index].clone();
     for (text, color) in [
         ("Script", crate::theme::MODEL),
         ("Save the report", crate::theme::SURFACE_TEXT),
     ] {
-        assert!(heading
-            .spans
-            .iter()
-            .any(|span| span.content.trim() == text && span.style.fg == Some(color)));
+        assert!(
+            heading
+                .spans
+                .iter()
+                .any(|span| span.content.trim() == text && span.style.fg == Some(color))
+        );
     }
     let detail = transcript.detail_at(index).unwrap().clone();
     assert!(transcript.toggle_in_view(&detail, 80, 20));
     let view = transcript.project(80, 20);
     assert_eq!(heading, view.lines[index]);
-    assert!(view.lines[index + 1]
-        .to_string()
-        .contains("│   │ Status · ok"));
+    assert!(
+        view.lines[index + 1]
+            .to_string()
+            .contains("│   │ Status · ok")
+    );
     let source = view
         .lines
         .iter()
@@ -287,13 +297,17 @@ fn script_details_show_source_inside_the_tool_card() {
         .unwrap();
     assert_eq!(source, index + 2);
     assert!(view.lines[source].to_string().contains("4 lines"));
-    assert!(view.lines[source + 1]
-        .to_string()
-        .contains("│   │   │ const marker"));
-    assert!(!view
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("return { marker };")));
+    assert!(
+        view.lines[source + 1]
+            .to_string()
+            .contains("│   │   │ const marker")
+    );
+    assert!(
+        !view
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("return { marker };"))
+    );
     let source_key = transcript.detail_at(source).unwrap().clone();
     assert!(transcript.toggle_in_view(&source_key, 80, 20));
     let view = transcript.project(80, 20);
@@ -317,9 +331,10 @@ fn script_details_show_source_inside_the_tool_card() {
             .filter(|line| line.contains("│   │ Input · JavaScript"))
             .count()
     );
-    assert!(text
-        .iter()
-        .any(|line| line.contains("const marker = '```';")));
+    assert!(
+        text.iter()
+            .any(|line| line.contains("const marker = '```';"))
+    );
     assert!(text.iter().any(|line| line.contains("return { marker };")));
     assert!(!text.iter().any(|line| line.contains("Requested arguments")));
 }
@@ -367,18 +382,20 @@ fn creation_and_overwrite_previews_share_the_same_diff_rules() {
                 .iter()
                 .find(|row| row.line.to_string().contains(body))
                 .unwrap();
-            assert!(row
-                .line
-                .spans
-                .iter()
-                .any(|span| span.content.starts_with("│")
-                    && span.style.fg == Some(crate::theme::TURN_RULE)));
-            assert!(row
-                .line
-                .spans
-                .iter()
-                .any(|span| body.ends_with(span.content.as_ref())
-                    && span.style.fg == Some(crate::theme::SUCCESS)));
+            assert!(
+                row.line
+                    .spans
+                    .iter()
+                    .any(|span| span.content.starts_with("│")
+                        && span.style.fg == Some(crate::theme::TURN_RULE))
+            );
+            assert!(
+                row.line
+                    .spans
+                    .iter()
+                    .any(|span| body.ends_with(span.content.as_ref())
+                        && span.style.fg == Some(crate::theme::SUCCESS))
+            );
         }
     }
 }
@@ -538,14 +555,18 @@ fn reads_separated_by_a_turn_boundary_show_each_path_with_its_actual_line_range(
     transcript.toggle_details();
     let collapsed = transcript.project(84, 24);
     assert_eq!(Some("Ctrl+O show"), collapsed.tool_hint.as_deref());
-    assert!(!collapsed
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("alpha")));
-    assert!(collapsed
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("src/lib.rs")));
+    assert!(
+        !collapsed
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("alpha"))
+    );
+    assert!(
+        collapsed
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("src/lib.rs"))
+    );
 }
 
 #[test]
@@ -633,18 +654,24 @@ fn file_cards_preview_saved_content_and_diff_without_using_requested_text_as_evi
     assert_eq!("-first\n-second\n+new line", transcript.tools()[1].diff);
     assert!(transcript.toggle_detail(&edit_key));
     let folded = transcript.project(90, 40);
-    assert!(folded
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("Edited   notes.txt")));
-    assert!(folded
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("17 - first")));
-    assert!(folded
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("18 - second")));
+    assert!(
+        folded
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("Edited   notes.txt"))
+    );
+    assert!(
+        folded
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("17 - first"))
+    );
+    assert!(
+        folded
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("18 - second"))
+    );
 }
 
 #[test]
@@ -717,13 +744,17 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
             .count()
     );
     assert!(inspected.iter().any(|line| line.contains("View output")));
-    assert!(inspected
-        .iter()
-        .any(|line| line.contains("│   │ Output · 1 line")));
+    assert!(
+        inspected
+            .iter()
+            .any(|line| line.contains("│   │ Output · 1 line"))
+    );
     assert!(inspected.iter().any(|line| line.contains("│   │ 1 GONE")));
-    assert!(!inspected
-        .iter()
-        .any(|line| line.contains("Requested arguments")));
+    assert!(
+        !inspected
+            .iter()
+            .any(|line| line.contains("Requested arguments"))
+    );
     let args_row = inspected
         .iter()
         .position(|line| line.contains("View arguments"))
@@ -869,9 +900,10 @@ fn shell_card_distinguishes_stderr_from_the_outer_exit_status() {
         "status":"ok","summary":"shell exited 0","model_content":"check failed","structured":facts
     })).unwrap(),None);
     let view = transcript.project(80, 16);
-    assert!(view.lines.iter().any(|line| line
-        .to_string()
-        .contains("ok · shell exit 0 · stderr · 5.9s")));
+    assert!(view.lines.iter().any(|line| {
+        line.to_string()
+            .contains("ok · shell exit 0 · stderr · 5.9s")
+    }));
 }
 
 #[test]

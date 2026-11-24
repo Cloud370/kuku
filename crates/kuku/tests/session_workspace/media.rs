@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use kuku::config::{
     ModelCapabilityDeclaration, ModelCapabilityEntry, ProviderFormat, ProviderProfile,
@@ -10,7 +10,7 @@ use kuku::config::{
 use kuku::event::EventPayload;
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{AgentConfig, AgentStatus, Input, Session, SessionOptions};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{common, until};
 
@@ -95,22 +95,26 @@ async fn authorized_image_replays_from_retained_bytes_after_reopen() {
     session
         .create_agent("create", "main", AgentConfig::default())
         .unwrap();
-    assert!(session
-        .agent_selection("main")
-        .unwrap()
-        .tools
-        .iter()
-        .any(|tool| tool.name == "view_image"));
+    assert!(
+        session
+            .agent_selection("main")
+            .unwrap()
+            .tools
+            .iter()
+            .any(|tool| tool.name == "view_image")
+    );
     let text_only = AgentConfig {
         model: Some("text-fixture".into()),
         ..Default::default()
     };
-    assert!(!session
-        .selection_for_config("main", text_only)
-        .unwrap()
-        .tools
-        .iter()
-        .any(|tool| tool.name == "view_image"));
+    assert!(
+        !session
+            .selection_for_config("main", text_only)
+            .unwrap()
+            .tools
+            .iter()
+            .any(|tool| tool.name == "view_image")
+    );
     run(&session, "first", "inspect these four images").await;
     let id = session.id().to_owned();
     let events = session.events(0, 256).unwrap();

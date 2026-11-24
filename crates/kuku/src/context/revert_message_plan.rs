@@ -8,8 +8,9 @@ use crate::{Error, Result};
 
 use super::message_rewind::{file_snapshot, is_created_file_write};
 use super::{
-    event_owner, event_turn_owners, message_rewind_comparison_path, message_rewind_path,
-    reject_symlink_components, revertable_path, FileRestore, RevertPlan, RewindVisibility,
+    FileRestore, RevertPlan, RewindVisibility, event_owner, event_turn_owners,
+    message_rewind_comparison_path, message_rewind_path, reject_symlink_components,
+    revertable_path,
 };
 
 /// Determine workspace changes needed to rewind a message to its visible history boundary.

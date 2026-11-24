@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::config::{PromptCacheScope, ProviderAuth, ProviderFormat, ProviderProfile};
@@ -365,7 +365,9 @@ fn validate_replay(
             } = block
             {
                 if *source != protocol {
-                    return Err(invalid_request("native replay data belongs to another protocol; prepare a successor context segment"));
+                    return Err(invalid_request(
+                        "native replay data belongs to another protocol; prepare a successor context segment",
+                    ));
                 }
             }
         }
@@ -662,9 +664,11 @@ metadata = { scope = "{{session_id}}", number = 7 }
                 json!({"type": "ephemeral"}),
                 prepared.body.as_json()["cache_control"]
             );
-            assert!(prepared.body.as_json()["system"][0]
-                .get("cache_control")
-                .is_none());
+            assert!(
+                prepared.body.as_json()["system"][0]
+                    .get("cache_control")
+                    .is_none()
+            );
         }
 
         for (kind, model) in [
@@ -936,11 +940,13 @@ metadata = { scope = "{{session_id}}", number = 7 }
         let responses = prepare_provider_request(&config, &request, None).unwrap();
         assert_eq!(false, responses.body.as_json()["store"]);
         assert_eq!("none", responses.body.as_json()["reasoning"]["effort"]);
-        assert!(responses
-            .body
-            .as_json()
-            .get("previous_response_id")
-            .is_none());
+        assert!(
+            responses
+                .body
+                .as_json()
+                .get("previous_response_id")
+                .is_none()
+        );
     }
 
     #[test]
@@ -989,8 +995,10 @@ metadata = { scope = "{{session_id}}", number = 7 }
         config.kind = ProviderKind::OpenAiCompatible;
         config.capabilities.profile = ProviderProfile::OpenAi;
         let chat = prepare_provider_request(&config, &request, None).unwrap();
-        assert!(chat.body.as_json()["tools"][0]["function"]
-            .get("strict")
-            .is_none());
+        assert!(
+            chat.body.as_json()["tools"][0]["function"]
+                .get("strict")
+                .is_none()
+        );
     }
 }

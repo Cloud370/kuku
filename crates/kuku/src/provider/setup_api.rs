@@ -1,11 +1,11 @@
 use url::Url;
 
-use crate::config::{
-    resolve_request_url, ModelCapabilityDeclaration, ProviderConfig, ProviderFormat,
-};
 use crate::Error;
+use crate::config::{
+    ModelCapabilityDeclaration, ProviderConfig, ProviderFormat, resolve_request_url,
+};
 
-use super::trial::{trial_with_route_evidence, TrialProblem};
+use super::trial::{TrialProblem, trial_with_route_evidence};
 use super::{ModelTrial, TrialResult};
 
 pub(super) const DECLARED_ORDER: [ProviderFormat; 3] = [

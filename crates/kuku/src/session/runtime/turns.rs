@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
+use crate::Result;
 use crate::event::store::Replay;
 use crate::event::{EventPayload, EventStore, StoredEvent};
-use crate::Result;
 
 use super::record::Record;
 use super::{
@@ -464,12 +464,14 @@ mod tests {
         assert_eq!(route("main", main).service_tier(), Some(None));
         assert_eq!(route("reviewer", peer).model, "peer");
         assert_eq!(route("reviewer", peer).service_tier(), Some(Some("flex")));
-        assert!(index
-            .indexed("main", next)
-            .unwrap()
-            .1
-            .last_model_route
-            .is_none());
+        assert!(
+            index
+                .indexed("main", next)
+                .unwrap()
+                .1
+                .last_model_route
+                .is_none()
+        );
     }
 
     fn append(store: &mut EventStore, second: u8, record: Record) -> u64 {

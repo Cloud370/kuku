@@ -431,10 +431,11 @@ mod tests {
         assert!(sent(&app).is_empty());
         assert!(app.modal.is_none());
         assert_eq!("Keep this draft", app.pane().draft.text());
-        assert!(app
-            .notice
-            .as_ref()
-            .is_some_and(|notice| notice.text == "Wait for model settings · draft kept"));
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|notice| notice.text == "Wait for model settings · draft kept")
+        );
     }
 
     #[test]

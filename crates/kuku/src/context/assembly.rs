@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::event::types::{ContextMessage, EventPayload, StoredEvent};
-use crate::prompt::{render_project_context, ProjectContextInput};
+use crate::prompt::{ProjectContextInput, render_project_context};
 
 use super::message::{CanonicalMessage, MessageBlock};
 use super::provenance::FileSource;
@@ -412,8 +412,8 @@ fn assemble_context_inner(
 #[cfg(test)]
 mod tests {
     use crate::context::{
-        assemble_context, CanonicalMessage, ContextInput, EnvironmentSource, InstructionSource,
-        MemorySource, MessageBlock, ToolSchema,
+        CanonicalMessage, ContextInput, EnvironmentSource, InstructionSource, MemorySource,
+        MessageBlock, ToolSchema, assemble_context,
     };
     use crate::prompt::builtin_prompt_catalog;
     use serde_json::json;

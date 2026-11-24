@@ -2,7 +2,7 @@ use crate::markup::MarkdownStream;
 use crate::theme::CardFrame;
 
 use super::preview::{assistant_body, assistant_header, assistant_width, trim_assistant_end};
-use super::{Row, MAX_VISUAL_ROWS};
+use super::{MAX_VISUAL_ROWS, Row};
 
 #[derive(Debug, Default)]
 pub(super) struct StreamingReply {
@@ -175,7 +175,9 @@ mod tests {
             )
         };
         for width in [60, 120] {
-            let mut text = String::from("首段。\n\n| 验证项 | 结果 |\n| --- | --- |\n| 中文 | 通过 |\n\n```rust\nfn preview() { }\n```\n\n");
+            let mut text = String::from(
+                "首段。\n\n| 验证项 | 结果 |\n| --- | --- |\n| 中文 | 通过 |\n\n```rust\nfn preview() { }\n```\n\n",
+            );
             text.extend((0..42).map(paragraph));
             let mut reply = StreamingReply::default();
             let mut canonical = Vec::new();

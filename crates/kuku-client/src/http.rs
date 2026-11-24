@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use url::Url;
 use wreq::header::HeaderValue;
@@ -47,7 +47,9 @@ pub enum Error {
     #[error("invalid service response: {0}")]
     Protocol(String),
     /// A managed or explicit service uses another Session protocol revision.
-    #[error("Session protocol {client} is required, but server {version} uses protocol {server}; check `kuku server status` and restart the managed service or upgrade the remote service")]
+    #[error(
+        "Session protocol {client} is required, but server {version} uses protocol {server}; check `kuku server status` and restart the managed service or upgrade the remote service"
+    )]
     ProtocolVersion {
         /// Protocol used by this client.
         client: u32,
@@ -892,7 +894,7 @@ mod tests {
     use std::sync::Arc;
 
     use axum::extract::{Query, State};
-    use axum::http::{header, HeaderMap};
+    use axum::http::{HeaderMap, header};
     use axum::routing::get;
     use axum::{Json, Router};
     use serde::Deserialize;

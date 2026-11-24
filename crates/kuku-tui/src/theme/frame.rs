@@ -1,6 +1,6 @@
 use super::{
-    append_line_count, card_padding, code_surface, emphasis, transcript_background, TranscriptTone,
-    ACCENT, MUTED, TURN_RULE,
+    ACCENT, MUTED, TURN_RULE, TranscriptTone, append_line_count, card_padding, code_surface,
+    emphasis, transcript_background,
 };
 use crate::text::shorten;
 use ratatui::style::{Color, Style};

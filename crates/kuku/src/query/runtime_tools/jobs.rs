@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use crate::session::runtime::JobControl;
@@ -13,25 +13,31 @@ fn job_schema() -> Value {
 }
 
 pub(super) fn list_definition() -> ToolDefinition {
-    let mut tool = super::definition("list_jobs",
+    let mut tool = super::definition(
+        "list_jobs",
         "List your Session Jobs, newest first. Returns id, tool, status, summary and output_id. For an older page pass the returned next_before.",
-        json!({"type":"object","properties":{"before":{"type":"integer","minimum":1}},"additionalProperties":false}));
+        json!({"type":"object","properties":{"before":{"type":"integer","minimum":1}},"additionalProperties":false}),
+    );
     tool.read_only = true;
     tool
 }
 
 pub(super) fn wait_definition() -> ToolDefinition {
-    let mut tool = super::definition("wait_job",
+    let mut tool = super::definition(
+        "wait_job",
         "Wait for one of your Session Jobs when your next action needs its result. Returns the final status and a bounded completion receipt with retained output references when available.",
-        job_schema());
+        job_schema(),
+    );
     tool.read_only = true;
     tool
 }
 
 pub(super) fn cancel_definition() -> ToolDefinition {
-    super::definition("cancel_job",
+    super::definition(
+        "cancel_job",
         "Stop a specific Session Job by job_id and wait for cleanup. Returns the final status and a bounded completion receipt with retained output references when available.",
-        job_schema())
+        job_schema(),
+    )
 }
 
 pub(super) fn list(session: &Session, agent: &str, args: &Value) -> Result<ToolResultEnvelope> {

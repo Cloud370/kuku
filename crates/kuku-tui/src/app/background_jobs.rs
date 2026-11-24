@@ -1,6 +1,6 @@
 use kuku_client::{JobSnapshot, JobStatus};
 
-use crate::jobs::{job_detail, Job, Search};
+use crate::jobs::{Job, Search, job_detail};
 use crate::menu::{Choice, ChoiceKind, PickerKind};
 use crate::transcript::ToolView;
 

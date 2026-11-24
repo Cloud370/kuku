@@ -4,20 +4,20 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio_stream::StreamExt;
 
+use crate::Result;
 use crate::context::{CanonicalMessage, MessageBlock};
 use crate::event::store::MAX_RECORD_BYTES;
 use crate::event::{EventPayload, ModelStopReason};
+use crate::provider::ProviderChunkStream;
 use crate::provider::chunk::ProviderChunk;
 use crate::provider::cost::RequestPricing;
 use crate::provider::types::{
     PreparedProviderRequest, ProviderCorrelation, ProviderReport, ProviderUsage, ResolvedProvider,
 };
-use crate::provider::ProviderChunkStream;
 use crate::query::frozen::ContextCommit;
 use crate::query::helpers::now_timestamp;
 use crate::query::request::OwnedRequestBase;
 use crate::query::types::PendingRun;
-use crate::Result;
 
 use super::dispatch::prepare_request;
 

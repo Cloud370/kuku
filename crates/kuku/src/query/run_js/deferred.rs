@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use super::WorkspaceHost;
@@ -10,8 +10,8 @@ use crate::event::{EventPayload, EventStore};
 use crate::permission::GateDecisionKind;
 use crate::query::helpers::{display_summary, now_timestamp, permission_candidate};
 use crate::query::types::{PendingRun, PermissionRequest, QueuedToolCall};
-use crate::tool::builtin::common::{prepare_file_target, ExecutorObservation};
-use crate::tool::run_js::{append_recovery_evidence, ScriptCall, ScriptExecution, ScriptOperation};
+use crate::tool::builtin::common::{ExecutorObservation, prepare_file_target};
+use crate::tool::run_js::{ScriptCall, ScriptExecution, ScriptOperation, append_recovery_evidence};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, Result, WorkspaceScriptActionStatus, WorkspaceScriptFacts};
 
@@ -324,8 +324,9 @@ impl Continuation {
             boundary -= 1;
         }
         content.truncate(boundary);
-        let mut model_content =
-            format!("{summary}\n{content}\nThe script stopped for approval. Continue from the recorded actions.");
+        let mut model_content = format!(
+            "{summary}\n{content}\nThe script stopped for approval. Continue from the recorded actions."
+        );
         append_recovery_evidence(&mut model_content, &self.facts.actions, can_read_output);
         ToolResultEnvelope {
             status: result.status,

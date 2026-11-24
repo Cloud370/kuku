@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use kuku::adapter::{
-    inspect_connection_model, inspect_model, trial_model_with_route_request, ModelTrial,
+    ModelTrial, inspect_connection_model, inspect_model, trial_model_with_route_request,
 };
 use kuku::config::{CustomServiceTier, RequestFields};
 use kuku_client::{Connection, ConnectionOptions};
@@ -203,7 +203,7 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::{probe, probe_result, SpeedResult};
+    use super::{SpeedResult, probe, probe_result};
 
     #[tokio::test]
     async fn custom_tier_probe_uses_configured_proxy_and_selected_route_with_synthetic_input() {

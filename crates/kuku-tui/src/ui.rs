@@ -1,9 +1,9 @@
 use kuku_client::AgentStatus;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Modal};
@@ -14,9 +14,9 @@ use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
-    composer_padding, composer_surface, emphasis, focused_row, panel, panel_padding, session_area,
     ACCENT, ERROR, MAX_DRAFT_ROWS, MODEL, MUTED, PICKER_HEIGHT, PICKER_WIDTH, SHORT_PROMPT_HEIGHT,
-    STATUS_EDITOR_HEIGHT, WARNING,
+    STATUS_EDITOR_HEIGHT, WARNING, composer_padding, composer_surface, emphasis, focused_row,
+    panel, panel_padding, session_area,
 };
 
 mod activity;
@@ -163,18 +163,26 @@ pub(crate) fn render_at(
         .saturating_sub(editor_height + above_editor + below_editor + MIN_TRANSCRIPT_ROWS)
         .min(MAX_BANNER_ROWS);
     let banner = banner(app, width, usize::from(banner_rows));
-    let [transcript, banner_area, gap, request_area, delivery_area, editor, status_gap_area, status] =
-        Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(banner.len() as u16),
-            Constraint::Length(composer_gap),
-            Constraint::Length(request_height),
-            Constraint::Length(delivery_height),
-            Constraint::Length(editor_height),
-            Constraint::Length(status_gap),
-            Constraint::Length(status_height),
-        ])
-        .areas(area);
+    let [
+        transcript,
+        banner_area,
+        gap,
+        request_area,
+        delivery_area,
+        editor,
+        status_gap_area,
+        status,
+    ] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(banner.len() as u16),
+        Constraint::Length(composer_gap),
+        Constraint::Length(request_height),
+        Constraint::Length(delivery_height),
+        Constraint::Length(editor_height),
+        Constraint::Length(status_gap),
+        Constraint::Length(status_height),
+    ])
+    .areas(area);
     let (transcript_body, row_insets) = render_transcript(
         frame,
         transcript,

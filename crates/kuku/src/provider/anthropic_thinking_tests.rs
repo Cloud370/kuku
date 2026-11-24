@@ -25,9 +25,11 @@ fn unsigned_thinking_does_not_prevent_tool_dispatch() {
             reason: ModelStopReason::ToolUse
         }
     )));
-    assert!(!terminal
-        .iter()
-        .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream)));
+    assert!(
+        !terminal
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream))
+    );
 
     let ended = parser.feed(r#"data: {"type":"message_stop"}"#).unwrap();
     let replay = ended.iter().find_map(|chunk| match chunk {

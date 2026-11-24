@@ -11,12 +11,12 @@ use std::ptr;
 
 use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Globalization::{
-    CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN,
+    CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB,
-    CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, PROCESS_INFORMATION,
-    STARTUPINFOW,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
+    CreateProcessW, DETACHED_PROCESS, GetExitCodeProcess, PROCESS_INFORMATION, STARTUPINFOW,
+    WaitForSingleObject,
 };
 
 const NUL: u16 = 0;
@@ -131,7 +131,7 @@ fn push_quoted_arg(line: &mut Vec<u16>, arg: &OsStr) -> io::Result<()> {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "argument contains NUL",
-                ))
+                ));
             }
             BACKSLASH => slashes += 1,
             unit => {

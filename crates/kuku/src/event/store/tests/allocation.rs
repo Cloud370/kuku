@@ -1,7 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use super::{payload, EventPayload, EventStore};
+use super::{EventPayload, EventStore, payload};
 
 const MIB: usize = 1024 * 1024;
 

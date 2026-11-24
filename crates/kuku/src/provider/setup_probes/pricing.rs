@@ -1,10 +1,10 @@
-use crate::config::{resolve_request_url, PriceCatalog, ProviderConfig, RouteQuote};
+use crate::config::{PriceCatalog, ProviderConfig, RouteQuote, resolve_request_url};
 use crate::provider::cost::RequestPricing;
 use crate::provider::openrouter_catalog::service_tiers;
 
 use super::{
-    openrouter_quote_url, ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow,
-    ReasoningCheckResult,
+    ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, ReasoningCheckResult,
+    openrouter_quote_url,
 };
 
 impl ProbeBatch {
@@ -142,8 +142,8 @@ mod tests {
     use crate::provider::{ProviderReport, ProviderUsage, RequestCost, TrialResult};
 
     use super::{
-        openrouter_quote_url, ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult,
-        ProviderConfig, RouteQuote,
+        ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProviderConfig, RouteQuote,
+        openrouter_quote_url,
     };
 
     #[test]

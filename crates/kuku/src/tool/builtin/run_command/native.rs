@@ -315,9 +315,11 @@ mod tests {
             &workspace, None, None,
         ).await;
         assert_eq!("ok", result.status, "{result:?}");
-        assert!(result
-            .model_content
-            .contains("shebang:literal ; > interpreted.txt"));
+        assert!(
+            result
+                .model_content
+                .contains("shebang:literal ; > interpreted.txt")
+        );
         assert!(result.model_content.contains("script-stderr"));
         assert!(!working.join("interpreted.txt").exists());
 

@@ -7,8 +7,8 @@ use kuku::adapter::{
 use kuku::config::ProviderProxy;
 use kuku::event::ModelStopReason;
 use kuku::{Error, ProviderFailureKind};
-use ratatui::layout::Rect;
 use ratatui::Frame;
+use ratatui::layout::Rect;
 
 use crate::text::shorten_middle;
 use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING};

@@ -9,8 +9,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use tokio::process::Command;
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::MAX_PATH;

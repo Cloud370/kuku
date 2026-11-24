@@ -1,13 +1,13 @@
 mod chatgpt;
 mod store;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::config::{ProviderProxy, SubscriptionAccount, SubscriptionChannel};
 use crate::{Error, Result};
 
-use self::store::{now, AccountRecord, AccountStore};
+use self::store::{AccountRecord, AccountStore, now};
 
 pub use self::chatgpt::{SubscriptionLogin, SubscriptionLoginProgress, SubscriptionLoginResult};
 
@@ -235,7 +235,7 @@ fn sign_in_required(account: &SubscriptionAccount) -> Error {
 mod display_tests {
     use crate::config::{SubscriptionAccount, SubscriptionChannel};
 
-    use super::{subscription_display_label, SubscriptionAccountInfo, SubscriptionStatus};
+    use super::{SubscriptionAccountInfo, SubscriptionStatus, subscription_display_label};
 
     #[test]
     fn label_uses_the_masked_email_and_never_exposes_automatic_names() {
@@ -273,7 +273,7 @@ mod display_tests {
 mod tests {
     use serde_json::json;
 
-    use super::{apply_request_shape, SubscriptionChannel};
+    use super::{SubscriptionChannel, apply_request_shape};
 
     #[test]
     fn request_shape_removes_unsupported_generated_fields_and_namespaces_tools() {

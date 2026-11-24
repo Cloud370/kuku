@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use kuku::event::{EventPayload, StoredEvent};
@@ -455,9 +455,11 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
         slow_session.job(AGENT, id).unwrap().status
     );
     slow_end.assert_hits_async(1).await;
-    assert!(wire_requests("/job-slow")
-        .iter()
-        .any(|body| body["messages"].to_string().contains(STEERING)));
+    assert!(
+        wire_requests("/job-slow")
+            .iter()
+            .any(|body| body["messages"].to_string().contains(STEERING))
+    );
 
     slow.release();
     let completion = committed(&mut observer, |event| job_completed_event(event, id)).await;
@@ -496,9 +498,11 @@ async fn same_script_keeps_one_command_capture_across_foreground_and_automatic_j
     let job_input = slow_session.events(0, 512).unwrap().into_iter().find(|event| matches!(
         &event.payload, EventPayload::MessageUser { job_delivery: true, text, .. } if text == wake
     )).expect("the durable event should identify the Job delivery");
-    assert!(slow_session
-        .rewind_message("rewind-job", AGENT, job_input.id, wake, false)
-        .is_err());
+    assert!(
+        slow_session
+            .rewind_message("rewind-job", AGENT, job_input.id, wake, false)
+            .is_err()
+    );
     assert_eq!(
         1,
         delivered
@@ -765,11 +769,13 @@ return {{length:text.length, original:command.output_ref, derived:derived.result
         .copied()
         .collect();
     assert_eq!(stdout.as_bytes(), retained_stdout);
-    assert!(facts
-        .actions
-        .iter()
-        .any(|action| action.tool == WorkspaceScriptOperation::ReadOutput
-            && action.result["output_id"] == original));
+    assert!(
+        facts
+            .actions
+            .iter()
+            .any(|action| action.tool == WorkspaceScriptOperation::ReadOutput
+                && action.result["output_id"] == original)
+    );
     fixture.assert_launch();
     assert_one_completion(&session, id);
     wait_until(|| {
@@ -792,10 +798,12 @@ fn check_first_request(body: &Value) {
             .unwrap_or_else(|| panic!("first request is missing {name}"))["function"]
     };
     let command = tool("run_command");
-    assert!(command["description"]
-        .as_str()
-        .unwrap()
-        .contains("The host controls process deadlines."));
+    assert!(
+        command["description"]
+            .as_str()
+            .unwrap()
+            .contains("The host controls process deadlines.")
+    );
     assert_eq!(
         "boolean",
         command["parameters"]["properties"]["background"]["type"]

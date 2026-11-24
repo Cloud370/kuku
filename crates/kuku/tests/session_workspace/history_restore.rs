@@ -99,10 +99,12 @@ return [edited.status, created.status];
     let jump = |id| {
         session.jump_history_with_file_restore(id, "main", target.event_id, Some(&plan.fingerprint))
     };
-    assert!(jump("stale-preview")
-        .unwrap_err()
-        .to_string()
-        .contains("file plan changed"));
+    assert!(
+        jump("stale-preview")
+            .unwrap_err()
+            .to_string()
+            .contains("file plan changed")
+    );
     assert_eq!(read("created.txt"), "a\nb\n");
     assert_eq!(read("owned.txt"), "edit on disk after preview\n");
     std::fs::write(path("owned.txt"), "new\nextra\n").unwrap();

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use kuku_client::ConnectionOptions;
 use serde::Deserialize;
 use tempfile::NamedTempFile;
-use toml_edit::{value, Array, DocumentMut, Item, Table};
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::statusline::StatusLine;
 
@@ -176,7 +176,7 @@ mod tests {
     use ratatui::layout::Rect;
     use tempfile::TempDir;
 
-    use super::{resolve_statusline as load, FILE_NAME, STATUSLINE_ENV};
+    use super::{FILE_NAME, STATUSLINE_ENV, resolve_statusline as load};
     use crate::app::{App, Modal};
     use crate::statusline::StatusLine;
 

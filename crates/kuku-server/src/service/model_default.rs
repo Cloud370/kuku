@@ -2,17 +2,17 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum::extract::{Query, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use kuku::adapter::inspect_model;
-use kuku::config::{parse_config_text, ModelEntry};
+use kuku::config::{ModelEntry, parse_config_text};
 use kuku::session::AgentConfig;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{failure, ServiceState};
+use super::{ServiceState, failure};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -186,10 +186,10 @@ mod tests {
     use std::sync::Arc;
 
     use axum::extract::{Query, State};
-    use axum::http::{header, StatusCode};
+    use axum::http::{StatusCode, header};
     use sha2::{Digest, Sha256};
 
-    use super::{plan, resolve_plan, ModelDefaultPlanRequest, PlanFailure, ServiceState};
+    use super::{ModelDefaultPlanRequest, PlanFailure, ServiceState, plan, resolve_plan};
 
     const CONFIG: &str = r#"
 default_model = "balanced"
@@ -244,7 +244,9 @@ think = "off"
             "model = \"gpt-4\"",
             "model = \"$KUKU_MODEL_DEFAULT_SERVICE_MODEL\"",
         );
-        let alternate = format!("{input}\n[model.alternate]\nprovider = \"openai\"\nmodel = \"server-model\"\nthink = \"off\"\n");
+        let alternate = format!(
+            "{input}\n[model.alternate]\nprovider = \"openai\"\nmodel = \"server-model\"\nthink = \"off\"\n"
+        );
         let plan = resolve_plan(
             alternate.as_bytes(),
             &request(alternate.as_bytes(), "server-model"),
@@ -259,8 +261,7 @@ think = "off"
         let input = CONFIG.replace(
             "model = \"gpt-4\"\nthink = \"off\"",
             "model = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"",
-        )
-            + "\n[model.alternate]\nprovider = \"openai\"\nmodel = \"gpt-4\"\nthink = \"off\"\n";
+        ) + "\n[model.alternate]\nprovider = \"openai\"\nmodel = \"gpt-4\"\nthink = \"off\"\n";
         let plan = resolve_plan(input.as_bytes(), &request(input.as_bytes(), "gpt-4")).unwrap();
         assert_eq!("alternate", plan.tier);
         assert!(!plan.overwrite_user_default);
@@ -268,9 +269,10 @@ think = "off"
 
     #[test]
     fn rejects_when_all_matching_tiers_are_unusable() {
-        let input = CONFIG
-            .replace("model = \"gpt-4\"\nthink = \"off\"", "model = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"")
-            + "\n[model.alternate]\nprovider = \"openai\"\nmodel = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"\n";
+        let input = CONFIG.replace(
+            "model = \"gpt-4\"\nthink = \"off\"",
+            "model = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"",
+        ) + "\n[model.alternate]\nprovider = \"openai\"\nmodel = \"gpt-4\"\nthink = \"off\"\nservice_tier = \"invalid\"\n";
         assert!(matches!(
             resolve_plan(input.as_bytes(), &request(input.as_bytes(), "gpt-4")),
             Err(PlanFailure::RouteUnusable)

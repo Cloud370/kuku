@@ -4,15 +4,15 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::WorkspaceIoLimits;
 use crate::event::StoredEvent;
 use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
-use crate::WorkspaceIoLimits;
 
 use super::common::{
+    ExecutorObservation, FileCancellation, IoLimit, WriteEvidence, WriteSnapshotLookup,
     content_hash, expected_version, file_read_error, file_version_with_text, mutation_preview,
     plural, publish_file, require_version, resolve_stat_path, snapshot_stale_error,
-    ExecutorObservation, FileCancellation, IoLimit, WriteEvidence, WriteSnapshotLookup,
 };
 
 use super::file_change;
@@ -233,10 +233,12 @@ mod tests {
             structured["raw_text_after"].as_str().unwrap(),
             "hello\nworld\n"
         );
-        assert!(structured["content_hash_after"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
+        assert!(
+            structured["content_hash_after"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("docs/new.md")).unwrap(),
             "hello\nworld\n"
@@ -302,9 +304,11 @@ mod tests {
             partial_result.structured.as_ref().unwrap()["reason_code"],
             "full_snapshot_required"
         );
-        assert!(partial_result
-            .model_content
-            .contains("prior full read_file snapshot"));
+        assert!(
+            partial_result
+                .model_content
+                .contains("prior full read_file snapshot")
+        );
 
         let full = read_snapshot_event(
             18,
@@ -353,10 +357,12 @@ mod tests {
             structured["raw_text_after"].as_str().unwrap(),
             "replacement\n"
         );
-        assert!(structured["content_hash_after"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
+        assert!(
+            structured["content_hash_after"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
             "replacement\n"

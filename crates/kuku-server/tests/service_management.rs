@@ -4,12 +4,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use axum::routing::get;
 use axum::Router;
-use common::mock_provider::{tool_response, ControlledProvider};
+use axum::routing::get;
+use common::mock_provider::{ControlledProvider, tool_response};
 use kuku::session::{AgentStatus, Session, SessionOptions};
 use kuku_server::server_args::ServerArgs;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Digest;
 use tokio::task::JoinHandle;
 use wreq::{Method, RequestBuilder};
@@ -286,10 +286,12 @@ async fn restart_defers_during_execution_and_releases_a_durable_wait() {
     assert_eq!(409, reply.status());
     let problem: Value = reply.json().await.unwrap();
     assert_eq!("service_busy", problem["code"]);
-    assert!(problem["busy"][0]
-        .as_str()
-        .unwrap()
-        .starts_with("restart-wait/main/"));
+    assert!(
+        problem["busy"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("restart-wait/main/")
+    );
     assert!(!daemon.task.is_finished());
     call.reply(tool_response(
         "ask_user",

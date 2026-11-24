@@ -281,9 +281,11 @@ mod tests {
         config.capabilities.profile = ProviderProfile::OpenRouter;
         let mut request = prepared(&config);
         with_preset(&config, &mut request);
-        assert!(!request_headers(&config, &request, "test-key")
-            .unwrap()
-            .contains_key("x-openrouter-metadata"));
+        assert!(
+            !request_headers(&config, &request, "test-key")
+                .unwrap()
+                .contains_key("x-openrouter-metadata")
+        );
         request.url = "https://eu.openrouter.ai/api/v1/messages".into();
         with_preset(&config, &mut request);
         assert_eq!(
@@ -295,9 +297,11 @@ mod tests {
             .model_pricing
             .insert(config.model.clone(), crate::config::ModelPricing::UsageOnly);
         with_preset(&config, &mut request);
-        assert!(!request_headers(&config, &request, "test-key")
-            .unwrap()
-            .contains_key("x-openrouter-metadata"));
+        assert!(
+            !request_headers(&config, &request, "test-key")
+                .unwrap()
+                .contains_key("x-openrouter-metadata")
+        );
     }
 
     #[test]

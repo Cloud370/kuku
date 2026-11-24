@@ -1,10 +1,10 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
-use crate::theme::{transcript_background, TURN_RULE};
+use crate::theme::{TURN_RULE, transcript_background};
 use crate::transcript::TurnSurface;
 
 pub(super) fn render(

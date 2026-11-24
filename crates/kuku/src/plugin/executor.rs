@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 
 use super::hook::HookInstance;
-use super::output::{handle_overflow, merge_outputs, parse_stdout, HookOutput};
+use super::output::{HookOutput, handle_overflow, merge_outputs, parse_stdout};
 
 const SIGTERM_GRACE: Duration = Duration::from_secs(2);
 

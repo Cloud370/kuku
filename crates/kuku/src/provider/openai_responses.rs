@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -6,10 +6,10 @@ use crate::config::ProviderFormat;
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::replay::{validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
+use super::replay::{MAX_REPLAY_ITEMS, ReplayBudget, validate_replay_size};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
-use super::transport::{send_prepared, TransportResponse};
+use super::transport::{TransportResponse, send_prepared};
 use super::types::{PreparedProviderRequest, ProviderFailure, ResolvedProvider};
 
 #[path = "openai_responses/media.rs"]

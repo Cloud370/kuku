@@ -4,10 +4,10 @@ use serde_json::Value;
 use crate::theme::CardFrame;
 
 use super::agent::AgentCards;
-use super::details::{compact_file_rows, groups, DetailRecord, Details, GroupHeading};
+use super::details::{DetailRecord, Details, GroupHeading, compact_file_rows, groups};
 use super::{
-    Anchor, AnchorLine, AssistantView, Body, CardTiming, Key, Record, RewindGroupState, Row,
-    ToolDetails, MAX_BODY_BYTES, MAX_LIVE_RECORDS, MAX_RECORDS,
+    Anchor, AnchorLine, AssistantView, Body, CardTiming, Key, MAX_BODY_BYTES, MAX_LIVE_RECORDS,
+    MAX_RECORDS, Record, RewindGroupState, Row, ToolDetails,
 };
 
 #[derive(Debug, Default)]

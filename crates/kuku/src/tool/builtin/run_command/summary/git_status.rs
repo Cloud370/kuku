@@ -68,7 +68,9 @@ impl Status {
         if exit_code != 0 || self.groups.is_empty() {
             return None;
         }
-        let mut text = String::from("Git status rows start with a two-character status and a space. Paths keep Git's quoting.");
+        let mut text = String::from(
+            "Git status rows start with a two-character status and a space. Paths keep Git's quoting.",
+        );
         let mut ranges = Vec::new();
         if let Some(branch) = self.branch {
             write!(text, "\n{}", branch.text).ok()?;
@@ -83,8 +85,13 @@ impl Status {
         }
         Some(Summary {
             text,
-            source: CommandOutputSummary::Rule { rule: rule.name.clone(), ranges },
-            script_hint: Some("For exact rows in run_js, iterate tools.output_lines({id, stream:\"stdout\"}). Skip the optional ## branch line. Filter by line.text.slice(0, 2) and keep line.text.slice(3) with Git's quoting."),
+            source: CommandOutputSummary::Rule {
+                rule: rule.name.clone(),
+                ranges,
+            },
+            script_hint: Some(
+                "For exact rows in run_js, iterate tools.output_lines({id, stream:\"stdout\"}). Skip the optional ## branch line. Filter by line.text.slice(0, 2) and keep line.text.slice(3) with Git's quoting.",
+            ),
         })
     }
 }

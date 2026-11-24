@@ -226,7 +226,7 @@ fn truncate(input: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{transport_error, ProviderFailureKind};
+    use super::{ProviderFailureKind, transport_error};
 
     #[test]
     fn invalid_url_builder_errors_are_permanent_and_sanitized() {

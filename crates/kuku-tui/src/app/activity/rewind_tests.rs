@@ -1,7 +1,7 @@
 use kuku_client::{Error, HistoryPage, Observation};
 use serde_json::json;
 
-use super::{connected, loaded, observe, snapshot, streaming, Activity, ServiceStatus};
+use super::{Activity, ServiceStatus, connected, loaded, observe, snapshot, streaming};
 use crate::app::Address;
 use crate::jobs::{Job, Update};
 use crate::transcript::HistoryRequest;

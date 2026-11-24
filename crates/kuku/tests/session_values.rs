@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use kuku::event::{EventPayload, ModelStopReason};
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
@@ -107,20 +107,24 @@ async fn original_value_survives_name_replacement_in_a_durable_child_input() {
     assert_ne!(original.reference.id, replacement.reference.id);
     options.session_id = Some(session.id().into());
     session.close().await.unwrap();
-    assert!(!std::fs::read_to_string(&events_path)
-        .unwrap()
-        .contains(ORIGINAL));
+    assert!(
+        !std::fs::read_to_string(&events_path)
+            .unwrap()
+            .contains(ORIGINAL)
+    );
     assert_eq!(
         vec![replacement.clone()],
         Session::read_named_values(&events_path, "main").unwrap()
     );
-    assert!(Session::read_saved_agent_output(
-        &events_path,
-        "child",
-        &original.reference.id,
-        &OutputRead::default()
-    )
-    .is_ok());
+    assert!(
+        Session::read_saved_agent_output(
+            &events_path,
+            "child",
+            &original.reference.id,
+            &OutputRead::default()
+        )
+        .is_ok()
+    );
     assert!(matches!(
         Session::read_saved_agent_output(
             &events_path,
@@ -305,10 +309,12 @@ impl ModelAdapter for ReferenceReader {
             {
                 let chunk: Value = serde_json::from_str(tool["content"].as_str().unwrap()).unwrap();
                 assert_eq!(self.reference.id, chunk["output_id"]);
-                assert!(chunk["segments"][0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with(ORIGINAL));
+                assert!(
+                    chunk["segments"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with(ORIGINAL)
+                );
                 events.push(ModelEvent::TextDelta {
                     text: "verified original reference".into(),
                 });

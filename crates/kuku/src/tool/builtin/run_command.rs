@@ -2,24 +2,24 @@ use std::io;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
-use tokio::sync::{mpsc, Notify};
-use tokio::time::{sleep_until, timeout, Duration, Instant as TokioInstant};
+use tokio::sync::{Notify, mpsc};
+use tokio::time::{Duration, Instant as TokioInstant, sleep_until, timeout};
 
 use crate::execution::CommandTermination;
 use crate::permission::gate::blocked_command_reason;
 use crate::tool::ToolResultEnvelope;
 
-use output::{read_output, OutputLimits, OutputRead, OutputStream, OutputWriter};
+use output::{OutputLimits, OutputRead, OutputStream, OutputWriter, read_output};
 use process::ProcessTree;
 use render::render_command_result;
-use request::{run_command_request, CommandRequest};
+use request::{CommandRequest, run_command_request};
 
 pub(crate) use request::{command_permission_candidate, prepare_command_args};
 pub(crate) use shell::available_shells;
@@ -213,18 +213,24 @@ pub(crate) async fn run_command_to(
         }
         _ => None,
     };
-    let mut writer =
-        match OutputWriter::create_command(output.dir, output.id, output.limits, collector).await {
-            Ok(writer) => writer,
-            Err(error) => {
-                return ToolResultEnvelope::error(
-                    format!("failed: output create: {error}"),
-                    format!(
+    let mut writer = match OutputWriter::create_command(
+        output.dir,
+        output.id,
+        output.limits,
+        collector,
+    )
+    .await
+    {
+        Ok(writer) => writer,
+        Err(error) => {
+            return ToolResultEnvelope::error(
+                format!("failed: output create: {error}"),
+                format!(
                     "command output create failed: {error}; no output reference was acknowledged"
                 ),
-                )
-            }
-        };
+            );
+        }
+    };
     let already_cancelled = tokio::select! {
         biased;
         _ = cancelled.as_mut() => true,

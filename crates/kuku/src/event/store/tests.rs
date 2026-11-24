@@ -68,13 +68,15 @@ fn a_closed_scan_can_overlap_reopen_and_only_sees_its_committed_prefix() {
             writer.append(payload()).unwrap();
         }
         if packed {
-            assert!(writer
-                .inner
-                .writer
-                .lock()
-                .unwrap()
-                .pack(&path, &())
-                .unwrap());
+            assert!(
+                writer
+                    .inner
+                    .writer
+                    .lock()
+                    .unwrap()
+                    .pack(&path, &())
+                    .unwrap()
+            );
         }
         drop(writer);
         OpenOptions::new()
@@ -206,9 +208,11 @@ fn write_failure_stops_all_shared_handles() {
     assert!(store.append(payload()).is_err());
     assert_eq!(0, shared.last_id());
     let error = shared.append(payload()).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("stopped after a durability failure"));
+    assert!(
+        error
+            .to_string()
+            .contains("stopped after a durability failure")
+    );
     drop(shared);
     drop(store);
     assert!(std::fs::read(&path).unwrap().is_empty());
@@ -286,12 +290,14 @@ fn invalid_batch_publishes_no_prefix_and_preserves_the_next_id() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.jsonl");
     let mut store = EventStore::open(&path).unwrap();
-    assert!(store
-        .append_batch(|_| Ok(vec![
-            payload(),
-            EventPayload::Unknown(serde_json::json!([]))
-        ]))
-        .is_err());
+    assert!(
+        store
+            .append_batch(|_| Ok(vec![
+                payload(),
+                EventPayload::Unknown(serde_json::json!([]))
+            ]))
+            .is_err()
+    );
     assert_eq!(0, std::fs::metadata(&path).unwrap().len());
     let batch = store
         .append_batch(|first| {
@@ -449,7 +455,7 @@ mod active_journal {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use super::{payload, EventStore};
+    use super::{EventStore, payload};
 
     #[test]
     fn snapshot_preserves_original_bytes_and_position_before_more_appends() {
@@ -496,10 +502,12 @@ mod active_journal {
         assert_eq!(2, EventStore::replay(&path).unwrap().len());
         drop(store);
         assert_eq!(snapshot, std::fs::read(&path).unwrap());
-        assert!(EventStore::read_active_journal_for_test(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("no active writer"));
+        assert!(
+            EventStore::read_active_journal_for_test(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("no active writer")
+        );
         assert_eq!(snapshot, std::fs::read(&path).unwrap());
     }
 
@@ -556,10 +564,12 @@ mod active_journal {
             file.seek(SeekFrom::Start(5)).unwrap();
         }
 
-        assert!(EventStore::read_active_journal_for_test(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("committed journal prefix was truncated"));
+        assert!(
+            EventStore::read_active_journal_for_test(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("committed journal prefix was truncated")
+        );
         let mut writer = store.inner.writer.lock().unwrap();
         assert_eq!(
             5,
@@ -657,13 +667,15 @@ fn packed_history_crosses_frames_supports_cursors_and_repairs_only_the_tail() {
     }
     let original_len = std::fs::metadata(&path).unwrap().len();
     assert!(original_len > 2 * 1024 * 1024);
-    assert!(store
-        .inner
-        .writer
-        .lock()
-        .unwrap()
-        .pack(&path, &"checkpoint")
-        .unwrap());
+    assert!(
+        store
+            .inner
+            .writer
+            .lock()
+            .unwrap()
+            .pack(&path, &"checkpoint")
+            .unwrap()
+    );
     assert!(std::fs::metadata(&path).unwrap().len() < original_len / 10);
     assert_eq!(5, store.append(payload()).unwrap().id);
     drop(store);
@@ -716,13 +728,15 @@ fn corrupt_inline_checkpoint_falls_back_to_committed_events() {
     for _ in 0..40 {
         store.append(payload()).unwrap();
     }
-    assert!(store
-        .inner
-        .writer
-        .lock()
-        .unwrap()
-        .pack(&path, &"checkpoint")
-        .unwrap());
+    assert!(
+        store
+            .inner
+            .writer
+            .lock()
+            .unwrap()
+            .pack(&path, &"checkpoint")
+            .unwrap()
+    );
     drop(store);
 
     let mut file = OpenOptions::new()

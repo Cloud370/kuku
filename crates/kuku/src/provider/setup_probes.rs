@@ -2,17 +2,17 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::config::{resolve_request_url, ModelThinkingTest, ProviderConfig, ProviderFormat};
+use crate::config::{ModelThinkingTest, ProviderConfig, ProviderFormat, resolve_request_url};
 use crate::{Error, Result};
 
 use super::capabilities::thinking_scope;
-use super::setup_api::{check_setup_api, DECLARED_ORDER};
+use super::setup_api::{DECLARED_ORDER, check_setup_api};
 use super::setup_reasoning::{check_reasoning, reply_accepted};
-use super::trial::{trial_with_route_evidence, TrialProblem};
+use super::trial::{TrialProblem, trial_with_route_evidence};
 use super::types::ProviderFailureKind;
 use super::{
-    discover_models, openrouter_quote_url, openrouter_quotes, DiscoveredModel, ModelListTarget,
-    ModelTrial, ReasoningCheck, ReasoningCheckResult, RouteQuote, SetupApiEvidence, TrialResult,
+    DiscoveredModel, ModelListTarget, ModelTrial, ReasoningCheck, ReasoningCheckResult, RouteQuote,
+    SetupApiEvidence, TrialResult, discover_models, openrouter_quote_url, openrouter_quotes,
 };
 use tokio::task::{AbortHandle, JoinSet};
 
@@ -23,7 +23,7 @@ const MAX_RATE_LIMIT_RETRIES: u8 = 2;
 mod plan;
 mod pricing;
 
-pub use plan::{plan_model_trials, TrialSelection};
+pub use plan::{TrialSelection, plan_model_trials};
 
 /// One request in a setup plan.
 #[derive(PartialEq)]

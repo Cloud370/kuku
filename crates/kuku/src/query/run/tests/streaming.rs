@@ -1,6 +1,6 @@
 use super::{
-    assert_rejected_tool_response, finish_tool_stream, make_test_pending, tool_stream_state,
-    EventPayload, EventStore, PendingStep, Run,
+    EventPayload, EventStore, PendingStep, Run, assert_rejected_tool_response, finish_tool_stream,
+    make_test_pending, tool_stream_state,
 };
 
 #[tokio::test]
@@ -34,9 +34,11 @@ async fn provider_context_exhaustion_preserves_the_reason_and_skips_output_retry
         events.iter().any(|event| matches!(&event.payload,
         EventPayload::TurnInterrupted { reason, .. } if reason == "model_context_window_exceeded"))
     );
-    assert!(!events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ModelRecovery { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ModelRecovery { .. }))
+    );
 }
 
 #[tokio::test]
@@ -403,16 +405,18 @@ async fn complete_tool_call_without_stop_reason_infers_tool_use() {
         pending.queued_tool_calls[0].tool_call.id,
         "tool_without_terminal"
     );
-    assert!(EventStore::replay(&events_path)
-        .unwrap()
-        .iter()
-        .any(|event| matches!(
-            &event.payload,
-            EventPayload::ModelResponse {
-                stop_reason: Some(crate::event::ModelStopReason::ToolUse),
-                ..
-            }
-        )));
+    assert!(
+        EventStore::replay(&events_path)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                &event.payload,
+                EventPayload::ModelResponse {
+                    stop_reason: Some(crate::event::ModelStopReason::ToolUse),
+                    ..
+                }
+            ))
+    );
 }
 
 #[tokio::test]
@@ -960,12 +964,14 @@ async fn empty_and_literal_object_tool_buffers_are_valid_empty_objects() {
             pending.queued_tool_calls[0].tool_call.args,
             serde_json::json!({})
         );
-        assert!(EventStore::replay(&events_path)
-            .unwrap()
-            .iter()
-            .any(|event| matches!(
-                &event.payload,
-                EventPayload::ToolCall { args, .. } if args == &serde_json::json!({})
-            )));
+        assert!(
+            EventStore::replay(&events_path)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(
+                    &event.payload,
+                    EventPayload::ToolCall { args, .. } if args == &serde_json::json!({})
+                ))
+        );
     }
 }

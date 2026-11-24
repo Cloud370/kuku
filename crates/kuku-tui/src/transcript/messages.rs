@@ -2,8 +2,8 @@ use crate::jobs::Selection;
 use crate::text::{shorten, single_line};
 
 use super::{
-    Anchor, AnchorLine, AssistantView, Body, DetailKey, Reading, ToolView, Transcript,
-    DISPLAY_LIMIT_NOTICE,
+    Anchor, AnchorLine, AssistantView, Body, DISPLAY_LIMIT_NOTICE, DetailKey, Reading, ToolView,
+    Transcript,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

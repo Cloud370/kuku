@@ -1,9 +1,9 @@
 use crate::text::single_line;
-use crate::theme::{tool_operation_color, MUTED, SURFACE_TEXT};
+use crate::theme::{MUTED, SURFACE_TEXT, tool_operation_color};
 
 use super::{
-    body_inset, finish_card, render_preview, render_rows, Row, Tool, ToolDetails, ToolView,
-    MAX_INSPECTION_ROWS, MAX_SUMMARY_ROWS, MAX_WARNING_ROWS,
+    MAX_INSPECTION_ROWS, MAX_SUMMARY_ROWS, MAX_WARNING_ROWS, Row, Tool, ToolDetails, ToolView,
+    body_inset, finish_card, render_preview, render_rows,
 };
 
 impl Tool {

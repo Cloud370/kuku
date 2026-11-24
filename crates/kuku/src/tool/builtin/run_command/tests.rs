@@ -6,21 +6,21 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(unix)]
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 #[cfg(unix)]
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use crate::execution::{
     CommandExecutionFacts, CommandInvocation, CommandShell, CommandTermination,
 };
 
 use super::super::test_helpers::{noisy_timeout_command, workspace};
-use super::{
-    blocked_command_reason, run_command, run_command_with_output, OutputLimits,
-    RUN_COMMAND_MAX_CHARS,
-};
 #[cfg(unix)]
-use super::{read_output, CommandEvent, OutputRead, OutputStream};
+use super::{CommandEvent, OutputRead, OutputStream, read_output};
+use super::{
+    OutputLimits, RUN_COMMAND_MAX_CHARS, blocked_command_reason, run_command,
+    run_command_with_output,
+};
 
 #[cfg(unix)]
 fn stdout_command() -> &'static str {
@@ -28,11 +28,7 @@ fn stdout_command() -> &'static str {
 }
 
 fn shell_name() -> &'static str {
-    if cfg!(windows) {
-        "cmd"
-    } else {
-        "sh"
-    }
+    if cfg!(windows) { "cmd" } else { "sh" }
 }
 
 #[cfg(windows)]
@@ -162,9 +158,11 @@ async fn run_command_rejects_invalid_timeout_empty_command_and_dangerous_command
     )
     .await;
     assert_eq!(missing.status, "error");
-    assert!(missing
-        .model_content
-        .contains("run_command requires program and literal args"));
+    assert!(
+        missing
+            .model_content
+            .contains("run_command requires program and literal args")
+    );
 
     let empty = run_command(
         &serde_json::json!({"shell": shell_name(), "cwd": ".", "command": "   ", "timeout": 1, "brief": "test"}),
@@ -203,9 +201,11 @@ async fn run_command_rejects_invalid_timeout_empty_command_and_dangerous_command
     )
     .await;
     assert_eq!(dangerous.status, "blocked");
-    assert!(dangerous
-        .model_content
-        .contains("blocked by command hard guard"));
+    assert!(
+        dangerous
+            .model_content
+            .contains("blocked by command hard guard")
+    );
 }
 
 #[test]
@@ -411,9 +411,10 @@ async fn unavailable_shell_fixture() {
         .iter()
         .find(|tool| tool.name == "run_command")
         .unwrap();
-    assert!(tool
-        .description
-        .contains("workspace-relative program with './'"));
+    assert!(
+        tool.description
+            .contains("workspace-relative program with './'")
+    );
     assert!(tool.description.contains("output ID"));
     let schema = &tool.input_schema;
     assert_eq!(serde_json::json!(["program"]), schema["required"]);
@@ -654,10 +655,12 @@ async fn large_output_is_persisted_within_quota_without_an_event_consumer() {
     .unwrap();
     assert!(chunk.complete);
     assert!(chunk.capture_truncated);
-    assert!(chunk
-        .segments
-        .iter()
-        .all(|segment| segment.text.bytes().all(|byte| byte == b'x')));
+    assert!(
+        chunk
+            .segments
+            .iter()
+            .all(|segment| segment.text.bytes().all(|byte| byte == b'x'))
+    );
 }
 
 #[cfg(unix)]
@@ -731,9 +734,11 @@ async fn build_test_summary_survives_the_capture_quota_and_reopen() {
     ).await;
     assert_eq!("ok", result.status);
     assert!(result.model_content.contains("7 passed"));
-    assert!(result
-        .model_content
-        .contains("First reported failure: parser::quoted"));
+    assert!(
+        result
+            .model_content
+            .contains("First reported failure: parser::quoted")
+    );
     assert!(result.model_content.contains("Capture quota reached"));
     let facts =
         CommandExecutionFacts::from_structured(result.structured.as_ref().unwrap()).unwrap();

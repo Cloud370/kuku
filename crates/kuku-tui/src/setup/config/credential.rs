@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use kuku::util::sync_private_file;
 use tempfile::Builder;
 
-use super::{invalid_config, Settings};
+use super::{Settings, invalid_config};
 
 pub(super) struct StagedKey {
     path: PathBuf,
@@ -53,7 +53,7 @@ pub(super) fn stage_key_with_sync(
         Err(_) => {
             return Err(invalid_config(
                 "cannot create a private credential directory",
-            ))
+            ));
         }
     };
     settings.check_storage(true).map_err(|_| {

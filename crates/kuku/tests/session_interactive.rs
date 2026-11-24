@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use kuku::event::{EventPayload, EventStore, ModelStopReason};
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer, TrustedLocal};
@@ -213,24 +213,28 @@ async fn message_rewind_targets_one_event_survives_reopen_and_keeps_new_inputs_i
         EventPayload::MessageUser { turn, .. } => *turn,
         _ => unreachable!(),
     };
-    assert!(session
-        .rewind_message(
-            "wrong-agent",
-            "reviewer",
-            target_id,
-            "original message",
-            false
-        )
-        .is_err());
-    assert!(session
-        .rewind_message(
-            "missing-target",
-            "main",
-            target_id + 100,
-            "original message",
-            false
-        )
-        .is_err());
+    assert!(
+        session
+            .rewind_message(
+                "wrong-agent",
+                "reviewer",
+                target_id,
+                "original message",
+                false
+            )
+            .is_err()
+    );
+    assert!(
+        session
+            .rewind_message(
+                "missing-target",
+                "main",
+                target_id + 100,
+                "original message",
+                false
+            )
+            .is_err()
+    );
     assert_eq!(
         "leave this file alone",
         std::fs::read_to_string(&sentinel).unwrap()
@@ -693,12 +697,14 @@ async fn steering_waits_for_tools_and_skips_an_earlier_next_turn_receipt() {
     assert!(!body.contains("work in the next turn"), "{body}");
     assert!(!body.contains("withdraw this material"), "{body}");
     assert!(body.contains("SELECTED_SKILL_INSTRUCTIONS"), "{body}");
-    assert!(session
-        .agent("main")
-        .unwrap()
-        .config
-        .bootstrap_skill
-        .is_none());
+    assert!(
+        session
+            .agent("main")
+            .unwrap()
+            .config
+            .bootstrap_skill
+            .is_none()
+    );
     continuation
         .response
         .send(Reply::Text("current turn finished"))
@@ -706,11 +712,12 @@ async fn steering_waits_for_tools_and_skips_an_earlier_next_turn_receipt() {
 
     let next = next_call(&mut calls).await;
     assert!(next.request.turn > first.request.turn);
-    assert!(next
-        .request
-        .body
-        .to_string()
-        .contains("work in the next turn"));
+    assert!(
+        next.request
+            .body
+            .to_string()
+            .contains("work in the next turn")
+    );
     let execution = session.agent("main").unwrap().execution_id.unwrap();
     assert!(execution > first_execution);
     assert!(
@@ -901,11 +908,12 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
     let next = next_call(&mut calls).await;
     assert_eq!(first.request.turn, next.request.turn);
     assert_eq!("updated-fixture-model", next.request.model);
-    assert!(next
-        .request
-        .body
-        .to_string()
-        .contains("wait for the next prepared request"));
+    assert!(
+        next.request
+            .body
+            .to_string()
+            .contains("wait for the next prepared request")
+    );
     next.response.send(Reply::Text("finished")).unwrap();
     ready(&session, AgentStatus::Idle).await;
     let facts = session.events(0, 256).unwrap();
@@ -976,11 +984,12 @@ async fn long_turn_accepts_input_and_can_finish_or_be_cancelled() {
         }
         let last = next_call(&mut calls).await;
         assert_eq!("req_22", last.request.request_id);
-        assert!(last
-            .request
-            .body
-            .to_string()
-            .contains("consider this active update"));
+        assert!(
+            last.request
+                .body
+                .to_string()
+                .contains("consider this active update")
+        );
         if complete {
             last.response
                 .send(Reply::Text("finished naturally"))

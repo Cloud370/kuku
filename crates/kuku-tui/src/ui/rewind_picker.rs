@@ -1,18 +1,18 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::history_jump::{HistoryJumpPrompt, Preview};
 use crate::app::REWIND_PAGE;
+use crate::app::history_jump::{HistoryJumpPrompt, Preview};
 use crate::markup::render_literal;
 use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::text::{shorten, single_line};
 use crate::theme::{
-    emphasis, focused_row, panel, panel_padding, ACCENT, ERROR, MUTED, TURN_CARD, TURN_RULE,
-    WARNING,
+    ACCENT, ERROR, MUTED, TURN_CARD, TURN_RULE, WARNING, emphasis, focused_row, panel,
+    panel_padding,
 };
 
 pub(super) const WIDTH: u16 = 100;

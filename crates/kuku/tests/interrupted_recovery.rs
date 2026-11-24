@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use kuku::event::{EventPayload, EventStore};
 use kuku::{AgentConfig, AgentStatus, Input, Session, SessionOptions};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn append_operation(store: &mut EventStore, record: Value) {
     store

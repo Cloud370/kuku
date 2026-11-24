@@ -15,9 +15,9 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::time::Duration;
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 
 use kuku::event::EventPayload;
 #[cfg(unix)]
@@ -174,10 +174,12 @@ async fn public_session_executes_real_tools_without_observers_and_reopens() {
         .unwrap();
     assert!(output.complete);
     assert!(!output.capture_truncated);
-    assert!(output
-        .segments
-        .iter()
-        .any(|segment| segment.text.contains("after")));
+    assert!(
+        output
+            .segments
+            .iter()
+            .any(|segment| segment.text.contains("after"))
+    );
     let id = session.id().to_string();
     let events_path = session.events_path().to_path_buf();
     session.close().await.unwrap();
@@ -335,12 +337,16 @@ async fn receipts_are_durable_idempotent_and_enqueue_requires_explicit_advance()
             .create_agent("create", "main", AgentConfig::default())
             .unwrap()
     );
-    assert!(session
-        .create_agent("another", "main", AgentConfig::default())
-        .is_err());
-    assert!(session
-        .create_agent("nested", "review/child", AgentConfig::default())
-        .is_err());
+    assert!(
+        session
+            .create_agent("another", "main", AgentConfig::default())
+            .is_err()
+    );
+    assert!(
+        session
+            .create_agent("nested", "review/child", AgentConfig::default())
+            .is_err()
+    );
     let mut input = Input::new("input", "main", "pending");
     input.activation = Activation::Enqueue;
     let receipt = session.send(input.clone()).unwrap();
@@ -691,9 +697,11 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
         let wait_error = wait_for_agent_during(&session, "main", "command output failure")
             .await
             .unwrap_err();
-        assert!(wait_error
-            .to_string()
-            .contains("tool output could not be durably captured"));
+        assert!(
+            wait_error
+                .to_string()
+                .contains("tool output could not be durably captured")
+        );
         let snapshot = session.agent("main").unwrap();
         assert_eq!(
             "ran",
@@ -844,10 +852,12 @@ async fn request_limit_is_shared_across_agents_and_turns_and_resets_on_reopen() 
         .unwrap();
     let interrupted = settled(&session, "main").await;
     assert_eq!(AgentStatus::Interrupted, interrupted.status);
-    assert!(interrupted
-        .last_error
-        .as_deref()
-        .is_some_and(|error| error.contains("model request limit exhausted")));
+    assert!(
+        interrupted
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("model request limit exhausted"))
+    );
     assert_eq!(1, interrupted.usage.model_requests);
     let steps = session.events(0, 256).unwrap().into_iter().filter(|event| matches!(&event.payload, EventPayload::Unknown(value) if value["kind"] == "runtime.step_prepared")).count();
     assert_eq!(

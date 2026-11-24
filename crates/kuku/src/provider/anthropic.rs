@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -7,10 +7,10 @@ use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::replay::{native_replay, validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
+use super::replay::{MAX_REPLAY_ITEMS, ReplayBudget, native_replay, validate_replay_size};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
-use super::transport::{send_prepared, TransportResponse};
+use super::transport::{TransportResponse, send_prepared};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before message_stop";
@@ -72,18 +72,20 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         body["output_config"] = json!({ "effort": effort });
     }
     if !request.assembly.tools.is_empty() {
-        body["tools"] = json!(request
-            .assembly
-            .tools
-            .iter()
-            .map(|schema| {
-                json!({
-                    "name": schema.name,
-                    "description": schema.description,
-                    "input_schema": schema.input_schema,
+        body["tools"] = json!(
+            request
+                .assembly
+                .tools
+                .iter()
+                .map(|schema| {
+                    json!({
+                        "name": schema.name,
+                        "description": schema.description,
+                        "input_schema": schema.input_schema,
+                    })
                 })
-            })
-            .collect::<Vec<_>>());
+                .collect::<Vec<_>>()
+        );
     }
     body
 }
@@ -693,9 +695,11 @@ mod tests {
             chunk,
             ProviderChunk::TextDelta { text } if text == "partial"
         )));
-        assert!(!chunks
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+        assert!(
+            !chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+        );
         let failure = parser.finish().unwrap_err();
         assert_eq!(
             crate::provider::types::ProviderFailureKind::InvalidResponse,
@@ -823,9 +827,11 @@ mod tests {
             Some(&json!([{"type":"text","text":"answer"}])),
             replay.and_then(|value| value.get("content"))
         );
-        assert!(ended
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+        assert!(
+            ended
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+        );
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             ProviderChunk::ThinkingDelta { text } if text == "fixture reasoning"
@@ -834,9 +840,11 @@ mod tests {
             chunk,
             ProviderChunk::TextDelta { text } if text == "answer"
         )));
-        assert!(!chunks
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream)));
+        assert!(
+            !chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream))
+        );
     }
 
     #[test]
@@ -930,8 +938,10 @@ mod tests {
         let chunks = parser.feed(
             "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"read_file\",\"input\":{}}}",
         ).unwrap();
-        assert!(chunks
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStart { index: 0, .. })));
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStart { index: 0, .. }))
+        );
     }
 }

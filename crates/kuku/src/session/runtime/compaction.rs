@@ -8,7 +8,7 @@ use super::controls::command;
 use super::driver::Work;
 use super::record::{Command, ManualCompaction, Record, State};
 use super::usage::{AgentUsage, UnfinishedSummary};
-use super::{ensure_open, Activation, AgentStatus, Receipt, Session};
+use super::{Activation, AgentStatus, Receipt, Session, ensure_open};
 
 impl Session {
     /// Compact an idle or interrupted Agent's model context without submitting a user message.

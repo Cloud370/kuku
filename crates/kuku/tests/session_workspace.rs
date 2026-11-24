@@ -19,7 +19,7 @@ use kuku::{
     ModelStream, Session, SessionOptions, WorkspaceExecutionHost, WorkspaceScriptActionStatus,
     WorkspaceScriptFacts, WorkspaceScriptOperation,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug)]
 struct ScriptModel {
@@ -194,11 +194,13 @@ return {denied:two.status,first:one.status};
     .await;
     let facts = until(|| script_facts(&session)).await;
     assert_eq!(json!({"denied":"blocked","first":"ok"}), facts.value);
-    assert!(facts
-        .actions
-        .iter()
-        .any(|action| action.tool == WorkspaceScriptOperation::WriteFile
-            && action.status == WorkspaceScriptActionStatus::Blocked));
+    assert!(
+        facts
+            .actions
+            .iter()
+            .any(|action| action.tool == WorkspaceScriptOperation::WriteFile
+                && action.status == WorkspaceScriptActionStatus::Blocked)
+    );
     assert_eq!(
         "after",
         std::fs::read_to_string(work.path().join("docs/guide/allowed.txt")).unwrap()
@@ -474,9 +476,11 @@ return {original, saved:saved.result.output_ref.id, draft};
         facts.value["saved"].as_str().unwrap()
     );
     let draft = facts.value["draft"].as_str().unwrap();
-    assert!(session
-        .read_agent_output("main", draft, &kuku::OutputRead::default())
-        .is_err());
+    assert!(
+        session
+            .read_agent_output("main", draft, &kuku::OutputRead::default())
+            .is_err()
+    );
     assert_eq!(
         2,
         std::fs::read_dir(session.events_path().parent().unwrap().join("outputs"))
@@ -567,10 +571,12 @@ return {base, id, statuses:[create.status,append.status,deny.status,allowed.stat
         .collect::<Vec<_>>();
     assert_eq!(4, blocked.len());
     for action in blocked {
-        assert!(!actions
-            .iter()
-            .any(|candidate| candidate.action_id == action.action_id
-                && candidate.status == WorkspaceActionState::Dispatched));
+        assert!(
+            !actions
+                .iter()
+                .any(|candidate| candidate.action_id == action.action_id
+                    && candidate.status == WorkspaceActionState::Dispatched)
+        );
     }
     session.close().await.unwrap();
     let events = session.events(0, 256).unwrap();
@@ -605,10 +611,12 @@ async fn reusing_a_tool_call_id_in_the_next_model_step_cannot_redispatch_the_old
     })
     .await;
     assert_eq!(AgentStatus::Interrupted, agent.status);
-    assert!(agent
-        .last_error
-        .unwrap()
-        .contains("The model reused a tool call ID."));
+    assert!(
+        agent
+            .last_error
+            .unwrap()
+            .contains("The model reused a tool call ID.")
+    );
     assert_eq!(1, host.metrics().started_workers);
     assert_eq!(
         "once",

@@ -49,7 +49,7 @@ impl<'a> WorkspaceFiles<'a> {
     pub(crate) fn new(path: &'a Path) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         let directory = {
-            use rustix::fs::{openat2, Mode, OFlags, ResolveFlags, CWD};
+            use rustix::fs::{CWD, Mode, OFlags, ResolveFlags, openat2};
             use rustix::io::Errno;
 
             match openat2(
@@ -137,7 +137,7 @@ fn open_in_workspace(
     path: &Path,
     oflags: rustix::fs::OFlags,
 ) -> io::Result<File> {
-    use rustix::fs::{openat2, Mode, OFlags, ResolveFlags};
+    use rustix::fs::{Mode, OFlags, ResolveFlags, openat2};
 
     Ok(File::from(openat2(
         directory,

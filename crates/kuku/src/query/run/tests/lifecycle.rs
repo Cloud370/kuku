@@ -1,6 +1,6 @@
 use super::{
-    make_cancelled_run, make_test_pending, EventPayload, EventStore, PendingStep, Run, RunState,
-    StreamingChunkState, UiEvent,
+    EventPayload, EventStore, PendingStep, Run, RunState, StreamingChunkState, UiEvent,
+    make_cancelled_run, make_test_pending,
 };
 
 #[tokio::test]

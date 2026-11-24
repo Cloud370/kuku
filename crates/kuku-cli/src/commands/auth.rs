@@ -1,8 +1,8 @@
 use std::io::{self, IsTerminal, Write};
 
 use kuku::adapter::{
-    discover_models, sign_out_subscription, subscription_account_info, SubscriptionLogin,
-    SubscriptionLoginProgress, SubscriptionStatus,
+    SubscriptionLogin, SubscriptionLoginProgress, SubscriptionStatus, discover_models,
+    sign_out_subscription, subscription_account_info,
 };
 use kuku::config::{
     ProviderConfig, ProviderProxy, ProxyAuth, SubscriptionAccount, SubscriptionChannel,
@@ -62,7 +62,9 @@ pub(super) async fn run(command: SubscriptionAuthCommand, target: &ConnectionArg
             let proxy = proxy_settings(proxy)
                 .ok_or("choose --proxy URL, --proxy-from-env, or --no-proxy")?;
             let name = settings.save_connection(account, &proxy)?;
-            println!("Saved network settings for {name}. The service uses them after reloading configuration.");
+            println!(
+                "Saved network settings for {name}. The service uses them after reloading configuration."
+            );
             Ok(())
         }
         SubscriptionAuthCommand::Models { channel, name } => {

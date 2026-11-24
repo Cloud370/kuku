@@ -1,13 +1,13 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
-use std::sync::{mpsc as thread_channel, Arc};
+use std::sync::{Arc, mpsc as thread_channel};
 use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use crate::session::runtime::WorkspaceWorkerPermit;
@@ -19,9 +19,9 @@ use super::host::{bound_action_facts, bounded_json, cap_str};
 use super::recovery::command_program;
 use super::vm::{self, BufferedResponse, Reply, Request};
 use super::{
-    append_recovery_evidence, ScriptExecution, ScriptHost, ScriptOperation,
-    WorkspaceScriptActionStatus, WorkspaceScriptFacts, WorkspaceScriptLimits,
-    WorkspaceScriptResultKind,
+    ScriptExecution, ScriptHost, ScriptOperation, WorkspaceScriptActionStatus,
+    WorkspaceScriptFacts, WorkspaceScriptLimits, WorkspaceScriptResultKind,
+    append_recovery_evidence,
 };
 
 const HOST_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -68,7 +68,7 @@ pub(crate) async fn execute(
                 Finish::Failed(format!("could not start JavaScript worker: {error}")),
                 &execution,
                 false,
-            )
+            );
         }
     };
     let finish = worker
@@ -310,9 +310,9 @@ async fn buffer_response(
         Ok(json) => json,
         Err(_) => {
             response.error = error.map(|message| cap_str(message, MAX_HOST_MESSAGE_BYTES));
-            bounded_json(&response, limit).map_err(|_| {
-                "workspace host response exceeds its byte limit; read a smaller range or page"
-            })?
+            bounded_json(&response, limit).map_err(
+                |_| "workspace host response exceeds its byte limit; read a smaller range or page",
+            )?
         }
     };
     drop(envelope);
@@ -390,7 +390,9 @@ fn result(
             let model_content = serde_json::json!({"output_ref":output,"hint":hint}).to_string();
             output_ref = Some(output);
             ToolResultEnvelope::ok(
-                format!("run_js saved its JSON return after {dispatched} host actions ({failures} unsuccessful)"),
+                format!(
+                    "run_js saved its JSON return after {dispatched} host actions ({failures} unsuccessful)"
+                ),
                 model_content,
                 Value::Null,
             )

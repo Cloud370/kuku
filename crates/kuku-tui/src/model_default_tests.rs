@@ -7,8 +7,8 @@ use sha2::Digest;
 use toml_edit::{DocumentMut, Item};
 
 use super::{
-    edited_config, prepare, test_plan, update_user_default, ModelDefaultPlan, ResolvedModel,
-    SAVE_SCOPE,
+    ModelDefaultPlan, ResolvedModel, SAVE_SCOPE, edited_config, prepare, test_plan,
+    update_user_default,
 };
 
 use crate::local_settings::require_local;
@@ -100,7 +100,10 @@ fn fallback_creates_or_overwrites_only_user_default() {
 
     let old = format!(
         "{}\n[model.user-default]\nprovider = \"openai\"\nmodel = \"old-user-model\"\nreasoning_effort = \"high\"\nservice_tier = \"priority\"\nmax_output_tokens = 4096\n",
-        CONFIG.replace("default_model = \"light\"", "default_model = \"user-default\"")
+        CONFIG.replace(
+            "default_model = \"light\"",
+            "default_model = \"user-default\""
+        )
     );
     let (_, overwritten) = edit_with_server_plan(&old, &selected, "user-default", true).unwrap();
     let overwritten = String::from_utf8(overwritten).unwrap();
@@ -164,9 +167,11 @@ fn matched_tier_retains_its_existing_route_settings() {
     let (tier, output) =
         edit_with_server_plan(&input, &route("balanced-model"), "balanced", false).unwrap();
     assert_eq!("balanced", tier);
-    assert!(String::from_utf8(output)
-        .unwrap()
-        .contains("max_output_tokens = 888"));
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("max_output_tokens = 888")
+    );
 }
 
 #[test]

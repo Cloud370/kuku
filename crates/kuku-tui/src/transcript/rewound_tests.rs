@@ -252,9 +252,11 @@ fn rewind_group_page_from_before_a_transcript_refresh_is_discarded() {
         rewind_groups: vec![group.clone()],
         next_before: None,
     });
-    assert!(all_rows(&mut transcript)
-        .join("\n")
-        .contains("Rewound content · read-only · excluded from model context"));
+    assert!(
+        all_rows(&mut transcript)
+            .join("\n")
+            .contains("Rewound content · read-only · excluded from model context")
+    );
     let request = transcript.toggle_rewind_group(50).unwrap();
     transcript.replace_recent(HistoryPage {
         entries: Vec::new(),
@@ -277,13 +279,17 @@ fn rewind_group_page_from_before_a_transcript_refresh_is_discarded() {
             next_before: None,
         }),
     ));
-    assert!(!all_rows(&mut transcript)
-        .join("\n")
-        .contains("stale hidden content"));
-    assert!(transcript
-        .rewind_group_choices()
-        .iter()
-        .any(|choice| choice.can_retry));
+    assert!(
+        !all_rows(&mut transcript)
+            .join("\n")
+            .contains("stale hidden content")
+    );
+    assert!(
+        transcript
+            .rewind_group_choices()
+            .iter()
+            .any(|choice| choice.can_retry)
+    );
     let retry = transcript.retry_rewind_group(50).unwrap();
     assert_eq!(None, retry.before);
     assert_ne!(request.epoch, retry.epoch);
@@ -303,9 +309,11 @@ fn rewind_group_page_from_before_a_transcript_refresh_is_discarded() {
         }),
     ));
     transcript.show_latest();
-    assert!(all_rows(&mut transcript)
-        .join("\n")
-        .contains("fresh hidden content"));
+    assert!(
+        all_rows(&mut transcript)
+            .join("\n")
+            .contains("fresh hidden content")
+    );
 }
 
 #[test]
@@ -339,9 +347,11 @@ fn rewind_group_page_state_survives_reading_snapshot_and_show_latest() {
             next_before: None,
         }),
     ));
-    assert!(all_rows(&mut transcript)
-        .join("\n")
-        .contains("shared hidden page"));
+    assert!(
+        all_rows(&mut transcript)
+            .join("\n")
+            .contains("shared hidden page")
+    );
     transcript.show_latest();
     let latest = all_rows(&mut transcript).join("\n");
     assert!(latest.contains("shared hidden page"));
@@ -440,9 +450,11 @@ fn rewind_group_visual_cap_is_explicit() {
         unseen: false,
         manual: true,
     });
-    assert!(rows(&mut transcript)
-        .join("\n")
-        .contains("Display limit reached"));
+    assert!(
+        rows(&mut transcript)
+            .join("\n")
+            .contains("Display limit reached")
+    );
 }
 
 #[test]

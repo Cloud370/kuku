@@ -2,9 +2,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::text::single_line;
-use crate::theme::{CardFrame, TranscriptTone, ERROR, MUTED, WARNING};
+use crate::theme::{CardFrame, ERROR, MUTED, TranscriptTone, WARNING};
 
-use super::{tool_operation_color, InlineOutput, Row, ScriptDetail, State, Tool, ToolDetails};
+use super::{InlineOutput, Row, ScriptDetail, State, Tool, ToolDetails, tool_operation_color};
 
 impl Tool {
     pub(in crate::transcript) fn activity_has_changes(&self) -> bool {

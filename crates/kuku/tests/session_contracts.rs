@@ -5,9 +5,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 
 use kuku::event::{EventPayload, EventStore, StoredEvent};
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
@@ -154,9 +154,11 @@ fn assert_batch_facts(events: &[StoredEvent]) {
             ..
         } = &event.payload
         {
-            assert!(calls
-                .insert(tool_call_id.as_str(), (tool.as_str(), event.id, turn))
-                .is_none());
+            assert!(
+                calls
+                    .insert(tool_call_id.as_str(), (tool.as_str(), event.id, turn))
+                    .is_none()
+            );
             requests.insert(request_id);
         }
         if let EventPayload::ToolResult {
@@ -166,9 +168,11 @@ fn assert_batch_facts(events: &[StoredEvent]) {
             ..
         } = &event.payload
         {
-            assert!(results
-                .insert(tool_call_id.as_str(), (status.as_str(), event.id, turn))
-                .is_none());
+            assert!(
+                results
+                    .insert(tool_call_id.as_str(), (status.as_str(), event.id, turn))
+                    .is_none()
+            );
         }
     }
     let expected = BTreeMap::from([

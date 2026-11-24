@@ -8,9 +8,9 @@ use kuku_client::{
     InputTiming, JobSnapshot, JobStatus, NamedValue, NamedValueKind, NamedValueSource,
     OutputReference, Receipt, Timing,
 };
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::Terminal;
 use serde_json::json;
 
 use crate::app::{App, KeyboardFocus, Modal};
@@ -325,9 +325,11 @@ fn queued_input_edit_waits_for_complete_text_in_the_receipt_snapshot() {
     assert!(app.delivery_hits.iter().any(|(_, id)| id == &input_id));
     press(&mut app, KeyCode::Up);
     assert!(matches!(app.pane().keyboard_focus, KeyboardFocus::Queue));
-    assert!(!app.pane().deliveries.rows()[0]
-        .text
-        .contains("complete queued input"));
+    assert!(
+        !app.pane().deliveries.rows()[0]
+            .text
+            .contains("complete queued input")
+    );
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
     assert!(app.effects.iter().any(|job| matches!(job, Job::Refresh(_))));
@@ -436,9 +438,11 @@ fn skill_named_like_an_action_remains_a_distinct_editable_choice() {
         "Skill · new",
         ChoiceKind::Skill("new".into()),
     ));
-    assert!(choices
-        .iter()
-        .any(|choice| { choice.label == "/new" && matches!(choice.kind, ChoiceKind::Command(_)) }));
+    assert!(
+        choices.iter().any(|choice| {
+            choice.label == "/new" && matches!(choice.kind, ChoiceKind::Command(_))
+        })
+    );
     assert!(choices.iter().any(|choice| {
         choice.label == "/skill:new" && matches!(choice.kind, ChoiceKind::Skill(_))
     }));
@@ -957,10 +961,11 @@ fn restart_requires_confirmation_and_preserves_draft_across_cancel_defer_and_suc
     }
     press(&mut app, KeyCode::Enter);
     assert!(!app.restarting);
-    assert!(!app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::PrepareRestart(_) | Job::Restart(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::PrepareRestart(_) | Job::Restart(_)))
+    );
     press(&mut app, KeyCode::Esc);
 
     confirm_dialog(&mut app);

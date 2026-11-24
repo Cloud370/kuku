@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
-use jsonwebtoken::{decode, decode_header, jwk::JwkSet, Algorithm, DecodingKey, Validation};
-use serde::de::DeserializeOwned;
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
@@ -17,8 +17,8 @@ use crate::config::subscription::CHATGPT_RESOURCE;
 use crate::config::{ProviderProxy, SubscriptionAccount, SubscriptionChannel};
 use crate::{Error, Result};
 
-use super::store::{now, AccountRecord, AccountStore, HostRegistration, Tokens};
-use super::{account_info, is_email_suffix, SubscriptionAccountInfo};
+use super::store::{AccountRecord, AccountStore, HostRegistration, Tokens, now};
+use super::{SubscriptionAccountInfo, account_info, is_email_suffix};
 
 const ISSUER: &str = "https://auth.openai.com";
 const AUTH_ENDPOINT: &str = "https://auth.openai.com/api/accounts/authorize";
@@ -542,7 +542,7 @@ fn parse_callback(
         _ => {
             return Err(Error::InvalidArgument(
                 "callback client registration does not match this sign-in".into(),
-            ))
+            ));
         }
     };
     Ok(Callback {
@@ -734,8 +734,8 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        automatic_name, now, parse_callback, private_email, test_signer, verify_identity,
-        SubscriptionLogin, ISSUER,
+        ISSUER, SubscriptionLogin, automatic_name, now, parse_callback, private_email, test_signer,
+        verify_identity,
     };
     use crate::config::{ProviderProxy, SubscriptionAccount, SubscriptionChannel};
 
@@ -759,13 +759,15 @@ mod tests {
         assert_eq!("oaiapp_sample", returning.client_id);
         assert!(parse_callback(&callback, &redirect, "pending", Some("oaiapp_other")).is_err());
         assert!(parse_callback(&callback, &redirect, "other", None).is_err());
-        assert!(parse_callback(
-            &format!("{callback}&state=pending"),
-            &redirect,
-            "pending",
-            None
-        )
-        .is_err());
+        assert!(
+            parse_callback(
+                &format!("{callback}&state=pending"),
+                &redirect,
+                "pending",
+                None
+            )
+            .is_err()
+        );
         let different_port = callback.replace("52914", "52915");
         assert!(parse_callback(&different_port, &redirect, "pending", None).is_err());
         let denied = format!("{redirect}?error=access_denied&state=pending");
@@ -822,26 +824,25 @@ mod tests {
     async fn manual_sign_in_contacts_only_the_configured_proxy() {
         let root = tempfile::tempdir().unwrap();
         for mode in [ProviderProxy::Environment, ProviderProxy::Direct] {
-            assert!(SubscriptionLogin::start(
+            assert!(
+                SubscriptionLogin::start(root.path(), SubscriptionChannel::ChatGpt, None, mode)
+                    .await
+                    .is_ok()
+            );
+        }
+        assert!(
+            SubscriptionLogin::start(
                 root.path(),
                 SubscriptionChannel::ChatGpt,
                 None,
-                mode
+                ProviderProxy::Explicit {
+                    url: "socks5://127.0.0.1:1080".into(),
+                    auth: None
+                }
             )
             .await
-            .is_ok());
-        }
-        assert!(SubscriptionLogin::start(
-            root.path(),
-            SubscriptionChannel::ChatGpt,
-            None,
-            ProviderProxy::Explicit {
-                url: "socks5://127.0.0.1:1080".into(),
-                auth: None
-            }
-        )
-        .await
-        .is_err());
+            .is_err()
+        );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let proxy = ProviderProxy::Explicit {
@@ -858,9 +859,10 @@ mod tests {
         .unwrap();
         let url = url::Url::parse(attempt.authorization_url()).unwrap();
         assert_eq!(Some("auth.openai.com"), url.host_str());
-        assert!(url
-            .query_pairs()
-            .all(|(key, _)| !matches!(key.as_ref(), "id_token_hint" | "login_hint")));
+        assert!(
+            url.query_pairs()
+                .all(|(key, _)| !matches!(key.as_ref(), "id_token_hint" | "login_hint"))
+        );
         let mut redirect = attempt.browser.redirect.clone();
         redirect.query_pairs_mut().extend_pairs([
             ("state", attempt.browser.state.as_str()),

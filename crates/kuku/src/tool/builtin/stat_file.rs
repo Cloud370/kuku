@@ -8,8 +8,8 @@ use serde_json::Value;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    ensure_active, file_read_error, file_version, required_path, resolve_stat_path,
-    FileCancellation,
+    FileCancellation, ensure_active, file_read_error, file_version, required_path,
+    resolve_stat_path,
 };
 
 #[derive(Serialize)]
@@ -45,7 +45,7 @@ pub(crate) fn stat_file(
             return ToolResultEnvelope::error(
                 "failed: version must be a boolean",
                 "stat_file version must be true or false",
-            )
+            );
         }
     };
     let relative = if resolved.relative.is_empty() {

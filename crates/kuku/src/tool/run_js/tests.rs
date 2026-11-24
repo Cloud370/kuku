@@ -5,16 +5,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Barrier, Notify};
 
+use crate::WorkspaceExecutionHost;
 use crate::tool::builtin::common::{ExecutorObservation, ExecutorObservationSource};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
-use crate::WorkspaceExecutionHost;
 
 use super::{
-    execute, ScriptCall, ScriptExecution, ScriptFuture, ScriptHost, ScriptOperation,
-    WorkspaceScriptActionStatus, WorkspaceScriptFacts, WorkspaceScriptLimits,
+    ScriptCall, ScriptExecution, ScriptFuture, ScriptHost, ScriptOperation,
+    WorkspaceScriptActionStatus, WorkspaceScriptFacts, WorkspaceScriptLimits, execute,
 };
 
 struct TestHost<F> {
@@ -142,15 +142,29 @@ async fn script_runtime_errors_locate_submitted_code_and_preserve_awaited_action
         let output = run(code, host, WorkspaceScriptLimits::default()).await;
         assert_eq!("error", output.status);
         assert!(
-            output.model_content.contains(&format!("{message} ({location}")),
+            output
+                .model_content
+                .contains(&format!("{message} ({location}")),
             "{}",
             output.model_content
         );
         if let Some(name) = missing_method {
-            assert!(output.model_content.contains(&format!("does not expose tools.{name}")));
-            assert!(output.model_content.contains(&format!("call {name} separately")));
+            assert!(
+                output
+                    .model_content
+                    .contains(&format!("does not expose tools.{name}"))
+            );
+            assert!(
+                output
+                    .model_content
+                    .contains(&format!("call {name} separately"))
+            );
         } else {
-            assert!(!output.model_content.contains("The run_js host does not expose"));
+            assert!(
+                !output
+                    .model_content
+                    .contains("The run_js host does not expose")
+            );
         }
         assert_eq!(actions, facts(&output).actions.len());
     }
@@ -179,9 +193,11 @@ async fn oversized_script_result_preserves_nonzero_exit_and_the_partial_capture_
             WorkspaceScriptLimits { result_bytes: 256, ..Default::default() },
         ).await;
         assert_eq!("error", output.status, "{}", output.model_content);
-        assert!(output
-            .model_content
-            .contains("script result exceeds 256 bytes"));
+        assert!(
+            output
+                .model_content
+                .contains("script result exceeds 256 bytes")
+        );
         assert!(output.model_content.contains("\"exit_code\":7"));
         assert!(output.model_content.contains("\"capture_complete\":false"));
         assert!(output.model_content.contains("\"id\":\"known-capture\""));

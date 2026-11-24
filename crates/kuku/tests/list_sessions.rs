@@ -1,5 +1,5 @@
 use kuku::event::{EventPayload, EventStore};
-use kuku::session::{list_sessions, SessionStatus};
+use kuku::session::{SessionStatus, list_sessions};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tempfile::tempdir;

@@ -1,7 +1,7 @@
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
 use serde_json::json;
 
-use super::{HistoryRequest, Key, Record, Transcript, MAX_RECORDS};
+use super::{HistoryRequest, Key, MAX_RECORDS, Record, Transcript};
 
 fn retry_entry(
     id: u64,

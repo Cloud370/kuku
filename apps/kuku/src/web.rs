@@ -3,7 +3,7 @@ use axum::Router;
 #[cfg(feature = "embedded-web-assets")]
 use axum::{
     body::Body,
-    http::{header, StatusCode, Uri},
+    http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::get,
 };

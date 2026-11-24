@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use kuku::ProviderFailureKind;
 use kuku::adapter::{
-    discover_models, model_list_targets, trial_model, ModelTrial, Probe, ProbeBatch, ProbeProgress,
-    ProbeResult, ReasoningCheck, ReasoningCheckResult, RequestCost, SetupTextCheck,
-    TRIAL_OUTPUT_TOKENS,
+    ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, ReasoningCheck,
+    ReasoningCheckResult, RequestCost, SetupTextCheck, TRIAL_OUTPUT_TOKENS, discover_models,
+    model_list_targets, trial_model,
 };
 use kuku::config::{ApiKey, ProviderConfig, ProviderFormat, ProviderOptions, ProviderProxy};
-use kuku::ProviderFailureKind;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -141,9 +141,11 @@ async fn api_discovery_tries_another_route_after_an_explicit_404() {
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         let (mut first, _) = listener.accept().await.unwrap();
-        assert!(read_request(&mut first)
-            .await
-            .starts_with("POST /v1/responses "));
+        assert!(
+            read_request(&mut first)
+                .await
+                .starts_with("POST /v1/responses ")
+        );
         first
             .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await
@@ -240,9 +242,11 @@ async fn api_discovery_starts_all_protocols_and_respects_preference() {
             error_status(&mut chat, chat_status).await;
         }
         for _ in 0..2 {
-            assert!(tokio::time::timeout(Duration::from_secs(5), batch.next())
-                .await
-                .unwrap());
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), batch.next())
+                    .await
+                    .unwrap()
+            );
             assert!(!batch.finish_api_check());
         }
 
@@ -255,9 +259,11 @@ async fn api_discovery_starts_all_protocols_and_respects_preference() {
         } else {
             error_status(&mut responses, responses_status).await;
         }
-        assert!(tokio::time::timeout(Duration::from_secs(5), batch.next())
-            .await
-            .unwrap());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), batch.next())
+                .await
+                .unwrap()
+        );
         assert!(batch.finish_api_check());
         assert_eq!(1, batch.selected_rows().count());
         let selected_format = match &batch.rows()[0].progress {

@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 use httpmock::{Method, MockServer};
 use kuku::session::{AgentStatus, Session};
 use kuku_client::local::LocalService;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn tool_round(request: &httpmock::prelude::HttpMockRequest) -> usize {
     let body: Value =
@@ -283,9 +283,11 @@ async fn cli_stream_json_emits_one_record_per_line_for_progress_completion_and_m
     assert_eq!("started", failed_records[0]["event"]);
     let final_result = failed_records.last().unwrap();
     assert_eq!("session", final_result["type"]);
-    assert!(final_result["error"]
-        .as_str()
-        .is_some_and(|error| error.contains("fixture model failure")));
+    assert!(
+        final_result["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("fixture model failure"))
+    );
     assert!(String::from_utf8_lossy(&failure.stderr).contains("fixture model failure"));
 }
 
@@ -451,9 +453,11 @@ async fn cli_persists_file_and_command_results_then_reopens_same_agent() {
         .unwrap();
     assert!(listing.status.success());
     let sessions: Vec<Value> = serde_json::from_slice(&listing.stdout).unwrap();
-    assert!(sessions
-        .iter()
-        .any(|entry| entry["session_id"] == session_id));
+    assert!(
+        sessions
+            .iter()
+            .any(|entry| entry["session_id"] == session_id)
+    );
 
     stop_managed(home.path()).await;
 }

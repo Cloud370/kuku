@@ -147,10 +147,12 @@ fn readable_deltas_and_their_final_item_publish_one_copy() {
         json!({"type":"response.completed","response":{"status":"completed","output":[item]}}),
     ].iter().map(|event| format!("data: {event}")).collect::<Vec<_>>().join("\n\n"));
     assert_eq!(["检查", " totals."], reasoning_text(&chunks).as_slice());
-    assert!(chunks
-        .iter()
-        .any(|chunk| matches!(chunk, ProviderChunk::Replay { value, .. }
-        if value["output"][0] == item)));
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::Replay { value, .. }
+        if value["output"][0] == item))
+    );
 }
 
 #[test]
@@ -177,14 +179,18 @@ fn final_items_supply_typed_text_summaries_and_opaque_activity() {
             .filter(|chunk| matches!(chunk, ProviderChunk::Reasoning))
             .count()
     );
-    assert!(chunks
-        .iter()
-        .any(|chunk| matches!(chunk, ProviderChunk::Replay { value, .. }
-        if value["output"] == output)));
-    assert!(chunks
-        .iter()
-        .any(|chunk| matches!(chunk, ProviderChunk::Report { report }
-        if report.raw_usage.as_ref().unwrap()["output_tokens_details"]["reasoning_tokens"] == 29)));
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::Replay { value, .. }
+        if value["output"] == output))
+    );
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::Report { report }
+        if report.raw_usage.as_ref().unwrap()["output_tokens_details"]["reasoning_tokens"] == 29))
+    );
 }
 
 fn reasoning_text(chunks: &[ProviderChunk]) -> Vec<&str> {
@@ -230,9 +236,11 @@ fn incomplete_response_is_terminal_and_preserves_usage() {
         chunk,
         ProviderChunk::StopReason { reason } if reason == &ModelStopReason::Length
     )));
-    assert!(chunks
-        .last()
-        .is_some_and(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+    assert!(
+        chunks
+            .last()
+            .is_some_and(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+    );
 }
 
 #[test]
@@ -584,7 +592,9 @@ fn function_item_identity_cannot_be_reused_across_indices() {
 fn mismatched_argument_representations_are_invalid() {
     let cases = [
         (
-            Some("event: response.function_call_arguments.delta\ndata: {\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}"),
+            Some(
+                "event: response.function_call_arguments.delta\ndata: {\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}",
+            ),
             "event: response.function_call_arguments.done\ndata: {\"output_index\":0,\"arguments\":\"{\\\"path\\\":\\\"b.txt\\\"}\"}",
             r#"{\"path\":\"b.txt\"}"#,
             r#"{\"path\":\"b.txt\"}"#,
@@ -752,9 +762,11 @@ fn truncated_stream_does_not_emit_stream_end() {
         chunk,
         ProviderChunk::TextDelta { text } if text == "partial"
     )));
-    assert!(!chunks
-        .iter()
-        .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+    assert!(
+        !chunks
+            .iter()
+            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+    );
 }
 
 #[test]

@@ -9,27 +9,27 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::{Observation, OutputRead, Session, SessionHistory};
 use kuku_client::{HistoryDestination, HistoryDestinations, RewindGroup};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
-use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tokio_stream::Stream;
+use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 
 use super::Params;
-use super::{journal_task, manager, SessionTarget};
+use super::{SessionTarget, journal_task, manager};
+use crate::AppState;
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::{RunManager, TurnLookup};
 use crate::wire::{
     agent_activity_frame, committed_frame, event_agent, history_entry_for_agent, live_frame,
     reply_preview_frame,
 };
-use crate::AppState;
 
 pub(super) const HISTORY_DEFAULT_LIMIT: usize = 40;
 pub(super) const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
@@ -683,7 +683,7 @@ mod tests {
     use kuku::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::{validate_response_bytes, HISTORY_PAGE_BYTES};
+    use super::{HISTORY_PAGE_BYTES, validate_response_bytes};
 
     fn read_history(events: &[StoredEvent]) -> (tempfile::TempDir, kuku::session::SessionHistory) {
         let root = tempfile::tempdir().unwrap();

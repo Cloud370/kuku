@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{compact_token_count, format_elapsed};
-use crate::theme::{emphasis, CardFrame, TranscriptTone, MUTED, TURN_CARD, USAGE};
+use crate::theme::{CardFrame, MUTED, TURN_CARD, TranscriptTone, USAGE, emphasis};
 
 use super::{Body, Record, Transcript};
 use crate::text::shorten;
@@ -181,7 +181,7 @@ fn cache_hit(rate: f64) -> String {
 #[cfg(test)]
 mod tests {
     use kuku_client::{HistoryEntry, HistoryPage};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::super::{HistoryRequest, Transcript};
 
@@ -297,9 +297,10 @@ mod tests {
         );
         assert!(transcript.toggle_source());
         let raw = rows(&mut transcript, 64);
-        assert!(raw
-            .iter()
-            .any(|line| crate::transcript::tests::card_text(line) == "## Partial result"));
+        assert!(
+            raw.iter()
+                .any(|line| crate::transcript::tests::card_text(line) == "## Partial result")
+        );
         assert_eq!(
             "Turn 2   1 tool",
             transcript.turn_dock(64).unwrap().to_string()

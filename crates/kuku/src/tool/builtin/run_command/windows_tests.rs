@@ -5,23 +5,23 @@ use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{Duration, sleep, timeout};
 use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, TerminateProcess, WaitForSingleObject, DETACHED_PROCESS,
-    PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    DETACHED_PROCESS, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 };
 
 use crate::tool::ToolResultEnvelope;
 
 use super::super::test_helpers::workspace;
 use super::{
-    read_output, run_command, run_command_with_output, CommandEvent, OutputLimits, OutputRead,
-    OutputStream,
+    CommandEvent, OutputLimits, OutputRead, OutputStream, read_output, run_command,
+    run_command_with_output,
 };
 
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -483,11 +483,13 @@ async fn windows_timeout_stops_children_and_grandchildren() {
 async fn windows_dropped_command_future_stops_children_and_grandchildren() {
     let mut tree = RunningTree::start(20).await;
     tree.worker.abort();
-    assert!(timeout(PROCESS_EXIT_TIMEOUT, &mut tree.worker)
-        .await
-        .unwrap()
-        .unwrap_err()
-        .is_cancelled());
+    assert!(
+        timeout(PROCESS_EXIT_TIMEOUT, &mut tree.worker)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .is_cancelled()
+    );
     tree.assert_descendants_exited().await;
 }
 
@@ -514,10 +516,12 @@ async fn windows_large_output_is_bounded_and_reopens_without_event_consumers() {
     let reopened = read_output(&outputs, "large", OutputRead::default()).unwrap();
     assert!(reopened.complete);
     assert!(reopened.capture_truncated);
-    assert!(reopened
-        .segments
-        .iter()
-        .all(|segment| segment.text.bytes().all(|byte| byte == b'x')));
+    assert!(
+        reopened
+            .segments
+            .iter()
+            .all(|segment| segment.text.bytes().all(|byte| byte == b'x'))
+    );
     eprintln!(
         "{}",
         serde_json::json!({"windows_output_file_bytes": file_bytes, "reopened_payload_bytes": reopened.total_bytes, "facts": facts})
@@ -535,9 +539,11 @@ async fn windows_batch_execution_requires_an_explicit_cmd_interpreter() {
     let native = serde_json::json!({"program":"./fixture.cmd","args":[],"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let rejected = run_command(&native, dir.path(), None, None).await;
     assert_eq!("error", rejected.status);
-    assert!(rejected
-        .model_content
-        .contains("explicit cmd.exe invocation"));
+    assert!(
+        rejected
+            .model_content
+            .contains("explicit cmd.exe invocation")
+    );
     let shell = serde_json::json!({"program":"cmd.exe","args":["/D","/S","/C","fixture.cmd"],"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let explicit = run_command(&shell, dir.path(), None, None).await;
     assert_eq!("ok", explicit.status, "{explicit:?}");

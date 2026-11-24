@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{Activity, App, OutputTokens, ServiceStatus, SubmissionStatus};
 use crate::keys::Shortcut;
 use crate::text::{compact_token_count, format_elapsed, shorten, shorten_middle, single_line};
-use crate::theme::{emphasis, ACCENT, ERROR, EXECUTION, MODEL, MUTED, SURFACE_TEXT, WARNING};
+use crate::theme::{ACCENT, ERROR, EXECUTION, MODEL, MUTED, SURFACE_TEXT, WARNING, emphasis};
 
 mod clock;
 mod motion;
@@ -245,11 +245,13 @@ fn thinking_preview_yields_space_to_its_right_aligned_timer() {
     }
     assert!(frame.thinking_line(2).width() <= 2);
     frame.status = ObservedActivity::Agent(Activity::RunningTools);
-    assert!(frame
-        .thinking_line(64)
-        .spans
-        .iter()
-        .all(|span| span.content.as_ref() != "18s"));
+    assert!(
+        frame
+            .thinking_line(64)
+            .spans
+            .iter()
+            .all(|span| span.content.as_ref() != "18s")
+    );
 }
 
 pub(super) fn render_heading(

@@ -5,5 +5,5 @@ pub(crate) mod result;
 pub(crate) mod run_js;
 
 pub(crate) use dispatch::dispatch;
-pub(crate) use registry::{builtin_registry, to_tool_schemas, ToolDefinition};
+pub(crate) use registry::{ToolDefinition, builtin_registry, to_tool_schemas};
 pub(crate) use result::{ToolErrorReason, ToolFaults, ToolResultEnvelope};

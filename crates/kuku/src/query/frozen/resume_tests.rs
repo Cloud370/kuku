@@ -1,6 +1,6 @@
 use super::resumed_current_input;
-use crate::context::runtime::{AdmittedMessage, MessageOrigin};
 use crate::context::CanonicalMessage;
+use crate::context::runtime::{AdmittedMessage, MessageOrigin};
 
 #[test]
 fn compacted_resume_recreates_the_source_input_and_reuses_it_on_retry() {

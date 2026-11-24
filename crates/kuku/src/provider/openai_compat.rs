@@ -1,17 +1,17 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
 
 use super::chunk::ProviderChunk;
-use super::replay::{native_replay, validate_replay_size, ReplayBudget, MAX_REPLAY_ITEMS};
+use super::replay::{MAX_REPLAY_ITEMS, ReplayBudget, native_replay, validate_replay_size};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
-use super::transport::{send_prepared, TransportResponse};
+use super::transport::{TransportResponse, send_prepared};
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before [DONE]";
@@ -77,21 +77,23 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> Value {
         body["reasoning_effort"] = json!(effort);
     }
     if has_tools {
-        body["tools"] = json!(request
-            .assembly
-            .tools
-            .iter()
-            .map(|schema| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": schema.name,
-                        "description": schema.description,
-                        "parameters": schema.input_schema,
-                    }
+        body["tools"] = json!(
+            request
+                .assembly
+                .tools
+                .iter()
+                .map(|schema| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": schema.name,
+                            "description": schema.description,
+                            "parameters": schema.input_schema,
+                        }
+                    })
                 })
-            })
-            .collect::<Vec<_>>());
+                .collect::<Vec<_>>()
+        );
     }
 
     body
@@ -690,9 +692,11 @@ mod tests {
             .unwrap();
         let chunks = parser.feed(r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#).unwrap();
         assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::ToolCallArgDelta { index: 0, fragment } if fragment == "{}")));
-        assert!(!chunks
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::StopReason { .. })));
+        assert!(
+            !chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::StopReason { .. }))
+        );
     }
 
     #[test]
@@ -707,9 +711,11 @@ mod tests {
             let chunks = parser
                 .feed(&format!("data: {}", json!({"choices":choices})))
                 .unwrap();
-            assert!(chunks
-                .iter()
-                .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream)));
+            assert!(
+                chunks
+                    .iter()
+                    .any(|chunk| matches!(chunk, ProviderChunk::InvalidToolStream))
+            );
             assert!(chunks.iter().any(|chunk| matches!(
                 chunk,
                 ProviderChunk::StopReason {
@@ -756,9 +762,11 @@ mod tests {
                     json!({"choices":[{"delta":{"reasoning_details":details}}]})
                 ))
                 .unwrap();
-            assert!(chunks
-                .iter()
-                .any(|chunk| matches!(chunk, ProviderChunk::Reasoning)));
+            assert!(
+                chunks
+                    .iter()
+                    .any(|chunk| matches!(chunk, ProviderChunk::Reasoning))
+            );
             assert!(!chunks.iter().any(|chunk| matches!(
                 chunk,
                 ProviderChunk::ThinkingDelta { .. } | ProviderChunk::TextDelta { .. }
@@ -874,9 +882,11 @@ mod tests {
             )
             .unwrap();
 
-        assert!(chunks
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStop { index: 0 })));
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStop { index: 0 }))
+        );
     }
 
     #[test]
@@ -896,9 +906,11 @@ mod tests {
         let chunks = parser.feed(
             r#"data: {"id":"chatcmpl_tool","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}"#,
         ).unwrap();
-        assert!(chunks
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStart { index: 0, .. })));
+        assert!(
+            chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::ToolCallStart { index: 0, .. }))
+        );
     }
 
     #[test]
@@ -915,9 +927,11 @@ mod tests {
             chunk,
             ProviderChunk::TextDelta { text } if text == "partial"
         )));
-        assert!(!chunks
-            .iter()
-            .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd)));
+        assert!(
+            !chunks
+                .iter()
+                .any(|chunk| matches!(chunk, ProviderChunk::StreamEnd))
+        );
         let failure = parser.finish().unwrap_err();
         assert_eq!(
             crate::provider::types::ProviderFailureKind::InvalidResponse,

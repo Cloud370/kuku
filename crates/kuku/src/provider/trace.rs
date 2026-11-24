@@ -1,12 +1,12 @@
-use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use serde_json::{json, Value};
-use time::format_description::well_known::Rfc3339;
+use serde_json::{Value, json};
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use wreq::header::HeaderMap;
 
 use crate::config::LogsConfig;
@@ -166,11 +166,13 @@ impl TraceState {
                 .pointer("/delta/reasoning_details")
                 .and_then(Value::as_array)
             {
-                record["reasoning_details"] = json!(details
-                    .iter()
-                    .take(MAX_DETAILS_PER_FRAME)
-                    .map(|item| self.reasoning_metadata(item))
-                    .collect::<Vec<_>>());
+                record["reasoning_details"] = json!(
+                    details
+                        .iter()
+                        .take(MAX_DETAILS_PER_FRAME)
+                        .map(|item| self.reasoning_metadata(item))
+                        .collect::<Vec<_>>()
+                );
                 if details.len() > MAX_DETAILS_PER_FRAME {
                     record["reasoning_details_truncated"] = json!(true);
                 }

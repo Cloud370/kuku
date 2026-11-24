@@ -1,9 +1,9 @@
 use kuku_client::{
     HistoryEntry, RetryFailureKind, RetryMetadata, RetryPhase, RetrySource, RetryStopReason,
 };
-use serde_json::{json, Value};
-use time::format_description::well_known::Rfc3339;
+use serde_json::{Value, json};
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::text::{cap, single_line};
 

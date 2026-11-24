@@ -1,5 +1,5 @@
 use kuku_client::{
-    Error, NamedValue, NamedValueSource, OutputReference, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
+    Error, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES, NamedValue, NamedValueSource, OutputReference,
 };
 
 use crate::jobs::{Job, Selection, ValueSave};

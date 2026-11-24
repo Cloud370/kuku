@@ -1,7 +1,7 @@
 use kuku_client::{HistoryEntry, HistoryKind, HistoryPage};
 use serde_json::json;
 
-use super::{HistoryRequest, Key, MessageId, Transcript, HISTORY_PAGE};
+use super::{HISTORY_PAGE, HistoryRequest, Key, MessageId, Transcript};
 
 fn response(id: u64, body: String) -> HistoryEntry {
     HistoryEntry {
@@ -90,10 +90,12 @@ fn compaction_progress_updates_the_same_card_and_reveals_the_checkpoint_on_reque
         .iter()
         .find(|line| line.to_string().contains("~16K → ~8K input tokens"))
         .unwrap();
-    assert!(context
-        .spans
-        .iter()
-        .all(|span| span.style.bg == crate::theme::transcript_background().bg));
+    assert!(
+        context
+            .spans
+            .iter()
+            .all(|span| span.style.bg == crate::theme::transcript_background().bg)
+    );
     let summary = wide
         .lines
         .iter()
@@ -175,9 +177,11 @@ fn frozen_history_survives_older_page_arrival_and_many_recent_commits() {
     }
     assert_eq!(anchored, rows(&mut transcript));
     transcript.show_latest();
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.contains("Answer 239")));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("Answer 239"))
+    );
 }
 
 #[test]
@@ -278,9 +282,11 @@ fn durable_response_replaces_its_live_preview() {
         Some(1),
         &json!({"type":"text","content":"temporary preview"}),
     );
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.contains("temporary preview")));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("temporary preview"))
+    );
     transcript.apply(response(8, "settled response".into()), Some(7));
     let rendered = rows(&mut transcript).join("\n");
     assert!(!rendered.contains("temporary preview"));
@@ -378,11 +384,13 @@ fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
     transcript.apply(interruption.clone(), None);
 
     let rendered = rows(&mut transcript).join("\n");
-    assert!(rendered
-        .lines()
-        .collect::<Vec<_>>()
-        .windows(2)
-        .any(|pair| pair[0].starts_with("Turn 2  ─") && pair[1] == "Interrupted"));
+    assert!(
+        rendered
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair[0].starts_with("Turn 2  ─") && pair[1] == "Interrupted")
+    );
     assert_eq!(1, rendered.matches("Interrupted body.").count());
     assert!(
         compact(&rendered).contains(&compact("Display limit reached")),
@@ -406,11 +414,13 @@ fn cancellation_without_visible_reply_still_renders_a_turn_marker() {
     .unwrap();
     transcript.apply(entry, None);
     let rendered = rows(&mut transcript).join("\n");
-    assert!(rendered
-        .lines()
-        .collect::<Vec<_>>()
-        .windows(2)
-        .any(|pair| pair[0].starts_with("Turn 1  ─") && pair[1] == "Interrupted"));
+    assert!(
+        rendered
+            .lines()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|pair| pair[0].starts_with("Turn 1  ─") && pair[1] == "Interrupted")
+    );
 }
 
 #[test]
@@ -449,19 +459,23 @@ fn roles_and_file_details_are_readable_without_styles_at_narrow_widths() {
         assert_eq!(heading, card_text(&plain[0]));
         assert_eq!("看一下 e\u{301} 👩‍💻", card_text(&plain[1]));
         assert_eq!(if width < 18 { 1 } else { 2 }, view.row_insets[1].left);
-        assert!(view.lines[0]
-            .spans
-            .iter()
-            .all(|span| span.style.bg == Some(crate::theme::SURFACE)));
+        assert!(
+            view.lines[0]
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(crate::theme::SURFACE))
+        );
         let gap = if width < 18 { 2 } else { 3 };
         assert!(plain[gap].is_empty());
         assert!(view.lines[gap].style.bg.is_none());
         assert!(plain.windows(2).any(|pair| {
             card_text(&pair[0]) == "Assistant" && card_text(&pair[1]) == "我来检查"
         }));
-        assert!(plain
-            .iter()
-            .any(|row| card_text(row).starts_with("Read file")));
+        assert!(
+            plain
+                .iter()
+                .any(|row| card_text(row).starts_with("Read file"))
+        );
         assert!(plain.iter().any(|row| row.contains("error")));
         assert!(plain.iter().any(|row| card_text(row) == "中文.txt"));
         assert!(plain.iter().any(|row| card_text(row) == "文件丢失"));
@@ -497,12 +511,16 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
         .unwrap(),
         None,
     );
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.contains("requested")));
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.contains("Check workspace")));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("requested"))
+    );
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("Check workspace"))
+    );
 
     transcript.live(
         9,
@@ -527,9 +545,11 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     assert!(collapsed.contains("running"));
     assert!(!collapsed.contains("working output"));
     assert!(transcript.toggle_details());
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.contains("working output")));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("working output"))
+    );
 
     transcript.live(
         9,
@@ -540,9 +560,11 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
             "model_content": "live diagnostic"
         }),
     );
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.contains("live diagnostic")));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("live diagnostic"))
+    );
     transcript.apply(serde_json::from_value(json!({
         "id": 3, "agent": "main", "turn": 1, "type": "tool_result",
         "tool_call_id": "cmd", "status": "ok", "summary": "Command completed",
@@ -569,13 +591,17 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
             .count()
     );
     assert!(plain.iter().any(|row| row.contains("failed · exit 7")));
-    assert!(plain
-        .iter()
-        .any(|row| card_text(row) == "durable diagnostic"));
+    assert!(
+        plain
+            .iter()
+            .any(|row| card_text(row) == "durable diagnostic")
+    );
     assert!(plain.iter().any(|row| card_text(row) == "View output"));
-    assert!(!plain
-        .iter()
-        .any(|row| row.contains("live diagnostic") || row.contains("late duplicate")));
+    assert!(
+        !plain
+            .iter()
+            .any(|row| row.contains("live diagnostic") || row.contains("late duplicate"))
+    );
     let tools = transcript.tools();
     assert_eq!(Some("out"), tools[0].output_id.as_deref());
     assert_eq!("check-workspace", tools[0].invocation);
@@ -606,9 +632,11 @@ fn history_page_join_only_marks_genuine_turn_boundaries_and_preserves_the_anchor
             .filter(|row| row.starts_with("Turn 2  ─"))
             .count()
     );
-    assert!(!anchored
-        .iter()
-        .any(|row| matches!(row.as_str(), "Turn 6" | "Turn 23")));
+    assert!(
+        !anchored
+            .iter()
+            .any(|row| matches!(row.as_str(), "Turn 6" | "Turn 23"))
+    );
 
     let mut first_message = response(8, "Inspect the file".into());
     first_message.kind = HistoryKind::User;
@@ -720,9 +748,11 @@ fn a_thinking_only_commit_retires_the_preview_without_emitting_an_empty_assistan
         Some(1),
         &json!({"type":"text","content":"temporary answer"}),
     );
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.contains("temporary answer")));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.contains("temporary answer"))
+    );
     transcript.apply(serde_json::from_value(json!({
         "id": 2, "agent": "main", "turn": 1, "type": "assistant", "text": "", "thinking": "Consult the tool"
     })).unwrap(), Some(7));
@@ -753,13 +783,17 @@ fn assistant_markdown_keeps_the_model_sections_as_prose_and_raw_copy() {
     assert!(rendered_lines.contains(&"Tests failed."));
     let narrow = transcript.project(24, 24);
     assert!(narrow.lines.iter().all(|line| line.width() <= 24));
-    assert!(narrow
-        .lines
-        .iter()
-        .any(|line| line.to_string().contains("失败")));
-    assert!(rendered_lines
-        .windows(2)
-        .any(|pair| pair == ["Suggestions", ""]));
+    assert!(
+        narrow
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("失败"))
+    );
+    assert!(
+        rendered_lines
+            .windows(2)
+            .any(|pair| pair == ["Suggestions", ""])
+    );
     assert!(rendered_lines.contains(&"1. Inspect the log."));
     assert!(rendered_lines.contains(&"Should I proceed?"));
     assert!(!rendered.contains("Permission") && !rendered.contains("F2"));
@@ -813,15 +847,19 @@ fn source_keeps_nested_fences_and_both_renderings_are_cached_until_the_reply_cha
         cached_preview,
         cache.streaming.as_ref().unwrap().rows().as_ptr()
     );
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.trim_start() == "````"));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.trim_start() == "````")
+    );
 
     let committed = format!("{chunk}````\n");
     transcript.apply(response(9, committed.clone()), Some(7));
-    assert!(rows(&mut transcript)
-        .iter()
-        .any(|row| row.trim_start() == "````"));
+    assert!(
+        rows(&mut transcript)
+            .iter()
+            .any(|row| row.trim_start() == "````")
+    );
 }
 
 #[test]
@@ -842,10 +880,12 @@ fn toggling_markdown_source_keeps_the_reading_anchor_and_round_trips_the_view() 
     assert!(transcript.toggle_source());
     let source = transcript.project(44, 10);
     assert!(!source.following);
-    assert!(source
-        .lines
-        .iter()
-        .any(|row| card_text(&row.to_string()).starts_with("## Section")));
+    assert!(
+        source
+            .lines
+            .iter()
+            .any(|row| card_text(&row.to_string()).starts_with("## Section"))
+    );
     assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
 
     assert!(!transcript.toggle_source());
@@ -879,10 +919,11 @@ fn streaming_tables_code_and_unicode_use_the_committed_markdown_layout() {
         .map(ToString::to_string)
         .collect();
     assert!(live.iter().any(|row| row.contains("完成")));
-    assert!(live
-        .iter()
-        .map(|row| row.trim_start())
-        .any(|row| row.contains("e\u{301}")));
+    assert!(
+        live.iter()
+            .map(|row| row.trim_start())
+            .any(|row| row.contains("e\u{301}"))
+    );
     assert!(live.iter().any(|row| row.contains("👩‍💻")));
     let source = chunks.concat();
     transcript.apply(response(8, source.clone()), Some(4));
@@ -904,10 +945,12 @@ fn message_entries_exclude_records_evicted_from_the_active_window() {
         entry.kind = HistoryKind::ToolResult;
         transcript.apply(entry, None);
     }
-    assert!(transcript
-        .message_entries("main")
-        .iter()
-        .all(|entry| entry.id != MessageId::Event(9)));
+    assert!(
+        transcript
+            .message_entries("main")
+            .iter()
+            .all(|entry| entry.id != MessageId::Event(9))
+    );
 }
 
 #[test]

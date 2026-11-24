@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::event::EventStore;
-use crate::provider::config::{resolve_config, ResolveConfigInput};
+use crate::provider::config::{ResolveConfigInput, resolve_config};
 use crate::query::helpers::{append_model_error, append_turn_interrupted};
 use crate::query::types::{PendingRun, ResolvedRuntime};
 use crate::tool;

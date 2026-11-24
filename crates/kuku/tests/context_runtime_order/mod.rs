@@ -48,10 +48,12 @@ async fn distinct_workspaces_share_guidance_and_behavior_before_project_policy()
     let a = bodies[0]["messages"].as_array().unwrap();
     let b = bodies[1]["messages"].as_array().unwrap();
     assert_eq!(&a[..4], &b[..4]);
-    assert!(a[1]["content"]
-        .as_str()
-        .unwrap()
-        .starts_with("<kuku_tool_guidance>"));
+    assert!(
+        a[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("<kuku_tool_guidance>")
+    );
     assert!(!a[1]["content"].as_str().unwrap().contains("<!-- tools:"));
     assert_eq!(
         kuku::builtin_prompt_catalog().blocks["memory"].text,

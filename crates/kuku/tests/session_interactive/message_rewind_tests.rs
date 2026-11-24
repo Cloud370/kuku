@@ -1,4 +1,4 @@
-use super::{next_call, ready, Model, Reply};
+use super::{Model, Reply, next_call, ready};
 use kuku::event::{EventPayload, EventStore};
 use kuku::{AgentConfig, AgentStatus, Input, ProviderFailureKind, Session, SessionOptions};
 use std::sync::Arc;
@@ -27,11 +27,13 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
         ))
         .unwrap();
     let first_attempt = next_call(&mut calls).await;
-    assert!(first_attempt
-        .request
-        .body
-        .to_string()
-        .contains("do not resend this prompt"));
+    assert!(
+        first_attempt
+            .request
+            .body
+            .to_string()
+            .contains("do not resend this prompt")
+    );
     first_attempt
         .response
         .send(Reply::TemporaryFailure(
@@ -137,14 +139,18 @@ async fn history_switch_restores_each_branches_model_context_after_reopen() {
         .unwrap();
     let alternate = next_call(&mut calls).await;
     let alternate_request = alternate.request.body.clone();
-    assert!(!alternate
-        .request
-        .body
-        .to_string()
-        .contains("original branch"));
-    assert!(session
-        .jump_history("busy", "main", point.event_id)
-        .is_err());
+    assert!(
+        !alternate
+            .request
+            .body
+            .to_string()
+            .contains("original branch")
+    );
+    assert!(
+        session
+            .jump_history("busy", "main", point.event_id)
+            .is_err()
+    );
     alternate
         .response
         .send(Reply::Text("alternate branch answer"))
@@ -160,9 +166,11 @@ async fn history_switch_restores_each_branches_model_context_after_reopen() {
             .jump_history("original-head", "main", point.event_id)
             .unwrap()
     );
-    assert!(session
-        .jump_history("original-head", "main", alternate_point.event_id)
-        .is_err());
+    assert!(
+        session
+            .jump_history("original-head", "main", alternate_point.event_id)
+            .is_err()
+    );
     assert_eq!("current file", std::fs::read_to_string(&sentinel).unwrap());
     assert!(calls.try_recv().is_err());
     session.close().await.unwrap();

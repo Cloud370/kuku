@@ -7,19 +7,19 @@ use sha2::{Digest, Sha256};
 
 use crate::execution::OutputReference;
 use crate::tool::builtin::run_command::output::search::{
-    search_open_output, OutputSearch, SearchPage,
+    OutputSearch, SearchPage, search_open_output,
 };
 use crate::tool::builtin::run_command::output::{
-    capture_metadata, framed_bytes, read_open_output, validate_output_id, OutputLimits,
-    OutputWriter, MAX_FRAME_BYTES,
+    MAX_FRAME_BYTES, OutputLimits, OutputWriter, capture_metadata, framed_bytes, read_open_output,
+    validate_output_id,
 };
 use crate::{Error, Result};
 
 use super::record::{Record, State};
-use super::retention::{open_retained_output, output_dir, OutputStore};
+use super::retention::{OutputStore, open_retained_output, output_dir};
 use super::{
-    ensure_open, load_state, replay_state, Input, InputSource, OutputChunk, OutputRead,
-    OutputStream, Session,
+    Input, InputSource, OutputChunk, OutputRead, OutputStream, Session, ensure_open, load_state,
+    replay_state,
 };
 
 /// Maximum number of exact output references on a single input.

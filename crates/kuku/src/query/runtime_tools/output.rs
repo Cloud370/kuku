@@ -1,12 +1,12 @@
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::session::runtime::OutputSelector;
 use crate::tool::builtin::run_command::output::search::{
-    OutputSearch, DEFAULT_MATCHES, MAX_LITERAL_BYTES, MAX_MATCHES,
+    DEFAULT_MATCHES, MAX_LITERAL_BYTES, MAX_MATCHES, OutputSearch,
 };
 use crate::tool::builtin::run_command::output::validate_output_id;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
-use crate::{Error, OutputRead, OutputStream, Result, Session, MAX_VALUE_NAME_BYTES};
+use crate::{Error, MAX_VALUE_NAME_BYTES, OutputRead, OutputStream, Result, Session};
 
 const DEFAULT_READ_BYTES: usize = 4096;
 const MAX_READ_BYTES: usize = 8192;
@@ -350,8 +350,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        definition, definition_local, request, DEFAULT_LOCAL_READ_BYTES, DEFAULT_READ_BYTES,
-        LOCAL_BOUNDS, MAX_LOCAL_READ_BYTES, MAX_READ_BYTES, MAX_RESULT_BYTES, MODEL_BOUNDS,
+        DEFAULT_LOCAL_READ_BYTES, DEFAULT_READ_BYTES, LOCAL_BOUNDS, MAX_LOCAL_READ_BYTES,
+        MAX_READ_BYTES, MAX_RESULT_BYTES, MODEL_BOUNDS, definition, definition_local, request,
     };
     use crate::session::runtime::OutputSelector;
 

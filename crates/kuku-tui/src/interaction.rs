@@ -11,7 +11,7 @@ use crate::editor::Editor;
 use crate::jobs::{Job, Search, Selection};
 use crate::keys::{AgentDirection, Shortcut};
 use crate::menu::{Choice, ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
-use crate::text::{shorten, single_line, TAB};
+use crate::text::{TAB, shorten, single_line};
 
 mod commands;
 mod contextual;

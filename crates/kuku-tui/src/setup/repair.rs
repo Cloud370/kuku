@@ -2,11 +2,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::editor::Editor;
 use crate::jobs::Selection;
@@ -296,17 +296,37 @@ impl CredentialRepair {
         frame.render_widget(Paragraph::new(header), chunks[0]);
         let text = match self.stage {
             Stage::Preparing => "Reading the failed request and active service settings…",
-            Stage::Input => "Paste a new key; every character is masked.\nSaved locally as plaintext, not encrypted. Only this connection's credential will change.",
-            Stage::Confirm => "Save credentials and restart local service\n\nThe current Session, Agent, draft and input remain. Other active work can defer restart. No model request will be made.",
-            Stage::Saving => "Saving credentials and restarting the local service…\nNo request is being retried.",
-            Stage::SavedNotApplied if self.saved.is_some() => "Credentials saved; service not restarted\n\nRestart local service when its other work has finished. The saved credential is not confirmed as applied.",
-            Stage::SavedNotApplied => "Credentials saved; service needs checking\n\nReturn to the Session, press Ctrl+R to reconnect, and inspect the active local service before reopening credential repair. No request was retried.",
+            Stage::Input => {
+                "Paste a new key; every character is masked.\nSaved locally as plaintext, not encrypted. Only this connection's credential will change."
+            }
+            Stage::Confirm => {
+                "Save credentials and restart local service\n\nThe current Session, Agent, draft and input remain. Other active work can defer restart. No model request will be made."
+            }
+            Stage::Saving => {
+                "Saving credentials and restarting the local service…\nNo request is being retried."
+            }
+            Stage::SavedNotApplied if self.saved.is_some() => {
+                "Credentials saved; service not restarted\n\nRestart local service when its other work has finished. The saved credential is not confirmed as applied."
+            }
+            Stage::SavedNotApplied => {
+                "Credentials saved; service needs checking\n\nReturn to the Session, press Ctrl+R to reconnect, and inspect the active local service before reopening credential repair. No request was retried."
+            }
             Stage::Restarting => "Restarting the local service…\nNo request is being retried.",
-            Stage::Reconnecting => "Credentials saved and local service restarted.\nReconnecting to the same Session…",
-            Stage::ReconnectFailed => "Local service restarted; reconnect before retrying.\n\nEnter reconnects. Esc returns without sending a request.",
-            Stage::Ready => "Credentials saved and local service restarted.\n\nReturn to the Session, then choose Continue to retry the existing input once. No retry has been sent.",
-            Stage::Guidance => "Correct credentials on the service host; no local files changed.\n\n1. Run `kuku init` there with its config/data-dir options.\n   Or update the environment that launches that service.\n2. Run `kuku server restart` there when idle.\n3. Reconnect here, then choose Continue.\n\nThis client cannot write remote provider settings.",
-            Stage::Failed => "Credential repair is unavailable for this view. No request was retried.",
+            Stage::Reconnecting => {
+                "Credentials saved and local service restarted.\nReconnecting to the same Session…"
+            }
+            Stage::ReconnectFailed => {
+                "Local service restarted; reconnect before retrying.\n\nEnter reconnects. Esc returns without sending a request."
+            }
+            Stage::Ready => {
+                "Credentials saved and local service restarted.\n\nReturn to the Session, then choose Continue to retry the existing input once. No retry has been sent."
+            }
+            Stage::Guidance => {
+                "Correct credentials on the service host; no local files changed.\n\n1. Run `kuku init` there with its config/data-dir options.\n   Or update the environment that launches that service.\n2. Run `kuku server restart` there when idle.\n3. Reconnect here, then choose Continue.\n\nThis client cannot write remote provider settings."
+            }
+            Stage::Failed => {
+                "Credential repair is unavailable for this view. No request was retried."
+            }
         };
         let mut lines = text
             .lines()
@@ -360,10 +380,10 @@ impl CredentialRepair {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::Terminal;
 
     use super::{
         CredentialRepair, CredentialRepairAction, CredentialRepairApplied, CredentialRepairRequest,

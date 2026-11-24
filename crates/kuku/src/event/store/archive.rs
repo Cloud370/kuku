@@ -2,9 +2,9 @@ use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 
 const MAGIC: &[u8; 8] = b"KUKUJNL1";
 const SIZE_HEADER: usize = 36;

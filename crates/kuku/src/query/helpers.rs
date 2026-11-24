@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::context::{InstructionSource, MemorySource};
 use crate::conversation::address::ConversationAddress;

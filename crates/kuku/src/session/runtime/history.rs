@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::context::revert::{
-    apply_verified_file_rewind, event_owner_with, plan_file_rewind, RewindVisibility,
+    RewindVisibility, apply_verified_file_rewind, event_owner_with, plan_file_rewind,
 };
 use crate::event::store::{HistoryMarks, MessagePreviews, TurnOwnerIndex};
 use crate::event::{EventPayload, EventStore, StoredEvent};
@@ -367,9 +367,11 @@ mod tests {
         let page = history.page_before(None, 10).unwrap();
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].id, history.cursor());
-        assert!(history
-            .page_before(Some(history.cursor()), 10)
-            .unwrap()
-            .is_empty());
+        assert!(
+            history
+                .page_before(Some(history.cursor()), 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -553,9 +553,11 @@ mod tests {
         writer.fail_after_bytes = Some(first_line.len() + 10);
 
         let error = writer.flush().unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("simulated partial write failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("simulated partial write failure")
+        );
         assert_eq!(writer.buffer.len(), 1);
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -591,9 +593,11 @@ mod tests {
         writer.fail_after_bytes = Some(first_line.len() + 10);
 
         let error = writer.flush().unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("simulated partial write failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("simulated partial write failure")
+        );
 
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<_> = content.lines().collect();
@@ -621,9 +625,11 @@ mod tests {
         writer.fail_after_bytes = Some(5);
 
         let error = writer.flush().unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("simulated partial write failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("simulated partial write failure")
+        );
         assert_eq!(writer.buffer.len(), 2);
 
         let content = std::fs::read_to_string(&path).unwrap();

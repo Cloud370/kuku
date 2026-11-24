@@ -1,8 +1,8 @@
 use kuku_client::{ForwardHistoryPage, HistoryPage};
 
 use super::{
-    Anchor, AnchorLine, Block, HistoryRequest, Reading, Transcript, Window, HISTORY_PAGE,
-    MAX_RECORDS,
+    Anchor, AnchorLine, Block, HISTORY_PAGE, HistoryRequest, MAX_RECORDS, Reading, Transcript,
+    Window,
 };
 
 const MAX_READING_RECORDS: usize = MAX_RECORDS + 2 * HISTORY_PAGE;

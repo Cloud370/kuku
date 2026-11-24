@@ -481,14 +481,18 @@ mod tests {
             result.structured.as_ref().unwrap()["section"],
             "how_to_work"
         );
-        assert!(result.structured.as_ref().unwrap()["canonical_path"]
-            .as_str()
-            .unwrap()
-            .ends_with("memory.md"));
-        assert!(result.structured.as_ref().unwrap()["content_hash_after"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
+        assert!(
+            result.structured.as_ref().unwrap()["canonical_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("memory.md")
+        );
+        assert!(
+            result.structured.as_ref().unwrap()["content_hash_after"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
         let raw = result.structured.as_ref().unwrap()["raw_text_after"]
             .as_str()
             .unwrap();
@@ -536,9 +540,11 @@ mod tests {
             home.path(),
         );
         assert_eq!(remember.status, "ok");
-        assert!(std::fs::read_to_string(&global_path)
-            .unwrap()
-            .contains("- The user prefers concise answers"));
+        assert!(
+            std::fs::read_to_string(&global_path)
+                .unwrap()
+                .contains("- The user prefers concise answers")
+        );
         assert_eq!(
             std::fs::read_to_string(&project_path).unwrap(),
             "# memory\n\n## how_to_work\n- Project only\n\n## what_is_true\n\n## where_to_look\n"
@@ -559,12 +565,16 @@ mod tests {
             forget.structured.as_ref().unwrap()["section"],
             "how_to_work"
         );
-        assert!(!std::fs::read_to_string(&project_path)
-            .unwrap()
-            .contains("Project only"));
-        assert!(std::fs::read_to_string(&global_path)
-            .unwrap()
-            .contains("Global only"));
+        assert!(
+            !std::fs::read_to_string(&project_path)
+                .unwrap()
+                .contains("Project only")
+        );
+        assert!(
+            std::fs::read_to_string(&global_path)
+                .unwrap()
+                .contains("Global only")
+        );
     }
 
     #[test]
@@ -599,9 +609,11 @@ mod tests {
             home.path(),
         );
         assert_eq!(same_section.status, "error");
-        assert!(same_section
-            .model_content
-            .contains("forget requires exactly one match"));
+        assert!(
+            same_section
+                .model_content
+                .contains("forget requires exactly one match")
+        );
         assert_eq!(
             std::fs::read_to_string(&project_path).unwrap(),
             same_section_content

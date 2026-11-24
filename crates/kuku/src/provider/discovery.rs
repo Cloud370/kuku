@@ -9,9 +9,8 @@ use url::Url;
 use wreq::header::HeaderValue;
 
 use crate::config::{
-    resolve_models_url, resolve_request_url, ModelCapabilityDeclaration,
-    ProtocolCapabilityDeclaration, ProviderAuth, ProviderConfig, ProviderFormat,
-    SubscriptionChannel,
+    ModelCapabilityDeclaration, ProtocolCapabilityDeclaration, ProviderAuth, ProviderConfig,
+    ProviderFormat, SubscriptionChannel, resolve_models_url, resolve_request_url,
 };
 use crate::{Error, Result};
 

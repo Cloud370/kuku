@@ -2,10 +2,10 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use kuku_client::{Action, HistoryKind, HistoryPage, OutputReference, Timing};
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
-use ratatui::Terminal;
 use serde_json::json;
 use unicode_width::UnicodeWidthStr;
 
@@ -144,9 +144,11 @@ fn command_and_model_lists_wrap_and_stay_above_the_composer() {
     app.open_models();
     press(&mut app, KeyCode::Up);
     let buffer = frame(&mut app, 60);
-    assert!(lines(&buffer)
-        .iter()
-        .any(|line| line.contains("›Set current model as default")));
+    assert!(
+        lines(&buffer)
+            .iter()
+            .any(|line| line.contains("›Set current model as default"))
+    );
     assert_eq!(
         position(&buffer, "Model route").1,
         position(&buffer, "Search models…").1
@@ -288,9 +290,11 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         press(&mut app, KeyCode::Left);
         let cursor = app.pane().draft.cursor();
         let baseline = frame(&mut app, width);
-        assert!(lines(&baseline)
-            .iter()
-            .any(|line| line.contains("Running") && line.contains("Next Medium")));
+        assert!(
+            lines(&baseline)
+                .iter()
+                .any(|line| line.contains("Running") && line.contains("Next Medium"))
+        );
         app.scroll(-6);
         assert_eq!(KeyboardFocus::Transcript, app.pane().keyboard_focus);
         let anchor = app.pane().transcript.reading_anchor().cloned();
@@ -327,9 +331,11 @@ fn composer_lists_keep_alignment_draft_selection_and_reading_position() {
         let right = width - crate::theme::horizontal_gutter(width) - 1;
         assert_eq!(suggestions[(right, menu_row)].bg, crate::theme::SURFACE);
         assert_eq!(suggestions[(right, row)].bg, crate::theme::SURFACE);
-        assert!(suggestions[(column, row)]
-            .modifier
-            .contains(Modifier::REVERSED));
+        assert!(
+            suggestions[(column, row)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
         press(&mut app, KeyCode::Esc);
 
         action_picker(&mut app, "thinking");
@@ -492,24 +498,26 @@ fn speed_uses_the_composer_and_applies_declared_tiers_without_probing() {
     press(&mut app, KeyCode::Enter);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
         if picker.kind == PickerKind::Speed && picker.kind.composer_anchored()));
-    assert!(app
-        .effects
-        .iter()
-        .all(|job| !matches!(job, Job::CustomSpeed(..))));
+    assert!(
+        app.effects
+            .iter()
+            .all(|job| !matches!(job, Job::CustomSpeed(..)))
+    );
 
     app.paste("provider-cu");
     press(&mut app, KeyCode::Tab);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
         if picker.query.text() == "provider-custom"));
     press(&mut app, KeyCode::Enter);
-    assert!(app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::Save(command)
+    assert!(
+        app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Save(command)
         if command.target.agent == "main"
         && matches!(&command.action, Action::Configure { config }
             if config.service_tier.as_deref() == Some("provider-custom")
-            && config.reasoning_effort.as_deref() == Some("high")))));
+            && config.reasoning_effort.as_deref() == Some("high"))))
+    );
 }
 
 fn reviewer_speed_fixture() -> App {
@@ -579,10 +587,11 @@ fn custom_speed_can_be_saved_without_probing_and_then_applied() {
     press(&mut app, KeyCode::Enter);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker))
         if picker.kind == PickerKind::CustomSpeed && picker.kind.composer_anchored()));
-    assert!(app
-        .effects
-        .iter()
-        .all(|job| !matches!(job, Job::CustomSpeed(..))));
+    assert!(
+        app.effects
+            .iter()
+            .all(|job| !matches!(job, Job::CustomSpeed(..)))
+    );
 
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);

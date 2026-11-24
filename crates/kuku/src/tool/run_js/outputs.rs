@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use super::{ScriptOperation, WorkspaceActions, WorkspaceScriptLimits};
 use crate::session::runtime::OutputReservation;
-use crate::tool::builtin::run_command::output::{OutputLimits, OutputWriter, MAX_FRAME_BYTES};
 use crate::tool::ToolDefinition;
+use crate::tool::builtin::run_command::output::{MAX_FRAME_BYTES, OutputLimits, OutputWriter};
 use crate::{Error, OutputStream, Result};
 
 const COMMAND_SIGNATURE: &str = concat!(

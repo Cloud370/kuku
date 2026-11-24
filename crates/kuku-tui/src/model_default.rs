@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions, ModelDefaultPlan};
 use sha2::{Digest, Sha256};
-use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, Value, value};
 
-use crate::local_settings::{active_service, ensure_same_service, LOCAL_SERVICE_REQUIRED};
+use crate::local_settings::{LOCAL_SERVICE_REQUIRED, active_service, ensure_same_service};
 
 const CONFIG_UNAVAILABLE: &str = "Cannot read the active config; reopen /model and try again.";
 const CONFIG_INVALID: &str = "The active config is invalid; no changes were made.";

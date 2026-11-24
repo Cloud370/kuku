@@ -1,6 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::style::{Color, Modifier};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 
 use crate::menu::{Choice, PickerKind};
@@ -74,7 +74,9 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
     }
     for heading in [edit, compaction, reply] {
         let gap = heading - 2;
-        assert!((session.left()..session.right()).all(|x| buffer[(x, heading - 1)].symbol() == " "));
+        assert!(
+            (session.left()..session.right()).all(|x| buffer[(x, heading - 1)].symbol() == " ")
+        );
         assert_eq!("╭", buffer[(left, heading)].symbol());
         assert_ne!("│", buffer[(x, heading)].symbol());
         assert_eq!(" ", buffer[(left, gap)].symbol());

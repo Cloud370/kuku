@@ -3,7 +3,7 @@
 mod commands;
 mod values;
 
-pub(crate) use commands::{input_status, INTERNAL_CREATE_PREFIX};
+pub(crate) use commands::{INTERNAL_CREATE_PREFIX, input_status};
 pub(crate) use values::SaveValue;
 
 use std::collections::{HashMap, VecDeque};
@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use kuku::session::{
     HistoryPoint, Input, Session, SessionHistory, SessionOptions, TurnIndex, TurnSummary,
 };
-use tokio::sync::{watch, Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::error_mapping::{ApiError, Result};
 use crate::wire::{Command, CommandResult};
@@ -520,7 +520,7 @@ struct CommandExecution<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::{poll_fn, Future};
+    use std::future::{Future, poll_fn};
     use std::path::Path;
     use std::pin::pin;
     use std::task::Poll;

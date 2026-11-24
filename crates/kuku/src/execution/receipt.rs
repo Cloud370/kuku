@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{CommandTermination, FileCommitState, FileMutationKind, OutputReference};
-use crate::event::{EventPayload, StoredEvent};
 use crate::WorkspaceScriptOperation;
+use crate::event::{EventPayload, StoredEvent};
 
 /// A durable action boundary inside one workspace script.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

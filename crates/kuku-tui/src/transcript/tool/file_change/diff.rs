@@ -3,7 +3,7 @@ use ratatui::text::{Line, Span};
 
 use crate::markup::{render_literal, wrap_bounded};
 use crate::text::{replace_tabs, shorten, terminal_text};
-use crate::theme::{emphasis, ERROR, MUTED, SUCCESS};
+use crate::theme::{ERROR, MUTED, SUCCESS, emphasis};
 
 const COMPACT_DIFF_ROWS: usize = 4;
 
@@ -147,7 +147,7 @@ impl Columns {
 
 #[cfg(test)]
 mod tests {
-    use super::{render, Presentation, ERROR, MUTED, SUCCESS};
+    use super::{ERROR, MUTED, Presentation, SUCCESS, render};
 
     #[test]
     fn unified_diff_keeps_numbers_dim_and_colors_plain_additions_and_deletions() {
@@ -163,16 +163,21 @@ mod tests {
         assert!(text[1].starts_with("      "), "{text:?}");
         assert_eq!(text.last().unwrap(), "105 + new");
         assert_eq!(rows[0].spans[0].style.fg, Some(MUTED));
-        assert!(rows[0].spans[1..]
-            .iter()
-            .all(|span| span.style.fg == Some(ERROR)));
-        assert!(rows.last().unwrap().spans[1..]
-            .iter()
-            .all(|span| span.style.fg == Some(SUCCESS)));
-        assert!(rows
-            .iter()
-            .flat_map(|row| &row.spans)
-            .all(|span| span.style.bg.is_none()));
+        assert!(
+            rows[0].spans[1..]
+                .iter()
+                .all(|span| span.style.fg == Some(ERROR))
+        );
+        assert!(
+            rows.last().unwrap().spans[1..]
+                .iter()
+                .all(|span| span.style.fg == Some(SUCCESS))
+        );
+        assert!(
+            rows.iter()
+                .flat_map(|row| &row.spans)
+                .all(|span| span.style.bg.is_none())
+        );
         assert!(rows.iter().all(|row| row.width() <= 14));
         let narrow = render("+# heading", &[1], 1, Presentation::Compact, false);
         assert_eq!(narrow[0].to_string(), "+");

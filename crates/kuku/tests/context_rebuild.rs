@@ -1,7 +1,7 @@
 use kuku::context::{
-    assemble_context, rebuild_history, restore_prompt_snapshot, CanonicalMessage, ContextInput,
-    EnvironmentSource, FileSource, HistoryRange, InstructionSource, MemorySource, MessageBlock,
-    RequestProvenance, ToolRegistryProvenance, ToolResult, ToolSchema, ToolUse,
+    CanonicalMessage, ContextInput, EnvironmentSource, FileSource, HistoryRange, InstructionSource,
+    MemorySource, MessageBlock, RequestProvenance, ToolRegistryProvenance, ToolResult, ToolSchema,
+    ToolUse, assemble_context, rebuild_history, restore_prompt_snapshot,
 };
 use kuku::conversation::address::ConversationAddress;
 use kuku::event::{EventPayload, EventStore};
@@ -133,9 +133,11 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
     .unwrap();
 
     assert!(assembly.system_prompt.contains("<kuku_foundation>"));
-    assert!(assembly
-        .system_prompt
-        .contains("put the content in your reply"));
+    assert!(
+        assembly
+            .system_prompt
+            .contains("put the content in your reply")
+    );
     assert!(!assembly.system_prompt.contains("To change the workspace"));
     assert!(assembly.system_prompt.contains("<kuku_hard_rules>"));
     assert!(assembly.system_prompt.contains("<kuku_shared_style>"));
@@ -148,10 +150,12 @@ fn rebuilds_and_assembles_context_from_events_and_explicit_sources() {
         vec![global_memory.clone(), project_memory.clone()]
     );
     assert_eq!(assembly.prompt_asset_sources.len(), 3);
-    assert!(!assembly
-        .prompt_asset_sources
-        .iter()
-        .any(|asset| asset.path.ends_with("blocks/memory.md")));
+    assert!(
+        !assembly
+            .prompt_asset_sources
+            .iter()
+            .any(|asset| asset.path.ends_with("blocks/memory.md"))
+    );
 
     // [0] project_policy
     match &assembly.prelude_messages[0].blocks[..] {

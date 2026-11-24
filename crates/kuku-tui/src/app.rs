@@ -4,15 +4,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use kuku_client::{
-    new_id, Action, AgentConfig, AgentStatus, Error, HistoryKind, HistoryPage, ModelSelection,
-    OutputReference, Snapshot, Target, UsageTotals,
+    Action, AgentConfig, AgentStatus, Error, HistoryKind, HistoryPage, ModelSelection,
+    OutputReference, Snapshot, Target, UsageTotals, new_id,
 };
 use ratatui::layout::Rect;
 
 use crate::config::StatusLineSettings;
 use crate::contextual::{ContextFocus, ContextHit};
 use crate::editor::Editor;
-use crate::jobs::{job_status_label, Job, Restarted, Selection, Update};
+use crate::jobs::{Job, Restarted, Selection, Update, job_status_label};
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, Prompt};
 use crate::output::OutputViewer;
 use crate::selection::TextSelection;

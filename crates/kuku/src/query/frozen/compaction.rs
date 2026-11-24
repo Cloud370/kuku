@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{model_history, ContextCommit, MessageOrigin, OwnedRequestBase};
+use super::{ContextCommit, MessageOrigin, OwnedRequestBase, model_history};
+use crate::Result;
 use crate::context::runtime::AdmittedMessage;
 use crate::context::{CanonicalMessage, MessageBlock};
 use crate::event::{EventPayload, EventStore};
 use crate::query::request::estimated_message_tokens;
 use crate::query::types::{FailedCompaction, PendingRun};
-use crate::Result;
 
 impl ContextCommit {
     pub(in crate::query) fn failed_compaction(&self, material_tokens: u32) -> FailedCompaction {
@@ -84,7 +84,7 @@ impl ContextCommit {
                     MessageBlock::ToolResult(result)
                         if !open_calls.remove(result.tool_call_id.as_str()) =>
                     {
-                        return None
+                        return None;
                     }
                     _ => {}
                 }

@@ -206,7 +206,7 @@ pub(super) fn select(command: &str) -> Option<&'static Rule> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load, BUILTIN};
+    use super::{BUILTIN, load};
 
     #[test]
     fn built_in_fixtures_and_unsupported_rule_fields_are_checked() {
@@ -229,10 +229,12 @@ mod tests {
         let unsupported = BUILTIN.replace("strip_ansi = true", "replace = []");
         assert!(load(&unsupported).err().unwrap().contains("unknown field"));
         let conflicting = BUILTIN.replace("head_lines = 16", "keep_lines_matching = ['error']");
-        assert!(load(&conflicting)
-            .err()
-            .unwrap()
-            .contains("mutually exclusive"));
+        assert!(
+            load(&conflicting)
+                .err()
+                .unwrap()
+                .contains("mutually exclusive")
+        );
     }
 
     #[test]

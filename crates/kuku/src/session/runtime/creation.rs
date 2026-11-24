@@ -3,8 +3,8 @@ use std::path::Path;
 use crate::event::{EventPayload, EventStore};
 use crate::{Error, Result};
 
-use super::record::{fingerprint, timestamp, Command, CreationClaim, Record, State};
-use super::{receipts, AgentConfig, Input, Session, SessionOptions};
+use super::record::{Command, CreationClaim, Record, State, fingerprint, timestamp};
+use super::{AgentConfig, Input, Session, SessionOptions, receipts};
 
 impl Session {
     /// Open a session only if the caller owns its original creation intent.

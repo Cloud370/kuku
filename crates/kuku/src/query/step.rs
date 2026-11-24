@@ -5,9 +5,9 @@ use super::helpers::{
     resolved_tool_available,
 };
 use super::run::find_tool_definition;
-use super::slots::{dispatch_tool_slot, query_workspace_access, SlotDispatchArgs};
+use super::slots::{SlotDispatchArgs, dispatch_tool_slot, query_workspace_access};
 use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
-use super::tool_response::{self, validate_tool_calls, ToolResponseError};
+use super::tool_response::{self, ToolResponseError, validate_tool_calls};
 use super::types::{
     PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, StreamingChunkState, UiEvent,
@@ -16,7 +16,7 @@ use crate::error::Result;
 use crate::event::{EventPayload, EventStore, ModelStopReason};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::permission::{
-    decide_tool_call, load_project_policy, recover_session_grants, GateDecisionKind, GateSource,
+    GateDecisionKind, GateSource, decide_tool_call, load_project_policy, recover_session_grants,
 };
 
 /// Maximum times a model.post_response hook can force-continue (exit code 2)

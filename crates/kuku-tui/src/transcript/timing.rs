@@ -3,13 +3,13 @@ use std::time::Duration;
 use kuku_client::{HistoryEntry, HistoryKind};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
+use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 use crate::text::format_elapsed;
 use crate::theme::{CardFrame, TranscriptTone};
 
 use super::window::BlockGap;
-use super::{body_inset, Block, Record, Row};
+use super::{Block, Record, Row, body_inset};
 
 pub(super) fn connector_column(frame: &CardFrame) -> Option<usize> {
     frame

@@ -5,12 +5,12 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 
 use super::{
-    existing_path, read_source, recovery, visit_events, Checkpoint, EventStore, HistoryMarks,
-    JournalIndex, JournalSnapshot, JournalSummary, Layout, LockedJournal, Replay, ReplayVisitor,
-    Writer,
+    Checkpoint, EventStore, HistoryMarks, JournalIndex, JournalSnapshot, JournalSummary, Layout,
+    LockedJournal, Replay, ReplayVisitor, Writer, existing_path, read_source, recovery,
+    visit_events,
 };
-use crate::util::fs_sync;
 use crate::Result;
+use crate::util::fs_sync;
 
 use super::archive::PackCheckpoint;
 

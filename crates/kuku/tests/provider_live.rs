@@ -1,6 +1,6 @@
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::session_events_path;
-use kuku::{query, Provider};
+use kuku::{Provider, query};
 
 fn require_live_tests() {
     assert_eq!(

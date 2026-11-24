@@ -8,7 +8,7 @@ mod receipt;
 
 pub use receipt::{WorkspaceActionDetails, WorkspaceActionReceipt, WorkspaceActionState};
 
-pub(crate) use media::{ImageMime, ModelImage, MAX_MODEL_IMAGE_BYTES};
+pub(crate) use media::{ImageMime, MAX_MODEL_IMAGE_BYTES, ModelImage};
 
 pub use file::{FileCommitState, FileMutationFacts, FileMutationKind};
 

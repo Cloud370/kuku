@@ -1,14 +1,14 @@
 use std::io::Read;
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::execution::{ImageMime, MAX_MODEL_IMAGE_BYTES};
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 
 use super::common::{
-    file_read_error, required_path, resolve_path, FileCancellation, IoLimit, LimitedReader,
-    StableFile,
+    FileCancellation, IoLimit, LimitedReader, StableFile, file_read_error, required_path,
+    resolve_path,
 };
 
 pub(crate) fn view_image_definition() -> ToolDefinition {

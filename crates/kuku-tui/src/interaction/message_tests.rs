@@ -1,7 +1,7 @@
 use crossterm::event::KeyCode;
 use kuku_client::HistoryKind;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use serde_json::json;
 
 use super::tests::{
@@ -470,10 +470,11 @@ fn remediation_copy_is_not_offered_for_thinking_only_or_empty_tool_entries() {
         },
         MessageAction::Copy,
     );
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::Copy(_)))
+    );
     assert!(app.notice.as_ref().is_some_and(|notice| notice.error));
 }
 
@@ -549,10 +550,11 @@ fn message_picker_escape_preserves_draft_and_stale_actions_fail_safe() {
     };
     message.selection.generation = message.selection.generation.wrapping_add(1);
     app.execute_message_action(message, MessageAction::Copy);
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::Copy(_)))
+    );
     assert!(app.notice.as_ref().is_some_and(|notice| notice.error));
     assert_eq!("draft survives both levels", app.pane().draft.text());
 
@@ -560,10 +562,11 @@ fn message_picker_escape_preserves_draft_and_stale_actions_fail_safe() {
     target.agent = "reviewer".into();
     app.select_agent(target);
     choose_message_action(&mut app, MessageAction::Copy);
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::Copy(_)))
+    );
 }
 
 #[test]
@@ -580,17 +583,19 @@ fn message_actions_fail_closed_after_rewind_removes_the_entry() {
     let selection = app.selection();
     open_message_actions(&mut app, MessageId::Event(91));
     choose_message_action(&mut app, MessageAction::Copy);
-    assert!(app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::ReplySource(target, 91) if target == &selection)));
+    assert!(
+        app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::ReplySource(target, 91) if target == &selection))
+    );
     app.effects.clear();
     app.pane_mut().transcript.invalidate_after_rewind();
     app.update(Update::ReplySource(selection, 91, Ok(original)));
-    assert!(!app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(_))));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::Copy(_)))
+    );
     assert_eq!(None, app.pane().pending_reply_copy);
 }
 
@@ -625,10 +630,11 @@ fn mouse_opens_messages_selects_entry_and_runs_action_without_losing_draft() {
 
     let screen = draw(&mut app, &mut terminal);
     click_screen(&mut app, &screen, screen_position(&screen, "Copy"));
-    assert!(app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, Job::Copy(text) if text == "mouse-target user entry")));
+    assert!(
+        app.effects
+            .iter()
+            .any(|effect| matches!(effect, Job::Copy(text) if text == "mouse-target user entry"))
+    );
     assert_eq!("draft remains editable", app.pane().draft.text());
 
     for width in [32, 33] {
@@ -680,10 +686,11 @@ fn message_picker_excludes_entries_outside_the_active_window() {
             Default::default(),
         );
     }
-    assert!(!app
-        .pane()
-        .transcript
-        .has_assistant_message(111, &app.active.agent));
+    assert!(
+        !app.pane()
+            .transcript
+            .has_assistant_message(111, &app.active.agent)
+    );
 
     app.open_messages_picker();
     let Some(Modal::Picker(picker)) = &app.modal else {

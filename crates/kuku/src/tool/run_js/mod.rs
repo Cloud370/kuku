@@ -189,13 +189,27 @@ pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
 fn method_result(operation: ScriptOperation) -> &'static str {
     use ScriptOperation as Op;
     match operation {
-        Op::FindFiles => "find_files({path?,pattern?,max_depth?}) returns result.entries, entry_count and scan_complete. ",
-        Op::ReadFile => "read_file({path,offset?,limit?}) returns result.raw_text, content_hash, start_byte, end_byte and is_full_file_snapshot. ",
-        Op::SearchText => "search_text({pattern,path?,include?,view?,offset?,limit?,context?}) returns result.matches, scan_complete, has_more and next_offset. Default view is lines with path, line_number and an excerpt. If scan_complete is false, matches cover only the searched portion and unchecked_file may name one skipped file. ",
-        Op::EditFile => "edit_file({path,old_text,new_text,replace_all?,expected_version?,brief?}) returns result.replacement_count and content_hash_after. ",
-        Op::WriteFile => "write_file({path,content,expected_version?,brief?}) returns result.content_hash_after and bytes_written. ",
-        Op::StatFile => "stat_file({path,version?}) returns result.exists and entry_kind. Set version:true for a regular file's result.content_hash. ",
-        Op::RemoveFile => "remove_file({path,expected_version?,brief?}) returns result.bytes_removed. Pass the current content_hash as expected_version, or fully read the current version in this script. ",
+        Op::FindFiles => {
+            "find_files({path?,pattern?,max_depth?}) returns result.entries, entry_count and scan_complete. "
+        }
+        Op::ReadFile => {
+            "read_file({path,offset?,limit?}) returns result.raw_text, content_hash, start_byte, end_byte and is_full_file_snapshot. "
+        }
+        Op::SearchText => {
+            "search_text({pattern,path?,include?,view?,offset?,limit?,context?}) returns result.matches, scan_complete, has_more and next_offset. Default view is lines with path, line_number and an excerpt. If scan_complete is false, matches cover only the searched portion and unchecked_file may name one skipped file. "
+        }
+        Op::EditFile => {
+            "edit_file({path,old_text,new_text,replace_all?,expected_version?,brief?}) returns result.replacement_count and content_hash_after. "
+        }
+        Op::WriteFile => {
+            "write_file({path,content,expected_version?,brief?}) returns result.content_hash_after and bytes_written. "
+        }
+        Op::StatFile => {
+            "stat_file({path,version?}) returns result.exists and entry_kind. Set version:true for a regular file's result.content_hash. "
+        }
+        Op::RemoveFile => {
+            "remove_file({path,expected_version?,brief?}) returns result.bytes_removed. Pass the current content_hash as expected_version, or fully read the current version in this script. "
+        }
         Op::RunCommand => "",
         Op::ReadOutput => concat!(
             "read_output({id or name,offset?,limit?,search?}) returns result.segments, next_offset and has_more. ",
@@ -204,9 +218,15 @@ fn method_result(operation: ScriptOperation) -> &'static str {
             "For a complete JSON capture, use `const data = JSON.parse(await tools.output_text({id})); return {count:data.count};`. ",
             "For larger or incomplete output, iterate tools.output_chunks or read a bounded range. ",
         ),
-        Op::SearchOutput => "search_output({id or name,text,stream?,offset?,limit?}) finds exact UTF-8 bytes in each stream and returns result.matches with stream, offset and end_offset. Continue with result.next_offset while result.has_more is true, even if a page has no matches. ",
-        Op::SaveValue => "save_value({name,output_id or value,replace?}) returns result.reference. ",
-        Op::ListValues => "list_values({prefix?,after?,limit?}) returns result.values and next_after. ",
+        Op::SearchOutput => {
+            "search_output({id or name,text,stream?,offset?,limit?}) finds exact UTF-8 bytes in each stream and returns result.matches with stream, offset and end_offset. Continue with result.next_offset while result.has_more is true, even if a page has no matches. "
+        }
+        Op::SaveValue => {
+            "save_value({name,output_id or value,replace?}) returns result.reference. "
+        }
+        Op::ListValues => {
+            "list_values({prefix?,after?,limit?}) returns result.values and next_after. "
+        }
         Op::CreateOutput => "create_output({}) returns result.id. ",
         Op::AppendOutput => "append_output({id,text}) returns result.submitted_bytes. ",
         Op::FinishOutput => "finish_output({id}) returns result.output_ref and capture_complete. ",

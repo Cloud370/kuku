@@ -15,11 +15,11 @@ use rquickjs::{
     String as JsString, TypedArray, Value as JsValue,
 };
 use serde_json::Value;
-use tokio::sync::{mpsc, OwnedSemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
+use crate::tool::ToolDefinition;
 use crate::tool::builtin::common::ExecutorObservation;
 use crate::tool::builtin::run_command::encoding::display_text;
-use crate::tool::ToolDefinition;
 
 use super::host::{bounded_json, cap_str};
 use super::{ScriptExecution, ScriptOperation};
@@ -381,7 +381,10 @@ impl<'js> Worker<'js> {
             message.push_str(&text);
         }
         if let Some(method) = method {
-            let _ = write!(message, ". The run_js host does not expose tools.{method}. Check tools.methods or call {method} separately if offered as a top-level tool.");
+            let _ = write!(
+                message,
+                ". The run_js host does not expose tools.{method}. Check tools.methods or call {method} separately if offered as a top-level tool."
+            );
         }
         Failure::Error(message)
     }
