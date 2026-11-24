@@ -307,7 +307,7 @@ impl Session {
                 "too many retained image markers".into(),
             ));
         }
-        super::media::validate_markers(text, markers)?;
+        crate::execution::ImageMarker::validate_all(text, markers)?;
         let mut images = markers
             .iter()
             .map(|marker| {

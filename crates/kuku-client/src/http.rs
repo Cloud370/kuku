@@ -907,6 +907,19 @@ impl Client {
                 input_command_id: input_command_id.clone(),
                 draft: None,
             }),
+            crate::Action::ReplaceQueued {
+                input_command_id,
+                text,
+                image_markers,
+                draft_images,
+            } if !draft_images.is_empty() => {
+                std::borrow::Cow::Owned(crate::Action::ReplaceQueued {
+                    input_command_id: input_command_id.clone(),
+                    text: text.clone(),
+                    image_markers: image_markers.clone(),
+                    draft_images: Vec::new(),
+                })
+            }
             action => std::borrow::Cow::Borrowed(action),
         };
         let acknowledgement: Acknowledgement = self

@@ -70,7 +70,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     let mut tools = tool::to_tool_schemas(&registry);
     render_tool_descriptions(&mut tools, &catalog)?;
-    let behavior = render_agent_behavior(&pending, &tools, &catalog)?;
+    let behavior = render_agent_behavior(&pending, &tools, &catalog, &resolved_config)?;
     let (skills_text, runtime_blocks) = build_runtime_blocks(
         &pending.workspace,
         pending.conversation.as_str(),
@@ -499,8 +499,12 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
         return Ok(());
     };
     let session = runtime_session(pending, execution)?;
-    let boundary =
-        session.prepare_step_boundary(pending.conversation.as_str(), execution, pending.turn)?;
+    let boundary = session.prepare_step_boundary(
+        pending.conversation.as_str(),
+        execution,
+        pending.turn,
+        pending.request_num == 1,
+    )?;
     pending.query.input_skills.extend(boundary.skills);
     if let Some(source) = boundary.source {
         pending.query.input_source = source;
@@ -720,15 +724,20 @@ pub(super) fn render_agent_behavior(
     pending: &PendingRun,
     tools: &[crate::context::ToolSchema],
     catalog: &crate::prompt::PromptCatalog,
+    resolved: &crate::provider::types::ResolvedProvider,
 ) -> Result<String> {
     if let Some(instructions) = &pending.query.agent_instructions {
         return Ok(instructions.clone());
     }
     let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+    let agent = crate::context::assembly::agent_prompt_facts(
+        Some(resolved),
+        pending.query.runtime.is_some() && pending.query.model_adapter.is_none(),
+    );
     catalog.render(
         "agents/main.md",
         minijinja::context! {
-            agent => minijinja::context! { address => pending.conversation.as_str() },
+            agent => minijinja::context! { address => pending.conversation.as_str(), ..agent },
             tools => minijinja::value::Serde(&names),
             workspace_root => pending.workspace.to_string_lossy().as_ref(),
         },

@@ -147,6 +147,9 @@ pub enum Action {
         /// Original attachments explicitly retained at their new positions.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         image_markers: Vec<crate::ImageMarker>,
+        /// Attachment bytes saved locally with the edit for recovery after rejection.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        draft_images: Vec<ImageAttachment>,
     },
     /// Rewind one committed user message and later history for the selected Agent.
     RewindMessage {

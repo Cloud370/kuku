@@ -80,6 +80,15 @@ impl OwnedRequestBase {
         })
     }
 
+    pub(super) fn has_current_images(&self) -> bool {
+        self.current_input.parts.iter().any(|message| {
+            message
+                .blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::InputImage(_)))
+        })
+    }
+
     pub(super) fn current_user_index(&self) -> usize {
         self.current_user_index
     }

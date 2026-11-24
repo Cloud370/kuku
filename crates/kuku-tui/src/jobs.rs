@@ -94,7 +94,7 @@ pub(crate) enum Job {
     History(Selection, HistoryRequest),
     RewindHistory(Selection, Ticket, u64),
     RewindSource(Selection, Ticket, u64),
-    QueuedDraft(Selection, String),
+    QueuedDraft(Selection, String, crate::app::QueueAction),
     RecallImageDraft(Selection, u64),
     HistoryJump(Selection, Ticket, Option<u64>),
     HistoryJumpDraft(Selection, u64, u64),
@@ -176,7 +176,12 @@ pub(crate) enum Update {
     Refreshed(Selection, Result<Box<Snapshot>, Error>),
     History(Selection, HistoryRequest, Result<LoadedHistory, Error>),
     RewindHistory(Selection, Ticket, u64, Result<HistoryPage, Error>),
-    QueuedDraft(Selection, String, Result<kuku_client::MessageDraft, Error>),
+    QueuedDraft(
+        Selection,
+        String,
+        crate::app::QueueAction,
+        Result<kuku_client::MessageDraft, Error>,
+    ),
     RecallImageDraft(Selection, u64, Result<kuku_client::MessageDraft, Error>),
     RewindSource(
         Selection,
@@ -621,9 +626,9 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             let result = client.message_draft(&selection.target, event_id).await;
             Update::RecallImageDraft(selection, event_id, result)
         }
-        Job::QueuedDraft(selection, input_id) => {
+        Job::QueuedDraft(selection, input_id, action) => {
             let result = client.queued_draft(&selection.target, &input_id).await;
-            Update::QueuedDraft(selection, input_id, result)
+            Update::QueuedDraft(selection, input_id, action, result)
         }
         Job::RewindSource(selection, ticket, event_id) => {
             let result = client.message_draft(&selection.target, event_id).await;

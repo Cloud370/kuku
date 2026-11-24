@@ -605,6 +605,7 @@ pub(crate) enum PromptKind {
     },
     QueuedInput {
         input_command_id: String,
+        images: Vec<kuku_client::ImageAttachment>,
     },
     RewindMessage {
         event_id: u64,

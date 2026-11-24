@@ -3,7 +3,8 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use crate::execution::{
-    ImageMime, InputImage, MAX_INPUT_IMAGES, MAX_MODEL_IMAGE_BYTES, ModelImage, OutputReference,
+    ImageMarker, ImageMime, InputImage, MAX_INPUT_IMAGES, MAX_MODEL_IMAGE_BYTES, ModelImage,
+    OutputReference,
 };
 use crate::tool::builtin::run_command::output::{
     MAX_FRAME_BYTES, OutputLimits, OutputWriter, framed_bytes, read_complete_stdout_bytes,
@@ -50,7 +51,7 @@ impl Session {
             )));
         }
         self.validate_image_route(config)?;
-        validate_markers(
+        ImageMarker::validate_all(
             &input.text,
             input.images.iter().filter_map(InputImage::marker),
         )?;
@@ -170,13 +171,14 @@ impl Session {
                             },
                         )?;
                     }
-                    if turn.is_none() {
-                        let id = image.output.id.clone();
-                        let retained = state.model_images.get_mut(&id).expect("registered image");
-                        if !retained.referenced {
-                            retained.staged = true;
-                            state.outputs.refresh_retention(&id);
-                        }
+                    if turn.is_none() && !state.model_images[&image.output.id].referenced {
+                        self.commit(
+                            &mut state,
+                            Record::InputImageRestaged {
+                                id: image.output.id.clone(),
+                                at: std::time::SystemTime::now(),
+                            },
+                        )?;
                     }
                     return Ok(image);
                 }
@@ -264,30 +266,6 @@ pub(super) fn require_image_input(
         return Err(Error::InvalidArgument(
             "The selected model cannot receive images. Switch to a model with image input or remove the attachments.".into(),
         ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_markers<'a>(
-    text: &str,
-    markers: impl IntoIterator<Item = &'a crate::execution::ImageMarker>,
-) -> Result<()> {
-    let mut ranges = Vec::new();
-    let mut labels = std::collections::HashSet::new();
-    for marker in markers {
-        let range = marker.range_in(text).ok_or_else(|| {
-            Error::InvalidArgument("image marker must match the input at its byte offset".into())
-        })?;
-        if !labels.insert(&marker.label)
-            || ranges.iter().any(|other: &std::ops::Range<usize>| {
-                range.start < other.end && other.start < range.end
-            })
-        {
-            return Err(Error::InvalidArgument(
-                "image markers must be distinct".into(),
-            ));
-        }
-        ranges.push(range);
     }
     Ok(())
 }

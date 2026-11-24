@@ -118,16 +118,8 @@ impl Command {
                 "attach up to {MAX_INPUT_IMAGES} images"
             )));
         }
-        let mut ordered = images
-            .iter()
-            .map(|image| {
-                image.marker.range_in(text).map(|_| image).ok_or_else(|| {
-                    kuku::Error::InvalidArgument(
-                        "image marker must match the input at its byte offset".into(),
-                    )
-                })
-            })
-            .collect::<kuku::Result<Vec<_>>>()?;
+        ImageMarker::validate_all(text, images.iter().map(|image| &image.marker))?;
+        let mut ordered: Vec<_> = images.iter().collect();
         ordered.sort_unstable_by_key(|image| image.marker.offset);
         ordered
             .into_iter()
@@ -756,6 +748,23 @@ mod retry_tests {
     use serde_json::json;
 
     use super::{TurnLookup, history_entry, retry_metadata};
+
+    #[test]
+    fn send_rejects_duplicate_image_markers_before_decoding() {
+        let marker = json!({"offset": 0, "label": "[Image #1]", "data": "AA=="});
+        let command: super::Command = serde_json::from_value(json!({
+            "type": "send",
+            "text": "[Image #1]",
+            "timing": "steer",
+            "create": {},
+            "images": [marker.clone(), marker],
+        }))
+        .unwrap();
+        assert!(matches!(
+            command.decode_images(),
+            Err(kuku::Error::InvalidArgument(error)) if error == "image markers must be distinct"
+        ));
+    }
 
     #[test]
     fn history_projects_human_input_and_omits_internal_job_wakes() {

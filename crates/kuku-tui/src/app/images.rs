@@ -122,12 +122,16 @@ impl App {
         event_id: u64,
         result: Result<kuku_client::MessageDraft, kuku_client::Error>,
     ) {
-        if selection != self.selection()
-            || self.pane().draft.recalled_image_event() != Some(event_id)
-        {
+        if selection.target.workspace != self.workspace {
             return;
         }
-        let pane = self.pane_mut();
+        let address = Address::from_target(&selection.target);
+        let Some(pane) = self.panes.get_mut(&address) else {
+            return;
+        };
+        if pane.draft.recalled_image_event() != Some(event_id) {
+            return;
+        }
         match result {
             Ok(draft) => {
                 pane.draft.load_recalled_images(event_id, &draft);
@@ -140,7 +144,9 @@ impl App {
             }
             Err(error) => {
                 pane.cancel_image_recall();
-                self.problem(format!("Could not load recalled images · {error}"));
+                if address == self.active {
+                    self.problem(format!("Could not load recalled images · {error}"));
+                }
             }
         }
     }
@@ -529,7 +535,41 @@ impl Pane {
 mod tests {
     use kuku_client::{ImageAttachment, ImageMarker};
 
-    use super::{DraftImage, Pane};
+    use super::{Address, App, DraftImage, Pane};
+
+    #[test]
+    fn recalled_image_lookup_finishes_in_the_pane_that_started_it() {
+        let mut app = App::new(std::path::PathBuf::from("/workspace"), None);
+        let address = app.active.clone();
+        let caption = "[Image #1]";
+        app.pane_mut().draft.remember_image_event(caption, 42);
+        app.pane_mut().recall_draft(-1);
+        let selection = app.selection();
+
+        let other = Address::new(address.session.clone(), "other".into());
+        app.select(other, true, String::new());
+        app.recalled_image_draft(
+            selection,
+            42,
+            Ok(kuku_client::MessageDraft {
+                text: caption.into(),
+                images: vec![ImageAttachment {
+                    marker: ImageMarker {
+                        offset: 0,
+                        label: caption.into(),
+                    },
+                    data: "saved image bytes".into(),
+                    transparent: false,
+                }],
+            }),
+        );
+        assert!(app.pane().draft.text().is_empty());
+
+        app.select(address, true, String::new());
+        assert_eq!(app.pane().draft.text(), caption);
+        assert_eq!(app.pane().draft.recalled_image_event(), None);
+        assert_eq!(app.pane().attached_images().count(), 1);
+    }
 
     #[test]
     fn restored_send_preserves_attachment_ranges_in_another_draft() {

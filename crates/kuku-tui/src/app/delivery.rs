@@ -378,19 +378,38 @@ impl App {
             self.problem("Input has already left the queue");
             return;
         };
+        if input.images.is_empty() {
+            self.open_queued_editor(
+                input_command_id,
+                kuku_client::MessageDraft {
+                    text: input.text,
+                    images: Vec::new(),
+                },
+            );
+        } else if self.require_service() {
+            self.read_queued_draft(input_command_id, QueueAction::Edit);
+        }
+    }
+
+    pub(crate) fn open_queued_editor(
+        &mut self,
+        input_command_id: String,
+        draft: kuku_client::MessageDraft,
+    ) {
         self.prompt(
-            PromptKind::QueuedInput { input_command_id },
+            PromptKind::QueuedInput {
+                input_command_id,
+                images: draft.images,
+            },
             "Edit queued input",
             "Enter replaces the queued text · Shift+Enter adds a line · Esc keeps the queued input",
         );
-        if let Some(Modal::Prompt(prompt)) = &mut self.modal {
-            prompt.editor.set_image_markers(
-                &input.text,
-                input
-                    .images
-                    .iter()
-                    .filter_map(kuku_client::InputImage::marker),
-            );
+        if let Some(Modal::Prompt(prompt)) = &mut self.modal
+            && let PromptKind::QueuedInput { images, .. } = &prompt.kind
+        {
+            prompt
+                .editor
+                .set_image_markers(&draft.text, images.iter().map(|image| &image.marker));
         }
     }
 
@@ -398,7 +417,7 @@ impl App {
         &mut self,
         input_command_id: String,
         text: String,
-        image_markers: Vec<kuku_client::ImageMarker>,
+        draft_images: Vec<kuku_client::ImageAttachment>,
     ) -> bool {
         if !self
             .queued_for_edit()
@@ -430,7 +449,11 @@ impl App {
             Action::ReplaceQueued {
                 input_command_id,
                 text,
-                image_markers,
+                image_markers: draft_images
+                    .iter()
+                    .map(|image| image.marker.clone())
+                    .collect(),
+                draft_images,
             },
         );
         let pane = self.pane_mut();

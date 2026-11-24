@@ -136,7 +136,7 @@ fn inline_queue_click_scroll_and_edit_keep_the_selected_identity() {
     );
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
-        if matches!(&prompt.kind, PromptKind::QueuedInput { input_command_id } if input_command_id == "queue-2")
+        if matches!(&prompt.kind, PromptKind::QueuedInput { input_command_id, .. } if input_command_id == "queue-2")
             && prompt.editor.text() == "queued text 2"));
     key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
     event(&mut app, Event::Paste("edited queue item".into()));
@@ -244,6 +244,7 @@ fn pending_queue_mutations_block_duplicate_edits_and_withdrawals() {
             input_command_id: "queue-1".into(),
             text: "first edit".into(),
             image_markers: vec![],
+            draft_images: vec![],
         },
     );
     assert!(app.queue_mutation_pending("queue-1"));
@@ -618,23 +619,36 @@ fn a_deleted_queue_image_atom_is_absent_from_the_replacement() {
     let mut state = queued_state(&app, 1);
     let queued = &mut state.pending[0].input;
     queued.text = "literal [Image #1] actual [Image #1]".into();
+    let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
+    let marker = kuku_client::ImageMarker {
+        offset: "literal [Image #1] actual ".len(),
+        label: "[Image #1]".into(),
+    };
     queued.images.push(
         kuku_client::InputImage::from_bytes(
-            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD,
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==").unwrap()
+            &base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).unwrap(),
         )
-            .unwrap()
-            .with_marker(kuku_client::ImageMarker {
-                offset: "literal [Image #1] actual ".len(),
-                label: "[Image #1]".into(),
-            }),
+        .unwrap()
+        .with_marker(marker.clone()),
     );
+    let draft = kuku_client::MessageDraft {
+        text: queued.text.clone(),
+        images: vec![kuku_client::ImageAttachment {
+            marker,
+            data: data.into(),
+            transparent: false,
+        }],
+    };
     load(&mut app, state);
     app.edit_queued("queue-0".into());
+    let Some(crate::jobs::Job::QueuedDraft(selection, input_id, action)) = app.effects.pop() else {
+        panic!("read queued attachment before editing")
+    };
+    app.update(Update::QueuedDraft(selection, input_id, action, Ok(draft)));
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.atom_count() == 1));
     key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&saved_input(&app).action,
-        Action::ReplaceQueued { text, image_markers, .. }
-            if text == "literal [Image #1] actual " && image_markers.is_empty()));
+        Action::ReplaceQueued { text, image_markers, draft_images, .. }
+            if text == "literal [Image #1] actual " && image_markers.is_empty() && draft_images.is_empty()));
 }

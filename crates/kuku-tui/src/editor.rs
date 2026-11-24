@@ -291,7 +291,11 @@ impl Editor {
 
     fn remember_history(&mut self, entry: HistoryDraft) {
         self.history
-            .retain(|previous| previous.draft.text != entry.draft.text);
+            .retain(|previous| match (previous.image_event, entry.image_event) {
+                (Some(previous), Some(incoming)) => previous != incoming,
+                (None, None) => previous.draft != entry.draft,
+                _ => true,
+            });
         self.history.push_front(entry);
         let mut bytes = 0;
         let keep = self
@@ -692,6 +696,20 @@ mod tests {
         assert_eq!(editor.text(), caption);
         assert_eq!(editor.recalled_image_event(), None);
         assert_eq!(editor.atom_count(), 0);
+    }
+
+    #[test]
+    fn identical_captions_recall_separate_image_events() {
+        let mut editor = Editor::default();
+        let caption = "Inspect [Image #1]";
+        editor.remember_image_event(caption, 42);
+        editor.remember_image_event(caption, 48);
+        editor.remember_image_event(caption, 48);
+
+        editor.recall(-1);
+        assert_eq!(editor.recalled_image_event(), Some(48));
+        editor.recall(-1);
+        assert_eq!(editor.recalled_image_event(), Some(42));
     }
 
     #[test]

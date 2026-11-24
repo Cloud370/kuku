@@ -208,6 +208,28 @@ mod tests {
     }
 
     #[test]
+    fn loading_history_after_an_early_refresh_keeps_the_first_image() {
+        let mut app = connected();
+        let snapshot = state_snapshot(&app, 11, "idle", None);
+        let selection = app.selection();
+        app.update(Update::Refreshed(selection.clone(), Ok(snapshot.clone())));
+        app.update(Update::Loaded(
+            selection,
+            snapshot,
+            serde_json::from_value(json!({
+                "entries":[{"id":10,"agent":"main","type":"user","turn":5,
+                    "text":"[Image #1]","has_images":true}],
+                "rewind_groups":[],
+                "next_before":null,
+            }))
+            .unwrap(),
+        ));
+
+        app.pane_mut().recall_draft(-1);
+        assert_eq!(app.pane().draft.recalled_image_event(), Some(10));
+    }
+
+    #[test]
     fn a_late_interrupt_receipt_cannot_block_or_clear_a_newer_interrupt() {
         let mut app = connected();
         let interrupt = |app: &mut App, execution_id| {
@@ -414,12 +436,22 @@ mod tests {
         let mut app = connected();
         app.pane_mut().exists = true;
         app.pane_mut().draft.insert("independent draft");
+        let marker = kuku_client::ImageMarker {
+            offset: "edited text\nwith a newline ".len(),
+            label: "[Image #1]".into(),
+        };
+        let image = kuku_client::ImageAttachment {
+            marker: marker.clone(),
+            data: "saved image bytes".into(),
+            transparent: false,
+        };
         app.issue(
             app.active.clone(),
             Action::ReplaceQueued {
                 input_command_id: "admitted".into(),
-                text: "edited text\nwith a newline".into(),
-                image_markers: vec![],
+                text: "edited text\nwith a newline [Image #1]".into(),
+                image_markers: vec![marker],
+                draft_images: vec![image],
             },
         );
         let Some(Job::Save(command)) = app.effects.pop() else {
@@ -437,9 +469,10 @@ mod tests {
         assert_eq!("independent draft", app.pane().draft.text());
         app.restore_rejected(&command.command_id);
         assert_eq!(
-            "independent draft\n\nedited text\nwith a newline",
+            "independent draft\n\nedited text\nwith a newline [Image #1]",
             app.pane().draft.text()
         );
+        assert_eq!(app.pane().attached_images().count(), 1);
         assert!(app.pending.contains_key(&command.command_id));
     }
 
@@ -625,11 +658,15 @@ impl App {
 
     pub(crate) fn restore_rejected(&mut self, id: &str) {
         if let Some(item) = self.pending.get(id) {
-            if let Action::ReplaceQueued { text, .. } = &item.command.action {
+            if let Action::ReplaceQueued {
+                text, draft_images, ..
+            } = &item.command.action
+            {
                 let address = Address::from_target(&item.command.target);
                 let text = text.clone();
+                let images = draft_images.clone();
                 self.select(address, true, String::new());
-                self.append_to_draft(&text);
+                self.pane_mut().restore_draft_images(&text, images);
                 self.message(
                     "Copied replacement to draft · delivery recovery keeps the saved edit",
                 );
@@ -658,15 +695,6 @@ impl App {
             pane.restore_draft_images(&text, images);
             self.message("Restored rejected text to draft");
         }
-    }
-
-    fn append_to_draft(&mut self, text: &str) {
-        let pane = self.pane_mut();
-        if !pane.draft.text().is_empty() {
-            pane.draft.append("\n\n");
-        }
-        pane.draft.append(text);
-        pane.draft_changed();
     }
 
     pub(super) fn saved(&mut self, command: Command, result: Result<(), Error>) {
@@ -886,11 +914,6 @@ impl App {
                 pane.cancel_image_recall();
                 if images.is_empty() {
                     pane.draft.remember(&text);
-                } else {
-                    pane.draft.remember_draft(kuku_client::MessageDraft {
-                        text: text.clone(),
-                        images,
-                    });
                 }
                 if pane.title.is_empty() {
                     pane.title = crate::text::shorten(&crate::text::single_line(&text), 68);

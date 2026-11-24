@@ -328,11 +328,27 @@ impl App {
                 }
                 return;
             }
-            if let PromptKind::QueuedInput { input_command_id } = &prompt.kind {
+            if let PromptKind::QueuedInput {
+                input_command_id,
+                images,
+            } = &prompt.kind
+            {
                 let id = input_command_id.clone();
                 let text = prompt.editor.text().to_owned();
-                let image_markers = prompt.editor.image_markers();
-                if self.replace_queued(id, text, image_markers) {
+                let draft_images = prompt
+                    .editor
+                    .image_markers()
+                    .into_iter()
+                    .filter_map(|marker| {
+                        let mut image = images
+                            .iter()
+                            .find(|image| image.marker.label == marker.label)?
+                            .clone();
+                        image.marker = marker;
+                        Some(image)
+                    })
+                    .collect();
+                if self.replace_queued(id, text, draft_images) {
                     self.modal = None;
                 }
                 return;

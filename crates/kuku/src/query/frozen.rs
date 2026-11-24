@@ -87,7 +87,7 @@ pub(super) fn prepare(pending: &mut PendingRun, compact_only: bool) -> Result<Pr
         .unwrap_or_else(|| pending.catalog.clone());
     let current_date = current_date_string();
     super::provider::render_tool_descriptions(&mut tools, &catalog)?;
-    let behavior = super::provider::render_agent_behavior(pending, &tools, &catalog)?;
+    let behavior = super::provider::render_agent_behavior(pending, &tools, &catalog, &resolved)?;
     let handoff = cursor
         .handoff
         .as_ref()

@@ -665,6 +665,124 @@ async fn history_images_yield_request_budget_to_the_current_input() {
 }
 
 #[tokio::test]
+async fn queued_images_get_a_request_each_and_follow_their_markers() {
+    const PATH: &str = "/steered-images/responses";
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let prompts = work.path().join("prompts");
+    std::fs::create_dir_all(prompts.join("agents")).unwrap();
+    std::fs::write(
+        prompts.join("agents/main.md"),
+        r#"{% if agent.image_input.supported %}The main template sees images.{% endif %}"#,
+    )
+    .unwrap();
+
+    let config = media_config(&server, "/steered-images");
+    let mut options = SessionOptions::new(work.path(), data.path(), config);
+    options.prompts_dir = Some(prompts);
+    options.limits.max_request_bytes = Some(45 * 1024);
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent(
+            "create",
+            "main",
+            AgentConfig {
+                tools: Some(Vec::new()),
+                no_skills: true,
+                no_agents: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let mut first = Input::new("first", "main", "First [Image #1] and [Image #2]");
+    let mut second = Input::new("second", "main", "Second [Image #1]");
+    for (input, images) in [
+        (
+            &mut first,
+            &[(b'B', "[Image #2]", 10_000), (b'A', "[Image #1]", 10_000)][..],
+        ),
+        (&mut second, &[(b'C', "[Image #1]", 24_000)][..]),
+    ] {
+        for &(byte, label, size) in images {
+            input.images.push(
+                session
+                    .save_input_image("main", &png_with_comment(size, byte))
+                    .await
+                    .unwrap()
+                    .with_marker(kuku::execution::ImageMarker {
+                        label: label.into(),
+                        offset: input.text.find(label).unwrap(),
+                    }),
+            );
+        }
+        input.activation = kuku::Activation::Enqueue;
+        session.send(input.clone()).unwrap();
+    }
+    let mock = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(PATH)
+                .body_contains("The main template sees images.")
+                .matches(|request| {
+                    let request = body(request);
+                    let captions = ["First [Image #1] and [Image #2]", "Second [Image #1]"];
+                    let current =
+                        request["input"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .rev()
+                            .find_map(|item| {
+                                let parts = item["content"].as_array()?;
+                                let caption = parts
+                                    .iter()
+                                    .filter_map(|part| part["text"].as_str())
+                                    .find(|text| captions.contains(text))?;
+                                Some((caption, parts))
+                            });
+                    let Some((caption, parts)) = current else {
+                        return false;
+                    };
+                    let expected: &[(u8, usize)] = if caption == captions[0] {
+                        &[(b'A', 10_000), (b'B', 10_000)]
+                    } else {
+                        &[(b'C', 24_000)]
+                    };
+                    parts
+                        .iter()
+                        .filter_map(|part| part["image_url"].as_str())
+                        .eq(expected.iter().map(|&(byte, size)| {
+                            format!(
+                                "data:image/png;base64,{}",
+                                STANDARD.encode(png_with_comment(size, byte))
+                            )
+                        }))
+                });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(IMAGE_DONE);
+        })
+        .await;
+    for id in ["first", "second"] {
+        assert_eq!(
+            session.input_status("main", id).unwrap(),
+            kuku::InputStatus::Queued
+        );
+        session.advance("main").unwrap();
+        let finished = session.wait_for_agent("main").await.unwrap();
+        assert_eq!(finished.last_error, None, "delivery {id}");
+        assert_eq!(
+            session.input_status("main", id).unwrap(),
+            kuku::InputStatus::Accepted
+        );
+    }
+    mock.assert_hits_async(2).await;
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn an_expired_queued_image_is_protected_until_withdrawn() {
     let server = MockServer::start_async().await;
     let work = tempfile::tempdir().unwrap();
@@ -708,8 +826,9 @@ async fn image_staging_validates_content_and_protects_each_attachment_until_enqu
     let data = tempfile::tempdir().unwrap();
     let mut options =
         SessionOptions::new(work.path(), data.path(), media_config(&server, "/staging"));
+    options.session_id = Some("image-staging".into());
     options.limits.output_retention_secs = 0;
-    let session = Session::open(options).await.unwrap();
+    let session = Session::open(options.clone()).await.unwrap();
     session
         .create_agent("create", "main", AgentConfig::default())
         .unwrap();
@@ -737,7 +856,20 @@ async fn image_staging_validates_content_and_protects_each_attachment_until_enqu
             .len(),
         2
     );
+    session
+        .withdraw_input("withdraw", "main", "queued")
+        .unwrap();
+    let bytes = png_with_comment(500, b'X');
+    let restaged = session.save_input_image("main", &bytes).await.unwrap();
     session.close().await.unwrap();
+
+    let reopened = Session::open(options).await.unwrap();
+    assert_eq!(reopened.read_input_image("main", &restaged).unwrap(), bytes);
+    let mut input = Input::new("resend", "main", "Restaged image");
+    input.activation = kuku::Activation::Enqueue;
+    input.images.push(restaged);
+    reopened.send(input).unwrap();
+    reopened.close().await.unwrap();
 }
 
 #[tokio::test]

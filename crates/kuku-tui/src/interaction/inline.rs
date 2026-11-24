@@ -261,11 +261,7 @@ impl App {
             return;
         }
         if self.pane().draft.text().is_empty() && !input.images.is_empty() {
-            let selection = self.selection();
-            self.queued_draft_reads
-                .insert((selection.target.clone(), input_id.clone()));
-            self.effects.push(Job::QueuedDraft(selection, input_id));
-            self.confirmation("Reading queued attachments…");
+            self.read_queued_draft(input_id, QueueAction::Withdraw);
             return;
         }
         let draft = self.pane().draft.text().is_empty().then(|| MessageDraft {
@@ -275,10 +271,20 @@ impl App {
         self.issue_withdrawal(input_id, draft);
     }
 
+    pub(crate) fn read_queued_draft(&mut self, input_id: String, action: QueueAction) {
+        let selection = self.selection();
+        self.queued_draft_reads
+            .insert((selection.target.clone(), input_id.clone()));
+        self.effects
+            .push(Job::QueuedDraft(selection, input_id, action));
+        self.confirmation("Reading queued attachments…");
+    }
+
     pub(crate) fn queued_draft_loaded(
         &mut self,
         selection: Selection,
         input_id: String,
+        action: QueueAction,
         result: Result<MessageDraft, Error>,
     ) {
         if !self
@@ -289,9 +295,13 @@ impl App {
             return;
         }
         match result {
-            Ok(draft) if !self.queue_mutation_pending(&input_id) => {
-                self.issue_withdrawal(input_id, Some(draft));
-            }
+            Ok(draft) if !self.queue_mutation_pending(&input_id) => match action {
+                QueueAction::Withdraw => self.issue_withdrawal(input_id, Some(draft)),
+                QueueAction::Edit if self.modal.is_none() => {
+                    self.open_queued_editor(input_id, draft)
+                }
+                QueueAction::Edit => {}
+            },
             Ok(_) => {}
             Err(error) => self.problem(format!("Could not read queued attachments · {error}")),
         }

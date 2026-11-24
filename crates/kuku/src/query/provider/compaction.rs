@@ -80,6 +80,7 @@ pub(super) async fn compact(
         .request_base
         .as_ref()
         .expect("prepared task request");
+    let can_admit_input = manual || !task.has_current_images();
     let headroom = task.context_headroom(resolved);
     let context_limit = headroom.total_budget();
     let budget = headroom.input_budget();
@@ -223,7 +224,7 @@ pub(super) async fn compact(
             }
         } => true,
     };
-    let waiting_for_input = completed && session.has_step_input(&agent)?;
+    let waiting_for_input = completed && can_admit_input && session.has_step_input(&agent)?;
     pending.model_request_count += 1;
     let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let pricing = RequestPricing::new(

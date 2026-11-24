@@ -66,13 +66,9 @@ pub(crate) fn attach_user_images(
         return Ok(());
     }
     let mut available = limit.saturating_sub(json_bytes(body));
-    let required = images.last().and_then(|(index, _)| {
-        current_offset
-            .filter(|offset| index >= offset)
-            .map(|_| *index)
-    });
     for batch in images.chunk_by(|(left, _), (right, _)| left == right).rev() {
         let index = batch[0].0;
+        let required = current_offset.is_some_and(|offset| index >= offset);
         let additional: usize = batch
             .iter()
             .map(|(_, image)| {
@@ -83,7 +79,7 @@ pub(crate) fn attach_user_images(
             })
             .sum();
         if additional > available {
-            if required == Some(index) {
+            if required {
                 return Err(ProviderFailure {
                     kind: ProviderFailureKind::ContextTooLarge,
                     ..invalid_request("image attachments exceed the remaining request byte limit")
@@ -102,7 +98,7 @@ pub(crate) fn attach_user_images(
             .collect::<crate::Result<Vec<_>>>();
         let parts = match parts {
             Ok(parts) => parts,
-            Err(error) if required == Some(index) => {
+            Err(error) if required => {
                 return Err(invalid_request(&error.to_string()));
             }
             Err(_) => continue,

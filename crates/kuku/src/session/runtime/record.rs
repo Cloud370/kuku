@@ -86,6 +86,10 @@ pub(super) enum Record {
         digest: String,
         image: ModelImage,
     },
+    InputImageRestaged {
+        id: String,
+        at: std::time::SystemTime,
+    },
     OutputsPinned {
         agent: String,
         turn: u64,
@@ -494,6 +498,12 @@ impl State {
                         staged: turn.is_none(),
                     },
                 );
+            }
+            Record::InputImageRestaged { id, at } => {
+                if let Some(image) = self.model_images.get_mut(&id) {
+                    image.staged = true;
+                    self.outputs.refresh_retention(&id, at);
+                }
             }
             Record::OutputsPinned { agent, turn, ids } => {
                 self.pin_current_turn(agent, turn, ids)?;

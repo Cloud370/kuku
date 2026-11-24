@@ -285,17 +285,21 @@ pub(super) async fn history(
             let entries: Vec<_> = messages
                 .into_iter()
                 .filter_map(|event| {
-                    let EventPayload::MessageUser { turn, text, .. } = event.payload else {
+                    let EventPayload::MessageUser { turn, text, images, .. } = event.payload else {
                         return None;
                     };
                     let preview = text
                         .char_indices()
                         .nth(512)
                         .map_or(text.as_str(), |(end, _)| &text[..end]);
-                    Some(
-                        json!({"type":"user","id":event.id,"agent":agent,"turn":turn,
-                    "turn_number":turns.number(agent, turn),"text":preview}),
-                    )
+                    let mut entry = json!({
+                        "type":"user","id":event.id,"agent":agent,"turn":turn,
+                        "turn_number":turns.number(agent, turn),"text":preview
+                    });
+                    if !images.is_empty() {
+                        entry["has_images"] = json!(true);
+                    }
+                    Some(entry)
                 })
                 .collect();
             let response =

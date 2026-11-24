@@ -250,6 +250,7 @@ fn shared_protocol_preserves_the_command_id_for_each_queue_transition() {
         input_command_id: "send-example".into(),
         text: "Inspect the two modified files".into(),
         image_markers: vec![],
+        draft_images: vec![],
     };
     assert_eq!(
         fixture["queued_replacement"],
@@ -364,7 +365,9 @@ async fn missing_acknowledgement_reopens_exact_command_and_checks_receipt_before
 async fn rejected_queued_replacement_remains_recoverable_after_reopening_the_store() {
     let router = Router::new().route(
         "/sessions/{id}/commands",
-        post(|| async {
+        post(|Json(request): Json<Value>| async move {
+            assert!(request.get("draft_images").is_none());
+            assert_eq!(request["image_markers"][0]["label"], "[Image #1]");
             (
                 StatusCode::CONFLICT,
                 Json(json!({"ok":false,"code":"input_not_queued","message":"Input already admitted"})),
@@ -375,13 +378,23 @@ async fn rejected_queued_replacement_remains_recoverable_after_reopening_the_sto
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("pending");
     let store = PendingStore::open(&path).unwrap();
+    let text = "Keep this edited text\nincluding the second line [Image #1]";
+    let marker = kuku_client::ImageMarker {
+        offset: text.find("[Image #1]").unwrap(),
+        label: "[Image #1]".into(),
+    };
     let command = Command {
         target: target(),
         command_id: "edit-example".into(),
         action: Action::ReplaceQueued {
             input_command_id: "original-example".into(),
-            text: "Keep this edited text\nincluding the second line".into(),
-            image_markers: vec![],
+            text: text.into(),
+            image_markers: vec![marker.clone()],
+            draft_images: vec![kuku_client::ImageAttachment {
+                marker,
+                data: "saved image bytes".into(),
+                transparent: false,
+            }],
         },
     };
     let error = store.submit(&client, &command).await.unwrap_err();

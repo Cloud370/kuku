@@ -205,6 +205,7 @@ impl OutputStore {
             if let Some(current) = self.entries.get_mut(&id) {
                 current.owner = previous.owner;
                 current.origin = previous.origin;
+                current.retained_since = current.retained_since.max(previous.retained_since);
             }
         }
     }
@@ -289,9 +290,9 @@ impl OutputStore {
             .is_some_and(|entry| entry.owner.as_deref() == Some(agent))
     }
 
-    pub(super) fn refresh_retention(&mut self, id: &str) {
+    pub(super) fn refresh_retention(&mut self, id: &str, at: SystemTime) {
         if let Some(entry) = self.entries.get_mut(id) {
-            entry.retained_since = SystemTime::now();
+            entry.retained_since = entry.retained_since.max(at);
         }
     }
 

@@ -41,6 +41,33 @@ impl ImageMarker {
             && text.get(range.clone()) == Some(&self.label))
         .then_some(range)
     }
+
+    /// Validate nonoverlapping positions and distinct labels within one input.
+    pub fn validate_all<'a>(
+        text: &str,
+        markers: impl IntoIterator<Item = &'a Self>,
+    ) -> crate::Result<()> {
+        let mut ranges = Vec::new();
+        let mut labels = std::collections::HashSet::new();
+        for marker in markers {
+            let range = marker.range_in(text).ok_or_else(|| {
+                crate::Error::InvalidArgument(
+                    "image marker must match the input at its byte offset".into(),
+                )
+            })?;
+            if !labels.insert(&marker.label)
+                || ranges.iter().any(|other: &std::ops::Range<usize>| {
+                    range.start < other.end && other.start < range.end
+                })
+            {
+                return Err(crate::Error::InvalidArgument(
+                    "image markers must be distinct".into(),
+                ));
+            }
+            ranges.push(range);
+        }
+        Ok(())
+    }
 }
 
 impl InputImage {

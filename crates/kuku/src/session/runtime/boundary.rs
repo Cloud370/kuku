@@ -35,11 +35,25 @@ impl Session {
         address: &str,
         execution: u64,
         turn: u64,
+        first_step: bool,
     ) -> Result<StepBoundary> {
         let mut state = self.inner.state.lock().unwrap();
         let agent = self.executing_agent(&state, address, execution)?;
         if agent.snapshot.turn != Some(turn) {
             return Err(Error::ExecutionNotActive(execution));
+        }
+        // Give the Turn's first image delivery its own request before admitting steering.
+        if first_step
+            && agent
+                .accepted
+                .iter()
+                .any(|entry| !entry.input.images.is_empty())
+        {
+            return Ok(StepBoundary {
+                source: None,
+                config: None,
+                skills: Vec::new(),
+            });
         }
         let inputs = self.select_inputs(agent, Some(InputTiming::NextStep));
         let config = update_model_selection(&agent.snapshot);
@@ -369,10 +383,12 @@ fn update_model_selection(snapshot: &super::AgentSnapshot) -> Option<AgentConfig
 fn images_for_inputs<'a>(
     entries: impl IntoIterator<Item = &'a QueuedDelivery>,
 ) -> Vec<crate::execution::InputImage> {
-    entries
+    let mut images: Vec<_> = entries
         .into_iter()
         .flat_map(|entry| entry.input.images.iter().cloned())
-        .collect()
+        .collect();
+    images.sort_by_key(|image| image.marker().map_or(usize::MAX, |marker| marker.offset));
+    images
 }
 
 fn input_text(entries: &[QueuedDelivery]) -> String {

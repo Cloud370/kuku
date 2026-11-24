@@ -753,8 +753,8 @@ impl App {
             Update::RecallImageDraft(selection, event_id, result) => {
                 self.recalled_image_draft(selection, event_id, result);
             }
-            Update::QueuedDraft(selection, input_id, result) => {
-                self.queued_draft_loaded(selection, input_id, result);
+            Update::QueuedDraft(selection, input_id, action, result) => {
+                self.queued_draft_loaded(selection, input_id, action, result);
             }
             Update::RewindSource(selection, ticket, event_id, result) => {
                 self.apply_rewind_source_update(selection, ticket, event_id, result);
@@ -968,17 +968,19 @@ impl App {
         pane.exists = true;
         pane.opening = false;
         let progress = ExecutionProgress::from_snapshot(snapshot.progress.as_ref());
+        let previous_cursor = pane.last_event;
         pane.last_event = snapshot.cursor;
         pane.live_floor = snapshot.cursor;
         pane.latest_reply_cursor = 0;
         pane.retired_execution_floor = snapshot
             .execution_id()
             .map_or(snapshot.cursor, |execution| execution.saturating_sub(1));
-        if pane.snapshot.is_none() {
-            for entry in &page.entries {
-                if entry.kind == HistoryKind::User {
-                    pane.remember_history_entry(entry);
-                }
+        for entry in &page.entries {
+            if entry.id > previous_cursor
+                && entry.kind == HistoryKind::User
+                && entry.agent == active.agent
+            {
+                pane.remember_history_entry(entry);
             }
         }
         if let Some(entry) =
