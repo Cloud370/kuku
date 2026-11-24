@@ -336,6 +336,15 @@ pub fn inspect_model(
     })
 }
 
+/// Validate a registered model's reusable settings. The configured default must be ready
+/// without a request-specific output limit.
+pub fn validate_model_config(
+    config: &crate::config::Config,
+    model: &crate::config::ModelRef,
+) -> Result<()> {
+    crate::provider::config::validate_model_config(config, model)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTool {
     pub(crate) spec: ToolSpec,

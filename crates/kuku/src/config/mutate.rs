@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File, Permissions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use toml_edit::{DocumentMut, Item, Key, Table, TableLike};
 
 use super::resolve::{parse_config_text, parse_config_text_with_env};
 use super::types::ModelRef;
-use crate::config::types::{ConfigFile, HandoffConfig, ThinkLevel};
+use crate::config::types::{ConfigFile, HandoffConfig, ThinkLevel, UpdateConfig};
 use crate::error::{Error, Result};
 
 /// Generate a default config file content as a TOML string.
@@ -97,8 +98,9 @@ fn inject_update_section(doc: &mut toml_edit::DocumentMut) {
         "\n\n# Update system: self-update source, channel, and custom mirrors.\n",
         "",
     );
-    section["source"] = toml_edit::value("github");
-    section["channel"] = toml_edit::value("stable");
+    let defaults = UpdateConfig::default();
+    section["source"] = toml_edit::value(defaults.source);
+    section["channel"] = toml_edit::value(defaults.channel);
     doc["update"] = toml_edit::Item::Table(section);
 }
 
@@ -279,12 +281,14 @@ pub fn patch_config_text_with_env(
         }
     }
 
-    resolve_patch_model_keys(&doc, &mut patch, &environment)?;
+    resolve_patch_model_keys(&mut doc, &mut patch, &environment)?;
     merge_tables(doc.as_table_mut(), patch.as_table(), true);
     if let Some((previous, raw_model)) = previous {
         let is_still_default =
             read_default(&doc, &environment).is_some_and(|(pair, _)| pair == previous);
-        let registered = registered_model_key(&doc, &previous, &environment).is_some();
+        let registered = model_table(&doc, &previous.connection).is_some_and(|models| {
+            registered_model_key(models, &previous.model, &environment).is_some()
+        });
         if removed_previous && is_still_default && !registered {
             return Err(config_field(
                 "default_model.model",
@@ -334,21 +338,21 @@ fn model_table<'a>(doc: &'a DocumentMut, connection: &str) -> Option<&'a dyn Tab
 }
 
 fn registered_model_key<'a>(
-    doc: &'a DocumentMut,
-    pair: &ModelRef,
+    models: &'a dyn TableLike,
+    model: &str,
     environment: &impl Fn(&str) -> EnvValue,
 ) -> Option<&'a str> {
-    let models = model_table(doc, &pair.connection)?;
-    if let Some((key, _)) = models.get_key_value(&pair.model) {
-        return Some(key.get());
-    }
     models
         .iter()
-        .find_map(|(name, _)| model_key_matches(name, &pair.model, environment).then_some(name))
+        .find_map(|(name, _)| model_key_matches(name, model, environment).then_some(name))
 }
 
 fn model_key_matches(key: &str, model: &str, environment: &impl Fn(&str) -> EnvValue) -> bool {
-    key == model || resolve_model_key(key, environment).as_deref() == Some(model)
+    if key.starts_with('$') {
+        resolve_model_key(key, environment).as_deref() == Some(model)
+    } else {
+        key == model
+    }
 }
 
 fn resolve_model_key(key: &str, environment: &impl Fn(&str) -> EnvValue) -> Option<String> {
@@ -381,12 +385,11 @@ fn resolve_delete_path(
 ) -> Vec<Key> {
     if let [root, connection, id, ..] = keys.as_mut_slice()
         && root.get() == "model"
-        && !model_table(doc, connection.get()).is_some_and(|models| models.contains_key(id.get()))
+        && let Some(models) = model_table(doc, connection.get())
+        && !models.contains_key(id.get())
     {
         let model = resolve_model_key(id.get(), environment).unwrap_or_else(|| id.get().to_owned());
-        if let Some(raw_key) =
-            registered_model_key(doc, &ModelRef::new(connection.get(), model), environment)
-        {
+        if let Some(raw_key) = registered_model_key(models, &model, environment) {
             *id = Key::new(raw_key);
         }
     }
@@ -394,18 +397,24 @@ fn resolve_delete_path(
 }
 
 fn resolve_patch_model_keys(
-    doc: &DocumentMut,
+    doc: &mut DocumentMut,
     patch: &mut DocumentMut,
     environment: &impl Fn(&str) -> EnvValue,
 ) -> Result<()> {
-    let Some(changes) = patch.get_mut("model").and_then(Item::as_table_like_mut) else {
+    let (Some(models), Some(changes)) = (
+        doc.get_mut("model").and_then(Item::as_table_like_mut),
+        patch.get_mut("model").and_then(Item::as_table_like_mut),
+    ) else {
         return Ok(());
     };
     for (connection, entry) in changes.iter_mut() {
         let Some(registrations) = entry.as_table_like_mut() else {
             continue;
         };
-        let Some(existing) = model_table(doc, connection.get()) else {
+        let Some(existing) = models
+            .get_mut(connection.get())
+            .and_then(Item::as_table_like_mut)
+        else {
             continue;
         };
         let aliases = registrations
@@ -415,20 +424,25 @@ fn resolve_patch_model_keys(
                     return None;
                 }
                 let model = resolve_model_key(id, environment).unwrap_or_else(|| id.to_owned());
-                let pair = ModelRef::new(connection.get(), model);
-                registered_model_key(doc, &pair, environment)
+                registered_model_key(existing, &model, environment)
                     .map(|key| (id.to_owned(), key.to_owned()))
             })
             .collect::<Vec<_>>();
-        for (incoming, existing) in aliases {
-            if registrations.contains_key(&existing) {
+        let mut targets = BTreeSet::new();
+        for (incoming, target) in &aliases {
+            if registrations.contains_key(target) || !targets.insert(target) {
                 return Err(config_field(
                     ModelRef::new(connection.get(), incoming).config_path(),
-                    format!("patch names the same model twice through {existing:?}"),
+                    format!("patch names the same model twice through {target:?}"),
                 ));
             }
-            if let Some(item) = registrations.remove(&incoming) {
-                registrations.insert(&existing, item);
+            if incoming.starts_with('$') {
+                // Keep the requested reference so later config loads resolve the same table.
+                if let Some(item) = existing.remove(target) {
+                    existing.insert(incoming, item);
+                }
+            } else if let Some(item) = registrations.remove(incoming) {
+                registrations.insert(target, item);
             }
         }
     }

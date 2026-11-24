@@ -20,6 +20,23 @@ pub(crate) struct ResolveConfigInput<'a> {
 }
 
 pub(crate) fn resolve_config(input: ResolveConfigInput<'_>) -> Result<ResolvedProvider> {
+    resolve(input, true)
+}
+
+pub(crate) fn validate_model_config(config: &Config, model: &ModelRef) -> Result<()> {
+    resolve(
+        ResolveConfigInput {
+            connection: Some(model.connection.clone()),
+            model: Some(model.model.clone()),
+            config: Some(config),
+            ..Default::default()
+        },
+        model == config.default_model(),
+    )?;
+    Ok(())
+}
+
+fn resolve(input: ResolveConfigInput<'_>, require_output_limit: bool) -> Result<ResolvedProvider> {
     let (name, model, connection, model_config) = if input.connection.is_none()
         && input.base_url.is_some()
         && input.api_key.is_some()
@@ -146,7 +163,8 @@ pub(crate) fn resolve_config(input: ResolveConfigInput<'_>) -> Result<ResolvedPr
             "connection '{name}': routing options require an OpenRouter profile"
         )));
     }
-    let requires_output_limit = kind == ProviderKind::Anthropic
+    let requires_output_limit = require_output_limit
+        && kind == ProviderKind::Anthropic
         && !matches!(
             capabilities.profile,
             crate::config::ProviderProfile::DeepSeek | crate::config::ProviderProfile::OpenRouter

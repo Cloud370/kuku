@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use kuku::adapter::{ModelSelection, discover_models, inspect_model};
+use kuku::adapter::{ModelSelection, discover_models, inspect_model, validate_model_config};
 use kuku::config::{
     Config, ModelRef, config_sha256, config_text_with_value, parse_config_text_with_env,
     patch_config_text_with_env, publish_config,
@@ -264,7 +264,7 @@ async fn execute(
         }
         ConfigSubcommand::Validate => {
             let config = parse_config_text_with_env(text, environment)?.resolve()?;
-            inspect_models(&config)?;
+            validate_models(&config)?;
             Ok(json!({"status":"valid","default_model":config.default_model()}))
         }
         ConfigSubcommand::Set { key, value, patch } => {
@@ -281,7 +281,7 @@ async fn execute(
                 }
             };
             let config = parse_config_text_with_env(&updated, environment)?.resolve()?;
-            inspect_models(&config)?;
+            validate_models(&config)?;
             publish_config(
                 path,
                 raw.as_deref().map(str::as_bytes),
@@ -295,11 +295,10 @@ async fn execute(
     }
 }
 
-fn inspect_models(config: &Config) -> Result<(), ConfigError> {
-    config
-        .models
-        .keys()
-        .try_for_each(|pair| inspect_configured_model(config, pair).map(|_| ()))
+fn validate_models(config: &Config) -> Result<(), ConfigError> {
+    config.models.keys().try_for_each(|pair| {
+        validate_model_config(config, pair).map_err(|error| invalid_model_settings(pair, error))
+    })
 }
 
 fn inspect_configured_model(
@@ -314,14 +313,16 @@ fn inspect_configured_model(
             ..AgentConfig::default()
         },
     )
-    .map_err(|error| {
-        ConfigError::new(
-            "invalid",
-            "invalid_model_settings",
-            Some(pair.config_path()),
-            error.to_string(),
-        )
-    })
+    .map_err(|error| invalid_model_settings(pair, error))
+}
+
+fn invalid_model_settings(pair: &ModelRef, error: kuku::Error) -> ConfigError {
+    ConfigError::new(
+        "invalid",
+        "invalid_model_settings",
+        Some(pair.config_path()),
+        error.to_string(),
+    )
 }
 
 fn print_json(value: &Value) -> CliResult {

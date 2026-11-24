@@ -77,6 +77,95 @@ fn validates_configured_models_without_checking_credentials_or_discovery() {
 }
 
 #[test]
+fn nondefault_messages_model_can_require_an_agent_output_limit() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().canonicalize().unwrap().join("config.toml");
+    let raw = format!(
+        r#"{FIXTURE_CONFIG}
+[provider.native]
+format = "anthropic"
+base_url = "https://messages.example/v1"
+api_key = "fixture-key"
+
+[model.native.fixture]
+"#
+    );
+    fs::write(&path, raw).unwrap();
+    let result = report(&config(home.path(), &["validate"]), 0, &path);
+    assert_eq!("valid", result["status"]);
+
+    let models = report(&config(home.path(), &["models"]), 0, &path);
+    let native = models["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["connection"] == "native")
+        .unwrap();
+    assert_eq!("invalid_model_settings", native["error"]["code"]);
+
+    let edit = config(home.path(), &["set", "--patch", "logs.max_age_days = 30"]);
+    assert_eq!("updated", report(&edit, 0, &path)["status"]);
+    let edited = fs::read(&path).unwrap();
+    let invalid_settings = r#"model.native.fixture.reasoning_effort = "unsupported""#;
+    let default_without_limit = r#"default_model = { connection = "native", model = "fixture" }"#;
+    for patch in [invalid_settings, default_without_limit] {
+        let result = report(&config(home.path(), &["set", "--patch", patch]), 1, &path);
+        assert_eq!("invalid_model_settings", result["diagnostics"][0]["code"]);
+        assert_eq!("model.native.fixture", result["diagnostics"][0]["field"]);
+        assert_eq!(edited, fs::read(&path).unwrap());
+    }
+
+    let with_limit =
+        format!("{default_without_limit}\nmodel.native.fixture.max_output_tokens = 128");
+    let result = report(
+        &config(home.path(), &["set", "--patch", &with_limit]),
+        0,
+        &path,
+    );
+    assert_eq!(
+        json!({"connection":"native","model":"fixture"}),
+        result["default_model"]
+    );
+}
+
+#[test]
+fn patch_fills_missing_update_defaults_and_preserves_an_existing_source() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().canonicalize().unwrap().join("config.toml");
+    fs::write(&path, FIXTURE_CONFIG).unwrap();
+    let patch = |text| {
+        let output = config(home.path(), &["set", "--patch", text]);
+        assert_eq!("updated", report(&output, 0, &path)["status"]);
+        kuku::config::load_config(&path)
+            .unwrap()
+            .resolve()
+            .unwrap()
+            .update
+    };
+
+    let alpha = patch(r#"update.channel = "alpha""#);
+    assert_eq!("alpha", alpha.channel);
+    assert_eq!("github", alpha.source);
+
+    let mirror = patch(
+        r#"
+[update]
+source = "mirror"
+[update.sources]
+custom = "https://mirror.example/latest.json"
+"#,
+    );
+    assert_eq!("alpha", mirror.channel);
+    let stable = patch(r#"update.channel = "stable""#);
+    assert_eq!("stable", stable.channel);
+    assert_eq!("mirror", stable.source);
+    assert_eq!(
+        "https://mirror.example/latest.json",
+        stable.sources["custom"]
+    );
+}
+
+#[test]
 fn patch_creates_config_deletes_and_replaces_default_pair_and_preserves_file_on_failure() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().canonicalize().unwrap().join("config.toml");
@@ -267,6 +356,58 @@ default_model = {{ connection = "work", model = "next.model.v2" }}
         let result = report(&config(home.path(), &["models"]), 0, &path);
         assert_eq!(1, result["models"].as_array().unwrap().len());
         assert_eq!("next.model.v2", result["models"][0]["model"]);
+    }
+}
+
+#[test]
+fn patch_adopts_an_explicit_model_reference_and_retains_existing_settings() {
+    const NEW_KEY: &str = "$KUKU_CLI_DYNAMIC_ID";
+    const OLD_KEY: &str = "$KUKU_CLI_OLD_ID";
+    const ORIGINAL_MODEL: &str = "vendor/fixture.v1";
+    const NEXT_MODEL: &str = "vendor/fixture.v2";
+
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().canonicalize().unwrap().join("config.toml");
+    let run = |model: &str, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+            .env("KUKU_HOME", home.path())
+            .env("KUKU_CLI_DYNAMIC_ID", model)
+            .env("KUKU_CLI_OLD_ID", ORIGINAL_MODEL)
+            .arg("config")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let select_reference = format!(
+        r#"
+default_model = {{ connection = "work", model = "{NEW_KEY}" }}
+[model.work."{NEW_KEY}"]
+max_output_tokens = 128
+"#
+    );
+    for old_key in [ORIGINAL_MODEL, OLD_KEY] {
+        let raw = format!(
+            "{FIXTURE_CONFIG}\n# Model comment\n[model.work.\"{old_key}\"]\ncontext_window = 8192\n"
+        );
+        fs::write(&path, &raw).unwrap();
+        let duplicate =
+            format!("{select_reference}\n[model.work.\"{old_key}\"]\ncontext_window = 2048\n");
+        let result = run(ORIGINAL_MODEL, &["set", "--patch", &duplicate]);
+        assert_eq!("invalid", report(&result, 1, &path)["status"]);
+        assert_eq!(raw, fs::read_to_string(&path).unwrap());
+
+        let output = run(ORIGINAL_MODEL, &["set", "--patch", &select_reference]);
+        assert_eq!("updated", report(&output, 0, &path)["status"]);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# Model comment"));
+        assert!(text.contains(&format!("[model.work.\"{NEW_KEY}\"]")));
+        assert!(!text.contains(&format!("[model.work.\"{old_key}\"]")));
+        let result = report(&run(NEXT_MODEL, &["models"]), 0, &path);
+        assert_eq!(NEXT_MODEL, result["default_model"]["model"]);
+        assert_eq!(1, result["models"].as_array().unwrap().len());
+        let selection = &result["models"][0]["selection"];
+        assert_eq!(8192, selection["context_window_tokens"]);
+        assert_eq!(128, selection["max_output_tokens"]);
     }
 }
 

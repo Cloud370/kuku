@@ -278,10 +278,10 @@ pub struct PluginConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UpdateConfig {
     pub source: String,
     pub channel: String,
-    #[serde(default)]
     pub sources: BTreeMap<String, String>,
 }
 

@@ -12,7 +12,7 @@
 
 ## Config references
 
-Choose your own variable names. A complete `$NAME` value in `config.toml` explicitly references that variable. For example, use `base_url = "$MY_GATEWAY_URL"` and `model = "$MY_MODEL_ID"` inside `default_model`. To apply model settings to that same ID, use the quoted model key `[model.work."$MY_MODEL_ID"]`.
+Choose your own variable names. A complete `$NAME` value in `config.toml` explicitly references that variable. Set `base_url = "$MY_GATEWAY_URL"` in `[provider.work]` and set `model = "$MY_MODEL_ID"` in `default_model`. To apply model settings to that ID, use the quoted model key `[model.work."$MY_MODEL_ID"]`.
 
 kuku expands URL and model references when loading the config. API keys and custom headers keep their `$NAME` references until request preparation or dispatch. Custom request body strings keep literal dollar signs. API keys can also use `file:<absolute-path>`. [Config reference](config.md)
 

@@ -12,7 +12,7 @@
 
 ## 配置中的引用
 
-变量名可以自己选。`config.toml` 中完整的 `$NAME` 值引用对应的环境变量。例如，写入 `base_url = "$MY_GATEWAY_URL"`，并在 `default_model` 中写入 `model = "$MY_MODEL_ID"`。要为同一个 ID 设置选项，可用带引号的模型键 `[model.work."$MY_MODEL_ID"]`。
+变量名可以自己选。`config.toml` 中完整的 `$NAME` 值引用对应的环境变量。在 `[provider.work]` 中写入 `base_url = "$MY_GATEWAY_URL"`，在 `default_model` 中写入 `model = "$MY_MODEL_ID"`。要为这个 ID 设置选项，可用带引号的模型键 `[model.work."$MY_MODEL_ID"]`。
 
 kuku 在加载配置时展开 URL 和模型 ID 引用。API 密钥与自定义请求头保留 `$NAME`，到准备或发出请求时再解析。自定义请求体中的美元符号按字面值保留。API 密钥也可使用 `file:<绝对路径>`。[配置参考](config.md)
 
