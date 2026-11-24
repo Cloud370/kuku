@@ -588,7 +588,7 @@ def run(args, result):
                   windows_build=sys.getwindowsversion().build,
                   binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest())
     with InstalledClient(args.binary, args.bridge, args.directory) as client:
-        workspace = client.workspace("work-windows-terminal")
+        workspace = client.workspace("work-windows-terminal", permissions="full")
         state = args.directory / "terminal-state.json"
         title = f"{TITLE} {secrets.token_hex(4)}"
         process = subprocess.Popen([terminal, "-w", "new", "--maximized", "new-tab", "--suppressApplicationTitle",

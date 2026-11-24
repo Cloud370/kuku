@@ -602,6 +602,7 @@ def run_linux_desktop(binary, bridge, scratch, evidence, record, checked):
                "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,mode=1777"]
     for source, target in ((binary, "/test/kuku"), (bridge, "/test/bridge"),
                            (Path(__file__).with_name("interactive_fixture.py"), "/test/interactive_fixture.py"),
+                           (Path(__file__).with_name("evidence.py"), "/test/evidence.py"),
                            (CONFIG, "/test/fixtures/config.toml"), (evidence, "/evidence")):
         options = ["type=bind", f"source={source.resolve()}", f"target={target}"]
         if source != evidence:

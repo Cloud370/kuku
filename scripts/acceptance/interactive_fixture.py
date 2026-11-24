@@ -761,9 +761,14 @@ class InstalledClient:
         finally:
             path.unlink()
 
-    def workspace(self, name):
+    def workspace(self, name, *, permissions=None):
         workspace = self.directory / name
         workspace.mkdir()
+        if permissions is not None:
+            self.cli(workspace, "list")  # Start the managed service without opening a Session.
+            query = urlencode({"workspace": workspace})
+            response = self.request("PUT", f"/workspaces/permissions?{query}", payload=permissions)
+            assert response.as_json() == permissions
         return workspace
 
     def terminal(self, workspace, *args, color=False, confirm_permissions=True):

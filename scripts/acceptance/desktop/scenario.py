@@ -109,10 +109,10 @@ class Desktop:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=5)
 
 
-def copy_selected_message(desktop, window, contextual_controls_before_messages=1):
+def copy_selected_message(desktop, window):
+    # Messages comes last in the contextual focus cycle.
     desktop.key(window, "F2")
-    for _ in range(contextual_controls_before_messages):
-        desktop.key(window, "Tab")
+    desktop.key(window, "shift+Tab")
     for _ in range(3):
         desktop.key(window, "Return")
 
@@ -230,7 +230,7 @@ def agent_navigation(client, desktop, workspace, session, window):
         screens["child"] = desktop.screen("agent-streaming-reviewer")
     eventually("the complete child reply to settle",
                lambda: client.snapshot(workspace, session, "reviewer")["last_output"] == initial + tail)
-    copy_selected_message(desktop, window, contextual_controls_before_messages=2)
+    copy_selected_message(desktop, window)
     eventually("a reply larger than the transcript preview in the clipboard", lambda: desktop.clipboard() == raw)
     desktop.key(window, "alt+Left")
     screens["restored"] = desktop.screen("agent-parent-restored")
@@ -240,7 +240,7 @@ def agent_navigation(client, desktop, workspace, session, window):
 
 
 def phone_layout(client, desktop):
-    workspace = client.workspace("work-phone")
+    workspace = client.workspace("work-phone", permissions="full")
     state = client.directory / "phone-terminal.json"
     title = "Kuku Phone Layout"
     args = ["xfce4-terminal", "--disable-server", f"--title={title}", "--hide-menubar", "--geometry=42x30",
@@ -272,7 +272,7 @@ def close_terminal(desktop, window, terminal, state):
 
 
 def exercise(client, desktop, checks):
-    workspace = client.workspace("work-desktop")
+    workspace = client.workspace("work-desktop", permissions="full")
     state = client.directory / "terminal.json"
     args = ["xfce4-terminal", "--disable-server", f"--title={TITLE}", "--hide-menubar", "--maximize",
             f"--working-directory={workspace}", "--execute", sys.executable, Path(__file__),
