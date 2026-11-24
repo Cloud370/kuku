@@ -175,14 +175,19 @@ def composer_actions(client):
     def position(screen, text):
         return next((row, line.index(text)) for row, line in enumerate(screen.splitlines()) if text in line)
 
+    def reached_builtin_skill(terminal):
+        terminal.press("\x1b[6~")
+        return "›/skill:kuku-docs" in terminal.request("screen")["screen"]
+
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=28, cols=60)
         terminal.expect(f"{model} none")
         terminal.press("/")
         terminal.expect("›/new", also=("Actions and Skills",))
-        terminal.press("\x1b[A")
-        terminal.expect("›/quit")
+        eventually("the built-in Skill at the end of the action menu", lambda: reached_builtin_skill(terminal))
         terminal.press("\x1b[B")
+        terminal.expect("›/new")
+        terminal.press("\x1b[A")
         terminal.expect("›/skill:kuku-docs")
         terminal.press("\x1b[B")
         terminal.expect("›/new")
