@@ -6,22 +6,93 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release. Leave empty to build packages for the selected ref."
+        description: "Existing tag to release. Leave empty to rehearse on the selected ref."
         required: false
+      preview-version:
+        description: "Optional rehearsal version, for example 0.1.0-alpha.4."
+        required: false
+      notes-only:
+        description: "Generate the announcement without building packages."
+        type: boolean
+        default: false
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag || github.ref_name }}${{ inputs.notes-only && '-notes' || '' }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: '0'
 
 permissions:
   contents: read
 
 jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.resolve.outputs.revision }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}
+      - name: Resolve release candidate
+        id: resolve
+        env:
+          RELEASE_TAG: ${{ inputs.tag || (github.event_name == 'push' && github.ref_name) || '' }}
+          PREVIEW_VERSION: ${{ inputs.preview-version }}
+          NOTES_ONLY: ${{ inputs.notes-only && 'true' || 'false' }}
+        run: |
+          revision=$(git rev-parse HEAD)
+          version="$PREVIEW_VERSION"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            if [[ "$NOTES_ONLY" == true ]]; then
+              echo 'Leave tag empty for an announcement preview.' >&2
+              exit 1
+            fi
+            test -z "$PREVIEW_VERSION"
+            test "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" = "$revision"
+            [[ "$RELEASE_TAG" == v* ]]
+            version=${RELEASE_TAG#v}
+            test -n "$version"
+          fi
+          if [[ -n "$version" && ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Invalid release version: $version" >&2
+            exit 1
+          fi
+          prerelease=false
+          core=${version%%+*}
+          if [[ "$core" == *-* ]]; then
+            IFS=. read -r -a identifiers <<< "${core#*-}"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "$identifier" =~ ^0[0-9]+$ ]]; then
+                echo "Invalid numeric pre-release identifier: $identifier" >&2
+                exit 1
+              fi
+            done
+          fi
+          if [[ -z "$version" || "$core" == *-* ]]; then
+            prerelease=true
+          fi
+          printf 'revision=%s\ntag=%s\nversion=%s\nprerelease=%s\n' \
+            "$revision" "$RELEASE_TAG" "$version" "$prerelease" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Release contracts
+    if: ${{ !inputs.notes-only }}
+    needs: candidate
+    uses: ./.github/workflows/ci.yml
+    with:
+      release-revision: ${{ needs.candidate.outputs.revision }}
+
   build:
+    if: ${{ !inputs.notes-only }}
+    needs: candidate
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -44,17 +115,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.candidate.outputs.revision }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-
-      - name: Build WebUI
-        working-directory: apps/web
-        run: npm ci && npm run build
+      - name: Set the version for the package build
+        if: ${{ needs.candidate.outputs.version != '' }}
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.candidate.outputs.version }}
+        run: |
+          tag="v$RELEASE_VERSION"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            test "$(git rev-parse "refs/tags/$tag^{commit}")" = "$(git rev-parse HEAD)"
+          else
+            git tag "$tag"
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -69,23 +143,24 @@ jobs:
 
       - name: Build binary (Linux)
         if: runner.os == 'Linux'
-        run: cross build --locked --release --features embedded-web-assets --target ${{ matrix.target }}
+        run: cross build --locked --release --target ${{ matrix.target }}
 
       - name: Build binary
         if: runner.os != 'Linux'
-        run: cargo build --locked --release --features embedded-web-assets --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../kuku-${{ matrix.platform }}.tar.gz kuku
+        run: >-
+          tar -czf kuku-${{ matrix.platform }}.tar.gz
+          -C target/${{ matrix.target }}/release kuku
+          -C "$PWD" LICENSE-MIT LICENSE-APACHE
 
       - name: Package (zip)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/kuku.exe -DestinationPath kuku-${{ matrix.platform }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/kuku.exe, LICENSE-MIT, LICENSE-APACHE -DestinationPath kuku-${{ matrix.platform }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -93,15 +168,43 @@ jobs:
           path: kuku-${{ matrix.platform }}.*
           if-no-files-found: error
 
+      - name: Prepare isolated Windows Terminal desktop
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        run: |
+          python3 -m pip install --disable-pip-version-check Pillow==12.2.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python3 scripts/acceptance/desktop/windows_setup.py --report benchmarks/acceptance/windows-terminal-preflight.json --prepare "$env:RUNNER_TEMP/kuku-windows-terminal"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $preflight = Get-Content benchmarks/acceptance/windows-terminal-preflight.json -Raw | ConvertFrom-Json
+          "KUKU_RELEASE_TERMINAL=$($preflight.terminal)" >> $env:GITHUB_ENV
+
+      - name: Verify the native release archive
+        if: matrix.platform != 'linux-aarch64'
+        run: >-
+          python3 scripts/acceptance/run.py --run-id release-installed interactive
+          --archive kuku-${{ matrix.platform }}.${{ matrix.archive }}
+          --expected-revision ${{ needs.candidate.outputs.revision }}
+          ${{ needs.candidate.outputs.version && format('--expected-version {0}', needs.candidate.outputs.version) || '' }}
+          ${{ runner.os == 'Windows' && '--desktop --windows-terminal "$env:KUKU_RELEASE_TERMINAL"' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && matrix.platform != 'linux-aarch64' }}
+        with:
+          name: acceptance-release-${{ matrix.platform }}
+          path: |
+            benchmarks/acceptance/release-installed
+            benchmarks/acceptance/windows-terminal-preflight.json
+
   smoke-linux-arm64:
-    needs: build
+    needs: [candidate, build]
     runs-on: ubuntu-24.04-arm
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.candidate.outputs.revision }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -113,6 +216,8 @@ jobs:
       - name: Install and smoke test the ARM64 release archive
         env:
           PYTHONPATH: scripts/acceptance
+          RELEASE_REVISION: ${{ needs.candidate.outputs.revision }}
+          RELEASE_VERSION: ${{ needs.candidate.outputs.version }}
         run: |
           export ARM64_INSTALL_DIR="$RUNNER_TEMP/kuku-release-arm64"
           mkdir -p "$ARM64_INSTALL_DIR"
@@ -127,24 +232,103 @@ jobs:
               os.environ,
           )
           PY
+          expected=(--expected-revision "$RELEASE_REVISION")
+          if [[ -n "$RELEASE_VERSION" ]]; then
+            expected+=(--expected-version "$RELEASE_VERSION")
+          fi
           python3 scripts/acceptance/run.py --run-id release-arm64 interactive \
-            --binary "$ARM64_INSTALL_DIR/bin/kuku" --native-smoke
+            --binary "$ARM64_INSTALL_DIR/bin/kuku" --native-smoke "${expected[@]}"
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
           name: acceptance-release-linux-aarch64
           path: benchmarks/acceptance/release-arm64
 
-  release:
-    if: ${{ github.event_name == 'push' || inputs.tag != '' }}
-    needs: [build, smoke-linux-arm64]
+  notes:
+    name: Generate the release announcement
+    needs: candidate
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.candidate.outputs.revision }}
+          fetch-depth: 0
+      - name: Prepare release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.candidate.outputs.version }}
+          IS_PRERELEASE: ${{ needs.candidate.outputs.prerelease }}
+        run: |
+          notes=release-notes.md
+          : > "$notes"
+          if [[ -n "$RELEASE_VERSION" && -f CHANGELOG.md ]]; then
+            awk -v heading="## [$RELEASE_VERSION]" '
+              /^## / {
+                if (selected) exit
+                selected = $0 == heading || index($0, heading " - ") == 1
+                next
+              }
+              selected { print }
+            ' CHANGELOG.md > "$notes"
+          fi
+          gh api --paginate "repos/$GH_REPO/releases" \
+            --jq '.[] | select(.draft == false) | [.published_at, .tag_name, .prerelease] | @tsv' > releases.tsv
+          sort -r releases.tsv > ordered-releases.tsv
+          previous=
+          stable=
+          while IFS=$'\t' read -r published tag prerelease; do
+            [[ "$tag" != "v$RELEASE_VERSION" ]] || continue
+            commit=$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}") || continue
+            git merge-base --is-ancestor "$commit" HEAD || continue
+            if [[ "$prerelease" == "$IS_PRERELEASE" ]]; then
+              previous="$tag"
+              break
+            fi
+            if [[ "$prerelease" == false && -z "$stable" ]]; then
+              stable="$tag"
+            fi
+          done < ordered-releases.tsv
+          previous=${previous:-$stable}
+          revision=$(git rev-parse HEAD)
+          notes_tag=${RELEASE_VERSION:+v$RELEASE_VERSION}
+          fields=(-f "tag_name=${notes_tag:-rehearsal-$revision}" -f "target_commitish=$revision")
+          if [[ -n "$previous" ]]; then
+            fields+=(-f "previous_tag_name=$previous")
+          fi
+          gh api --method POST "repos/$GH_REPO/releases/generate-notes" "${fields[@]}" --jq .body > generated-notes.md
+          range=HEAD
+          if [[ -n "$previous" ]]; then
+            range="refs/tags/$previous..HEAD"
+          fi
+          git log --format='%aN%n%(trailers:key=Co-authored-by,valueonly,separator=%x0a)' "$range" | \
+            sed -E 's/[[:space:]]+<[^<>]*>$//; /^[[:space:]]*$/d' | sort -u > commit-authors.txt
+          {
+            printf '\n'
+            python3 scripts/release_notes.py generated-notes.md commit-authors.txt
+            if [[ -n "$previous" ]]; then
+              printf '\n[查看 `%s` 以来的完整差异](%s/%s/compare/%s...%s)\n' \
+                "$previous" "$GITHUB_SERVER_URL" "$GH_REPO" "$previous" "$revision"
+            fi
+          } >> "$notes"
+          cat "$notes" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  prepare:
+    name: Prepare checksums and the update manifest
+    needs: [candidate, validate, build, smoke-linux-arm64, notes]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.candidate.outputs.revision }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -156,48 +340,39 @@ jobs:
         working-directory: artifacts
         run: sha256sum kuku-* > sha256sums.txt
 
-      - name: Resolve tag
-        id: tag
-        env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      - name: Verify bundled license files
         run: |
-          git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}" >/dev/null
-          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          from pathlib import Path
+          import tarfile
+          import zipfile
 
-      - name: Determine prerelease
-        id: prerelease
-        env:
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          fi
+          artifacts = Path("artifacts")
+          for license_path in (Path("LICENSE-MIT"), Path("LICENSE-APACHE")):
+              expected = license_path.read_bytes().replace(b"\r\n", b"\n")
+              for archive in artifacts.glob("kuku-*.tar.gz"):
+                  with tarfile.open(archive) as package:
+                      contents = package.extractfile(license_path.name).read()
+                      assert contents.replace(b"\r\n", b"\n") == expected, archive
+              for archive in artifacts.glob("kuku-*.zip"):
+                  with zipfile.ZipFile(archive) as package:
+                      contents = package.read(license_path.name)
+                      assert contents.replace(b"\r\n", b"\n") == expected, archive
+          PY
 
-      - name: Prepare release notes
-        env:
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          : > release-notes.md
-          if [ -f CHANGELOG.md ]; then
-            awk -v heading="## [${RELEASE_TAG#v}]" '
-              /^## / {
-                if (selected) exit
-                selected = $0 == heading || index($0, heading " - ") == 1
-                next
-              }
-              selected { print }
-            ' CHANGELOG.md > release-notes.md
-          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: artifacts
 
       - name: Generate latest.json
+        if: ${{ needs.candidate.outputs.version != '' }}
         working-directory: artifacts
         env:
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.candidate.outputs.version }}
         run: |
-          TAG="$RELEASE_TAG"
-          VERSION="${TAG#v}"
+          VERSION="$RELEASE_VERSION"
+          TAG="v$VERSION"
           NOTES="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
           PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
           BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
@@ -235,13 +410,49 @@ jobs:
               desktop: {}
             }' > latest.json
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: |
+            artifacts/release-notes.md
+            artifacts/sha256sums.txt
+            artifacts/latest.json
+          if-no-files-found: error
+
+  release:
+    if: ${{ needs.candidate.outputs.tag != '' }}
+    needs: [candidate, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.candidate.outputs.tag }}
+
+      - name: Verify the release tag still identifies the tested commit
+        env:
+          RELEASE_REVISION: ${{ needs.candidate.outputs.revision }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_REVISION"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kuku-*
+          path: artifacts
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: artifacts
+
       - name: Publish release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-          IS_PRERELEASE: ${{ steps.prerelease.outputs.is_prerelease }}
+          RELEASE_TAG: ${{ needs.candidate.outputs.tag }}
+          IS_PRERELEASE: ${{ needs.candidate.outputs.prerelease }}
         run: |
           files=(
             artifacts/kuku-linux-x86_64.tar.gz
@@ -254,6 +465,7 @@ jobs:
           for file in "${files[@]}"; do
             test -s "$file"
           done
+          (cd artifacts && sha256sum --check sha256sums.txt)
           flags=(--prerelease="$IS_PRERELEASE")
           if [ "$IS_PRERELEASE" = true ]; then
             flags+=(--latest=false)
@@ -272,17 +484,13 @@ jobs:
             fi
 
             if ! jq -e '.body | strings | test("\\S")' existing-release.json >/dev/null; then
-              printf '\n\n' >> release-notes.md
-              gh api --method POST "repos/$GH_REPO/releases/generate-notes" -f tag_name="$RELEASE_TAG" --jq .body >> release-notes.md
-              flags+=(--notes-file release-notes.md)
+              flags+=(--notes-file artifacts/release-notes.md)
             fi
             gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
             gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
           elif grep -Fxq 'release not found' release-lookup.log; then
-            if grep -q '[^[:space:]]' release-notes.md; then
-              flags+=(--notes-file release-notes.md)
-            fi
-            gh release create "$RELEASE_TAG" "${files[@]}" --verify-tag --title "$RELEASE_TAG" --generate-notes "${flags[@]}"
+            gh release create "$RELEASE_TAG" "${files[@]}" --verify-tag --title "$RELEASE_TAG" \
+              --notes-file artifacts/release-notes.md "${flags[@]}"
           else
             cat release-lookup.log >&2
             exit 1

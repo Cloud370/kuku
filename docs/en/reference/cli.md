@@ -281,7 +281,7 @@ kuku web [--session <id>] [--agent <name>] [--print-url]
 ```
 
 - `kuku server` requires `--password` or `KUKU_SERVER_PASSWORD`.
-- `kuku web` opens the browser UI on the selected service (managed sign-in links carry a short-lived, single-use ticket; use `--print-url` to print without opening).
+- `kuku web` opens the browser UI on a service built with embedded Web assets. Managed sign-in links carry a short-lived, single-use ticket. Use `--print-url` to print the URL.
 - `kuku server status` returns service info as JSON (`{"state":"stopped"}` when local service is down).
 - `kuku server restart` exits `1` with `state: "deferred"` when busy, or `0` with `state: "restarted"` on success.
 

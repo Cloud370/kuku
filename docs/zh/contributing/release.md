@@ -4,8 +4,7 @@
 
 ## Prerequisites
 
-- 安装 [`cargo-release`](https://github.com/crate-ci/cargo-release)：`cargo install cargo-release`
-- 拥有仓库的 push 权限
+发布需要有权限推送发行 tag 的仓库账号。
 
 ## Versioning
 
@@ -23,7 +22,7 @@ v0.MINOR.PATCH
 
 当一组功能尚未稳定时，使用 `-alpha.N` 作为面向开发者的预发布后缀。
 
-任何包含 `-` 的 tag 都会被 CI 视为预发布。
+带 SemVer 预发布后缀的 tag 会被 CI 视为预发布。
 
 示例演进：
 
@@ -33,16 +32,22 @@ v0.MINOR.PATCH
 
 ## Release steps
 
-1. 在 `CHANGELOG.md` 里用 `## [VERSION]` 或 `## [VERSION] - YYYY-MM-DD` 标记目标版本，省略开头的 `v`。概括用户可见的改动，有助于理解发布内容时附上实测数据。
-2. 在发布候选版本上以 `platform=all` 运行完整 CI 矩阵并确认结果。[测试](testing.md#选择验证范围)
-3. 运行 `cargo release <version>`。
-4. 让 CI 构建产物并发布 GitHub Release。
+1. 确定版本号和待发布的提交。[发布公告](#发布公告)
+2. 演练时，在候选 ref 上手动运行 Release 工作流，将 `tag` 留空。把目标版本填入 `preview-version` 可验收二进制版本和更新清单。从该次运行下载安装包和 `release-metadata` 产物核对。
+3. 在候选提交上创建带注释的 `v<version>` tag 并推送该 tag。统一二进制从 tag 读取发行版本。
+4. 工作流通过后，核对 GitHub Release 的下载包、校验值、更新清单和预发布状态。
 
-`cargo release` 会更新 workspace 版本、创建发布 commit、创建 `v<version>` tag，并 push 两者。
+Release 在 Linux、macOS 和 Windows 上运行全工作区合约，同时构建安装包。它直接验收构建好的包，并在原生 Linux ARM64 runner 上验证 ARM64 包。同一提交的这些检查通过后才公开发布。演练的结果保存在工作流产物里。
 
-Release 工作流会先上传安装包和清单，再公开发布。首次发布时，它把对应版本的摘要放在 GitHub Release 页面开头，再附上 GitHub 生成的变更列表。找不到对应段落时会发布生成的变更列表。重跑可以继续发布已有草稿，并保留草稿中已填写的说明。
+## 发布公告
 
-需要下载尚未打 tag 的候选包时，在对应分支运行 Release 工作流并将 tag 字段留空。安装包可以从该次工作流的产物中下载。
+在 `CHANGELOG.md` 的 `## [VERSION]` 或 `## [VERSION] - YYYY-MM-DD` 标题下准备中文用户公告。Release 会在公告后附上自动生成的 PR 清单和贡献者致谢，并优先与同通道已公开的上一版比较，附上完整源码差异的链接。
+
+请贡献者或 Agent 写公告时，可以直接给出版本和候选提交。
+
+> 为 `<版本>` 写一份面向用户的中文发布公告。完整对比上一版到 `<候选 SHA>` 的已合并 PR、源码和验收证据。按实际内容区分新增功能、体验改进、Bug 修复和升级须知，把摘要写入 `CHANGELOG.md` 对应版本。只引用这次候选已经验证的实测数据，PR 明细由发布流程放进可展开的清单。
+
+只预览公告时，运行 Release 并将 `tag` 留空，填写 `preview-version`，启用 `notes-only`。完成后下载 `release-notes` 产物。
 
 ## Build paths
 
@@ -53,7 +58,7 @@ Linux 发布包含 x86-64 和 ARM64 的静态 musl 包。CI 构建两种架构�
 
 release profile 使用 `opt-level = 2` 优先优化运行性能。构建去除符号，保留 Thin LTO、4 个 codegen unit 和 panic abort。比较二进制大小时，必须保持 target、feature 和源码版本一致。开发／测试可执行文件保留调试信息，不作为发行产物。
 
-发行包将 Web 界面内嵌到 `kuku` 可执行文件中。用验收入口的 `interactive --archive` 模式在相应平台验证源码树外的发行包。[安装客户端验收](testing.md#安装客户端验收)
+发行包提供终端客户端、服务端 API 和两份项目许可证。需要可选的 Web 界面时，可启用 `embedded-web-assets` 构建。用验收入口的 `interactive --archive` 模式在相应平台验证源码树外的发行包。[构建 Web 界面](../reference/cli.md#kuku-server-与-kuku-web) · [安装客户端验收](testing.md#安装客户端验收)
 
 ## Update channels
 

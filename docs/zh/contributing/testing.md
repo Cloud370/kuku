@@ -23,7 +23,7 @@
 cargo test -p kuku --features test_support --test provider_integration --test query_runtime
 ```
 
-合并前，确认待合版本通过就绪 PR 选定的检查。[CI 计划](../../../scripts/acceptance/ci_plan.py) 根据 PR 改动选择原生平台和安装验收场景。[发布流程](release.md)要求对候选版本运行 `platform=all` 完整矩阵。
+合并前，确认待合版本通过就绪 PR 选定的检查。[CI 计划](../../../scripts/acceptance/ci_plan.py) 根据 PR 改动选择原生平台和安装验收场景。[发布流程](release.md)会为候选版本运行合约测试和安装包验收。
 
 ## 安装客户端验收
 

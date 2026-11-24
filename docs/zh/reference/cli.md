@@ -280,7 +280,7 @@ kuku web [--session <id>] [--agent <name>] [--print-url]
 ```
 
 - `kuku server` 需指定 `--password` 或 `KUKU_SERVER_PASSWORD`。
-- `kuku web` 打开所选服务的浏览器界面（受管登录链接带短期一次性 ticket；`--print-url` 仅打印链接）。
+- `kuku web` 打开内嵌 Web 资源的服务所提供的浏览器界面。受管登录链接带短期一次性 ticket，可用 `--print-url` 打印链接。
 - `kuku server status` 返回 JSON 格式的服务状态（本地服务未运行时为 `{"state":"stopped"}`）。
 - `kuku server restart` 忙碌时退出码为 `1` 并输出 `state: "deferred"`，重启成功输出 `state: "restarted"`。
 

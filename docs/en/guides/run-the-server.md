@@ -12,7 +12,7 @@ See [Upgrade kuku](upgrade-kuku.md) for version handoff behavior.
 
 ## Open the Web UI
 
-With a release bundle or a source build that embeds the Web assets, run `kuku web` from your workspace (optionally with `--session SESSION_ID --agent ADDRESS`), or type `/web` inside the TUI for the selected Agent. Browser and terminal clients can observe the same Session and reply to the same pending requests.
+With a [build that embeds the Web assets](../reference/cli.md#kuku-server-and-kuku-web), run `kuku web` from your workspace (optionally with `--session SESSION_ID --agent ADDRESS`), or type `/web` inside the TUI for the selected Agent. Browser and terminal clients can observe the same Session and reply to the same pending requests.
 
 A managed local launch signs in with a single-use ticket. Pointing `kuku web` at an explicit server opens a sign-in page where you enter that server's access token. [CLI reference](../reference/cli.md#kuku-server-and-kuku-web) · [HTTP authentication](../reference/server-api.md#authentication-and-versions)
 

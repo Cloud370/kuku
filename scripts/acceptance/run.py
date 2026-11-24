@@ -727,7 +727,10 @@ def run_interactive(args, directory, record):
         record["binary"] = config_record(binary)
 
         version = checked([str(binary), "--version"], "installed-version", timeout=30, cwd=scratch_dir)
-        record["binary"]["version"] = Path(version["log"]).read_text(encoding="utf-8").strip()
+        build_version = Path(version["log"]).read_text(encoding="utf-8").strip()
+        record["binary"]["version"] = build_version
+        if args.expected_revision or args.expected_version:
+            verify_installed_build(build_version, args.expected_revision, args.expected_version)
         bridge_cache = args.bridge_cache.resolve() if args.bridge_cache else None
         if bridge_cache and bridge_cache.is_file():
             bridge_source = bridge_cache
@@ -783,6 +786,17 @@ def run_interactive(args, directory, record):
     record["passed"] = True
 
 
+def verify_installed_build(build, expected_revision, expected_version):
+    parsed = re.fullmatch(r"kuku (\S+) \(([0-9a-f]{7,40})\)", build)
+    if not parsed:
+        raise ValueError(f"Expected a release version and source revision, got {build!r}")
+    version, revision = parsed.groups()
+    if expected_revision and not expected_revision.startswith(revision):
+        raise ValueError(f"Installed revision {revision} does not match {expected_revision}")
+    if expected_version and version != expected_version:
+        raise ValueError(f"Installed version {version} does not match {expected_version}")
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--output", type=Path, default=OUTPUT, help="ignored local evidence directory")
@@ -802,6 +816,8 @@ def parser():
     interactive.add_argument("--cases", help="run only the comma-separated installed scenarios")
     interactive.add_argument("--native-smoke", action="store_true", help="exercise composer actions, first run, model editing and paste on the native terminal")
     interactive.add_argument("--bridge-cache", type=Path, help="reuse or populate the native PTY helper at this keyed cache path")
+    interactive.add_argument("--expected-revision", help="require the installed binary to identify this source commit")
+    interactive.add_argument("--expected-version", help="require the installed binary to report this version")
     scenario = interactive.add_mutually_exclusive_group()
     scenario.add_argument("--desktop", action="store_true", help="also exercise an isolated Linux or Windows graphical terminal")
     scenario.add_argument("--desktop-only", action="store_true", help="exercise only the isolated graphical terminal")

@@ -9,7 +9,7 @@ cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
 kuku --help
 ```
 
-A default source build includes the TUI, CLI commands, and HTTP server. To use `kuku web`, install a release bundle (which embeds the Web UI) or [build the browser assets from a checkout](../reference/cli.md#kuku-server-and-kuku-web).
+Source builds and release packages include the TUI, CLI commands, and HTTP server by default. To use `kuku web`, [build from a checkout with embedded Web assets](../reference/cli.md#kuku-server-and-kuku-web).
 
 ## Install a published release
 

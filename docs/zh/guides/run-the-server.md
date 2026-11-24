@@ -12,7 +12,7 @@
 
 ## 在浏览器里使用 Web UI
 
-如果使用的是发行包，或内嵌了前端资源的源码构建，在工作区运行 `kuku web`（可带 `--session SESSION_ID --agent ADDRESS`），或者直接在 TUI 里对当前 Agent 输入 `/web`。浏览器和终端可以同时观察同一个 Session，并回复同一个待决请求。
+使用[内嵌 Web 资源的构建](../reference/cli.md#kuku-server-与-kuku-web)时，在工作区运行 `kuku web`（可带 `--session SESSION_ID --agent ADDRESS`），或者直接在 TUI 里对当前 Agent 输入 `/web`。浏览器和终端可以同时观察同一个 Session，并回复同一个待决请求。
 
 受管本地启动会用一次性票据自动登录；显式指向外部服务时，浏览器会打开登录页让你输入该服务的访问令牌。[CLI 参考](../reference/cli.md#kuku-server-与-kuku-web) · [HTTP 认证](../reference/server-api.md#认证与版本)
 

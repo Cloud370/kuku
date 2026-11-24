@@ -109,7 +109,7 @@ SDK 在每个边界按回执次序接纳符合条件的输入。即使先排了�
 
 1. **打通共享执行路径。** 补齐 SDK 在 Step 和 Turn 边界的输入接纳，复用其观察、输出读取及待决回复接口。实现本地服务发现、server 契约和无界面的 Rust 客户端，再将 CLI 的执行和观察命令接入。同一改动中迁移仓库内调用方并移除被替换的路由或执行路径。验证首次发送重试、两个工作区共享服务、忙时投递和断开重连。[核心方向](core-direction.md)
 2. **交付默认终端入口。** 用 Ratatui 排版、Crossterm 接收终端事件。输入编辑和对话渲染独立于网络时机，通过共享客户端实现上面的日常操作。按需翻页读取旧历史。新一页到达时保留正在看的卡片，并为历史缓存和实时更新设上限。流式输出期间维持阅读位置。正常退出和可处理的错误都恢复终端模式、光标及粘贴设置。[Crossterm 事件](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html) · [Ratatui TestBackend](https://docs.rs/ratatui/latest/ratatui/backend/struct.TestBackend.html)
-3. **交付安装后的使用体验。** 发行包从同一服务提供现有 WebUI。通过 `kuku web` 或 TUI 菜单打开浏览器，接入该服务，带上已选的工作区、Session 和 Agent。浏览器接入时完成认证，可复用的凭据不写入链接或日志。`kuku server` 继续提供显式运行服务的入口。浏览器共用寻址、状态、回复、插话与打断契约。验证在浏览器里接着处理 TUI 发起的工作，再回到终端。按已交付的入口更新安装、快速上手、CLI 和 server 参考文档，把新增检查接入项目已有验收入口。浏览器自身的交互模型、token 系统与交付阶段归 [Web 客户端](web-client.md)。[现有 WebUI API](../../../apps/web/src/api) · [发行打包](../../../.github/workflows/release.yml) · [测试指南](../contributing/testing.md)
+3. **交付安装后的使用体验。** 启用内嵌 Web 资源的构建从同一服务提供现有 WebUI。通过 `kuku web` 或 TUI 菜单打开浏览器，接入该服务，带上已选的工作区、Session 和 Agent。浏览器接入时完成认证，可复用的凭据不写入链接或日志。`kuku server` 继续提供显式运行服务的入口。浏览器共用寻址、状态、回复、插话与打断契约。验证在浏览器里接着处理 TUI 发起的工作，再回到终端。按已交付的入口更新安装、快速上手、CLI 和 server 参考文档，把新增检查接入项目已有验收入口。浏览器自身的交互模型、token 系统与交付阶段归 [Web 客户端](web-client.md)。[现有 WebUI API](../../../apps/web/src/api) · [发行打包](../../../.github/workflows/release.yml) · [测试指南](../contributing/testing.md)
 
 ## 开发时如何测试
 

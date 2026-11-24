@@ -76,6 +76,9 @@ def job(platform, contract, installed="none", cases=(), browser=False, web=False
 
 
 def plan(event, draft=False, platform="all", paths=()):
+    if event == "release":
+        jobs = [job(name, "workspace") for name in PLATFORMS]
+        return jobs, [entry["os"] for entry in jobs], False
     if event == "workflow_dispatch" and platform == "windows-desktop":
         return [job("windows", "none", "desktop")], [PLATFORMS["windows"][0]], False
     if event in ("schedule", "workflow_dispatch"):
@@ -112,7 +115,7 @@ def changed_paths():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--event", required=True, choices=("pull_request", "push", "schedule", "workflow_dispatch"))
+    parser.add_argument("--event", required=True, choices=("pull_request", "push", "schedule", "workflow_dispatch", "release"))
     parser.add_argument("--draft", choices=("true", "false"), default="false")
     parser.add_argument("--platform", default="all", choices=("all", *PLATFORMS, "windows-desktop"))
     parser.add_argument("--output", required=True, type=Path)

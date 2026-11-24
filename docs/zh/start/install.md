@@ -9,7 +9,7 @@ cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
 kuku --help
 ```
 
-默认源码构建包含 TUI、CLI 命令和 HTTP 服务。如果要用 `kuku web`，建议直接装带内嵌界面的发行包，或者[从源码构建浏览器资源](../reference/cli.md#kuku-server-与-kuku-web)。
+源码构建和发行包默认提供 TUI、CLI 命令和 HTTP 服务。要使用 `kuku web`，请[从源码构建并内嵌 Web 资源](../reference/cli.md#kuku-server-与-kuku-web)。
 
 ## 安装已发布版本
 
