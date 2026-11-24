@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use crate::error::{Error, Result};
 
-use super::{EventPayload, StoredEvent, MAX_RECORD_BYTES};
+use super::{EventPayload, MAX_RECORD_BYTES, StoredEvent};
 
 const MAX_RECORD_DEPTH: usize = 128;
 

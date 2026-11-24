@@ -1,15 +1,15 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::contextual::{ContextControl, ContextHit};
 use crate::keys::Shortcut;
 use crate::text::{compact_token_count, shorten};
-use crate::theme::{emphasis, focused_row, ACCENT, MUTED, WARNING};
+use crate::theme::{ACCENT, MUTED, WARNING, emphasis, focused_row};
 
 pub(super) fn label(control: &ContextControl) -> String {
     match control {

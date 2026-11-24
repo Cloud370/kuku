@@ -14,9 +14,9 @@ use crate::{Error, Result};
 mod file_changes;
 mod startup;
 pub(crate) use file_changes::CheckpointFileChanges;
+pub(crate) use startup::StartupCache;
 #[cfg(test)]
 use startup::read_agent_events;
-pub(crate) use startup::StartupCache;
 
 const MAX_SELECTION_BYTES_FACTOR: usize = 4;
 const MAX_CACHED_FILE_SNAPSHOTS: usize = 128;

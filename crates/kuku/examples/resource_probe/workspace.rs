@@ -13,12 +13,12 @@ use kuku::{
     WorkspaceScriptOperation,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{
-    agent_config, allocator_usage, micros, native_call, number, phase, response, statistics,
-    tool_response, wait_idle, AnyError, SAMPLE_WINDOW,
+    AnyError, SAMPLE_WINDOW, agent_config, allocator_usage, micros, native_call, number, phase,
+    response, statistics, tool_response, wait_idle,
 };
 
 const DIRECT: &str = "resource-direct";

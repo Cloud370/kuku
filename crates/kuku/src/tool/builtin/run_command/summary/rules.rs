@@ -157,7 +157,7 @@ impl Rule {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        (actual == fixture.expected)
+        (actual == fixture.expected.replace("\r\n", "\n"))
             .then_some(())
             .ok_or_else(|| format!("fixture {:?} did not match", fixture.name))
     }
@@ -206,7 +206,14 @@ pub(super) fn select(command: &str) -> Option<&'static Rule> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load, BUILTIN};
+    use super::{BUILTIN, load};
+
+    #[test]
+    fn built_in_fixtures_accept_crlf() {
+        let lf = BUILTIN.replace("\r\n", "\n");
+        let crlf = lf.replace("\n", "\r\n");
+        assert_eq!(load(&crlf).unwrap().len(), load(&lf).unwrap().len());
+    }
 
     #[test]
     fn built_in_fixtures_and_unsupported_rule_fields_are_checked() {
@@ -229,10 +236,12 @@ mod tests {
         let unsupported = BUILTIN.replace("strip_ansi = true", "replace = []");
         assert!(load(&unsupported).err().unwrap().contains("unknown field"));
         let conflicting = BUILTIN.replace("head_lines = 16", "keep_lines_matching = ['error']");
-        assert!(load(&conflicting)
-            .err()
-            .unwrap()
-            .contains("mutually exclusive"));
+        assert!(
+            load(&conflicting)
+                .err()
+                .unwrap()
+                .contains("mutually exclusive")
+        );
     }
 
     #[test]

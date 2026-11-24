@@ -7,7 +7,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::markup::LinkDestination;
 use crate::selection::TextInsets;
 use crate::text::shorten;
-use crate::theme::{tool_operation_color, CardFrame, TranscriptTone, ACCENT, MUTED, TURN_RULE};
+use crate::theme::{ACCENT, CardFrame, MUTED, TURN_RULE, TranscriptTone, tool_operation_color};
 
 use super::body_inset;
 use super::details::{InlineOutputAction, OutputTarget, ScriptDetail};
@@ -329,11 +329,7 @@ impl Row {
     }
 
     fn detail_rule(width: usize) -> &'static str {
-        if body_inset(width) > 0 {
-            "│ "
-        } else {
-            ""
-        }
+        if body_inset(width) > 0 { "│ " } else { "" }
     }
 
     pub(super) fn frame_end(frame: &CardFrame) -> Vec<Self> {

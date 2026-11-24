@@ -55,7 +55,7 @@ pub(crate) async fn fetch_web(
     let permit = match host.operations().acquire_owned().await {
         Ok(permit) => permit,
         Err(error) => {
-            return ToolResultEnvelope::error("web capacity unavailable", error.to_string())
+            return ToolResultEnvelope::error("web capacity unavailable", error.to_string());
         }
     };
     let html = match fetch_html(url).await {
@@ -73,7 +73,7 @@ pub(crate) async fn fetch_web(
         Ok(Ok(markdown)) => markdown,
         Ok(Err(result)) => return result,
         Err(error) => {
-            return ToolResultEnvelope::error("HTML conversion failed", error.to_string())
+            return ToolResultEnvelope::error("HTML conversion failed", error.to_string());
         }
     };
 

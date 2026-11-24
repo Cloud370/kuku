@@ -6,8 +6,8 @@ pub mod revert;
 pub(crate) mod runtime;
 
 pub use assembly::{
-    assemble_context, restore_prompt_snapshot, ContextAssembly, ContextInput, EnvironmentSource,
-    HostResponseContract, InstructionSource, MemorySource, ToolSchema,
+    ContextAssembly, ContextInput, EnvironmentSource, HostResponseContract, InstructionSource,
+    MemorySource, ToolSchema, assemble_context, restore_prompt_snapshot,
 };
 pub use message::{CanonicalMessage, MessageBlock, Role, ToolResult, ToolUse};
 pub use provenance::{

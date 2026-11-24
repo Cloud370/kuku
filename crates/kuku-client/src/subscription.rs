@@ -6,7 +6,7 @@ use bytes::Bytes;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::time::{sleep_until, Instant};
+use tokio::time::{Instant, sleep_until};
 use tokio_stream::StreamExt;
 use wreq::Method;
 

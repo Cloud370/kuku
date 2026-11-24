@@ -1,7 +1,7 @@
 use std::io::{self, IsTerminal, Stdout, Write};
 use std::time::{Duration, Instant, SystemTime};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use crossterm::cursor::{Hide, MoveTo, Show};
 #[cfg(not(windows))]
 use crossterm::event::EventStream;
@@ -115,7 +115,7 @@ fn read_hidden_events(max_bytes: usize) -> io::Result<String> {
                     return Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "input cancelled",
-                    ))
+                    ));
                 }
                 KeyCode::Backspace => {
                     value.pop();
@@ -668,8 +668,8 @@ mod tests {
     use ratatui::layout::{Position, Rect};
 
     use super::{
-        strip_cell_colors, AuthorizationLink, Duration, FrameBackend, Instant, PaintSchedule,
-        FRAME_INTERVAL,
+        AuthorizationLink, Duration, FRAME_INTERVAL, FrameBackend, Instant, PaintSchedule,
+        strip_cell_colors,
     };
 
     #[test]

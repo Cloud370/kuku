@@ -1,10 +1,10 @@
 mod config {
     pub use kuku::config::{
-        load_and_patch_config, load_config, resolve_request_url, ApiKey, Config, CustomServiceTier,
-        MediaAdapterSupport, ModelCapabilityDeclaration, ModelCapabilityEntry, ModelThinkingTest,
-        ProtocolCapabilityDeclaration, ProviderConfig, ProviderFormat, ProviderOptions,
-        ProviderProfile, RequestFields, RequestedOutput, ResolvedThinking, SubscriptionChannel,
-        ThinkLevel, TierConfig,
+        ApiKey, Config, CustomServiceTier, MediaAdapterSupport, ModelCapabilityDeclaration,
+        ModelCapabilityEntry, ModelThinkingTest, ProtocolCapabilityDeclaration, ProviderConfig,
+        ProviderFormat, ProviderOptions, ProviderProfile, RequestFields, RequestedOutput,
+        ResolvedThinking, SubscriptionChannel, ThinkLevel, TierConfig, load_and_patch_config,
+        load_config, resolve_request_url,
     };
 }
 
@@ -21,7 +21,10 @@ mod error {
 }
 
 mod provider {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules to exercise the configuration boundary"
+    )]
     pub mod types {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -29,7 +32,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules to exercise the configuration boundary"
+    )]
     pub mod capabilities {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -37,7 +43,10 @@ mod provider {
         ));
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules to exercise the configuration boundary"
+    )]
     pub mod config {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -48,8 +57,8 @@ mod provider {
 
 mod common;
 
-use config::{load_config, ApiKey, Config, ThinkLevel};
-use provider::config::{resolve_config, ResolveConfigInput};
+use config::{ApiKey, Config, ThinkLevel, load_config};
+use provider::config::{ResolveConfigInput, resolve_config};
 
 fn config_from_toml(toml: &str) -> Config {
     let dir = tempfile::tempdir().unwrap();
@@ -224,7 +233,15 @@ api_key = "$TEST_API_KEY_VAR"
 
 #[test]
 fn base_url_env_ref_resolves() {
-    let _guard = common::env_lock().lock().unwrap();
+    if !common::process::isolate_test(
+        module_path!(),
+        stringify!(base_url_env_ref_resolves),
+        |command| {
+            command.env("TEST_BASE_URL_VAR", "https://gateway.example/v1");
+        },
+    ) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -250,14 +267,8 @@ api_key = "sk-ant-123"
     )
     .unwrap();
 
-    let prev = std::env::var_os("TEST_BASE_URL_VAR");
-    std::env::set_var("TEST_BASE_URL_VAR", "https://gateway.example/v1");
     let file = load_config(&path).unwrap();
     let cfg = file.resolve().unwrap();
-    match prev {
-        Some(value) => std::env::set_var("TEST_BASE_URL_VAR", value),
-        None => std::env::remove_var("TEST_BASE_URL_VAR"),
-    }
 
     assert_eq!(
         cfg.provider("anthropic").unwrap().base_url,
@@ -267,7 +278,15 @@ api_key = "sk-ant-123"
 
 #[test]
 fn missing_base_url_env_ref_is_rejected() {
-    let _guard = common::env_lock().lock().unwrap();
+    if !common::process::isolate_test(
+        module_path!(),
+        stringify!(missing_base_url_env_ref_is_rejected),
+        |command| {
+            command.env_remove("MISSING_BASE_URL_VAR");
+        },
+    ) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -293,13 +312,7 @@ api_key = "sk-ant-123"
     )
     .unwrap();
 
-    let prev = std::env::var_os("MISSING_BASE_URL_VAR");
-    std::env::remove_var("MISSING_BASE_URL_VAR");
     let err = load_config(&path).unwrap_err();
-    match prev {
-        Some(value) => std::env::set_var("MISSING_BASE_URL_VAR", value),
-        None => std::env::remove_var("MISSING_BASE_URL_VAR"),
-    }
 
     assert!(err.to_string().contains(
         "env var 'MISSING_BASE_URL_VAR' referenced by provider.anthropic.base_url is not set"
@@ -308,7 +321,16 @@ api_key = "sk-ant-123"
 
 #[test]
 fn env_ref_resolves_before_toml_typed_deserialize() {
-    let _guard = common::env_lock().lock().unwrap();
+    if !common::process::isolate_test(
+        module_path!(),
+        stringify!(env_ref_resolves_before_toml_typed_deserialize),
+        |command| {
+            command.env("TEST_DEFAULT_MODEL", "balanced");
+            command.env("TEST_PROVIDER_FORMAT", "anthropic");
+        },
+    ) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -336,20 +358,8 @@ api_key = "sk-ant-123"
     )
     .unwrap();
 
-    let prev_default = std::env::var_os("TEST_DEFAULT_MODEL");
-    let prev_format = std::env::var_os("TEST_PROVIDER_FORMAT");
-    std::env::set_var("TEST_DEFAULT_MODEL", "balanced");
-    std::env::set_var("TEST_PROVIDER_FORMAT", "anthropic");
     let file = load_config(&path).unwrap();
     let cfg = file.resolve().unwrap();
-    match prev_default {
-        Some(value) => std::env::set_var("TEST_DEFAULT_MODEL", value),
-        None => std::env::remove_var("TEST_DEFAULT_MODEL"),
-    }
-    match prev_format {
-        Some(value) => std::env::set_var("TEST_PROVIDER_FORMAT", value),
-        None => std::env::remove_var("TEST_PROVIDER_FORMAT"),
-    }
 
     assert_eq!(cfg.default_tier(), "balanced");
     assert_eq!(
@@ -360,7 +370,17 @@ api_key = "sk-ant-123"
 
 #[test]
 fn load_and_patch_config_resolves_env_refs_on_runtime_path() {
-    let _guard = common::env_lock().lock().unwrap();
+    if !common::process::isolate_test(
+        module_path!(),
+        stringify!(load_and_patch_config_resolves_env_refs_on_runtime_path),
+        |command| {
+            command.env("TEST_PROVIDER_FORMAT", "anthropic");
+            command.env("TEST_BASE_URL_VAR", "https://gateway.example/v1");
+            command.env("TEST_API_KEY_VAR", "runtime-key");
+        },
+    ) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -386,26 +406,8 @@ api_key = "$TEST_API_KEY_VAR"
     )
     .unwrap();
 
-    let prev_format = std::env::var_os("TEST_PROVIDER_FORMAT");
-    let prev_base = std::env::var_os("TEST_BASE_URL_VAR");
-    let prev_key = std::env::var_os("TEST_API_KEY_VAR");
-    std::env::set_var("TEST_PROVIDER_FORMAT", "anthropic");
-    std::env::set_var("TEST_BASE_URL_VAR", "https://gateway.example/v1");
-    std::env::set_var("TEST_API_KEY_VAR", "runtime-key");
     let file = config::load_and_patch_config(&path).unwrap();
     let cfg = file.resolve().unwrap();
-    match prev_format {
-        Some(value) => std::env::set_var("TEST_PROVIDER_FORMAT", value),
-        None => std::env::remove_var("TEST_PROVIDER_FORMAT"),
-    }
-    match prev_base {
-        Some(value) => std::env::set_var("TEST_BASE_URL_VAR", value),
-        None => std::env::remove_var("TEST_BASE_URL_VAR"),
-    }
-    match prev_key {
-        Some(value) => std::env::set_var("TEST_API_KEY_VAR", value),
-        None => std::env::remove_var("TEST_API_KEY_VAR"),
-    }
 
     assert_eq!(cfg.default_tier(), "balanced");
     assert_eq!(

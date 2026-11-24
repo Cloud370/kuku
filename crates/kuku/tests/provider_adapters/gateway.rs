@@ -5,9 +5,9 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use kuku::config::{ProviderFormat, ProviderProfile, ThinkLevel};
@@ -561,15 +561,17 @@ async fn native_unsigned_thinking_only_turn_reopens_without_replaying_thinking()
     assert!(history_after_reopen.starts_with(&history_before_reopen));
     let bodies = common::take_http_requests(&endpoint);
     assert_eq!(2, bodies.len());
-    assert!(bodies[1]["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|message| {
-            message["content"]
-                .as_array()
-                .is_none_or(|content| content.iter().all(|block| block["type"] != "thinking"))
-        }));
+    assert!(
+        bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| {
+                message["content"]
+                    .as_array()
+                    .is_none_or(|content| content.iter().all(|block| block["type"] != "thinking"))
+            })
+    );
     let events = EventStore::replay(&events_path).unwrap();
     assert_eq!(
         json!({"role":"assistant","content":[]}),
@@ -673,10 +675,12 @@ async fn reopened_native_session_rejects_passive_compatible_profile_change() {
         .unwrap();
     let reopened_snapshot = settle(&reopened).await;
     assert_eq!(AgentStatus::Interrupted, reopened_snapshot.status);
-    assert!(reopened_snapshot
-        .last_error
-        .as_deref()
-        .is_some_and(|error| { error.contains("frozen provider route or capabilities") }));
+    assert!(
+        reopened_snapshot
+            .last_error
+            .as_deref()
+            .is_some_and(|error| { error.contains("frozen provider route or capabilities") })
+    );
     second.assert_hits_async(0).await;
     reopened.close().await.unwrap();
 

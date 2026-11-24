@@ -6,15 +6,15 @@ use serde_json::Value;
 use crate::markup::{render_literal, wrap_numbered};
 use crate::text::{cap, single_line};
 use crate::theme::{
-    tool_operation_color, TranscriptTone, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING,
+    ERROR, MUTED, SUCCESS, SURFACE_TEXT, TranscriptTone, WARNING, tool_operation_color,
 };
 use crate::transcript::MAX_VISUAL_ROWS;
 
 use super::super::details::{InlineOutput, InlineOutputAction, OutputTarget};
 use super::{
-    arguments_json, capped, finish_card, render_excerpt, render_preview, render_rows, Row, Tool,
-    ToolDetails, ToolView, MAX_DETAIL_BYTES, MAX_INVOCATION_ROWS, MAX_PREVIEW_BYTES,
-    MAX_RESULT_ROWS, MAX_WARNING_ROWS,
+    MAX_DETAIL_BYTES, MAX_INVOCATION_ROWS, MAX_PREVIEW_BYTES, MAX_RESULT_ROWS, MAX_WARNING_ROWS,
+    Row, Tool, ToolDetails, ToolView, arguments_json, capped, finish_card, render_excerpt,
+    render_preview, render_rows,
 };
 
 #[derive(Debug, Clone)]

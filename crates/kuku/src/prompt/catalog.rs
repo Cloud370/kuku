@@ -214,19 +214,23 @@ fn load_subdir_map(
 
 #[cfg(test)]
 mod tests {
-    use super::{builtin_prompt_catalog, PromptCatalog};
+    use super::{PromptCatalog, builtin_prompt_catalog};
 
     #[test]
     fn loads_required_sdk_core_prompt_assets() {
         let catalog = builtin_prompt_catalog();
 
         assert!(catalog.system.path.ends_with("system.md"));
-        assert!(catalog.blocks["project-policy"]
-            .path
-            .ends_with("project-policy.md"));
-        assert!(catalog.blocks["tool-guidance"]
-            .path
-            .ends_with("tool-guidance.md"));
+        assert!(
+            catalog.blocks["project-policy"]
+                .path
+                .ends_with("project-policy.md")
+        );
+        assert!(
+            catalog.blocks["tool-guidance"]
+                .path
+                .ends_with("tool-guidance.md")
+        );
         assert!(catalog.runtime["context"].path.ends_with("context.md"));
         assert!(catalog.memory["global"].path.ends_with("global.md"));
         assert!(catalog.memory["project"].path.ends_with("project.md"));
@@ -237,16 +241,22 @@ mod tests {
         assert!(!catalog.memory["project"].text.trim().is_empty());
         assert!(catalog.tools["fetch-web"].path.ends_with("fetch-web.md"));
         assert!(!catalog.tools["fetch-web"].text.trim().is_empty());
-        assert!(catalog.runtime["handoff-context"]
-            .path
-            .ends_with("handoff-context.md"));
+        assert!(
+            catalog.runtime["handoff-context"]
+                .path
+                .ends_with("handoff-context.md")
+        );
         assert!(!catalog.runtime["handoff-context"].text.trim().is_empty());
-        assert!(catalog.runtime["handoff-context"]
-            .text
-            .contains("{{handoff_summary}}"));
-        assert!(catalog.runtime["recovery"]
-            .text
-            .contains("<kuku_recovery_notice>"));
+        assert!(
+            catalog.runtime["handoff-context"]
+                .text
+                .contains("{{handoff_summary}}")
+        );
+        assert!(
+            catalog.runtime["recovery"]
+                .text
+                .contains("<kuku_recovery_notice>")
+        );
         assert!(catalog.system.hash.starts_with("sha256:"));
         assert!(catalog.memory["global"].hash.starts_with("sha256:"));
         assert!(catalog.memory["project"].hash.starts_with("sha256:"));
@@ -260,8 +270,10 @@ mod tests {
 
         let catalog = PromptCatalog::load_from_dir(dir.path()).unwrap();
         assert_eq!(catalog.system.text, custom_system);
-        assert!(catalog.blocks["project-policy"]
-            .text
-            .contains("<kuku_project_context>"));
+        assert!(
+            catalog.blocks["project-policy"]
+                .text
+                .contains("<kuku_project_context>")
+        );
     }
 }

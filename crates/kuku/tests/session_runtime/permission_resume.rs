@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use kuku::event::EventPayload;
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};

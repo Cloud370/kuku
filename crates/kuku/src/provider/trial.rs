@@ -1,11 +1,11 @@
 use std::io::Write;
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use flate2::{write::ZlibEncoder, Compression};
+use base64::engine::general_purpose::STANDARD;
+use flate2::{Compression, write::ZlibEncoder};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_stream::StreamExt;
 
 use crate::config::{ProviderConfig, RequestFields};
@@ -15,7 +15,7 @@ use crate::{Error, Result};
 use super::capabilities::resolve_settings;
 use super::cost::{RequestCost, RequestPricing};
 use super::prepare::{apply_settings, request_url};
-use super::report::{normalize_usage, ReportAccumulator};
+use super::report::{ReportAccumulator, normalize_usage};
 use super::types::{
     PreparedBody, PreparedProviderRequest, ProviderFailureKind, ProviderKind, ProviderReport,
     ProviderUsage, ResolvedProvider, SecretString,
@@ -570,8 +570,8 @@ mod tests {
     use crate::event::ModelStopReason;
 
     use super::{
-        interpret_trial, recognized_colors, subscription_trial_receipt, tools, ProviderKind,
-        RequestPricing,
+        ProviderKind, RequestPricing, interpret_trial, recognized_colors,
+        subscription_trial_receipt, tools,
     };
 
     #[test]

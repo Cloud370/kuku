@@ -1,11 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent};
+use kuku::ProviderFailureKind;
 use kuku::adapter::{Probe, ProbeBatch, ProbeProgress, SetupTextCheck};
 use kuku::config::ProviderFormat;
-use kuku::ProviderFailureKind;
 
+use super::CredentialSource;
 use super::config::Settings;
 use super::state::{SetupIntent, SetupState, SetupStep};
-use super::CredentialSource;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum RecoveryAction {

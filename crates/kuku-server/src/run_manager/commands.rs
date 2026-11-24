@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::{CommandExecution, OpenSession, RunManager};
 use crate::error_mapping::{ApiError, Result};
-use crate::wire::{http_input_source, Command, CommandResult};
+use crate::wire::{Command, CommandResult, http_input_source};
 
 pub(crate) const INTERNAL_CREATE_PREFIX: &str = "http:agent:";
 

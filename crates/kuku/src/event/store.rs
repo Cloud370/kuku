@@ -39,7 +39,7 @@ use reader::EventReader;
 pub(crate) use recovery::Replay;
 use recovery::{Checkpoint, ReplayVisitor};
 use snapshot::{
-    read_after_source, read_before_source, read_source, JournalSnapshot, LockedJournal, ReadSource,
+    JournalSnapshot, LockedJournal, ReadSource, read_after_source, read_before_source, read_source,
 };
 
 pub(crate) const MAX_RECORD_BYTES: usize = 1024 * 1024;
@@ -615,7 +615,7 @@ impl EventStore {
         };
         let journal = match read_source(&path)? {
             ReadSource::Active(inner) => {
-                return Ok(inner.writer.lock().unwrap().facts.summary.clone())
+                return Ok(inner.writer.lock().unwrap().facts.summary.clone());
             }
             ReadSource::Closed(journal) => journal,
         };

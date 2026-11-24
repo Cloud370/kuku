@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::jobs::job_status_label;
 use crate::theme::{ERROR, MUTED, SUCCESS, WARNING};
 
-use super::{capped, ToolView, MAX_BODY_BYTES};
+use super::{MAX_BODY_BYTES, ToolView, capped};
 
 #[derive(Debug, Clone)]
 pub(super) struct JobNotice {

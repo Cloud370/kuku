@@ -11,12 +11,12 @@ use std::ptr;
 
 use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Globalization::{
-    CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN,
+    CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN, CompareStringOrdinal,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB,
-    CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS, PROCESS_INFORMATION,
-    STARTUPINFOW,
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT,
+    CreateProcessW, DETACHED_PROCESS, GetExitCodeProcess, PROCESS_INFORMATION, STARTUPINFOW,
+    WaitForSingleObject,
 };
 
 const NUL: u16 = 0;
@@ -28,11 +28,11 @@ pub(super) struct DetachedChild(OwnedHandle);
 impl DetachedChild {
     pub(super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         let process = self.0.as_raw_handle();
-        // NOTE: The owned process handle remains live for this non-blocking wait.
+        // SAFETY: The owned process handle remains live for this non-blocking wait.
         match unsafe { WaitForSingleObject(process, 0) } {
             WAIT_OBJECT_0 => {
                 let mut code = 0;
-                // NOTE: The process has exited and the writable code slot is valid.
+                // SAFETY: The process has exited and the writable code slot is valid.
                 if unsafe { GetExitCodeProcess(process, &mut code) } == 0 {
                     return Err(io::Error::last_os_error());
                 }
@@ -83,7 +83,7 @@ fn create_process(
         ..Default::default()
     };
     let mut process = PROCESS_INFORMATION::default();
-    // NOTE: CreateProcessW reads NUL-terminated UTF-16 inputs and can write to the command line.
+    // SAFETY: CreateProcessW reads NUL-terminated UTF-16 inputs and can write to the command line.
     // Stable Command does not expose the handle inheritance flag.
     if unsafe {
         CreateProcessW(
@@ -102,7 +102,7 @@ fn create_process(
     {
         return Err(io::Error::last_os_error());
     }
-    // NOTE: A successful CreateProcessW returns owned process and initial thread handles.
+    // SAFETY: A successful CreateProcessW returns owned process and initial thread handles.
     unsafe {
         drop(OwnedHandle::from_raw_handle(process.hThread));
         Ok(DetachedChild(OwnedHandle::from_raw_handle(
@@ -131,7 +131,7 @@ fn push_quoted_arg(line: &mut Vec<u16>, arg: &OsStr) -> io::Result<()> {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "argument contains NUL",
-                ))
+                ));
             }
             BACKSLASH => slashes += 1,
             unit => {
@@ -205,7 +205,7 @@ fn environment_block(data_dir: &OsStr) -> Vec<u16> {
 }
 
 fn compare_names(left: &[u16], right: &[u16]) -> Ordering {
-    // NOTE: CompareStringOrdinal reads the explicit lengths of these UTF-16 buffers.
+    // SAFETY: CompareStringOrdinal reads the explicit lengths of these UTF-16 buffers.
     // Windows bounds environment variable names well below i32::MAX.
     match unsafe {
         CompareStringOrdinal(

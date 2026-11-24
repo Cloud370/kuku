@@ -8,17 +8,17 @@ use crate::event::{EventPayload, StoredEvent};
 use crate::execution::{ModelImage, OutputReference};
 use crate::{Error, Result};
 
-use super::jobs::{JobCompletion, JobIndex, JOB_DELIVERY_PREFIX};
+use super::TurnIndex;
+use super::jobs::{JOB_DELIVERY_PREFIX, JobCompletion, JobIndex};
 use super::media::RetainedModelImage;
 use super::observe::ReplyPreview;
-use super::retention::{output_id, CaptureOrigin, OutputStore};
+use super::retention::{CaptureOrigin, OutputStore, output_id};
 use super::types::{
     AgentConfig, AgentSnapshot, AgentStatus, AgentView, Input, InputSource, InputStatus,
     PendingInput, QuestionRequest, Receipt, UsageTotals,
 };
 use super::usage::{AgentUsage, SummaryRequest};
 use super::values::{NamedBinding, ValueState};
-use super::TurnIndex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct Command {

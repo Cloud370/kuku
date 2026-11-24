@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::adapter::{AgentSelection, RegisteredTool};
-use crate::provider::config::{resolve_config, ResolveConfigInput};
+use crate::provider::config::{ResolveConfigInput, resolve_config};
 use crate::provider::types::ResolvedProvider;
 use crate::tool::ToolDefinition;
 use crate::{Error, PromptCatalog, Result};

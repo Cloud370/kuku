@@ -105,11 +105,7 @@ impl HandoffDetector {
 
     fn take_visible_text(&mut self) -> Option<String> {
         let text = std::mem::take(&mut self.user_text);
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        if text.is_empty() { None } else { Some(text) }
     }
 }
 

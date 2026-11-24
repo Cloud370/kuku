@@ -10,13 +10,13 @@ use std::future::IntoFuture;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -24,7 +24,7 @@ use axum::{Extension, Json, Router};
 use serde::Serialize;
 use serde_json::json;
 use tokio::net::TcpListener;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -411,7 +411,7 @@ async fn run(listener: TcpListener, app: Router, service: Arc<ServiceState>) -> 
 async fn wait_for_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         if let Ok(mut terminate) = signal(SignalKind::terminate()) {
             tokio::select! {
@@ -433,7 +433,7 @@ async fn wait_for_control_c() {
 
 #[cfg(test)]
 mod tests {
-    use std::future::{poll_fn, Future};
+    use std::future::{Future, poll_fn};
     use std::pin::pin;
     use std::sync::Arc;
     use std::task::Poll;
@@ -442,9 +442,9 @@ mod tests {
     use kuku::config::Config;
     use tokio::sync::Mutex;
 
-    use super::{close_for_restart, ServiceState};
-    use crate::run_manager::RunManager;
+    use super::{ServiceState, close_for_restart};
     use crate::AppState;
+    use crate::run_manager::RunManager;
 
     #[tokio::test]
     async fn restart_defers_while_a_session_command_holds_admission() {

@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 mod budgets;
-use super::{agent, common, facts, idle, options, response, HttpMockRequest, MockServer, POST};
+use super::{HttpMockRequest, MockServer, POST, agent, common, facts, idle, options, response};
 use kuku::event::{EventPayload, EventStore};
 use kuku::{AgentStatus, Input, Session};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const WIRE_LIMIT: usize = 48 * 1024;
 const EARLIER_REPLY: &str = "Previously delivered response.";
@@ -193,11 +193,13 @@ async fn context_rejection(case: OverflowCase) {
             (AgentStatus::Idle, 1, 1, 1)
         }
         OverflowCase::RejectedAgain | OverflowCase::NoBudget => {
-            assert!(agent
-                .last_error
-                .as_deref()
-                .unwrap()
-                .contains("context_length_exceeded"));
+            assert!(
+                agent
+                    .last_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("context_length_exceeded")
+            );
             let replacements = usize::from(matches!(case, OverflowCase::RejectedAgain));
             (
                 AgentStatus::Interrupted,
@@ -328,9 +330,11 @@ async fn manual_compaction_only_summarizes_the_selected_agents_completed_work() 
             .event_id
     );
     idle(&session, "main").await;
-    assert!(session
-        .restore_context_command("undo-failed", "main")
-        .is_err());
+    assert!(
+        session
+            .restore_context_command("undo-failed", "main")
+            .is_err()
+    );
     rejected.assert_hits_async(1).await;
     rejected.delete_async().await;
     let summary = server.mock_async(|when, then| {
@@ -384,10 +388,12 @@ async fn manual_compaction_only_summarizes_the_selected_agents_completed_work() 
         .filter(|body| !body.to_string().contains("Write a checkpoint"))
         .collect::<Vec<_>>();
     assert_eq!(6, bodies.len());
-    assert!(bodies[3]["messages"]
-        .as_array()
-        .unwrap()
-        .starts_with(bodies[1]["messages"].as_array().unwrap()));
+    assert!(
+        bodies[3]["messages"]
+            .as_array()
+            .unwrap()
+            .starts_with(bodies[1]["messages"].as_array().unwrap())
+    );
     assert!(!bodies[3].to_string().contains("MAIN_SUMMARY"));
     let main_body = bodies[4].to_string();
     assert!(!main_body.contains("MAIN_OLD"));
@@ -399,10 +405,12 @@ async fn manual_compaction_only_summarizes_the_selected_agents_completed_work() 
     assert!(!restored.contains("MAIN_SUMMARY"));
     let compactions = facts(&events, "runtime.compaction_finished", "main");
     assert_eq!(compactions[0]["status"], "failed");
-    assert!(compactions[0]["reason"]
-        .as_str()
-        .unwrap()
-        .contains("Provider error"));
+    assert!(
+        compactions[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Provider error")
+    );
     assert_eq!(compactions[1]["status"], "completed");
     assert_eq!(
         1,
@@ -563,9 +571,11 @@ async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
     reopened
         .rewind_message("rewind-both", "main", target_id, &target, false)
         .unwrap();
-    assert!(reopened
-        .restore_context_command("undo-after-rewind", "main")
-        .is_err());
+    assert!(
+        reopened
+            .restore_context_command("undo-after-rewind", "main")
+            .is_err()
+    );
     send_and_settle(&reopened, REWOUND, REWOUND).await;
     reopened.close().await.unwrap();
 
@@ -603,9 +613,11 @@ async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
     let steps = facts(&events, "runtime.step_prepared", "main");
     assert_eq!(13, bodies.len());
     assert_eq!(bodies.len(), steps.len());
-    assert!(steps
-        .iter()
-        .all(|step| step["request_bytes"].as_u64().unwrap() <= WIRE_LIMIT as u64));
+    assert!(
+        steps
+            .iter()
+            .all(|step| step["request_bytes"].as_u64().unwrap() <= WIRE_LIMIT as u64)
+    );
     let request = |text: &str| {
         let index = bodies
             .iter()
@@ -614,10 +626,12 @@ async fn undo_after_reopen_restores_only_the_preceding_checkpoint() {
         (&bodies[index], &steps[index]["segment"])
     };
     let message_prefix = |earlier: &Value, later: &Value| {
-        assert!(later["messages"]
-            .as_array()
-            .unwrap()
-            .starts_with(earlier["messages"].as_array().unwrap()));
+        assert!(
+            later["messages"]
+                .as_array()
+                .unwrap()
+                .starts_with(earlier["messages"].as_array().unwrap())
+        );
     };
     let (before_reopen, active_b) = request(BEFORE_REOPEN);
     let (after_reopen, reopened_b) = request(AFTER_REOPEN);

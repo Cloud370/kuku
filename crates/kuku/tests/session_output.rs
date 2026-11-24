@@ -4,9 +4,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 
 use kuku::event::EventPayload;
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
@@ -316,10 +316,12 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
     let facts = command.2.unwrap();
     assert_eq!(true, facts["capture_complete"]);
     assert_eq!(true, facts["preview_truncated"]);
-    assert!(facts["output_preview"]
-        .as_str()
-        .unwrap()
-        .contains(&"p".repeat(80)));
+    assert!(
+        facts["output_preview"]
+            .as_str()
+            .unwrap()
+            .contains(&"p".repeat(80))
+    );
     let first = chunk(&session, &id, 0, 8192, None);
     let second = chunk(&session, &id, first.next_offset, 8192, None);
     let searched = chunk(&session, &id, second.next_offset, 8192, Some(MARKER));
@@ -850,10 +852,12 @@ return {{matchCount:found.result.matches.length,captureComplete:found.result.cap
     let page = json_page(&stored_result(&session, "page"));
     assert_eq!(false, page["complete"]);
     assert_eq!(false, page["has_more"]);
-    assert!(page["segments"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("ready-prefix"));
+    assert!(
+        page["segments"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("ready-prefix")
+    );
     assert_eq!("blocked", stored_result(&session, "denied").0);
     let script = stored_result(&session, "script");
     assert_eq!("ok", script.0);

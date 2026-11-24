@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::transcript::{HISTORY_PAGE, MAX_RECORDS};
 
-use super::{line, text, HistoryPage, HistoryRequest, Journal, Transcript, TranscriptView};
+use super::{HistoryPage, HistoryRequest, Journal, Transcript, TranscriptView, line, text};
 
 #[test]
 fn reloaded_file_results_group_even_when_the_calls_are_on_an_older_page() {
@@ -163,10 +163,11 @@ fn every_direct_and_script_write_shows_a_bounded_preview_by_default() {
         );
         let row = &view.lines[line(&view, &format!("First {index}"))];
         assert!(row.style.bg.is_none());
-        assert!(row
-            .spans
-            .iter()
-            .all(|span| span.style.bg == crate::theme::transcript_background().bg));
+        assert!(
+            row.spans
+                .iter()
+                .all(|span| span.style.bg == crate::theme::transcript_background().bg)
+        );
     }
     assert!(!compact.contains("Third"), "{compact}");
     let target = transcript
@@ -420,10 +421,11 @@ fn repeated_workspace_diagnostics_keep_single_preview_and_individual_calls() {
     for label in ["2 file reads", "Result limit reached"] {
         let row = &view.lines[line(&view, label)];
         assert!(row.style.bg.is_none());
-        assert!(row
-            .spans
-            .iter()
-            .all(|span| span.style.bg == crate::theme::transcript_background().bg));
+        assert!(
+            row.spans
+                .iter()
+                .all(|span| span.style.bg == crate::theme::transcript_background().bg)
+        );
     }
     assert_eq!(1, collapsed.matches("Result limit reached").count());
     assert!(collapsed.contains("error ×2"));
@@ -480,11 +482,13 @@ fn a_page_that_settles_the_top_row_keeps_reading_after_the_changed_group() {
     transcript.scroll(-100, width, height);
     transcript.scroll(2, width, height);
     let viewport = text(&transcript.project(width, height));
-    assert!(viewport
-        .lines()
-        .next()
-        .unwrap()
-        .contains("result not loaded ×2"));
+    assert!(
+        viewport
+            .lines()
+            .next()
+            .unwrap()
+            .contains("result not loaded ×2")
+    );
     let request = HistoryRequest::Newer(2);
     transcript.reading.as_mut().unwrap().newer = Some(2);
     transcript.apply_forward_page(

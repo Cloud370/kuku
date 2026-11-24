@@ -15,9 +15,9 @@ use kuku::event::{EventPayload, EventStore, ModelStopReason};
 use kuku::execution::CommandExecutionFacts;
 use kuku::{AgentConfig, AgentStatus, Input, ModelAdapter, OutputRead, Session, SessionOptions};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{common, micros, native_call, number, phase, required, statistics, AnyError};
+use super::{AnyError, common, micros, native_call, number, phase, required, statistics};
 
 const SESSION_ID: &str = "long-session-resource-probe";
 const JOURNAL_MIB: u64 = 1024 * 1024;
@@ -205,8 +205,8 @@ fn history_call(events: &mut Vec<ModelEvent>, turn: u64, step: u64, index: u64, 
                     _ => 4,
                 };
                 let code = format!(
-                "return Array.from({{length:{rows}}}, (_, i) => `ingestion check ${{i + {sample}}} executed: worker=${{i % 7}} validation=${{i % 11 === 0 ? 'retry' : 'ok'}}  decoded=${{(i + 3) * 43}} bytes`).join('\\n');"
-            );
+                    "return Array.from({{length:{rows}}}, (_, i) => `ingestion check ${{i + {sample}}} executed: worker=${{i % 7}} validation=${{i % 11 === 0 ? 'retry' : 'ok'}}  decoded=${{(i + 3) * 43}} bytes`).join('\\n');"
+                );
                 ("run_js", json!({"code":code}))
             }
         }

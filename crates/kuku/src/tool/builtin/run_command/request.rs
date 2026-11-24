@@ -243,7 +243,9 @@ fn invocation(args: &Value) -> Result<CommandInvocation, ToolResultEnvelope> {
         });
     }
     if args.get("command").is_some() {
-        return Err(invalid("No default shell is advertised. Supply a listed shell with command, or use program and literal args."));
+        return Err(invalid(
+            "No default shell is advertised. Supply a listed shell with command, or use program and literal args.",
+        ));
     }
     let program = args
         .get("program")

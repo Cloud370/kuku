@@ -40,8 +40,13 @@ fn history_contains_text(history: &[kuku::context::CanonicalMessage], expected: 
 
 #[tokio::test(flavor = "current_thread")]
 async fn threshold_handoff_injects_once_allows_tool_call_and_retains_configured_turns() {
-    let env = TestEnv::new();
-    std::fs::write(env.workspace.path().join("handoff.txt"), "visible\n").unwrap();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(threshold_handoff_injects_once_allows_tool_call_and_retains_configured_turns),
+    ) else {
+        return;
+    };
+    std::fs::write(env.workspace.as_path().join("handoff.txt"), "visible\n").unwrap();
     let mut config = test_config();
     config.handoff.threshold = 0.7;
     config.handoff.keep_turns = 1;

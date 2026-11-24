@@ -3,7 +3,7 @@ use crate::event::{EventPayload, EventStore, PartialReply};
 use crate::provider::types::ProviderFailure;
 
 use super::super::helpers::now_timestamp;
-use super::super::provider::{record_retry_event, RetryEvent, RetryPhase, RetryStopReason};
+use super::super::provider::{RetryEvent, RetryPhase, RetryStopReason, record_retry_event};
 use super::super::types::StreamingChunkState;
 
 pub(super) fn record_streaming_provider_error_facts(

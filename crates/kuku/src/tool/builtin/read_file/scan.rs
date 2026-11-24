@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 
 use super::{ReadBy, ReadRequest};
 use crate::tool::builtin::common::{
-    format_content_hash, invalid_utf8, valid_utf8_prefix, FileCancellation, LimitedReader,
-    StableFile, Utf8Reader, FILE_BUFFER_BYTES, FILE_SCAN_BYTES,
+    FILE_BUFFER_BYTES, FILE_SCAN_BYTES, FileCancellation, LimitedReader, StableFile, Utf8Reader,
+    format_content_hash, invalid_utf8, valid_utf8_prefix,
 };
 
 const LINE_SAMPLE_BYTES: usize = 256;

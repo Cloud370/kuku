@@ -1,5 +1,5 @@
 use httpmock::prelude::{HttpMockRequest, POST};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use kuku::event::EventPayload;
 use kuku::{Activation, AgentConfig, AgentStatus, Input, Session};
@@ -58,10 +58,11 @@ async fn unpersisted_accepted_input_is_kept_with_new_queued_input() {
 
     let failed = settled(&session, "main").await;
     assert_eq!(AgentStatus::Interrupted, failed.status);
-    assert!(failed
-        .last_error
-        .as_deref()
-        .is_some_and(|error| error.contains("bootstrap skill 'missing-bootstrap' was not found")));
+    assert!(
+        failed.last_error.as_deref().is_some_and(
+            |error| error.contains("bootstrap skill 'missing-bootstrap' was not found")
+        )
+    );
     assert!(
         !session.events(0, 128).unwrap().iter().any(|event| matches!(
             &event.payload,

@@ -1,6 +1,6 @@
 use super::{
-    project_source, read_agent_events, read_frozen_catalog, ContextCursor,
-    MAX_CACHED_FILE_SNAPSHOTS, MAX_SELECTION_BYTES_FACTOR,
+    ContextCursor, MAX_CACHED_FILE_SNAPSHOTS, MAX_SELECTION_BYTES_FACTOR, project_source,
+    read_agent_events, read_frozen_catalog,
 };
 use crate::context::{CanonicalMessage, MessageBlock, ToolResult};
 use crate::conversation::address::ConversationAddress;

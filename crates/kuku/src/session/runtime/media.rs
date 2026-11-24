@@ -1,14 +1,14 @@
 use sha2::{Digest, Sha256};
 
-use crate::execution::{ImageMime, ModelImage, OutputReference, MAX_MODEL_IMAGE_BYTES};
+use crate::execution::{ImageMime, MAX_MODEL_IMAGE_BYTES, ModelImage, OutputReference};
 use crate::tool::builtin::run_command::output::{
-    framed_bytes, read_complete_stdout_bytes, OutputLimits, OutputWriter, MAX_FRAME_BYTES,
+    MAX_FRAME_BYTES, OutputLimits, OutputWriter, framed_bytes, read_complete_stdout_bytes,
 };
 use crate::{Error, Result};
 
 use super::record::Record;
 use super::retention::{open_retained_output, output_dir};
-use super::{ensure_open, OutputStream, Session};
+use super::{OutputStream, Session, ensure_open};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct RetainedModelImage {

@@ -14,20 +14,19 @@ mod snapshot;
 
 pub(super) use file_io::WorkspaceCommitError;
 pub(crate) use file_io::{
-    append_text, charge_entry, content_hash, ensure_active, file_read_error, file_version,
-    file_version_with_text, format_content_hash, invalid_utf8, is_cancellation, is_io_limit,
-    mutation_preview, path_lock, publish_file, read_context_file, read_file_as_utf8_bounded,
-    remove_observed_file, valid_utf8_prefix, write_atomically, FileCancellation, IoLimit,
-    LimitedReader, ScanDeadline, StableFile, Utf8Reader, WorkspaceFiles, FILE_BUFFER_BYTES,
-    FILE_SCAN_BYTES,
+    FILE_BUFFER_BYTES, FILE_SCAN_BYTES, FileCancellation, IoLimit, LimitedReader, ScanDeadline,
+    StableFile, Utf8Reader, WorkspaceFiles, append_text, charge_entry, content_hash, ensure_active,
+    file_read_error, file_version, file_version_with_text, format_content_hash, invalid_utf8,
+    is_cancellation, is_io_limit, mutation_preview, path_lock, publish_file, read_context_file,
+    read_file_as_utf8_bounded, remove_observed_file, valid_utf8_prefix, write_atomically,
 };
 #[cfg(test)]
 use snapshot::find_write_snapshot;
-pub(super) use snapshot::{
-    expected_version, find_covering_read, require_version, snapshot_stale_error, text_matches,
-    WriteEvidence, WriteSnapshotLookup,
-};
 pub(crate) use snapshot::{ExecutorObservation, ExecutorObservationSource};
+pub(super) use snapshot::{
+    WriteEvidence, WriteSnapshotLookup, expected_version, find_covering_read, require_version,
+    snapshot_stale_error, text_matches,
+};
 
 pub(super) struct ResolvedPath {
     pub(super) workspace: PathBuf,
@@ -286,11 +285,7 @@ pub(super) fn bounded_lines(lines: &[String], max_bytes: usize) -> &[String] {
 }
 
 pub(super) fn plural(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
-    }
+    if count == 1 { "" } else { "s" }
 }
 
 // ---------- Glob ----------

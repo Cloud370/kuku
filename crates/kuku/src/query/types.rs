@@ -276,7 +276,10 @@ pub(crate) enum SlotEvent {
 }
 
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)] // Done variant is large but boxed variants dominate hot paths
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the boxed variants dominate active runs and the final result is moved out"
+)]
 pub(super) enum RunState {
     Pending(Box<PendingRun>),
     Streaming(Box<StreamingChunkState>),
@@ -488,7 +491,10 @@ pub(super) enum PendingStep {
     },
     NeedPermission(Box<PendingPermission>),
     Streaming(Box<StreamingChunkState>),
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "the terminal event carries accounting and diagnostics separately from the user result"
+    )]
     Done(
         RunOutput,
         Option<crate::provider::types::ProviderUsage>,

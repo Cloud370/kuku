@@ -3,7 +3,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::execution::{
     CommandExecutionFacts, CommandInvocation, CommandOutputSummary, CommandResultKind,
@@ -13,12 +13,12 @@ use crate::tool::ToolResultEnvelope;
 
 use super::encoding::display_text;
 use super::output::{
-    read_output_tails, CaptureMetadata, FinishedCapture, OutputChunk, OutputSegment,
+    CaptureMetadata, FinishedCapture, OutputChunk, OutputSegment, read_output_tails,
 };
 use super::summary::Summary;
 use super::{
-    output_error, read_output, CommandCapture, CommandOutcome, CommandRequest, CommandView,
-    ModelOutputAccess, OutputRead, OutputStream,
+    CommandCapture, CommandOutcome, CommandRequest, CommandView, ModelOutputAccess, OutputRead,
+    OutputStream, output_error, read_output,
 };
 
 const MAX_OUTPUT_PREVIEW_BYTES: usize = 2048;
@@ -492,7 +492,9 @@ fn output_shape(prefix: &str, complete: bool) -> (String, Option<LineFormat>) {
     if let Some(third) = lines.next() {
         if let Some((separator, label, columns)) = delimited_sample([first, second, third]) {
             return (
-                format!("{columns} {label}-separated fields in each of the first three nonblank lines, sample {samples}"),
+                format!(
+                    "{columns} {label}-separated fields in each of the first three nonblank lines, sample {samples}"
+                ),
                 Some(LineFormat::Delimited { separator, columns }),
             );
         }
@@ -768,7 +770,7 @@ fn truncate_utf8(content: &mut String, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::super::output::{OutputLimits, OutputWriter};
-    use super::{output_shape, read_output, stream_shape, LineFormat, OutputRead, OutputStream};
+    use super::{LineFormat, OutputRead, OutputStream, output_shape, read_output, stream_shape};
 
     #[test]
     fn bounded_json_shape_requires_a_plausible_document_prefix() {

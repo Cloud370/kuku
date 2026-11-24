@@ -6,10 +6,10 @@ use crate::jobs::{Job, Selection};
 use crate::menu::{Choice, ChoiceKind, Picker, RewindLoad, Ticket};
 use crate::transcript::{HistoryRequest, RewindGroupRequest};
 
-use super::rewind::{
-    bound_rewind_choices, rewind_choice, rewind_event_id, rewind_history_header, RewindWindow,
-};
 use super::App;
+use super::rewind::{
+    RewindWindow, bound_rewind_choices, rewind_choice, rewind_event_id, rewind_history_header,
+};
 
 impl App {
     pub(super) fn apply_rewind_history_update(

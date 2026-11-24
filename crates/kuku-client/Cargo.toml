@@ -1,11 +1,14 @@
 [package]
 name = "kuku-client"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Headless client for the kuku Session service"
 repository = "https://github.com/Cloud370/kuku"
 readme = "../../README.md"
+
+[lints]
+workspace = true
 
 [dependencies]
 bytes = "1"

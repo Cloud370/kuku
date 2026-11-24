@@ -3,14 +3,14 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::mock_provider::{self, text_response, ControlledProvider};
 use common::TestServer;
+use common::mock_provider::{self, ControlledProvider, text_response};
 use httpmock::Method;
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::{
     Activation, AgentConfig, Input, InputSource, InputTiming, Session, SessionOptions,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[tokio::test]
 async fn session_listing_keeps_healthy_sessions_when_one_journal_is_corrupt() {

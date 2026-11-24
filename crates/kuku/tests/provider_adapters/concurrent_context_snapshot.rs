@@ -141,7 +141,9 @@ async fn concurrent_configuration_between_boundary_and_snapshot_reopens_on_new_r
         segments_after[1]["route_selectors"]["query_connection"]
     );
     assert_eq!("configuration", segments_after[1]["reason"]);
-    assert!(std::fs::read(&events_path)
-        .unwrap()
-        .starts_with(&bytes_before));
+    assert!(
+        std::fs::read(&events_path)
+            .unwrap()
+            .starts_with(&bytes_before)
+    );
 }

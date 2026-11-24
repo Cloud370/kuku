@@ -5,14 +5,14 @@ mod query_runtime_handoff;
 #[path = "query_runtime/mutator_ordering.rs"]
 mod query_runtime_mutator_ordering;
 
-use common::{anthropic_sse_response, test_config, TestEnv};
+use common::{TestEnv, anthropic_sse_response, test_config};
 
 use httpmock::prelude::{HttpMockRequest, MockServer};
 use kuku::context::replay::rebuild_history;
 use kuku::conversation::address::ConversationAddress;
 use kuku::event::{EventPayload, EventStore};
 use kuku::log::{LogLevel, LogRecord, LogScope};
-use kuku::{query, Error, PermissionChoice, PermissionRequest, Provider, Run, UiEvent};
+use kuku::{Error, PermissionChoice, PermissionRequest, Provider, Run, UiEvent, query};
 
 async fn next_permission_request(run: &mut Run) -> PermissionRequest {
     let mut event = run.next().await.unwrap().expect("event");

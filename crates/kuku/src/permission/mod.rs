@@ -2,11 +2,11 @@ pub(crate) mod gate;
 pub(crate) mod policy;
 mod runtime;
 
-pub(crate) use runtime::{authorize_action, ActionAuthorization};
+pub(crate) use runtime::{ActionAuthorization, authorize_action};
 pub use runtime::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer, TrustedLocal};
 
 pub use gate::{
-    decide_tool_call, recover_session_grants, GateDecision, GateDecisionKind, GateScope,
-    GateSource, SessionGrant,
+    GateDecision, GateDecisionKind, GateScope, GateSource, SessionGrant, decide_tool_call,
+    recover_session_grants,
 };
-pub use policy::{append_project_allow_rule, load_project_policy, parse_policy, PermissionPolicy};
+pub use policy::{PermissionPolicy, append_project_allow_rule, load_project_policy, parse_policy};

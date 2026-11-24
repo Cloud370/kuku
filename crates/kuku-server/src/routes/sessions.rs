@@ -2,23 +2,23 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use kuku::adapter::inspect_model;
 use kuku::event::{EventPayload, EventStore};
 use kuku::query::ModelPhase;
 use kuku::session::{AgentSnapshot, AgentStatus, ReplyPreviews, Session};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::workspaces::resolve_workspace;
 use super::Params;
-use super::{canonical_home, journal_task, manager, SessionTarget, WorkspaceQuery};
+use super::workspaces::resolve_workspace;
+use super::{SessionTarget, WorkspaceQuery, canonical_home, journal_task, manager};
+use crate::AppState;
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::RunManager;
 use crate::wire::{agent_summary, event_agent};
-use crate::AppState;
 
 const TITLE_CHARS: usize = 160;
 const PROGRESS_WINDOW: usize = 64;
@@ -438,10 +438,10 @@ fn agent_error(error: kuku::Error) -> ApiError {
 mod retry_progress_tests {
     use kuku::event::{EventPayload, EventStore};
     use kuku::session::{AgentConfig, AgentSnapshot, AgentStatus, UsageTotals};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
-    use super::{execution_progress, ProgressScan};
+    use super::{ProgressScan, execution_progress};
 
     fn retry(phase: &str, fields: Value) -> EventPayload {
         let mut event = json!({

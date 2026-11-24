@@ -1,8 +1,8 @@
 use std::fs;
 use std::sync::Arc;
 
-use httpmock::prelude::{MockServer, GET};
-use kuku::config::{generate_default, load_config, ApiKey};
+use httpmock::prelude::{GET, MockServer};
+use kuku::config::{ApiKey, generate_default, load_config};
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{
     AgentProgress, AgentSelection, AgentStatus, Connection, ConnectionOptions, RetryFailureKind,
@@ -10,13 +10,13 @@ use kuku_client::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use toml_edit::{value, DocumentMut};
+use toml_edit::{DocumentMut, value};
 
-use super::super::config::{save_credential, Settings};
+use super::super::config::{Settings, save_credential};
 use super::{
-    authentication_failure, prepare, verify_config_route, verify_failure, verify_route,
-    verify_saved_config, CredentialRepairApplied, CredentialRepairPlan, FailedRoute,
-    PreparedCredentialRepair, SavedCredentialRepair,
+    CredentialRepairApplied, CredentialRepairPlan, FailedRoute, PreparedCredentialRepair,
+    SavedCredentialRepair, authentication_failure, prepare, verify_config_route, verify_failure,
+    verify_route, verify_saved_config,
 };
 
 fn snapshot() -> Snapshot {

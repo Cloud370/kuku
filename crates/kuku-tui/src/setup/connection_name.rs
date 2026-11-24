@@ -1,8 +1,8 @@
 use kuku::config::ProviderConfig;
 use url::Url;
 
-use super::config::Settings;
 use super::ConnectionChoice;
+use super::config::Settings;
 
 pub(super) fn from_url(address: &str) -> Option<String> {
     let url = Url::parse(address.trim()).ok()?;
@@ -58,7 +58,7 @@ pub(super) fn for_save(
         ConnectionChoice::Existing(name) => return name.clone(),
         ConnectionChoice::Subscription(_) => unreachable!("sign-in selects the saved connection"),
         ConnectionChoice::Preset(preset) if !settings.existing => {
-            return preset.connection().into()
+            return preset.connection().into();
         }
         ConnectionChoice::Preset(preset) => format!("{}_setup", preset.connection()),
         ConnectionChoice::Custom => connection_host(connection).unwrap_or_else(|| "custom".into()),

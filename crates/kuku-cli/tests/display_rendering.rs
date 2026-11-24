@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use kuku_cli::display::{filter_events_for_conversation, render_event_brief};
 use kuku_cli::display::{Display, OutputLine};
+use kuku_cli::display::{filter_events_for_conversation, render_event_brief};
 
 #[test]
 fn thinking_default_hides_text() {

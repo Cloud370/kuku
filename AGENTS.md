@@ -24,8 +24,7 @@ For any work touching `docs/**`, `README.md`, translation pages, docs homepages,
 
 ```bash
 cargo check                                            # fast compile check
-cargo test -p kuku -p kuku-cli -p kuku-server                    # all tests
-cargo clippy -- -D warnings                            # zero warnings required
+python3 scripts/acceptance/run.py integration          # workspace format, lint and contracts
 cargo fmt --all                                        # format before commit
 make build                                             # local release build (glibc, fast)
 make release-linux                                     # portable release build (musl, via cross+Docker)
@@ -35,8 +34,7 @@ Use the default glibc target for Linux development and tests. See [Release](docs
 
 ## Code conventions
 
-- `MUST` / `PREFER` rules in [code-style.md](docs/en/contributing/code-style.md) are the contract.
-- No file over 1000 lines. Enums over strings. No wildcard imports. No comments by default.
+- Follow [Code Style](docs/en/contributing/code-style.md) for workspace lints, SDK contracts, and everyday defaults.
 - Module dependencies follow [module-contracts.md](docs/en/architecture/module-contracts.md).
 
 ## Editing tips
@@ -45,7 +43,7 @@ Use the default glibc target for Linux development and tests. See [Release](docs
 - **`cargo check` is fine mid-edit.** It validates without modifying files. Never `cargo fix`.
 - **Pipe long output through `head` or `tail`.** `cargo test | tail -30` shows failures without burning context on passing tests. Same for `grep -rn` in large repos.
 - **Verify the changed behavior.** Follow [Testing](docs/en/contributing/testing.md) for required Rust integration checks, explicit feature/live-test selection, and documentation-only checks. Reuse valid results instead of rerunning solely for commit or push.
-- **For collaborative TUI debugging, consider tmux.** See [Watch a TUI run together](docs/en/contributing/testing.md#watch-a-tui-run-together-optional) for an optional workflow to reproduce, edit, rebuild, and compare with a developer.
+- **For collaborative TUI debugging, consider tmux.** See [Watch a TUI run together](docs/en/contributing/testing-advanced.md#watch-a-tui-run-together-optional) for an optional workflow to reproduce, edit, rebuild, and compare with a developer.
 
 ## Workflow
 

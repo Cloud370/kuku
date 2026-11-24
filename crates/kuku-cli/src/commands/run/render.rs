@@ -4,7 +4,7 @@ use std::time::Instant;
 use kuku::ModelRecoveryInfo;
 use kuku_client::{AgentSnapshot, AgentStatus, HistoryEntry, HistoryKind};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::cli_args::RunArgs;
 use crate::commands::CliResult;

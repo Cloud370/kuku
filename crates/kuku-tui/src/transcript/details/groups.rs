@@ -7,13 +7,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::render_literal;
 use crate::text::shorten;
-use crate::theme::{emphasis, CardFrame, ACCENT, MUTED, SUCCESS};
+use crate::theme::{ACCENT, CardFrame, MUTED, SUCCESS, emphasis};
 use crate::transcript::agent::AgentCards;
-use crate::transcript::tool::{tool_title, Tool};
-use crate::transcript::{render_rows, Record, Row};
+use crate::transcript::tool::{Tool, tool_title};
+use crate::transcript::{Record, Row, render_rows};
 
-use super::inspection::{inspection_composition, INSPECTIONS};
-use super::{activity, GROUP_DETAIL_ROWS};
+use super::inspection::{INSPECTIONS, inspection_composition};
+use super::{GROUP_DETAIL_ROWS, activity};
 
 pub(in crate::transcript) fn compact_file_rows(records: &[Record]) -> Vec<bool> {
     let mut compact = vec![false; records.len()];

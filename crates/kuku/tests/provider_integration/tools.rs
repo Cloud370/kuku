@@ -1,10 +1,15 @@
 #[tokio::test(flavor = "current_thread")]
 async fn executes_find_files_and_continues_to_final_response() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(executes_find_files_and_continues_to_final_response),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
-    std::fs::write(env.workspace.path().join("README.md"), "# Project").unwrap();
-    std::fs::create_dir_all(env.workspace.path().join("src")).unwrap();
-    std::fs::write(env.workspace.path().join("src/main.rs"), "fn main() {}").unwrap();
+    std::fs::write(env.workspace.as_path().join("README.md"), "# Project").unwrap();
+    std::fs::create_dir_all(env.workspace.as_path().join("src")).unwrap();
+    std::fs::write(env.workspace.as_path().join("src/main.rs"), "fn main() {}").unwrap();
 
     let tool_mock = server.mock(|when, then| {
         context_conditions(when, "find files")
@@ -83,14 +88,19 @@ async fn executes_find_files_and_continues_to_final_response() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn executes_list_skills_and_continues_to_final_response() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(executes_list_skills_and_continues_to_final_response),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let mut config = test_config();
     config.discovery.auto_discover = false;
-    config.discovery.extra_project_paths = vec![env.workspace.path().join(".claude")];
+    config.discovery.extra_project_paths = vec![env.workspace.as_path().join(".claude")];
     let skill_dir = env
         .workspace
-        .path()
+        .as_path()
         .join(".claude")
         .join("skills")
         .join("review");
@@ -172,15 +182,20 @@ async fn executes_list_skills_and_continues_to_final_response() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn executes_read_file_and_search_text() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(executes_read_file_and_search_text),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     std::fs::write(
-        env.workspace.path().join("README.md"),
+        env.workspace.as_path().join("README.md"),
         "# Project\nTODO root\nDone\n",
     )
     .unwrap();
-    std::fs::create_dir_all(env.workspace.path().join("docs")).unwrap();
-    std::fs::write(env.workspace.path().join("docs/tools.md"), "TODO docs\n").unwrap();
+    std::fs::create_dir_all(env.workspace.as_path().join("docs")).unwrap();
+    std::fs::write(env.workspace.as_path().join("docs/tools.md"), "TODO docs\n").unwrap();
 
     let tool_mock = server.mock(|when, then| {
         context_conditions(when, "read and search")
@@ -260,11 +275,16 @@ async fn executes_read_file_and_search_text() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn each_slot_read_file_persists_its_own_read_event_id() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(each_slot_read_file_persists_its_own_read_event_id),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
-    std::fs::write(env.workspace.path().join("README.md"), "# Project\n").unwrap();
-    std::fs::create_dir_all(env.workspace.path().join("docs")).unwrap();
-    std::fs::write(env.workspace.path().join("docs/tools.md"), "# Tools\n").unwrap();
+    std::fs::write(env.workspace.as_path().join("README.md"), "# Project\n").unwrap();
+    std::fs::create_dir_all(env.workspace.as_path().join("docs")).unwrap();
+    std::fs::write(env.workspace.as_path().join("docs/tools.md"), "# Tools\n").unwrap();
 
     let tool_mock = server.mock(|when, then| {
         context_conditions(when, "read two files")
@@ -328,10 +348,15 @@ async fn each_slot_read_file_persists_its_own_read_event_id() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn read_file_range_disambiguates_a_following_edit() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(read_file_range_disambiguates_a_following_edit),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     std::fs::write(
-        env.workspace.path().join("README.md"),
+        env.workspace.as_path().join("README.md"),
         "alpha\nbeta\nbeta\n",
     )
     .unwrap();
@@ -420,16 +445,21 @@ async fn read_file_range_disambiguates_a_following_edit() {
     )));
     assert_eq!(
         "alpha\ngamma\nbeta\n",
-        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap()
+        std::fs::read_to_string(env.workspace.as_path().join("README.md")).unwrap()
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn same_batch_read_file_range_disambiguates_edit() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(same_batch_read_file_range_disambiguates_edit),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     std::fs::write(
-        env.workspace.path().join("README.md"),
+        env.workspace.as_path().join("README.md"),
         "alpha\nbeta\nbeta\n",
     )
     .unwrap();
@@ -479,7 +509,7 @@ async fn same_batch_read_file_range_disambiguates_edit() {
     assert_eq!(output.text, "Same-batch edit complete.");
     assert_eq!(
         "alpha\nbeta\ngamma\n",
-        std::fs::read_to_string(env.workspace.path().join("README.md")).unwrap()
+        std::fs::read_to_string(env.workspace.as_path().join("README.md")).unwrap()
     );
 
     let events = EventStore::replay(env.events_path(&output.session_id)).unwrap();
@@ -492,7 +522,12 @@ async fn same_batch_read_file_range_disambiguates_edit() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn can_allow_run_command_once_via_run_decide() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(can_allow_run_command_once_via_run_decide),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let tool_mock = server.mock(|when, then| {
@@ -566,7 +601,12 @@ async fn can_allow_run_command_once_via_run_decide() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(project_scope_allow_persists_to_policy_file_and_applies_on_next_run),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let tool_mock_1 = server.mock(|when, then| {
@@ -626,8 +666,8 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
 
     // Policy file persisted on disk.
     let policy_path = kuku::session::project_policy_path(
-        env.home.path(),
-        &std::fs::canonicalize(env.workspace.path()).unwrap(),
+        env.home.as_path(),
+        &std::fs::canonicalize(env.workspace.as_path()).unwrap(),
     )
     .unwrap();
     let policy_text = std::fs::read_to_string(&policy_path).unwrap();
@@ -683,7 +723,12 @@ async fn project_scope_allow_persists_to_policy_file_and_applies_on_next_run() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn records_denied_run_command_and_continues() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(records_denied_run_command_and_continues),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let tool_mock = server.mock(|when, then| {

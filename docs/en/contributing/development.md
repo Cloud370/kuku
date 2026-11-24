@@ -28,7 +28,7 @@ The task locator and handoff must let a fresh session identify the current branc
 
 The local locator for this rewrite is ignored `benchmarks/rewrite-state.json`. It points to the selected private Project and task identifiers; task status stays in that Project. Preserve the locator and follow its references rather than creating a second board. It may be absent in another checkout, so carry the tracker reference in the assigned task. Keep reproducible commands in the maintained [acceptance selector](testing.md#verification-selection), and link to bounded run records from the selected task instead of writing parallel handoff pages.
 
-Credential loading and local evidence locations belong to [Testing](testing.md#credentials-and-run-artifacts). Handoff references the configuration; it never copies keys or private request payloads.
+See [Testing](testing.md#test-ownership-and-evidence) for evidence locations and [Advanced acceptance](testing-advanced.md#credentials-and-run-artifacts) for credential loading. Handoff references the configuration; it never copies keys or private request payloads.
 
 ## Working loop
 
@@ -38,7 +38,7 @@ Credential loading and local evidence locations belong to [Testing](testing.md#c
 4. Review the actual diff against the task and evidence. Fix failures, or record the precise missing validation; a skipped live test is not a passing live test.
 5. Commit the logical result and update its task. A PR states the problem, resulting behavior, relevant checks actually run, and material limitations. Reference unfinished parent work without claiming the whole rewrite is complete.
 
-For interactive TUI changes, the [optional tmux workflow](testing.md#watch-a-tui-run-together-optional) lets a developer and coding Agent compare the original and rebuilt interfaces in separate windows.
+For interactive TUI changes, the [optional tmux workflow](testing-advanced.md#watch-a-tui-run-together-optional) lets a developer and coding Agent compare the original and rebuilt interfaces in separate windows.
 
 ## Workflow deliverables for the rewrite
 
@@ -56,22 +56,19 @@ Keep the implementation small: no service requirement, broad workflow framework,
 
 ## Main commands
 
+The workspace uses Rust Edition 2024 and the stable toolchain in `rust-toolchain.toml`. When a test requires process-wide settings, pass them to an isolated test process at launch.
+
 ```bash
 cargo check
-python3 scripts/acceptance/run.py contract
-python3 scripts/acceptance/run.py protocol
-python3 scripts/acceptance/run.py integration
-python3 scripts/acceptance/run.py interactive
-cargo fmt --all -- --check
 make build
 make release-linux
 ```
 
-The selector records what actually ran; a selected check is not proof of unselected live or platform coverage. [Testing](testing.md) owns feature selection, original benchmark environments/verifiers, cost reservations, and live-call prerequisites. Use the default glibc target for normal development and the musl release path only for release packaging.
+Choose verification commands in [Testing](testing.md). For benchmark reproduction and live-call requirements, use [Advanced acceptance](testing-advanced.md). Use the default glibc target for normal development and the musl release path for release packaging.
 
 ## Git and platform rules
 
-Use conventional commits with one logical change per commit. Do not amend pushed commits. Follow [Code Style](code-style.md) for integration rules and [Release](release.md) for publishing.
+Use conventional commits with one logical change per commit. Do not amend pushed commits. Use `git merge --ff-only` for local worktree integration. Follow [Release](release.md) for publishing.
 
 Default to Linux, Windows 10+, and macOS. Avoid shell-specific behavior in product code. Normalize paths with `std::path::Component` rather than string slicing.
 

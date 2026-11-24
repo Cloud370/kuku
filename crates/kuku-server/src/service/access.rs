@@ -4,16 +4,16 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::Json;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 use subtle::ConstantTimeEq;
 
-use super::{failure, ServiceState};
+use super::{ServiceState, failure};
 
 const TICKET_LIFETIME: Duration = Duration::from_secs(60);
 const MAX_PENDING_TICKETS: usize = 64;

@@ -4,8 +4,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use kuku_client::{
-    new_id, Acknowledgement, Action, AgentConfig, AgentSnapshot, AgentStatus, Command, Connection,
-    Error, Observation, PermissionRequest, Snapshot, Target, Timing,
+    Acknowledgement, Action, AgentConfig, AgentSnapshot, AgentStatus, Command, Connection, Error,
+    Observation, PermissionRequest, Snapshot, Target, Timing, new_id,
 };
 use serde_json::json;
 
@@ -15,7 +15,7 @@ use crate::display::OutputLine;
 
 mod render;
 
-use render::{write_json, RunRenderer};
+use render::{RunRenderer, write_json};
 
 /// Execute one script command, then render the settled Agent state.
 pub async fn run(args: RunArgs, options: &ConnectionArgs) -> CliResult {

@@ -3,8 +3,8 @@ use crate::execution::{
 };
 
 use super::super::super::test_helpers::workspace;
-use super::super::output::{read_output, OutputLimits, OutputRead};
-use super::super::{run_command_to, CommandCapture, ModelOutputAccess};
+use super::super::output::{OutputLimits, OutputRead, read_output};
+use super::super::{CommandCapture, ModelOutputAccess, run_command_to};
 use super::Collector;
 
 fn cargo(args: &[&str]) -> CommandInvocation {
@@ -50,9 +50,11 @@ fn node_spec_folds_passing_rows_and_preserves_diagnostic_ranges() {
     assert!(summary.text.contains("1 todo"));
     assert!(!summary.text.contains("confirms the route"));
     assert!(!summary.text.contains("another passing case"));
-    assert!(summary
-        .text
-        .contains("AssertionError: route selection mismatch"));
+    assert!(
+        summary
+            .text
+            .contains("AssertionError: route selection mismatch")
+    );
     assert!(summary.text.contains("/app/fixture.cjs:8:12"));
     assert!(!summary.text.contains("node:async_hooks"));
     assert!(!summary.text.contains("Array.map"));
@@ -67,9 +69,11 @@ fn node_spec_folds_passing_rows_and_preserves_diagnostic_ranges() {
             && report[span.offset as usize..span.end_offset as usize]
                 .contains("route selection mismatch")
     }));
-    assert!(ranges
-        .iter()
-        .any(|span| { span.stream == OutputStream::Stderr && span.offset == report.len() as u64 }));
+    assert!(
+        ranges.iter().any(|span| {
+            span.stream == OutputStream::Stderr && span.offset == report.len() as u64
+        })
+    );
 }
 
 #[test]
@@ -121,9 +125,11 @@ fn split_line_uses_merged_offsets_and_keeps_its_original_pipe() {
         suffix,
     );
     let summary = collector.summarize(101).unwrap();
-    assert!(summary
-        .text
-        .contains("error[E0308]: mismatched types\n  --> src/lib.rs:8:1"));
+    assert!(
+        summary
+            .text
+            .contains("error[E0308]: mismatched types\n  --> src/lib.rs:8:1")
+    );
     let CommandOutputSummary::Rule { ranges, .. } = summary.source;
     assert_eq!(ranges.len(), 2);
     assert_eq!(ranges[1].stream, OutputStream::Stderr);
@@ -181,9 +187,11 @@ fn pytest_rule_requires_a_test_report_and_preserves_failure_context() {
     assert!(summary.text.contains("test_checkout.py:5: AssertionError"));
     assert!(summary.text.contains("1 failed, 84 passed"));
     assert!(!summary.text.contains(" PASSED "));
-    assert!(ranges
-        .iter()
-        .any(|range| range.stream == OutputStream::Stdout && range.offset == location));
+    assert!(
+        ranges
+            .iter()
+            .any(|range| range.stream == OutputStream::Stdout && range.offset == location)
+    );
 
     for mode in [
         "--collect-only",
@@ -222,9 +230,11 @@ fn go_test_counts_packages_and_retains_both_failure_streams() {
         last,
     );
     let summary = collector.summarize(1).unwrap();
-    assert!(summary
-        .text
-        .starts_with("Go test packages: 1 ok, 1 no test files, 1 failed, 1 build failed."));
+    assert!(
+        summary
+            .text
+            .starts_with("Go test packages: 1 ok, 1 no test files, 1 failed, 1 build failed.")
+    );
     assert!(summary.text.contains("probe_test.go:6: values differ"));
     assert!(summary.text.contains("delta/probe.go:3:16: cannot use"));
     assert!(!summary.text.contains("probe/alpha"));
@@ -259,9 +269,18 @@ fn go_test_requires_plain_package_evidence_and_consistent_exit() {
     }
     for (output, code) in [
         ("ok  \texample.com/probe\t0.003s\n", 1),
-        ("ok  \texample.com/probe\t0.003s\nFAIL\texample.com/other [setup failed]\n", 1),
-        ("=== RUN   TestFixture\n--- PASS: TestFixture (0.00s)\nok  \texample.com/probe\t0.003s\n", 0),
-        ("ok  \texample.com/probe\t0.003s\tcoverage: 2.0% of statements\n", 0),
+        (
+            "ok  \texample.com/probe\t0.003s\nFAIL\texample.com/other [setup failed]\n",
+            1,
+        ),
+        (
+            "=== RUN   TestFixture\n--- PASS: TestFixture (0.00s)\nok  \texample.com/probe\t0.003s\n",
+            0,
+        ),
+        (
+            "ok  \texample.com/probe\t0.003s\tcoverage: 2.0% of statements\n",
+            0,
+        ),
     ] {
         let mut collector = Collector::new(&go_test(&["test", "./..."])).unwrap();
         collector.observe(OutputStream::Stdout, 0, output.as_bytes());
@@ -334,15 +353,21 @@ fn git_status_counts_large_captures_and_keeps_quoted_conflict_and_rename_rows() 
     }
     let summary = collector.summarize(0).unwrap();
     assert!(summary.text.contains("Unmerged (1)\nUU conflict.txt"));
-    assert!(summary
-        .text
-        .contains("Staged and unstaged (1)\nMM checked.txt"));
-    assert!(summary
-        .text
-        .contains("Staged only (1)\nR  \"before name\" -> \"after name\""));
-    assert!(summary
-        .text
-        .contains("Untracked (341)\n?? \"a note\\nwith newline.txt\""));
+    assert!(
+        summary
+            .text
+            .contains("Staged and unstaged (1)\nMM checked.txt")
+    );
+    assert!(
+        summary
+            .text
+            .contains("Staged only (1)\nR  \"before name\" -> \"after name\"")
+    );
+    assert!(
+        summary
+            .text
+            .contains("Untracked (341)\n?? \"a note\\nwith newline.txt\"")
+    );
     assert!(!summary.text.contains("scratch-200"));
     let CommandOutputSummary::Rule { rule, ranges } = summary.source;
     assert_eq!(rule, "git-status");
@@ -409,14 +434,18 @@ async fn cargo_rule_retains_assertions_and_the_original_output() {
     };
     assert_eq!(rule, "cargo-humans");
     assert!(result.model_content.contains("amount mismatch"));
-    assert!(result
-        .model_content
-        .replace('\\', "/")
-        .contains("src/lib.rs:"));
+    assert!(
+        result
+            .model_content
+            .replace('\\', "/")
+            .contains("src/lib.rs:")
+    );
     assert!(result.model_content.contains("read_output({id:"));
-    assert!(facts
-        .output_preview
-        .contains("Output summary (cargo-humans"));
+    assert!(
+        facts
+            .output_preview
+            .contains("Output summary (cargo-humans")
+    );
     assert!(result.model_content.len() < facts.output_ref.bytes as usize);
 
     let mut evidence = String::new();
@@ -444,12 +473,14 @@ async fn cargo_rule_retains_assertions_and_the_original_output() {
     }
     assert!(evidence.contains("amount mismatch"));
     let raw = read_output(&outputs, &facts.output_id, OutputRead::default()).unwrap();
-    assert!(raw
-        .segments
-        .iter()
-        .any(|segment| segment.text.contains("test passes_00 ... ok")));
-    assert!(raw
-        .segments
-        .iter()
-        .any(|segment| segment.as_bytes().contains(&0x1b)));
+    assert!(
+        raw.segments
+            .iter()
+            .any(|segment| segment.text.contains("test passes_00 ... ok"))
+    );
+    assert!(
+        raw.segments
+            .iter()
+            .any(|segment| segment.as_bytes().contains(&0x1b))
+    );
 }

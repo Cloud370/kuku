@@ -7,7 +7,7 @@ use crate::event::{EventPayload, EventStore};
 use crate::provider::RequestCost;
 use crate::{Error, ProviderUsage, Result};
 
-use super::record::{timestamp, Record, State};
+use super::record::{Record, State, timestamp};
 use super::{CostTotals, ModelUsageSample, Session, UsageTotals};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

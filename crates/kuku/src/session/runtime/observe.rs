@@ -4,15 +4,15 @@ use std::path::Path;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
+use crate::Result;
 use crate::event::{EventStore, StoredEvent};
 use crate::query::{ModelPhase, UiEvent};
-use crate::Result;
 
 use super::receipts::validate_key;
 use super::record::{Record, State};
 use super::{
-    load_state, AgentSnapshot, AgentStatus, AgentView, InputStatus, PendingInput, Receipt, Session,
-    TurnSummary,
+    AgentSnapshot, AgentStatus, AgentView, InputStatus, PendingInput, Receipt, Session,
+    TurnSummary, load_state,
 };
 
 use crate::event::REPLY_PREFIX_BYTES as REPLY_PREVIEW_BYTES;
@@ -363,7 +363,7 @@ impl Session {
                     _ => {
                         return Err(crate::Error::InvalidEventStream(format!(
                             "turn settlement {terminal} is missing"
-                        )))
+                        )));
                     }
                 }
                 result["settlement"] = terminal.into();
@@ -650,8 +650,8 @@ mod tests {
     use crate::query::ModelPhase;
     use serde_json::json;
 
-    use super::super::{record::Record, TurnIndex};
-    use super::{EventStore, ReplyPreview, REPLY_PREVIEW_BYTES};
+    use super::super::{TurnIndex, record::Record};
+    use super::{EventStore, REPLY_PREVIEW_BYTES, ReplyPreview};
     use crate::event::EventPayload;
 
     #[test]

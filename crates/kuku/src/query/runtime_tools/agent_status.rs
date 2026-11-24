@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{AgentSnapshot, AgentStatus};
@@ -75,7 +75,7 @@ fn last_request(events: &[StoredEvent], address: &str, turn: u64) -> Option<Valu
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::last_request;
     use crate::event::{EventPayload, StoredEvent};

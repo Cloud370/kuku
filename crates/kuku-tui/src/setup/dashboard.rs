@@ -5,11 +5,11 @@ use kuku::adapter::{
     SetupTextCheck,
 };
 use kuku::config::ProviderConfig;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::shorten_middle;

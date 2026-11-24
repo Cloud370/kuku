@@ -1,16 +1,16 @@
 mod common;
 
 use std::collections::VecDeque;
-use std::future::{ready, Future};
+use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::routing::post;
 use axum::{Json, Router};
-use common::mock_provider::{self, anthropic_sse_response, text_response, tool_response};
 use common::TestServer;
+use common::mock_provider::{self, anthropic_sse_response, text_response, tool_response};
 use kuku::event::{EventPayload, EventStore};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -207,11 +207,13 @@ async fn permission_resume_keeps_the_turn_and_replays_one_summary_after_restart(
     let reopened = server.snapshot(id, "main").await;
     assert_eq!(started, reopened["agent"]["turn_started_at_ms"]);
     assert_eq!(elapsed, reopened["agent"]["turn_elapsed_ms"]);
-    assert!(!server
-        .workspace
-        .path()
-        .join("permission-fixture.txt")
-        .exists());
+    assert!(
+        !server
+            .workspace
+            .path()
+            .join("permission-fixture.txt")
+            .exists()
+    );
     provider.abort();
 }
 
@@ -258,11 +260,13 @@ async fn explicit_stop_attaches_statistics_to_its_only_interruption_row() {
     );
     server.restart().await;
     assert_eq!(vec![stopped], summaries(&history(&server, id, &[]).await));
-    assert!(!server
-        .workspace
-        .path()
-        .join("permission-fixture.txt")
-        .exists());
+    assert!(
+        !server
+            .workspace
+            .path()
+            .join("permission-fixture.txt")
+            .exists()
+    );
     provider.abort();
 }
 

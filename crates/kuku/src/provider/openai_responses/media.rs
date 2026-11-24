@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use serde_json::{json, Value};
+use base64::engine::general_purpose::STANDARD;
+use serde_json::{Value, json};
 
-use crate::execution::{ModelImage, MAX_MODEL_IMAGE_BYTES};
+use crate::execution::{MAX_MODEL_IMAGE_BYTES, ModelImage};
 
 const MAX_IMAGES_PER_REQUEST: usize = 4;
 

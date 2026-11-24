@@ -1,8 +1,8 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::Terminal;
 
 use super::{app, key, mouse, render, screen, text_position};
 use crate::app::{App, Modal};
@@ -143,10 +143,11 @@ fn model_default_confirmation_requires_full_minimum_frame_and_escape_is_safe() {
             app.modal.is_none(),
             "Escape should cancel at {width}x{height}"
         );
-        assert!(!app
-            .effects
-            .iter()
-            .any(|job| matches!(job, Job::SaveDefault { .. })));
+        assert!(
+            !app.effects
+                .iter()
+                .any(|job| matches!(job, Job::SaveDefault { .. }))
+        );
     }
 }
 
@@ -236,10 +237,11 @@ fn model_default_resize_below_minimum_invalidates_save_hits_without_queuing_save
             &app.modal,
             Some(Modal::Picker(picker)) if picker.choice_count() == 1
         ));
-        assert!(!app
-            .effects
-            .iter()
-            .any(|job| matches!(job, Job::SaveDefault { .. })));
+        assert!(
+            !app.effects
+                .iter()
+                .any(|job| matches!(job, Job::SaveDefault { .. }))
+        );
 
         let buffer = terminal
             .draw(|frame| render(frame, &mut app))

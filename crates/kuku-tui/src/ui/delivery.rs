@@ -10,7 +10,7 @@ use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap_bounded};
 use crate::text::{shorten, single_line};
-use crate::theme::{emphasis, focused_row, ACCENT, ERROR, MUTED};
+use crate::theme::{ACCENT, ERROR, MUTED, emphasis, focused_row};
 
 const MAX_DELIVERY_ROWS: usize = 6;
 const MAX_MESSAGE_ROWS: usize = 3;

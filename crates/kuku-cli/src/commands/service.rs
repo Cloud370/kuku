@@ -1,7 +1,7 @@
 //! Shared management commands for the managed and explicit HTTP service.
 
-use kuku_client::local::{self, RestartOutcome};
 use kuku_client::ConnectionOptions;
+use kuku_client::local::{self, RestartOutcome};
 use serde_json::json;
 
 use crate::cli_args::{ConnectionArgs, ServerCommand, ServerCommandArgs};

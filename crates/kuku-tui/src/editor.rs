@@ -4,7 +4,7 @@ use std::ops::Range;
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 use unicode_width::UnicodeWidthStr;
 
-use crate::text::{replace_tabs, terminal_text, TAB};
+use crate::text::{TAB, replace_tabs, terminal_text};
 
 const MAX_HISTORY: usize = 64;
 const MAX_SAVED_PROMPT_BYTES: usize = 32 * 1024;

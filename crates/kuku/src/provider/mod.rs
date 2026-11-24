@@ -26,19 +26,19 @@ pub(crate) mod types;
 pub use capabilities::setup_requires_responses_for_tools;
 pub use cost::{EstimateBasis, RequestCost};
 pub use discovery::{
-    discover_models, model_list_targets, setup_model_list_targets, DiscoveredModel, ModelListTarget,
+    DiscoveredModel, ModelListTarget, discover_models, model_list_targets, setup_model_list_targets,
 };
 pub use openrouter_catalog::{
-    openrouter_quote_url, openrouter_quotes, route_quote_for_display, RouteQuote,
+    RouteQuote, openrouter_quote_url, openrouter_quotes, route_quote_for_display,
 };
-pub use setup_api::{setup_api_candidates, setup_endpoint_format, SetupApiEvidence};
+pub use setup_api::{SetupApiEvidence, setup_api_candidates, setup_endpoint_format};
 pub use setup_probes::{
-    plan_model_trials, Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, SetupTextCheck,
-    TrialSelection,
+    Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, SetupTextCheck, TrialSelection,
+    plan_model_trials,
 };
 pub use setup_reasoning::{ReasoningCheck, ReasoningCheckResult};
 pub use trial::{
-    trial_model, trial_model_with_route_request, ModelTrial, TrialResult, TRIAL_OUTPUT_TOKENS,
+    ModelTrial, TRIAL_OUTPUT_TOKENS, TrialResult, trial_model, trial_model_with_route_request,
 };
 pub use types::{
     CapabilitySource, DeclaredCapability, Provider, ProviderCapabilities, ProviderReport,

@@ -4,8 +4,8 @@ use crate::config::{
     Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, UpdateConfig,
 };
 use crate::event::{EventPayload, EventStore};
-use crate::query::types::RunState;
 use crate::query::Query;
+use crate::query::types::RunState;
 
 fn test_config() -> Config {
     Config {
@@ -155,9 +155,11 @@ async fn resumed_turn_restores_persisted_skill_snapshot_instead_of_live_disk() {
         .unwrap();
     assert_eq!(result.status, "ok");
     assert!(result.model_content.contains("persisted description body"));
-    assert!(!result
-        .model_content
-        .contains("mutated live description body"));
+    assert!(
+        !result
+            .model_content
+            .contains("mutated live description body")
+    );
 }
 
 #[tokio::test]

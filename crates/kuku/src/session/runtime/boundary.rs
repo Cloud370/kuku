@@ -5,7 +5,7 @@ use crate::event::{EventPayload, EventStore};
 use crate::execution::OutputReference;
 use crate::{Error, Result};
 
-use super::record::{timestamp, AgentState, QueuedDelivery, Record, State};
+use super::record::{AgentState, QueuedDelivery, Record, State, timestamp};
 use super::{
     AgentConfig, AgentStatus, InputSource, InputStatus, InputTiming, Session, UsageTotals,
 };

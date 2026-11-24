@@ -7,10 +7,10 @@ use std::fs;
 use std::path::Path;
 
 use httpmock::prelude::{MockServer, POST};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use kuku::event::{EventPayload, EventStore};
 use kuku::Session;
+use kuku::event::{EventPayload, EventStore};
 
 const CONTEXT_TOKENS: u32 = 16_384;
 #[tokio::test]

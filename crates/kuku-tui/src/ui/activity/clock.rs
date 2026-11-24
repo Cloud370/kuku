@@ -166,7 +166,7 @@ mod tests {
 
     use crate::app::{Activity, ServiceStatus};
 
-    use super::{ElapsedClock, ObservedActivity, PhaseClock, TurnTiming, PHASE_CONFIRMATION};
+    use super::{ElapsedClock, ObservedActivity, PHASE_CONFIRMATION, PhaseClock, TurnTiming};
 
     #[test]
     fn thinking_time_stays_anchored_during_updates_and_restarts_after_tools() {

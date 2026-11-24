@@ -1,14 +1,14 @@
 use kuku_client::HistoryEntry;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use unicode_width::UnicodeWidthStr;
 
 use crate::text::{compact_token_count, shorten, single_line};
-use crate::theme::{CardFrame, TranscriptTone, ACCENT, MUTED, SUCCESS, WARNING};
+use crate::theme::{ACCENT, CardFrame, MUTED, SUCCESS, TranscriptTone, WARNING};
 
-use super::{capped, message, render_rows, Row, MAX_BODY_BYTES, MAX_VISUAL_ROWS};
+use super::{MAX_BODY_BYTES, MAX_VISUAL_ROWS, Row, capped, message, render_rows};
 
 #[derive(Debug, Clone)]
 pub(super) enum Compaction {

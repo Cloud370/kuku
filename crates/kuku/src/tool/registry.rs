@@ -373,9 +373,11 @@ mod tests {
         let mut background = json!({"program":"git","background":true});
         let error =
             prepare_command_args(&mut background, workspace.path(), &standalone).unwrap_err();
-        assert!(error
-            .model_content
-            .contains("background on the outer run_js call"));
+        assert!(
+            error
+                .model_content
+                .contains("background on the outer run_js call")
+        );
         let session = run_command_definition(&[], true);
         assert!(prepare_command_args(&mut background, workspace.path(), &session).is_ok());
         background["background"] = json!("yes");
@@ -389,13 +391,17 @@ mod tests {
             let mut args = minimal.clone();
             args[field] = value;
             let result = prepare_command_args(&mut args, workspace.path(), &session).unwrap_err();
-            assert!(result
-                .model_content
-                .contains(&format!("does not accept {field:?}")));
-            if field == "timeout" {
-                assert!(result
+            assert!(
+                result
                     .model_content
-                    .contains("The host controls process deadlines."));
+                    .contains(&format!("does not accept {field:?}"))
+            );
+            if field == "timeout" {
+                assert!(
+                    result
+                        .model_content
+                        .contains("The host controls process deadlines.")
+                );
             }
         }
     }

@@ -167,7 +167,7 @@ fn merge_usage(target: &mut Value, update: &Value) {
 mod tests {
     use serde_json::json;
 
-    use super::{normalize_usage, ProviderFormat, ReportAccumulator};
+    use super::{ProviderFormat, ReportAccumulator, normalize_usage};
 
     #[test]
     fn reads_the_selected_openrouter_provider_from_responses_metadata() {

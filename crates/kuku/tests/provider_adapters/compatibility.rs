@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use httpmock::prelude::{MockServer, POST};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_stream::StreamExt;
 
 use super::config::{ProviderFormat, ProviderProfile, ThinkLevel};
@@ -182,10 +182,12 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
         let second_mock = mock_request(&server, &second, &fixture(protocol, profile, 2, model));
         let (assistant, calls, _) = collect_response(&config, &second).await;
         assert!(calls.is_empty());
-        assert!(assistant
-            .blocks
-            .iter()
-            .any(|block| matches!(block, MessageBlock::Text(text) if text == "sum=7")));
+        assert!(
+            assistant
+                .blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::Text(text) if text == "sum=7"))
+        );
         request.assembly.history.push(assistant);
         request
             .assembly
@@ -209,17 +211,21 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             let plain =
                 super::provider::prepare_provider_request(&config, &no_tools, Some(&correlation))
                     .unwrap();
-            assert!(wire_messages(plain.body.as_json())
-                .iter()
-                .all(|message| message.get("reasoning_content").is_none()));
+            assert!(
+                wire_messages(plain.body.as_json())
+                    .iter()
+                    .all(|message| message.get("reasoning_content").is_none())
+            );
         }
         let third_mock = mock_request(&server, &third, &fixture(protocol, profile, 3, model));
         let (assistant, calls, _) = collect_response(&config, &third).await;
         assert!(calls.is_empty());
-        assert!(assistant
-            .blocks
-            .iter()
-            .any(|block| matches!(block, MessageBlock::Text(text) if text == "confirmed")));
+        assert!(
+            assistant
+                .blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::Text(text) if text == "confirmed"))
+        );
         first_mock.assert_hits(1);
         second_mock.assert_hits(1);
         third_mock.assert_hits(1);
@@ -263,9 +269,11 @@ async fn collect_response(
             ProviderChunk::TextDelta { text: fragment } => text.push_str(&fragment),
             ProviderChunk::ThinkingDelta { text: fragment } => thinking.push_str(&fragment),
             ProviderChunk::ToolCallStart { index, id, name } => {
-                assert!(calls
-                    .insert(index, (id, name, String::new(), false))
-                    .is_none());
+                assert!(
+                    calls
+                        .insert(index, (id, name, String::new(), false))
+                        .is_none()
+                );
             }
             ProviderChunk::ToolCallArgDelta { index, fragment } => {
                 calls.get_mut(&index).unwrap().2.push_str(&fragment)
@@ -360,11 +368,13 @@ fn assert_tool_continuation(protocol: ProviderFormat, profile: ProviderProfile, 
                 assert!(messages.iter().any(|value| value["type"] == "function_call"
                     && value["call_id"] == id
                     && value["arguments"].is_string()));
-                assert!(messages
-                    .iter()
-                    .any(|value| value["type"] == "function_call_output"
-                        && value["call_id"] == id
-                        && value["output"] == content));
+                assert!(
+                    messages
+                        .iter()
+                        .any(|value| value["type"] == "function_call_output"
+                            && value["call_id"] == id
+                            && value["output"] == content)
+                );
             }
         }
         ProviderFormat::Anthropic => {

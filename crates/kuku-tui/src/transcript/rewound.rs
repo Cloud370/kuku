@@ -4,9 +4,9 @@ use ratatui::text::Span;
 
 use crate::markup::{render_literal, wrap_bounded};
 use crate::text::shorten;
-use crate::theme::{emphasis, ACCENT, ERROR, MUTED};
+use crate::theme::{ACCENT, ERROR, MUTED, emphasis};
 
-use super::{Anchor, AnchorLine, Key, Reading, Row, Transcript, REWIND_GROUP_PAGE};
+use super::{Anchor, AnchorLine, Key, REWIND_GROUP_PAGE, Reading, Row, Transcript};
 
 const MAX_GROUP_ROWS: usize = 768;
 const MAX_GROUP_PAGES: usize = 4;

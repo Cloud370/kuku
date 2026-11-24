@@ -8,21 +8,21 @@ use dispatch::dispatch_provider_step;
 
 pub(super) use resolve::ensure_resolved;
 pub(super) use retry::{
-    record_retry_event, record_terminal_stop, RetryEvent, RetryPhase, RetryStopReason,
+    RetryEvent, RetryPhase, RetryStopReason, record_retry_event, record_terminal_stop,
 };
 
 use crate::context::{
-    assemble_context, rebuild_history_for_provider, restore_prompt_snapshot, CanonicalMessage,
-    ContextInput, EnvironmentSource, MessageBlock, PluginRegistryProvenance,
+    CanonicalMessage, ContextInput, EnvironmentSource, MessageBlock, PluginRegistryProvenance,
     PromptCapabilityMetadata, PromptRendererIdentity, Role, SkillRegistryProvenance,
-    ToolRegistryProvenance,
+    ToolRegistryProvenance, assemble_context, rebuild_history_for_provider,
+    restore_prompt_snapshot,
 };
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::log::{LogLevel, LogRecord, LogScope};
 use crate::notice::{
-    build_runtime_notices, compute_context_headroom, render_notice_body, types::ContextHeadroom,
-    NoticeAssemblyInput,
+    NoticeAssemblyInput, build_runtime_notices, compute_context_headroom, render_notice_body,
+    types::ContextHeadroom,
 };
 use crate::prompt::{builtin_handoff_instruction, load_prompt_template};
 use crate::tool;
@@ -581,7 +581,10 @@ pub(super) fn should_trigger_handoff(headroom: &ContextHeadroom, threshold: f64)
     used_ratio >= threshold
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "context assembly keeps runtime settings and prompt sources separate"
+)]
 fn build_runtime_blocks(
     workspace: &std::path::Path,
     conversation: &str,

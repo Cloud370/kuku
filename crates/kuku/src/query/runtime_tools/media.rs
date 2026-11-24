@@ -1,13 +1,13 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
+use crate::Session;
 use crate::query::types::{
     ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind, WorkspaceAccess,
 };
-use crate::tool::{builtin::read_image, ToolResultEnvelope};
-use crate::Session;
+use crate::tool::{ToolResultEnvelope, builtin::read_image};
 
 pub(super) fn spawn(
     session: Session,

@@ -12,7 +12,7 @@ use ratatui::{Frame, Terminal};
 use crate::editor::Editor;
 use crate::terminal::{AuthorizationLink, FrameBackend};
 use crate::text::{shorten_middle, single_line};
-use crate::theme::{compact_padding, emphasis, focused_row, ACCENT, MUTED, SUCCESS, WARNING};
+use crate::theme::{ACCENT, MUTED, SUCCESS, WARNING, compact_padding, emphasis, focused_row};
 
 use super::config::Settings;
 use super::dashboard::TestOverview;
@@ -736,7 +736,7 @@ struct TerminalRestore {
 
 impl TerminalRestore {
     fn new() -> io::Result<Self> {
-        use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+        use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
         let mut restore = Self {
             raw: false,
             paste: false,
@@ -755,7 +755,7 @@ impl TerminalRestore {
 impl Drop for TerminalRestore {
     fn drop(&mut self) {
         use crossterm::cursor::Show;
-        use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+        use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
         let mut output = io::stdout();
         if self.paste {
             let _ = execute!(output, crossterm::event::DisableBracketedPaste);

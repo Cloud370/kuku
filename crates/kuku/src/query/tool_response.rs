@@ -204,7 +204,7 @@ pub(super) fn resumed_tool_argument_retries(
                     .as_deref()
                     .map_or(agent == "main", |owner| owner == agent) =>
             {
-                break
+                break;
             }
             EventPayload::Unknown(value)
                 if value["kind"] == "runtime.model_retry"

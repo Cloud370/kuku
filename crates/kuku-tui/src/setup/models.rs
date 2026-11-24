@@ -2,27 +2,27 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent};
+use kuku::ProviderCapabilities;
 use kuku::adapter::{
+    DiscoveredModel, ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, TrialSelection,
     inspect_connection_model, inspect_model, model_list_targets, plan_model_trials,
-    setup_api_candidates, setup_endpoint_format, setup_model_list_targets, DiscoveredModel,
-    ModelTrial, Probe, ProbeBatch, ProbeProgress, ProbeResult, TrialSelection,
+    setup_api_candidates, setup_endpoint_format, setup_model_list_targets,
 };
 use kuku::config::{
-    resolve_request_url, ApiKey, CustomServiceTier, ModelCapabilityDeclaration, ProviderConfig,
-    ProviderFormat, ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel,
+    ApiKey, CustomServiceTier, ModelCapabilityDeclaration, ProviderConfig, ProviderFormat,
+    ProviderOptions, ProviderProxy, RequestedOutput, ThinkLevel, resolve_request_url,
 };
 use kuku::session::AgentConfig;
-use kuku::ProviderCapabilities;
 
 use crate::editor::Editor;
 
 use super::config::Settings;
-use super::state::{edit_field, SetupIntent, SetupState, SetupStep};
+use super::state::{SetupIntent, SetupState, SetupStep, edit_field};
 use super::{ConnectionChoice, CredentialSource};
 
 mod capabilities;
 pub(super) use capabilities::{
-    automatic_reasoning, has_configured_reasoning, same_service_tier, CUSTOM_TIERS_ROW,
+    CUSTOM_TIERS_ROW, automatic_reasoning, has_configured_reasoning, same_service_tier,
 };
 mod pricing;
 

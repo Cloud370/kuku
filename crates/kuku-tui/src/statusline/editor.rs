@@ -1,16 +1,16 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Modal};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap};
 use crate::text::{shorten, single_line};
-use crate::theme::{focused_row, ERROR, MUTED};
+use crate::theme::{ERROR, MUTED, focused_row};
 
 use super::{Field, StatusLine};
 

@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use kuku::adapter::openrouter_quote_url;
 use kuku::config::{ModelPricing, ProviderConfig, TokenRates};
 
-use crate::setup::state::{edit_field, SetupState, SetupStep};
+use crate::setup::state::{SetupState, SetupStep, edit_field};
 
 impl SetupState {
     pub(in crate::setup) fn pricing_label(&self) -> &'static str {

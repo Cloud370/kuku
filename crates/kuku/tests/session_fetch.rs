@@ -3,12 +3,12 @@ mod common;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use httpmock::prelude::{MockServer, GET, POST};
-use serde_json::{json, Value};
+use httpmock::prelude::{GET, MockServer, POST};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -17,8 +17,8 @@ use tokio::sync::{mpsc, oneshot};
 use kuku::event::{EventPayload, ModelStopReason};
 use kuku::permission::{AuthorizationDecision, ToolAuthorization, ToolAuthorizer};
 use kuku::{
-    query, AdapterFuture, AgentConfig, AgentStatus, Error, Input, ModelAdapter, ModelEvent,
-    ModelRequest, ModelStream, OutputRead, Provider, Session, SessionOptions, UiEvent,
+    AdapterFuture, AgentConfig, AgentStatus, Error, Input, ModelAdapter, ModelEvent, ModelRequest,
+    ModelStream, OutputRead, Provider, Session, SessionOptions, UiEvent, query,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -332,10 +332,12 @@ async fn fetch_body_is_model_readable_and_agent_scoped_after_reopen() {
     assert_eq!("ok", status);
     assert_eq!(true, first["has_more"]);
     assert_eq!(8192, first["next_offset"]);
-    assert!(first["segments"][0]["text"]
-        .as_str()
-        .unwrap()
-        .starts_with("first page"));
+    assert!(
+        first["segments"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("first page")
+    );
     third.tools(&[(
         "search",
         "read_output",
@@ -345,10 +347,12 @@ async fn fetch_body_is_model_readable_and_agent_scoped_after_reopen() {
     assert!(last.request.body.to_string().contains(TEXT_MARKER));
     let (status, _, matches) = tool_result(&session, "search");
     assert_eq!("ok", status);
-    assert!(matches["segments"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains(TEXT_MARKER));
+    assert!(
+        matches["segments"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(TEXT_MARKER)
+    );
     last.done();
     idle(&session).await;
     session
@@ -376,10 +380,11 @@ async fn fetch_body_is_model_readable_and_agent_scoped_after_reopen() {
         .collect();
     assert_eq!(BINARY, bytes);
     assert!(page.complete && !page.has_more && !page.capture_truncated);
-    assert!(page
-        .segments
-        .iter()
-        .any(|segment| segment.raw_bytes.is_some()));
+    assert!(
+        page.segments
+            .iter()
+            .any(|segment| segment.raw_bytes.is_some())
+    );
     assert_eq!(0, fs::read_dir(workspace.path()).unwrap().count());
     reopened.close().await.unwrap();
     txt.assert_hits_async(1).await;

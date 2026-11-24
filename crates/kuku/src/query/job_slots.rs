@@ -1,14 +1,14 @@
 use std::future::pending;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
-use tokio::time::{sleep_until, Instant};
+use tokio::time::{Instant, sleep_until};
 
+use crate::Result;
 use crate::session::runtime::JobRequest;
 use crate::tool::{ToolFaults, ToolResultEnvelope};
-use crate::Result;
 
 use super::runtime_tools;
 use super::types::{PendingRun, QueuedToolCall, Run, RunState, SlotEvent, UiEvent};
@@ -277,7 +277,7 @@ fn worker_exited() -> SlotEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{ready_or_promote, SlotEvent, SlotProgress, ToolResultEnvelope};
+    use super::{SlotEvent, SlotProgress, ToolResultEnvelope, ready_or_promote};
 
     #[test]
     fn ready_foreground_result_wins_at_the_promotion_boundary() {

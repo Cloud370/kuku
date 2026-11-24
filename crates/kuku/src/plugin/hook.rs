@@ -34,7 +34,10 @@ impl std::str::FromStr for HookEvent {
 
 impl HookEvent {
     /// Return the wire-format event name (e.g. `"tool.pre_execute"`).
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "keeps the canonical event spelling available to hook hosts"
+    )]
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::SessionStart => "session.start",

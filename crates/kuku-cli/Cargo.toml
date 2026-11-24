@@ -1,7 +1,7 @@
 [package]
 name = "kuku-cli"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 license = "MIT OR Apache-2.0"
 description = "CLI for the kuku coding agent"
 repository = "https://github.com/Cloud370/kuku"
@@ -18,6 +18,9 @@ path = "src/bin/kuku-cli.rs"
 
 [features]
 server = []
+
+[lints]
+workspace = true
 
 [dependencies]
 kuku = { workspace = true }

@@ -5,10 +5,10 @@ use std::thread;
 
 use super::scan::{LINE_BYTES, SCAN_BYTES};
 use super::{CollectedFile, ContextPreview, FileSearch, SearchPage, SearchView};
-use crate::tool::builtin::common::{
-    is_cancellation, is_io_limit, FileCancellation, IoLimit, ScanDeadline, WorkspaceFiles,
-};
 use crate::WorkspaceIoLimits;
+use crate::tool::builtin::common::{
+    FileCancellation, IoLimit, ScanDeadline, WorkspaceFiles, is_cancellation, is_io_limit,
+};
 
 const FILES_PER_WORKER: usize = 1024;
 const MAX_EXTRA_THREADS: usize = 7;

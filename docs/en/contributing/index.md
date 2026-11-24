@@ -7,6 +7,7 @@ Use this section when working on the repository itself.
 - [Development](development.md)
 - [Code Style](code-style.md)
 - [Testing](testing.md)
+- [Advanced acceptance](testing-advanced.md)
 - [Release](release.md)
 
 ## Start Here

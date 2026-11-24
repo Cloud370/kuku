@@ -82,8 +82,12 @@ fn execution_wait_diagnostics(session: &Session, address: &str) -> String {
     let snapshot = match agent {
         Ok(agent) => format!(
             "status={:?}, turn={:?}, execution_id={:?}, pending_inputs={}, model_requests={}, last_error_present={}",
-            agent.status, agent.turn, agent.execution_id, agent.pending_inputs,
-            agent.usage.model_requests, agent.last_error.is_some()
+            agent.status,
+            agent.turn,
+            agent.execution_id,
+            agent.pending_inputs,
+            agent.usage.model_requests,
+            agent.last_error.is_some()
         ),
         Err(error) => format!("unavailable: {}", error_kind(&error)),
     };
@@ -223,8 +227,8 @@ pub(super) async fn settled_with_output(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tokio::sync::Notify;
 
@@ -234,8 +238,8 @@ mod tests {
     };
 
     use super::{
-        error_kind, execution_wait_diagnostics, settled_with_stage_timeout, Duration,
-        ModelStopReason, Session,
+        Duration, ModelStopReason, Session, error_kind, execution_wait_diagnostics,
+        settled_with_stage_timeout,
     };
 
     #[derive(Debug, Default)]

@@ -1,8 +1,8 @@
 use clap::Parser;
-use kuku::conversation::address::ConversationAddress;
 use kuku::PermissionRequest;
+use kuku::conversation::address::ConversationAddress;
 use kuku_client::HistoryEntry;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::cli_args::{Cli, Command};
 
@@ -23,10 +23,12 @@ fn reply_requires_one_explicit_decision() {
     assert!(
         Cli::try_parse_from(["kuku", "reply", "s_test", "request", "--answer", "text"]).is_ok()
     );
-    assert!(Cli::try_parse_from([
-        "kuku", "reply", "s_test", "request", "--answer", "text", "--allow"
-    ])
-    .is_err());
+    assert!(
+        Cli::try_parse_from([
+            "kuku", "reply", "s_test", "request", "--answer", "text", "--allow"
+        ])
+        .is_err()
+    );
 }
 
 #[test]

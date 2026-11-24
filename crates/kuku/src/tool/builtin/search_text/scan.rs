@@ -1,11 +1,11 @@
 use std::io::{self, Read};
 
 use memchr::{memchr, memchr_iter, memrchr};
-use regex::{bytes::Regex as ByteRegex, Regex};
-use regex_syntax::hir::{literal::Extractor, HirKind};
+use regex::{Regex, bytes::Regex as ByteRegex};
+use regex_syntax::hir::{HirKind, literal::Extractor};
 
 use crate::tool::builtin::common::{
-    invalid_utf8, IoLimit, LimitedReader, ScanDeadline, Utf8Reader, FILE_BUFFER_BYTES,
+    FILE_BUFFER_BYTES, IoLimit, LimitedReader, ScanDeadline, Utf8Reader, invalid_utf8,
 };
 
 pub(super) const SCAN_BYTES: IoLimit = IoLimit("search input byte budget exhausted");

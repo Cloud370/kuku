@@ -1,13 +1,13 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use kuku::config::{ProviderConfig, ThinkLevel, TierConfig};
 use kuku::ProviderCapabilities;
+use kuku::config::{ProviderConfig, ThinkLevel, TierConfig};
 
 use crate::setup::service_tier::valid_tier;
 
 use super::SetupState;
-use crate::setup::config::Settings;
-use crate::setup::state::{edit_field, SetupStep};
 use crate::setup::ConnectionChoice;
+use crate::setup::config::Settings;
+use crate::setup::state::{SetupStep, edit_field};
 
 pub(in crate::setup) const CUSTOM_TIERS_ROW: usize = 5;
 

@@ -165,9 +165,9 @@ mod windows {
         ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, GENERIC_WRITE,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfoEx, LockFileEx, SetFileInformationByHandle, UnlockFileEx, DELETE,
-        FILE_FLAG_WRITE_THROUGH, FILE_RENAME_INFO, LOCKFILE_EXCLUSIVE_LOCK,
-        LOCKFILE_FAIL_IMMEDIATELY,
+        DELETE, FILE_FLAG_WRITE_THROUGH, FILE_RENAME_INFO, FileRenameInfoEx,
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx, SetFileInformationByHandle,
+        UnlockFileEx,
     };
     use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
@@ -226,7 +226,7 @@ mod windows {
     pub(super) fn rename(from: &Path, to: &Path) -> io::Result<()> {
         let from = absolute_name(from)?;
         let to = absolute_name(to)?;
-        // NOTE: Both buffers are live, NUL-terminated UTF-16 paths; std::fs::rename cannot set WRITE_THROUGH.
+        // SAFETY: Both buffers are live, NUL-terminated UTF-16 paths; std::fs::rename cannot set WRITE_THROUGH.
         let moved = unsafe {
             MoveFileExW(
                 from.as_ptr(),

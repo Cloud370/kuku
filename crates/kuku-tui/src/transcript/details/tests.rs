@@ -1,5 +1,5 @@
 use kuku_client::{HistoryEntry, HistoryPage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::super::{AnchorLine, HistoryRequest, Transcript, TranscriptView};
 use super::{DetailKey, DetailKind};
@@ -150,9 +150,11 @@ fn mixed_twenty_four_tools_compact_by_operation_and_remain_individually_inspecta
         assert!(rendered.contains(term), "{term} missing\n{rendered}");
     }
     assert!(!rendered.contains("samples/read-12.txt"));
-    assert!(transcript.recent.records[..12]
-        .iter()
-        .all(|record| record.rendered.preview.is_none() && record.rendered.source.is_none()));
+    assert!(
+        transcript.recent.records[..12]
+            .iter()
+            .all(|record| record.rendered.preview.is_none() && record.rendered.source.is_none())
+    );
     assert_eq!(Some("Ctrl+O show"), compact.tool_hint.as_deref());
     let group = transcript
         .detail_at(line(&compact, "12 file reads"))
@@ -621,9 +623,11 @@ fn mixed_inspection_results_keep_the_same_heading_when_opened() {
         let agent = line(&open, "Agent check · main (Running)");
         let files = line(&open, "Find files");
         assert_eq!(agent + 1, files);
-        assert!(open.lines[files]
-            .to_string()
-            .contains("found 0 entries under ."));
+        assert!(
+            open.lines[files]
+                .to_string()
+                .contains("found 0 entries under .")
+        );
         assert_ne!(transcript.detail_at(agent), transcript.detail_at(files));
         assert!(!text(&open).contains("Agent · main"));
         assert_eq!(
@@ -695,11 +699,13 @@ fn a_full_window_of_large_agent_polls_keeps_default_paint_compact() {
         assert!(text(&view).contains("Agent · reviewer"));
         assert!(!text(&view).contains("archived Markdown"));
     }
-    assert!(transcript
-        .recent
-        .records
-        .iter()
-        .all(|record| record.rendered.preview.is_none()));
+    assert!(
+        transcript
+            .recent
+            .records
+            .iter()
+            .all(|record| record.rendered.preview.is_none())
+    );
 }
 
 #[test]

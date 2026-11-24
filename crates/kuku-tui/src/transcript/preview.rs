@@ -3,11 +3,11 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::text::shorten;
-use crate::theme::{emphasis, MUTED, SURFACE_TEXT};
+use crate::theme::{MUTED, SURFACE_TEXT, emphasis};
 
 use super::{
-    append_bounded, render_rows, Body, Key, RenderCache, Row, Transcript, DISPLAY_LIMIT_NOTICE,
-    MAX_BODY_BYTES, MAX_VISUAL_ROWS,
+    Body, DISPLAY_LIMIT_NOTICE, Key, MAX_BODY_BYTES, MAX_VISUAL_ROWS, RenderCache, Row, Transcript,
+    append_bounded, render_rows,
 };
 
 #[derive(Debug)]

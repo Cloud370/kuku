@@ -20,7 +20,7 @@ use crate::setup::{
     PreparedCredentialRepair, SavedCredentialRepair,
 };
 use crate::text::{format_elapsed, single_line};
-use crate::transcript::{HistoryRequest, RewindGroupRequest, REWIND_GROUP_PAGE};
+use crate::transcript::{HistoryRequest, REWIND_GROUP_PAGE, RewindGroupRequest};
 
 mod connect;
 mod history;

@@ -1,4 +1,4 @@
-use kuku::prompt::{builtin_prompt_catalog, PromptCatalog};
+use kuku::prompt::{PromptCatalog, builtin_prompt_catalog};
 
 #[test]
 fn load_from_dir_uses_external_system_prompt() {

@@ -2,7 +2,7 @@ use kuku_client::{HistoryEntry, HistoryKind, HistoryPage, TurnSummary};
 use ratatui::text::Line;
 use serde_json::Value;
 
-use crate::markup::{wrap_bounded, LinkDestination};
+use crate::markup::{LinkDestination, wrap_bounded};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{ACCENT, MIN_TRANSCRIPT_INDENT_WIDTH, MUTED, TRANSCRIPT_INDENT, WARNING};
 
@@ -568,7 +568,7 @@ impl Record {
                 text,
             },
             HistoryKind::Assistant if text.trim().is_empty() && reasoning_preview.is_empty() => {
-                return None
+                return None;
             }
             HistoryKind::Assistant => Body::Assistant(text),
             HistoryKind::ToolCall | HistoryKind::ToolResult => {

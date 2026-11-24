@@ -1,9 +1,9 @@
 mod common;
 
-use common::mock_provider::{self, text_response, tool_response};
 use common::TestServer;
+use common::mock_provider::{self, text_response, tool_response};
 use httpmock::Method;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[tokio::test]
 async fn simultaneous_question_replies_commit_once_through_durable_routing() {

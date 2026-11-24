@@ -4,7 +4,7 @@ use kuku_client::local::{BuildPolicy, LocalError};
 use kuku_client::{Client, Connection, Error, SubscriptionUpdate};
 use tokio::sync::mpsc;
 
-use super::{push, Message, Selection, Update};
+use super::{Message, Selection, Update, push};
 use crate::transcript::HISTORY_PAGE;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);

@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+pub use crate::test_process::isolate_test;
+
 const TOOL_OUTPUT: &str = "fixture-tool-output-42";
 
 /// Read exact committed journal bytes through an existing in-process writer.

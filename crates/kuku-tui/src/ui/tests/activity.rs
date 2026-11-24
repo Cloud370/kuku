@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use kuku_client::{
     Acknowledgement, Action, AgentProgress, Error, HistoryPage, Observation, Receipt,
 };
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 
 use super::super::banner;
@@ -13,7 +13,7 @@ use crate::app::{Address, App};
 use crate::config::StatusLineSettings;
 use crate::jobs::{Job, Update};
 use crate::statusline::StatusLine;
-use crate::ui::{render_at, ActivityClock};
+use crate::ui::{ActivityClock, render_at};
 
 #[test]
 fn composer_counts_running_jobs_when_the_agent_is_idle() {
@@ -75,11 +75,13 @@ fn composer_animates_only_observed_work_and_keeps_feedback_in_place() {
         activity_screen(&mut app, 92, 24, Some(1)).0,
         activity_screen(&mut app, 92, 24, Some(6)).0,
     );
-    assert!(screen(&mut app, 92, 24)
-        .lines()
-        .nth(19)
-        .unwrap()
-        .contains("Offline"));
+    assert!(
+        screen(&mut app, 92, 24)
+            .lines()
+            .nth(19)
+            .unwrap()
+            .contains("Offline")
+    );
 }
 
 #[test]
@@ -202,12 +204,13 @@ fn narrow_composer_preserves_the_distinguishing_end_of_the_agent_address() {
             && recipient.contains("Ready"),
         "{recipient}"
     );
-    assert!(rows
-        .lines()
-        .nth(21)
-        .unwrap()
-        .trim_matches([' ', '│'])
-        .is_empty());
+    assert!(
+        rows.lines()
+            .nth(21)
+            .unwrap()
+            .trim_matches([' ', '│'])
+            .is_empty()
+    );
 }
 
 #[test]

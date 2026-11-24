@@ -1,8 +1,8 @@
 use std::io;
 use std::path::Path;
 
-use super::{trim_search_line, FileSearch, SearchMatch};
-use crate::tool::builtin::common::{is_cancellation, StableFile, WorkspaceFiles};
+use super::{FileSearch, SearchMatch, trim_search_line};
+use crate::tool::builtin::common::{StableFile, WorkspaceFiles, is_cancellation};
 
 struct ContextRow {
     before_match: usize,
@@ -24,7 +24,10 @@ impl ContextPreview {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the window takes explicit match coordinates, content, and output bounds"
+    )]
     pub(super) fn extend(
         &mut self,
         relative: &str,

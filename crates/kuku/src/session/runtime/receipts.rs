@@ -4,7 +4,7 @@ use crate::{Error, Result};
 
 use super::jobs::JOB_DELIVERY_PREFIX;
 use super::record::fingerprint;
-use super::{AgentConfig, Input, InputSource, Receipt, Session, MAX_INPUT_VALUES};
+use super::{AgentConfig, Input, InputSource, MAX_INPUT_VALUES, Receipt, Session};
 
 impl Session {
     /// Find a committed command receipt without accepting or activating work.

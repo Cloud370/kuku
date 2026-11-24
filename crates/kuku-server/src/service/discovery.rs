@@ -112,7 +112,7 @@ mod tests {
     use std::fs;
     use std::io::{self, Read};
 
-    use super::{remove_discovery, DISCOVERY_NAME};
+    use super::{DISCOVERY_NAME, remove_discovery};
 
     #[test]
     fn withdrawal_hides_discovery_while_an_existing_reader_finishes() {

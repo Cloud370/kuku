@@ -3,7 +3,7 @@ use kuku_client::{AgentConfig, ModelSelection, Snapshot};
 
 use crate::jobs::{Job, Selection};
 use crate::menu::{Choice, ChoiceKind, PickerKind};
-use crate::setup::service_tier::{valid_tier, SpeedResult, SpeedWork};
+use crate::setup::service_tier::{SpeedResult, SpeedWork, valid_tier};
 
 use super::{App, Modal};
 

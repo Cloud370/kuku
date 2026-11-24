@@ -1,11 +1,11 @@
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 use crate::theme::{ACCENT, MUTED, WARNING};
 
-use super::super::models::{protocol_label, same_service_tier, CUSTOM_TIERS_ROW, PROTOCOLS};
+use super::super::models::{CUSTOM_TIERS_ROW, PROTOCOLS, protocol_label, same_service_tier};
 use super::super::recovery::text_problem;
 use super::super::state::{SetupState, SetupStep};
-use super::{field, line, option, trial_usage, Settings};
+use super::{Settings, field, line, option, trial_usage};
 
 pub(super) fn render_model_settings(
     frame: &mut Frame<'_>,

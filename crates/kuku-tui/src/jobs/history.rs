@@ -1,6 +1,6 @@
 use kuku_client::{Client, Error, ForwardHistoryPage, HistoryPage, Target};
 
-use crate::transcript::{HistoryRequest, HISTORY_PAGE};
+use crate::transcript::{HISTORY_PAGE, HistoryRequest};
 
 pub(crate) enum LoadedHistory {
     Before(HistoryPage),

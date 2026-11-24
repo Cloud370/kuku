@@ -1,6 +1,6 @@
 use super::{
-    make_waiting_run, EventPayload, EventStore, ExecSlot, Run, RunState, SlotEvent, ToolKind,
-    UiEvent,
+    EventPayload, EventStore, ExecSlot, Run, RunState, SlotEvent, ToolKind, UiEvent,
+    make_waiting_run,
 };
 use crate::tool::builtin::test_helpers::noisy_timeout_command;
 

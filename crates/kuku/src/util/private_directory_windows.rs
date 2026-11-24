@@ -1,4 +1,4 @@
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -8,23 +8,22 @@ use std::path::Path;
 use std::ptr::{self, addr_of};
 
 use windows_sys::Win32::Foundation::{
-    LocalFree, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+    ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, HANDLE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidA, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows_sys::Win32::Security::{
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
     EqualSid, GetAce, GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-    GetSecurityDescriptorOwner, GetTokenInformation, IsValidSid, TokenUser, ACCESS_ALLOWED_ACE,
-    ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERITED_ACE,
-    INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED, TOKEN_QUERY,
-    TOKEN_USER,
+    GetSecurityDescriptorOwner, GetTokenInformation, INHERIT_ONLY_ACE, INHERITED_ACE, IsValidSid,
+    OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
+    SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateDirectoryW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, GetFileInformationByHandle,
 };
 use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -37,7 +36,7 @@ struct LocalAllocation(*mut c_void);
 
 impl Drop for LocalAllocation {
     fn drop(&mut self) {
-        // NOTE: The Windows API transfers a LocalFree allocation here; no safe Rust owner can release this native pointer.
+        // SAFETY: The Windows API transfers a LocalFree allocation here; no safe Rust owner can release this native pointer.
         unsafe { LocalFree(self.0) };
     }
 }
@@ -47,17 +46,17 @@ struct AccountSid(Vec<usize>);
 impl AccountSid {
     fn current() -> io::Result<Self> {
         let mut handle = ptr::null_mut();
-        // NOTE: The process pseudo-handle and writable output slot meet OpenProcessToken's contract; no safe API opens this token.
+        // SAFETY: The process pseudo-handle and writable output slot meet OpenProcessToken's contract; no safe API opens this token.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
             return Err(io::Error::last_os_error());
         }
         if handle.is_null() {
             return Err(invalid_identity());
         }
-        // NOTE: OpenProcessToken succeeded and transferred one owned handle; OwnedHandle closes it because no safe token API exists.
+        // SAFETY: OpenProcessToken succeeded and transferred one owned handle; OwnedHandle closes it because no safe token API exists.
         let token = unsafe { OwnedHandle::from_raw_handle(handle) };
         let mut size = 0;
-        // NOTE: Null/zero is the documented size-query form and size is writable; no safe API exposes TOKEN_USER sizing.
+        // SAFETY: Null/zero is the documented size-query form and size is writable; no safe API exposes TOKEN_USER sizing.
         let success = unsafe {
             GetTokenInformation(
                 token.as_raw_handle(),
@@ -74,7 +73,7 @@ impl AccountSid {
             }
         }
         let mut buffer = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
-        // NOTE: The aligned buffer covers the queried size and stays writable; no safe API fills TOKEN_USER from this token.
+        // SAFETY: The aligned buffer covers the queried size and stays writable; no safe API fills TOKEN_USER from this token.
         if unsafe {
             GetTokenInformation(
                 token.as_raw_handle(),
@@ -92,7 +91,7 @@ impl AccountSid {
         if initialized < size_of::<TOKEN_USER>() || initialized > allocated {
             return Err(invalid_identity());
         }
-        // NOTE: GetTokenInformation succeeded and initialized TOKEN_USER within the checked buffer; Rust cannot model its embedded SID pointer.
+        // SAFETY: GetTokenInformation succeeded and initialized TOKEN_USER within the checked buffer; Rust cannot model its embedded SID pointer.
         let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
         let start = buffer.as_ptr() as usize;
         let Some(end) = start.checked_add(initialized) else {
@@ -105,12 +104,12 @@ impl AccountSid {
         if sid.is_null() || sid_address < start || sid_header_end > end {
             return Err(invalid_identity());
         }
-        // NOTE: The checked range contains the full SID header; GetLengthSid reads its bounded subauthority count, which Rust cannot inspect safely through PSID.
+        // SAFETY: The checked range contains the full SID header; GetLengthSid reads its bounded subauthority count, which Rust cannot inspect safely through PSID.
         let sid_length = unsafe { GetLengthSid(sid) as usize };
         if sid_length < 8 || sid_length > end - sid_address {
             return Err(invalid_identity());
         }
-        // NOTE: GetLengthSid proved the full SID lies in buffer; IsValidSid checks that bounded native structure without a safe Rust equivalent.
+        // SAFETY: GetLengthSid proved the full SID lies in buffer; IsValidSid checks that bounded native structure without a safe Rust equivalent.
         if unsafe { IsValidSid(sid) } == 0 {
             return Err(invalid_identity());
         }
@@ -118,13 +117,13 @@ impl AccountSid {
     }
 
     fn sid(&self) -> PSID {
-        // NOTE: current() validated TOKEN_USER and the SID bounds; self keeps their buffer alive, and no safe API exposes PSID.
+        // SAFETY: current() validated TOKEN_USER and the SID bounds; self keeps their buffer alive, and no safe API exposes PSID.
         unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
 
     fn security_descriptor(&self) -> io::Result<LocalAllocation> {
         let mut ascii_sid = ptr::null_mut();
-        // NOTE: The validated SID buffer and writable output slot live through conversion; only the native API converts this SID.
+        // SAFETY: The validated SID buffer and writable output slot live through conversion; only the native API converts this SID.
         if unsafe { ConvertSidToStringSidA(self.sid(), &mut ascii_sid) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -132,12 +131,12 @@ impl AccountSid {
             return Err(invalid_identity());
         }
         let ascii_sid = LocalAllocation(ascii_sid.cast());
-        // NOTE: ConvertSidToStringSidA returned a non-null NUL-terminated buffer owned by ascii_sid; CStr is the safe borrowed view.
+        // SAFETY: ConvertSidToStringSidA returned a non-null NUL-terminated buffer owned by ascii_sid; CStr is the safe borrowed view.
         let sid = unsafe { CStr::from_ptr(ascii_sid.0.cast()) }.to_string_lossy();
         let descriptor = format!("O:{sid}D:P(A;OICI;FA;;;{sid})");
         let utf16: Vec<u16> = descriptor.encode_utf16().chain([0]).collect();
         let mut result = ptr::null_mut();
-        // NOTE: The UTF-16 descriptor is NUL-terminated and both buffers live through the native call; no safe API builds this ACL descriptor.
+        // SAFETY: The UTF-16 descriptor is NUL-terminated and both buffers live through the native call; no safe API builds this ACL descriptor.
         if unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 utf16.as_ptr(),
@@ -172,7 +171,7 @@ pub(super) fn private_directory(path: &Path) -> io::Result<()> {
         lpSecurityDescriptor: descriptor.0,
         bInheritHandle: 0,
     };
-    // NOTE: The NUL-terminated path and protected descriptor live through CreateDirectoryW; std create_dir cannot supply this ACL at creation.
+    // SAFETY: The NUL-terminated path and protected descriptor live through CreateDirectoryW; std create_dir cannot supply this ACL at creation.
     if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32) {
@@ -214,7 +213,7 @@ pub(super) fn set_config_temp_security(
         let descriptor = account.security_descriptor()?;
         let mut owner = ptr::null_mut();
         let mut owner_defaulted = 0;
-        // NOTE: The descriptor allocation remains live, the owner slot is writable, and no safe API exposes this SID.
+        // SAFETY: The descriptor allocation remains live, the owner slot is writable, and no safe API exposes this SID.
         if unsafe { GetSecurityDescriptorOwner(descriptor.0, &mut owner, &mut owner_defaulted) }
             == 0
         {
@@ -223,7 +222,7 @@ pub(super) fn set_config_temp_security(
         let mut dacl_present = 0;
         let mut dacl_defaulted = 0;
         let mut dacl = ptr::null_mut();
-        // NOTE: The same live descriptor owns the returned DACL; native descriptor access has no safe wrapper.
+        // SAFETY: The same live descriptor owns the returned DACL; native descriptor access has no safe wrapper.
         if unsafe {
             GetSecurityDescriptorDacl(
                 descriptor.0,
@@ -271,7 +270,7 @@ pub(super) fn set_config_temp_security(
         security |= OWNER_SECURITY_INFORMATION;
         owner
     };
-    // NOTE: The opened handle matches the empty temp file and both descriptors keep owner/DACL pointers live; Win32 has no safe ACL setter.
+    // SAFETY: The opened handle matches the empty temp file and both descriptors keep owner/DACL pointers live; Win32 has no safe ACL setter.
     let error = unsafe {
         SetSecurityInfo(
             destination.as_raw_handle(),
@@ -307,7 +306,7 @@ fn query_file_security(handle: HANDLE) -> io::Result<(PSID, *mut ACL, LocalAlloc
     let mut owner = ptr::null_mut();
     let mut dacl = ptr::null_mut();
     let mut descriptor = ptr::null_mut();
-    // NOTE: The opened handle stays live and output slots are writable; the returned descriptor owns owner/DACL pointers, with no safe handle-DACL API.
+    // SAFETY: The opened handle stays live and output slots are writable; the returned descriptor owns owner/DACL pointers, with no safe handle-DACL API.
     let error = unsafe {
         GetSecurityInfo(
             handle,
@@ -331,7 +330,7 @@ fn query_file_security(handle: HANDLE) -> io::Result<(PSID, *mut ACL, LocalAlloc
 
 fn file_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    // NOTE: File owns a live handle and information is writable; path metadata cannot establish reparse status for this handle.
+    // SAFETY: File owns a live handle and information is writable; path metadata cannot establish reparse status for this handle.
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -358,7 +357,7 @@ fn is_private(handle: HANDLE, account: &AccountSid) -> io::Result<bool> {
     let (owner, dacl, descriptor) = query_file_security(handle)?;
     let mut control = 0;
     let mut revision = 0;
-    // NOTE: The queried descriptor stays allocated and control/revision are writable; std has no handle-DACL query.
+    // SAFETY: The queried descriptor stays allocated and control/revision are writable; std has no handle-DACL query.
     if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -404,13 +403,13 @@ fn single_ace(dacl: *const ACL) -> Option<*mut c_void> {
     if dacl.is_null() {
         return None;
     }
-    // NOTE: dacl is owned by a live security descriptor; Windows returned this ACL header, which Rust cannot inspect safely.
+    // SAFETY: dacl is owned by a live security descriptor; Windows returned this ACL header, which Rust cannot inspect safely.
     let (ace_count, acl_size) = unsafe { ((*dacl).AceCount, (*dacl).AclSize) };
     if ace_count != 1 || usize::from(acl_size) < size_of::<ACL>() {
         return None;
     }
     let mut ace = ptr::null_mut();
-    // NOTE: dacl remains live and ace is a writable output slot; GetAce is the native bounded ACL accessor.
+    // SAFETY: dacl remains live and ace is a writable output slot; GetAce is the native bounded ACL accessor.
     if unsafe { GetAce(dacl, 0, &mut ace) } == 0 || ace.is_null() {
         return None;
     }
@@ -427,7 +426,7 @@ fn allowed_ace_matches(
     const SID_OFFSET: usize = size_of::<ACE_HEADER>() + size_of::<u32>();
     const SID_HEADER_SIZE: usize = 8;
 
-    // NOTE: GetAce supplied an ACE inside dacl; ACL/AceSize bounds are checked before SID access, and no safe API parses native ACEs.
+    // SAFETY: GetAce supplied an ACE inside dacl; ACL/AceSize bounds are checked before SID access, and no safe API parses native ACEs.
     unsafe {
         let acl_size = usize::from((*dacl).AclSize);
         let Some(ace_offset) = (ace as usize).checked_sub(dacl as usize) else {
@@ -474,7 +473,7 @@ fn sid_matches(left: PSID, right: PSID) -> bool {
     if left.is_null() || right.is_null() {
         return false;
     }
-    // NOTE: Both SIDs come from live, validated token/security-descriptor buffers; Rust has no safe native SID comparator.
+    // SAFETY: Both SIDs come from live, validated token/security-descriptor buffers; Rust has no safe native SID comparator.
     unsafe { EqualSid(left, right) != 0 }
 }
 
@@ -489,7 +488,7 @@ fn invalid_identity() -> io::Error {
 mod config_temp_tests {
     use std::os::windows::io::AsRawHandle;
 
-    use super::{is_private_file, set_config_temp_security, AccountSid};
+    use super::{AccountSid, is_private_file, set_config_temp_security};
 
     #[test]
     fn config_temp_acl_is_private_and_copied_from_existing_file() {

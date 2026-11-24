@@ -22,7 +22,7 @@ use wreq::{Method, Response, StatusCode};
 use tokio::process::Child as DetachedChild;
 
 #[cfg(windows)]
-use self::windows::{spawn_detached, DetachedChild};
+use self::windows::{DetachedChild, spawn_detached};
 
 /// Revision of the Session protocol expected by the product client.
 pub const SESSION_PROTOCOL_VERSION: u32 = 2;
@@ -100,7 +100,9 @@ pub enum LocalError {
     )]
     ServiceChanged,
     /// The running build cannot satisfy the requested build policy.
-    #[error("kuku {running} is already running. Open that version to continue. This client is {requested}.")]
+    #[error(
+        "kuku {running} is already running. Open that version to continue. This client is {requested}."
+    )]
     BuildMismatch {
         /// Build in use by the running service.
         running: String,
@@ -116,7 +118,9 @@ pub enum LocalError {
         requested: String,
     },
     /// The service is using a different explicitly selected configuration.
-    #[error("the managed server is using {active}; requested {requested}. Run kuku server restart with the requested --config to switch")]
+    #[error(
+        "the managed server is using {active}; requested {requested}. Run kuku server restart with the requested --config to switch"
+    )]
     ConfigConflict {
         /// Path already in use.
         active: PathBuf,
@@ -124,10 +128,14 @@ pub enum LocalError {
         requested: PathBuf,
     },
     /// The selected configuration does not exist.
-    #[error("config file not found: {0}. Run kuku init to create the default config or select an existing --config")]
+    #[error(
+        "config file not found: {0}. Run kuku init to create the default config or select an existing --config"
+    )]
     ConfigMissing(PathBuf),
     /// The service uses an unsupported Session protocol.
-    #[error("client Session protocol {client} differs from server {version} protocol {server}. Run kuku server status or kuku server restart")]
+    #[error(
+        "client Session protocol {client} differs from server {version} protocol {server}. Run kuku server status or kuku server restart"
+    )]
     ProtocolVersion {
         /// Protocol required by the client.
         client: u32,
@@ -617,7 +625,7 @@ fn spawn_detached(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    // NOTE: setsid is async-signal-safe and only changes the child launched for this service.
+    // SAFETY: setsid is async-signal-safe and only changes the child launched for this service.
     // Rust's process API cannot create a detached session on Unix.
     unsafe {
         command.as_std_mut().pre_exec(|| {

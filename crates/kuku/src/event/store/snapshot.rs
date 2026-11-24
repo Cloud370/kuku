@@ -3,10 +3,10 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::util::fs_sync;
 use crate::Result;
+use crate::util::fs_sync;
 
-use super::{find_active_store, recovery, reverse, store_slot, Layout, StoreInner, Writer};
+use super::{Layout, StoreInner, Writer, find_active_store, recovery, reverse, store_slot};
 
 pub(super) struct LockedJournal {
     pub(super) file: File,

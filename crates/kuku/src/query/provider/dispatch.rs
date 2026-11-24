@@ -13,8 +13,8 @@ use crate::query::types::{PendingRun, PendingStep, RequestTiming, StreamingChunk
 
 use super::compaction::{self, Outcome as CompactionOutcome};
 use super::retry::{
-    preflight_stream, record_retry_event, retry_stop_reason, scheduled_retry_delay, PreflightError,
-    RetryEvent, RetryPhase, RetryStopReason,
+    PreflightError, RetryEvent, RetryPhase, RetryStopReason, preflight_stream, record_retry_event,
+    retry_stop_reason, scheduled_retry_delay,
 };
 use super::{emit_runtime_log, pending_failure_step};
 

@@ -14,7 +14,7 @@ use url::Url;
 
 use crate::local_settings::{active_service, ensure_same_service};
 
-use super::config::{save_credential, Settings};
+use super::config::{Settings, save_credential};
 
 const CHANGED: &str =
     "The failed request, model, or local service changed; reopen credential repair.";

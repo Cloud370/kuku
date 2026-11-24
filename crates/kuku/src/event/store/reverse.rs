@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::error::{Error, Result};
 
 use super::reader::EventReader;
-use super::{StoredEvent, MAX_PAGE_BYTES, MAX_PAGE_RECORDS, MAX_RECORD_BYTES};
+use super::{MAX_PAGE_BYTES, MAX_PAGE_RECORDS, MAX_RECORD_BYTES, StoredEvent};
 
 const READ_CHUNK_BYTES: usize = 8192;
 

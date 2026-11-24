@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::event::StoredEvent;
 use crate::session::runtime::JobControl;
@@ -30,7 +30,10 @@ pub(crate) fn query_workspace_access(tool_name: &str) -> WorkspaceAccess {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the slot receives explicit execution inputs and ownership handles"
+)]
 pub(crate) fn spawn_simple_slot(
     tool_call_id: String,
     conversation: Option<crate::conversation::address::ConversationAddress>,
@@ -132,7 +135,10 @@ pub(crate) fn spawn_simple_slot(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the command slot receives explicit execution and cancellation inputs"
+)]
 pub(super) fn spawn_command_slot(
     tool_call_id: String,
     conversation: Option<crate::conversation::address::ConversationAddress>,
@@ -184,7 +190,7 @@ pub(super) fn spawn_command_slot(
 
             let r = match output {
                 Some(mut output) => {
-                    use crate::tool::builtin::run_command::{run_command_to, CommandCapture};
+                    use crate::tool::builtin::run_command::{CommandCapture, run_command_to};
 
                     let result = run_command_to(
                         &args,

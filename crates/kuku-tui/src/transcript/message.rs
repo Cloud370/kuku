@@ -4,10 +4,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::markup::render_literal;
 use crate::text::shorten;
-use crate::theme::{emphasis, CardFrame, MUTED, SURFACE_TEXT, WARNING};
+use crate::theme::{CardFrame, MUTED, SURFACE_TEXT, WARNING, emphasis};
 
 use super::window::TurnHeading;
-use super::{render_rows, Row, MAX_VISUAL_ROWS};
+use super::{MAX_VISUAL_ROWS, Row, render_rows};
 
 pub(super) fn render_user(
     title: &str,

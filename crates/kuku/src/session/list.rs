@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::Result;
-use crate::event::store::JournalSummary;
 use crate::event::EventStore;
+use crate::event::store::JournalSummary;
 use crate::session::{AgentStatus, Session, SessionStatus};
 
 #[derive(Debug, Clone)]

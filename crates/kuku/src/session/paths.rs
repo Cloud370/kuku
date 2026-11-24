@@ -177,7 +177,7 @@ pub(crate) fn session_lock_path(kuku_home: &Path, workspace: &Path, session_id: 
 #[cfg(test)]
 mod tests {
     use super::kuku_home_with_env;
-    use super::{host_log_path, runtime_log_path, session_log_path, HostLogKind};
+    use super::{HostLogKind, host_log_path, runtime_log_path, session_log_path};
     use crate::error::Error;
     use home::env::Env;
     use std::collections::HashMap;

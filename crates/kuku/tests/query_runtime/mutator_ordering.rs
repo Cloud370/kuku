@@ -36,8 +36,13 @@ async fn next_tool_start(run: &mut Run, tool_call_id: &str) -> UiEvent {
 
 #[tokio::test(flavor = "current_thread")]
 async fn command_mutation_finishes_before_same_run_edit_starts() {
-    let env = TestEnv::new();
-    let target = env.workspace.path().join("race.txt");
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(command_mutation_finishes_before_same_run_edit_starts),
+    ) else {
+        return;
+    };
+    let target = env.workspace.as_path().join("race.txt");
     std::fs::write(&target, "alpha\n").unwrap();
 
     let snapshot_server = MockServer::start();
@@ -136,7 +141,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     assert!(
         matches!(command_start, Some(UiEvent::ToolStart { ref id, .. }) if id == "toolu_command")
     );
-    wait_for_file(&env.workspace.path().join("command-read")).await;
+    wait_for_file(&env.workspace.as_path().join("command-read")).await;
 
     let mut next_event = Box::pin(run.next());
     let early_edit_event = std::future::poll_fn(|cx| {
@@ -148,7 +153,7 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
     .await;
     drop(next_event);
 
-    std::fs::write(env.workspace.path().join("release-command"), "go").unwrap();
+    std::fs::write(env.workspace.as_path().join("release-command"), "go").unwrap();
     assert!(
         early_edit_event.is_none(),
         "edit advanced while the command was active: {early_edit_event:?}"
@@ -168,9 +173,15 @@ async fn command_mutation_finishes_before_same_run_edit_starts() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn command_mutation_finishes_before_same_run_memory_write_starts() {
-    let env = TestEnv::new();
-    let workspace = std::fs::canonicalize(env.workspace.path()).expect("canonical workspace path");
-    let memory_path = kuku::session::project_memory_path(env.home.path(), &workspace)
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(command_mutation_finishes_before_same_run_memory_write_starts),
+    ) else {
+        return;
+    };
+    let workspace =
+        std::fs::canonicalize(env.workspace.as_path()).expect("canonical workspace path");
+    let memory_path = kuku::session::project_memory_path(env.home.as_path(), &workspace)
         .expect("project memory path");
     std::fs::create_dir_all(memory_path.parent().unwrap()).unwrap();
     std::fs::write(
@@ -231,7 +242,7 @@ async fn command_mutation_finishes_before_same_run_memory_write_starts() {
     assert!(
         matches!(command_start, Some(UiEvent::ToolStart { ref id, .. }) if id == "toolu_memory_command")
     );
-    wait_for_file(&env.workspace.path().join("memory-read")).await;
+    wait_for_file(&env.workspace.as_path().join("memory-read")).await;
 
     let mut next_event = Box::pin(run.next());
     let early_memory_start = std::future::poll_fn(|cx| {
@@ -249,11 +260,11 @@ async fn command_mutation_finishes_before_same_run_memory_write_starts() {
             matches!(memory_start, UiEvent::ToolStart { ref id, .. } if id == "toolu_remember")
         );
         let memory_end = next_tool_end(&mut run, "toolu_remember").await;
-        std::fs::write(env.workspace.path().join("release-memory-command"), "go").unwrap();
+        std::fs::write(env.workspace.as_path().join("release-memory-command"), "go").unwrap();
         let _ = next_tool_end(&mut run, "toolu_memory_command").await;
         memory_end
     } else {
-        std::fs::write(env.workspace.path().join("release-memory-command"), "go").unwrap();
+        std::fs::write(env.workspace.as_path().join("release-memory-command"), "go").unwrap();
         let _ = next_tool_end(&mut run, "toolu_memory_command").await;
         let _ = next_tool_start(&mut run, "toolu_remember").await;
         next_tool_end(&mut run, "toolu_remember").await
@@ -270,8 +281,13 @@ async fn command_mutation_finishes_before_same_run_memory_write_starts() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn read_only_tool_starts_while_ordered_tool_waits_for_active_mutation() {
-    let env = TestEnv::new();
-    std::fs::write(env.workspace.path().join("queued-read.txt"), "visible\n").unwrap();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(read_only_tool_starts_while_ordered_tool_waits_for_active_mutation),
+    ) else {
+        return;
+    };
+    std::fs::write(env.workspace.as_path().join("queued-read.txt"), "visible\n").unwrap();
 
     let server = MockServer::start();
     server.mock(|when, then| {
@@ -321,7 +337,7 @@ async fn read_only_tool_starts_while_ordered_tool_waits_for_active_mutation() {
     assert!(
         matches!(command_start, Some(UiEvent::ToolStart { ref id, .. }) if id == "toolu_blocking_command")
     );
-    wait_for_file(&env.workspace.path().join("mixed-command-ready")).await;
+    wait_for_file(&env.workspace.as_path().join("mixed-command-ready")).await;
 
     let mut next_event = Box::pin(run.next());
     let early_event = std::future::poll_fn(|cx| {
@@ -332,7 +348,7 @@ async fn read_only_tool_starts_while_ordered_tool_waits_for_active_mutation() {
     })
     .await;
     drop(next_event);
-    std::fs::write(env.workspace.path().join("release-mixed-command"), "go").unwrap();
+    std::fs::write(env.workspace.as_path().join("release-mixed-command"), "go").unwrap();
 
     let event = early_event.expect("independent read-only tool was blocked behind ordered work");
     assert!(matches!(

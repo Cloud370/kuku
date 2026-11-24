@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use httpmock::prelude::{MockServer, POST};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::common;
 use kuku::config::{ProviderFormat, ProviderProfile, ThinkLevel};
@@ -192,9 +192,11 @@ async fn actual_provider_retries_stop_after_six_total_attempts() {
     {
         let recorded = attempts.lock().unwrap();
         assert_eq!(6, recorded.len());
-        assert!(recorded
-            .iter()
-            .all(|(request_id, body)| { request_id == &recorded[0].0 && body == &recorded[0].1 }));
+        assert!(
+            recorded.iter().all(|(request_id, body)| {
+                request_id == &recorded[0].0 && body == &recorded[0].1
+            })
+        );
     }
 
     assert_eq!(6, session.agent("main").unwrap().usage.model_requests);
@@ -255,9 +257,11 @@ async fn anthropic_first_overload_error_retries_before_any_stream_effect() {
     assert_eq!(Value::Null, waiting["status"]);
     assert_eq!(Value::Null, waiting["stop_reason"]);
     assert_eq!("provider unavailable", waiting["message"]);
-    assert!(waiting["delay_ms"]
-        .as_u64()
-        .is_some_and(|delay| (2_000..=2_500).contains(&delay)));
+    assert!(
+        waiting["delay_ms"]
+            .as_u64()
+            .is_some_and(|delay| (2_000..=2_500).contains(&delay))
+    );
     first.assert_hits_async(1).await;
     first.delete_async().await;
     let retry = server

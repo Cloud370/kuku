@@ -1,10 +1,10 @@
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::ProviderChunkStream;
 use super::chunk::ProviderChunk;
 use super::error::transport_error;
 use super::trace::ProviderTrace;
 use super::types::{ProviderFailure, ProviderFailureKind};
-use super::ProviderChunkStream;
 
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 

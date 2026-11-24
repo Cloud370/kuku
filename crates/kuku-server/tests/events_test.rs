@@ -1,6 +1,6 @@
 mod common;
 
-use common::{mock_provider, TestServer};
+use common::{TestServer, mock_provider};
 use kuku::event::{EventPayload, EventStore};
 
 fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, session_id: &str) {
@@ -131,12 +131,16 @@ async fn raw_event_pages_filter_agent_but_advance_the_full_ledger_cursor() {
         .unwrap();
     let main_entries = main["events"].as_array().unwrap();
     assert_eq!(5, main_entries.len());
-    assert!(main_entries
-        .iter()
-        .any(|entry| entry["payload"]["kind"] == "tool.result"));
-    assert!(main_entries
-        .iter()
-        .all(|entry| entry["payload"]["conversation"] != "review"));
+    assert!(
+        main_entries
+            .iter()
+            .any(|entry| entry["payload"]["kind"] == "tool.result")
+    );
+    assert!(
+        main_entries
+            .iter()
+            .all(|entry| entry["payload"]["conversation"] != "review")
+    );
 
     let page: serde_json::Value = server
         .session_request(

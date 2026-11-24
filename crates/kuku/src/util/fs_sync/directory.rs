@@ -84,7 +84,7 @@ fn acquire_with(
                         match OpenOptions::new().read(true).write(true).open(marker) {
                             Ok(_) => continue,
                             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                                return Ok(None)
+                                return Ok(None);
                             }
                             Err(error) => return Err(error),
                         }
@@ -115,7 +115,7 @@ fn acquire_with(
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "directory creation intent is not a regular file",
-                ))
+                ));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -156,7 +156,7 @@ mod tests {
     use std::io::{self, Write};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::PathBuf;
-    use std::sync::{mpsc, Arc, Barrier};
+    use std::sync::{Arc, Barrier, mpsc};
 
     use super::{
         acquire_with, create_dir_all, create_with, intent_path, publish_directory, sync_directory,

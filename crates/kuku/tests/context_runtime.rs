@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use kuku::context::{CanonicalMessage, MessageBlock, Role};
@@ -180,10 +180,12 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
         assert!(!encoded.contains("CHANGED_POLICY"));
         assert!(!encoded.contains("CHANGED_MEMORY"));
         if index > 0 {
-            assert!(body["messages"]
-                .as_array()
-                .unwrap()
-                .starts_with(bodies[index - 1]["messages"].as_array().unwrap()));
+            assert!(
+                body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .starts_with(bodies[index - 1]["messages"].as_array().unwrap())
+            );
         }
     }
     let segments = facts(&events, "runtime.context_segment", "main");
@@ -203,9 +205,11 @@ async fn reopen_replays_frozen_assets_and_exact_admitted_inputs_after_source_cha
         prepared[1]["history_prefix_hash"],
         prepared[2]["history_prefix_hash"]
     );
-    assert!(prepared
-        .iter()
-        .all(|step| step["prefix_hash"] == prepared[0]["prefix_hash"]));
+    assert!(
+        prepared
+            .iter()
+            .all(|step| step["prefix_hash"] == prepared[0]["prefix_hash"])
+    );
     for (body, input) in bodies
         .iter()
         .zip(["FIRST_INPUT", "SECOND_INPUT", "THIRD_INPUT"])
@@ -365,16 +369,22 @@ async fn provider_context_reflects_each_agents_tools_and_keeps_main_frozen() {
         ["read_output", "list_values"]
     );
     assert!(bodies[2]["tools"].is_null() || request_tool_names(&bodies[2]).is_empty());
-    assert!(bodies[2]["messages"]
-        .to_string()
-        .contains("put the content in your reply"));
-    assert!(!bodies[2]["messages"]
-        .to_string()
-        .contains("<kuku_tool_guidance>"));
+    assert!(
+        bodies[2]["messages"]
+            .to_string()
+            .contains("put the content in your reply")
+    );
+    assert!(
+        !bodies[2]["messages"]
+            .to_string()
+            .contains("<kuku_tool_guidance>")
+    );
     assert!(bodies[3]["tools"].is_null() || request_tool_names(&bodies[3]).is_empty());
-    assert!(!bodies[3]["messages"]
-        .to_string()
-        .contains("<kuku_tool_guidance>"));
+    assert!(
+        !bodies[3]["messages"]
+            .to_string()
+            .contains("<kuku_tool_guidance>")
+    );
     assert_eq!(
         serde_json::to_vec(&bodies[0]["tools"]).unwrap(),
         serde_json::to_vec(&bodies[4]["tools"]).unwrap()
@@ -795,13 +805,17 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
                 .count()
         );
     }
-    assert!(bodies[2]["messages"]
-        .as_array()
-        .unwrap()
-        .starts_with(bodies[1]["messages"].as_array().unwrap()));
-    assert!(!bodies
-        .iter()
-        .any(|body| body.to_string().contains("UNCONFIRMED_DYNAMIC_NOTICE")));
+    assert!(
+        bodies[2]["messages"]
+            .as_array()
+            .unwrap()
+            .starts_with(bodies[1]["messages"].as_array().unwrap())
+    );
+    assert!(
+        !bodies
+            .iter()
+            .any(|body| body.to_string().contains("UNCONFIRMED_DYNAMIC_NOTICE"))
+    );
 }
 
 fn tool_count(request: &HttpMockRequest) -> usize {
@@ -852,14 +866,18 @@ async fn tool_result_first_view_is_frozen_and_continued_steps_read_only_new_fact
     second.assert_hits_async(2).await;
     let bodies = common::take_http_requests(&path);
     assert_eq!(3, bodies.len());
-    assert!(bodies[1]["messages"]
-        .as_array()
-        .unwrap()
-        .starts_with(bodies[0]["messages"].as_array().unwrap()));
-    assert!(bodies[2]["messages"]
-        .as_array()
-        .unwrap()
-        .starts_with(bodies[1]["messages"].as_array().unwrap()));
+    assert!(
+        bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .starts_with(bodies[0]["messages"].as_array().unwrap())
+    );
+    assert!(
+        bodies[2]["messages"]
+            .as_array()
+            .unwrap()
+            .starts_with(bodies[1]["messages"].as_array().unwrap())
+    );
     assert!(bodies[2].to_string().contains("ORIGINAL_FILE"));
     assert!(!bodies[2].to_string().contains("CHANGED_FILE"));
     let source_view = events

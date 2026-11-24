@@ -3,8 +3,8 @@ use kuku_client::{
     Acknowledgement, Action, HistoryPage, Input, InputSource, InputStatus, InputTiming,
     QueuedInput, Receipt,
 };
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use serde_json::json;
 
 use super::{app, click, event, key, render, saved_input, screen, snapshot};
@@ -129,10 +129,11 @@ fn inline_queue_click_scroll_and_edit_keep_the_selected_identity() {
     assert_eq!(Some("queue-2"), app.pane().selected_queue_input.as_deref());
     assert!(screen(&mut app, 92, 26).contains("queued text 2"));
     screen(&mut app, 34, 18);
-    assert!(app
-        .delivery_hits
-        .iter()
-        .any(|(_, input_id)| input_id == "queue-2"));
+    assert!(
+        app.delivery_hits
+            .iter()
+            .any(|(_, input_id)| input_id == "queue-2")
+    );
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
         if matches!(&prompt.kind, PromptKind::QueuedInput { input_command_id } if input_command_id == "queue-2")
@@ -363,10 +364,11 @@ fn reconnect_shortcut_survives_permission_request_focus_without_answering_it() {
     assert_eq!(KeyboardFocus::Request, app.pane().keyboard_focus);
     app.effects.clear();
     key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-    assert!(app
-        .effects
-        .iter()
-        .any(|effect| matches!(effect, crate::jobs::Job::Connect)));
+    assert!(
+        app.effects
+            .iter()
+            .any(|effect| matches!(effect, crate::jobs::Job::Connect))
+    );
     assert!(!app.effects.iter().any(|effect| matches!(effect,
         crate::jobs::Job::Save(command)
             if matches!(command.action, Action::ReplyPermission { .. })

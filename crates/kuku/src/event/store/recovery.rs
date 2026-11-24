@@ -2,14 +2,14 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::Path;
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use super::{
-    archive::MAX_CHECKPOINT, reverse, EventOffset, JournalIndex, JournalSummary, Layout,
-    StoredEvent,
+    EventOffset, JournalIndex, JournalSummary, Layout, StoredEvent, archive::MAX_CHECKPOINT,
+    reverse,
 };
 use crate::Result;
 

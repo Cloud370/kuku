@@ -8,7 +8,7 @@ use std::process::ExitStatus;
 #[cfg(unix)]
 use tokio::process::{Child, Command};
 #[cfg(target_os = "macos")]
-use tokio::signal::unix::{signal, Signal, SignalKind};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 
 #[cfg(unix)]
 pub(super) struct ProcessTree {
@@ -98,7 +98,7 @@ impl ProcessTree {
         let Some(group) = self.group else {
             return Ok(());
         };
-        // NOTE: The positive child id names our dedicated process group; negative pid targets only that group. Rust has no safe group-signal API.
+        // SAFETY: The positive child id names our dedicated process group; negative pid targets only that group. Rust has no safe group-signal API.
         let result = unsafe { libc::kill(-group, libc::SIGKILL) };
         if result == 0 {
             return Ok(());
@@ -139,7 +139,7 @@ impl ProcessTree {
 
 #[cfg(target_os = "macos")]
 fn group_has_no_live_members(group: libc::pid_t) -> bool {
-    // NOTE: A null buffer requests the capacity in PID slots. The leader's PID is still owned.
+    // SAFETY: A null buffer requests the capacity in PID slots. The leader's PID is still owned.
     let capacity = unsafe { libc::proc_listpgrppids(group, std::ptr::null_mut(), 0) };
     if capacity <= 0 {
         return false;
@@ -148,7 +148,7 @@ fn group_has_no_live_members(group: libc::pid_t) -> bool {
         return false;
     };
     let mut members = vec![0; capacity as usize];
-    // NOTE: The buffer has the advertised length. Clear thread-local errno to distinguish an empty list from an error.
+    // SAFETY: The buffer has the advertised length. Clear thread-local errno to distinguish an empty list from an error.
     let count = unsafe {
         *libc::__error() = 0;
         libc::proc_listpgrppids(group, members.as_mut_ptr().cast(), bytes)
@@ -160,7 +160,7 @@ fn group_has_no_live_members(group: libc::pid_t) -> bool {
     count > 0
         && count < capacity
         && members[..count as usize].iter().all(|&pid| {
-            // NOTE: getpgid queries the PID without signalling it and excludes zombies on Darwin.
+            // SAFETY: getpgid queries the PID without signalling it and excludes zombies on Darwin.
             let member_group = unsafe { libc::getpgid(pid) };
             if member_group == -1 {
                 io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
@@ -173,9 +173,9 @@ fn group_has_no_live_members(group: libc::pid_t) -> bool {
 #[cfg(any(target_os = "macos", all(target_os = "linux", test)))]
 fn exited_without_reaping(pid: u32) -> io::Result<bool> {
     loop {
-        // NOTE: Zero is the no-event sentinel. waitid writes siginfo_t for this owned child without consuming its exit status.
+        // SAFETY: Zero is the no-event sentinel. waitid writes siginfo_t for this owned child without consuming its exit status.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        // NOTE: The flags keep this nonblocking and leave the observed child's PID owned until the subsequent reap.
+        // SAFETY: The flags keep this nonblocking and leave the observed child's PID owned until the subsequent reap.
         let result = unsafe {
             libc::waitid(
                 libc::P_PID,
@@ -185,7 +185,7 @@ fn exited_without_reaping(pid: u32) -> io::Result<bool> {
             )
         };
         if result == 0 {
-            // NOTE: The pid field is valid in the initialized event or remains the zero sentinel.
+            // SAFETY: The pid field is valid in the initialized event or remains the zero sentinel.
             return Ok(unsafe { info.si_pid() } != 0);
         }
         let error = io::Error::last_os_error();
@@ -223,15 +223,15 @@ mod windows {
     use tokio::process::{Child, Command};
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_JOB_MEMORY,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_JOB_MEMORY,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenThread, ResumeThread, CREATE_NO_WINDOW, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
     };
 
     pub(crate) struct ProcessTree {
@@ -278,14 +278,14 @@ mod windows {
     }
 
     fn create_job(memory_bytes: Option<NonZeroU64>) -> io::Result<OwnedHandle> {
-        // NOTE: Null security/name pointers request an unnamed job with default security; the returned non-null handle is newly owned.
+        // SAFETY: Null security/name pointers request an unnamed job with default security; the returned non-null handle is newly owned.
         let raw = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
         if raw.is_null() {
             return Err(io::Error::last_os_error());
         }
-        // NOTE: CreateJobObjectW transferred a valid unique handle; OwnedHandle closes it on every exit path.
+        // SAFETY: CreateJobObjectW transferred a valid unique handle; OwnedHandle closes it on every exit path.
         let job = unsafe { OwnedHandle::from_raw_handle(raw) };
-        // NOTE: This Win32 C structure permits all-zero initialization before its documented limit flag is set.
+        // SAFETY: This Win32 C structure permits all-zero initialization before its documented limit flag is set.
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if let Some(bytes) = memory_bytes {
@@ -297,7 +297,7 @@ mod windows {
             })?;
             limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
         }
-        // NOTE: The job handle and correctly sized limits remain valid throughout the call; Win32 exposes no safe wrapper.
+        // SAFETY: The job handle and correctly sized limits remain valid throughout the call; Win32 exposes no safe wrapper.
         let result = unsafe {
             SetInformationJobObject(
                 job.as_raw_handle(),
@@ -316,7 +316,7 @@ mod windows {
         let process = child
             .raw_handle()
             .ok_or_else(|| io::Error::other("command has no process handle"))?;
-        // NOTE: Both handles are live and the child is suspended, so no descendant can escape before job assignment.
+        // SAFETY: Both handles are live and the child is suspended, so no descendant can escape before job assignment.
         if unsafe { AssignProcessToJobObject(job.as_raw_handle(), process) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -328,23 +328,23 @@ mod windows {
     }
 
     fn resume_primary_thread(process_id: u32) -> io::Result<()> {
-        // NOTE: TH32CS_SNAPTHREAD ignores the process argument and returns a newly owned snapshot handle or INVALID_HANDLE_VALUE.
+        // SAFETY: TH32CS_SNAPTHREAD ignores the process argument and returns a newly owned snapshot handle or INVALID_HANDLE_VALUE.
         let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
         if raw == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
-        // NOTE: The successful snapshot call transferred this valid unique handle.
+        // SAFETY: The successful snapshot call transferred this valid unique handle.
         let snapshot = unsafe { OwnedHandle::from_raw_handle(raw) };
-        // NOTE: THREADENTRY32 is a zero-initializable Win32 C structure; dwSize is required before enumeration.
+        // SAFETY: THREADENTRY32 is a zero-initializable Win32 C structure; dwSize is required before enumeration.
         let mut entry: THREADENTRY32 = unsafe { zeroed() };
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
-        // NOTE: The snapshot and correctly sized writable entry remain live throughout enumeration.
+        // SAFETY: The snapshot and correctly sized writable entry remain live throughout enumeration.
         let mut found = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) };
         while found != 0 {
             if entry.th32OwnerProcessID == process_id {
                 return resume_thread(entry.th32ThreadID);
             }
-            // NOTE: The same valid snapshot and entry are retained until enumeration finishes.
+            // SAFETY: The same valid snapshot and entry are retained until enumeration finishes.
             found = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) };
         }
         Err(io::Error::other(
@@ -353,14 +353,14 @@ mod windows {
     }
 
     fn resume_thread(thread_id: u32) -> io::Result<()> {
-        // NOTE: The suspended child's enumerated thread id is opened with only resume rights and no handle inheritance.
+        // SAFETY: The suspended child's enumerated thread id is opened with only resume rights and no handle inheritance.
         let raw = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread_id) };
         if raw.is_null() {
             return Err(io::Error::last_os_error());
         }
-        // NOTE: OpenThread transferred a valid unique handle that must be closed even when resuming fails.
+        // SAFETY: OpenThread transferred a valid unique handle that must be closed even when resuming fails.
         let thread = unsafe { OwnedHandle::from_raw_handle(raw) };
-        // NOTE: This live handle has resume rights, and CREATE_SUSPENDED gave the primary thread one suspension count.
+        // SAFETY: This live handle has resume rights, and CREATE_SUSPENDED gave the primary thread one suspension count.
         if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
             return Err(io::Error::last_os_error());
         }
@@ -376,7 +376,7 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     use tokio::process::Command;
-    use tokio::time::{sleep, timeout, Duration};
+    use tokio::time::{Duration, sleep, timeout};
 
     use super::ProcessTree;
     #[cfg(target_os = "macos")]

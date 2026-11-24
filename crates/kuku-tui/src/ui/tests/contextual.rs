@@ -10,8 +10,8 @@ use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKi
 use crate::jobs::{Job, Update};
 use crate::menu::PickerKind;
 use crate::statusline::StatusLine;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use unicode_width::UnicodeWidthStr;
 
 fn load_snapshot(app: &mut crate::app::App, status: &str, with_input: bool) {
@@ -141,12 +141,13 @@ fn history_confirmation_with_no_restorable_files_still_switches() {
     assert!(rendered.contains("Enter Switch"));
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.modal.is_none());
-    assert!(app
-        .effects
-        .iter()
-        .any(|job| matches!(job, Job::Save(command) if matches!(
-            &command.action, Action::HistoryJump { target_event_id: 80, file_restore: None }
-        ))));
+    assert!(
+        app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Save(command) if matches!(
+                &command.action, Action::HistoryJump { target_event_id: 80, file_restore: None }
+            )))
+    );
 }
 
 #[test]
@@ -181,9 +182,11 @@ fn focused_rewind_hint_uses_the_narrow_footer() {
         .collect();
     assert!(lines[0].contains("Rewound · read-only"));
     assert!(lines[1].contains("browse") && lines[1].contains("Esc"));
-    assert!(lines
-        .iter()
-        .all(|line| UnicodeWidthStr::width(line.as_str()) <= width));
+    assert!(
+        lines
+            .iter()
+            .all(|line| UnicodeWidthStr::width(line.as_str()) <= width)
+    );
     for columns in [32, 33] {
         let view = screen(&mut app, columns, 20);
         assert!(view.contains("Esc input"), "{columns} columns:\n{view}");
@@ -478,17 +481,20 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
 fn continue_requires_pending_inputs_for_idle_and_stopped_but_not_interrupted_work() {
     let mut idle = app();
     load_snapshot(&mut idle, "idle", true);
-    assert!(idle
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        idle.contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut idle_empty = app();
     load_snapshot(&mut idle_empty, "idle", false);
-    assert!(!idle_empty
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        !idle_empty
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut idle_without_count = app();
     load_snapshot(&mut idle_without_count, "idle", true);
@@ -499,10 +505,12 @@ fn continue_requires_pending_inputs_for_idle_and_stopped_but_not_interrupted_wor
         .unwrap()
         .agent
         .pending_inputs = 0;
-    assert!(!idle_without_count
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        !idle_without_count
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut idle_without_queue = app();
     load_snapshot(&mut idle_without_queue, "idle", false);
@@ -513,24 +521,30 @@ fn continue_requires_pending_inputs_for_idle_and_stopped_but_not_interrupted_wor
         .unwrap()
         .agent
         .pending_inputs = 1;
-    assert!(!idle_without_queue
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        !idle_without_queue
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut stopped = app();
     load_snapshot(&mut stopped, "stopped", true);
-    assert!(stopped
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        stopped
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut no_input = app();
     load_snapshot(&mut no_input, "stopped", false);
-    assert!(!no_input
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        !no_input
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut interrupted = app();
     load_snapshot(&mut interrupted, "interrupted", false);
@@ -541,21 +555,27 @@ fn continue_requires_pending_inputs_for_idle_and_stopped_but_not_interrupted_wor
         .unwrap()
         .agent
         .last_error = Some("provider returned HTTP 400".into());
-    assert!(interrupted
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        interrupted
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut running = app();
     load_snapshot(&mut running, "running", true);
-    assert!(!running
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
-    assert!(running
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Interrupt { .. })));
+    assert!(
+        !running
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
+    assert!(
+        running
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Interrupt { .. }))
+    );
 
     let mut cleaning = app();
     load_snapshot(&mut cleaning, "interrupted", true);
@@ -567,10 +587,12 @@ fn continue_requires_pending_inputs_for_idle_and_stopped_but_not_interrupted_wor
         .agent
         .last_error = Some("provider returned HTTP 400".into());
     cleaning.pane_mut().snapshot.as_mut().unwrap().cleaning_up = true;
-    assert!(!cleaning
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        !cleaning
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 }
 
 #[test]
@@ -618,10 +640,12 @@ fn idle_continue_focuses_advances_and_revalidates_queued_identity() {
     let mut cleaning = app();
     load_snapshot(&mut cleaning, "idle", true);
     cleaning.pane_mut().snapshot.as_mut().unwrap().cleaning_up = true;
-    assert!(!cleaning
-        .contextual_controls()
-        .iter()
-        .any(|control| matches!(control, ContextControl::Continue { .. })));
+    assert!(
+        !cleaning
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, ContextControl::Continue { .. }))
+    );
 
     let mut stale = app();
     load_snapshot(&mut stale, "idle", true);
@@ -773,10 +797,11 @@ fn failed_configure_and_other_saved_action_open_recovery_without_a_send() {
             if commands.len() == 2
                 && commands.iter().all(|command| command.kind == PendingCommandKind::Action)
     ));
-    assert!(!app
-        .pending
-        .values()
-        .any(|item| matches!(item.command.action, Action::Send { .. })));
+    assert!(
+        !app.pending
+            .values()
+            .any(|item| matches!(item.command.action, Action::Send { .. }))
+    );
     assert!(app.focus_context_control(control));
     let focused = screen(&mut app, 82, 20);
     assert!(focused.contains("Unconfirmed action"));

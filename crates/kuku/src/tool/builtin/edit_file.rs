@@ -10,10 +10,10 @@ use crate::execution::{FileCommitState, FileMutationFacts, FileMutationKind};
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    append_text, content_hash, ensure_active, expected_version, file_read_error, mutation_preview,
-    plural, publish_file, read_file_as_utf8_bounded, require_version, resolve_path,
-    snapshot_stale_error, text_matches, ExecutorObservation, FileCancellation, IoLimit,
-    ResolvedPath, WriteEvidence, WriteSnapshotLookup,
+    ExecutorObservation, FileCancellation, IoLimit, ResolvedPath, WriteEvidence,
+    WriteSnapshotLookup, append_text, content_hash, ensure_active, expected_version,
+    file_read_error, mutation_preview, plural, publish_file, read_file_as_utf8_bounded,
+    require_version, resolve_path, snapshot_stale_error, text_matches,
 };
 
 use super::file_change;
@@ -277,10 +277,14 @@ fn require_full_snapshot(
     let relative = &resolved.relative;
     match evidence.find(&resolved.path, true, None, current_hash) {
         WriteSnapshotLookup::Found(snapshot) if snapshot.content_hash == current_hash => Ok(()),
-        WriteSnapshotLookup::Found(snapshot) => Err(snapshot_stale_error(relative, snapshot.event_id)),
+        WriteSnapshotLookup::Found(snapshot) => {
+            Err(snapshot_stale_error(relative, snapshot.event_id))
+        }
         WriteSnapshotLookup::Rejected(reason) => Err(ToolResultEnvelope::error_with_reason(
             format!("failed: fully read {relative} before editing"),
-            format!("replace_all requires a current full read_file snapshot or your own confirmed full write of {relative}"),
+            format!(
+                "replace_all requires a current full read_file snapshot or your own confirmed full write of {relative}"
+            ),
             reason,
         )),
     }

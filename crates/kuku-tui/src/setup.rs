@@ -18,17 +18,17 @@ use kuku::config::{ProviderFormat, ProviderProfile, SubscriptionChannel};
 use kuku_client::ConnectionOptions;
 
 pub(crate) use editor::{
-    save_setting, thinking_defaults, ModelEditor, ModelEditorAction, SavedModelSetting,
-    ThinkingDefaults, ThinkingSaveTarget,
+    ModelEditor, ModelEditorAction, SavedModelSetting, ThinkingDefaults, ThinkingSaveTarget,
+    save_setting, thinking_defaults,
 };
 pub(crate) use repair::{CredentialRepair, CredentialRepairAction};
 pub(crate) use repair_backend::{
-    apply as apply_credential_repair, prepare as prepare_credential_repair,
-    save as save_credential_repair,
-};
-pub(crate) use repair_backend::{
     CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
     PreparedCredentialRepair, SavedCredentialRepair,
+};
+pub(crate) use repair_backend::{
+    apply as apply_credential_repair, prepare as prepare_credential_repair,
+    save as save_credential_repair,
 };
 pub(crate) use state::SetupIntent;
 pub use subscription::SubscriptionSettings;

@@ -1,7 +1,7 @@
 use pulldown_cmark::{Event, Parser};
 use ratatui::text::Line;
 
-use super::{clean_markdown, document, LinkLayout, Markdown, SyntaxBudget, OPTIONS};
+use super::{LinkLayout, Markdown, OPTIONS, SyntaxBudget, clean_markdown, document};
 
 #[derive(Debug, Default)]
 pub(crate) struct MarkdownStream {

@@ -1,9 +1,9 @@
 use serde_json::json;
 
 use super::{
-    assembly_with_multiblock_current_user, assembly_with_recovery_notice,
-    assembly_with_tool_history, assembly_with_tool_schema, current_input, render_responses_body,
-    sample_assembly, test_catalog, ProviderRequest, ResolvedThinking,
+    ProviderRequest, ResolvedThinking, assembly_with_multiblock_current_user,
+    assembly_with_recovery_notice, assembly_with_tool_history, assembly_with_tool_schema,
+    current_input, render_responses_body, sample_assembly, test_catalog,
 };
 
 #[test]

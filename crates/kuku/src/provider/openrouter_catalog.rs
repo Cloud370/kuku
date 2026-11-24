@@ -5,7 +5,7 @@ use tokio_stream::StreamExt;
 use url::Url;
 
 pub use crate::config::RouteQuote;
-use crate::config::{resolve_request_url, OpenRouterRouting, ProviderConfig, TokenRates};
+use crate::config::{OpenRouterRouting, ProviderConfig, TokenRates, resolve_request_url};
 use crate::{Error, Result};
 
 use super::capabilities::normalized_tier;

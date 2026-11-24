@@ -38,10 +38,12 @@ async fn loopback_status_and_session_access_require_a_token() {
             .unwrap();
         assert_eq!(401, response.status());
         assert_eq!("Bearer", response.headers()["www-authenticate"]);
-        assert!(response
-            .headers()
-            .get("access-control-allow-origin")
-            .is_none());
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none()
+        );
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!("auth_required", body["code"]);
     }

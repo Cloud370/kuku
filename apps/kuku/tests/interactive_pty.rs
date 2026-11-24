@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[path = "support/terminal_state.rs"]
 mod terminal_state;
@@ -214,7 +214,7 @@ fn windows_input_mode() -> io::Result<u32> {
     use windows_sys::Win32::System::Console::{GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE};
 
     let mut mode = 0;
-    // NOTE: std::io does not expose console mode flags. The OS owns the handle and mode is writable for this call.
+    // SAFETY: std::io does not expose console mode flags. The OS owns the handle and mode is writable for this call.
     let ok = unsafe { GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mut mode) };
     if ok == 0 {
         return Err(io::Error::last_os_error());

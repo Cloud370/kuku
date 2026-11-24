@@ -28,9 +28,9 @@ impl CStringArray {
     }
 }
 
-// NOTE: These private pointers only borrow immutable CString allocations owned by this value; moving the owner cannot move those allocations.
+// SAFETY: These private pointers only borrow immutable CString allocations owned by this value; moving the owner cannot move those allocations.
 unsafe impl Send for CStringArray {}
-// NOTE: No pointer or backing allocation is exposed for mutation, so sharing this owner only permits immutable reads.
+// SAFETY: No pointer or backing allocation is exposed for mutation, so sharing this owner only permits immutable reads.
 unsafe impl Sync for CStringArray {}
 
 struct NativeExec {
@@ -44,7 +44,7 @@ impl NativeExec {
     fn execute(&self) -> io::Result<()> {
         let mut permission_denied = false;
         for path in &self.paths {
-            // NOTE: All NUL-terminated paths, strings and null-terminated pointer arrays were allocated before fork and remain owned here. execve is async-signal-safe and never performs shell fallback.
+            // SAFETY: All NUL-terminated paths, strings and null-terminated pointer arrays were allocated before fork and remain owned here. execve is async-signal-safe and never performs shell fallback.
             unsafe {
                 libc::execve(
                     path.as_ptr(),
@@ -78,7 +78,7 @@ pub(super) fn configure_memory(command: &mut Command, bytes: Option<NonZeroU64>)
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // The pointer is valid for a single rlimit. Do preparation in the parent.
+    // SAFETY: The pointer is valid for one writable rlimit in the parent.
     if unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut parent) } != 0 {
         return Err(io::Error::last_os_error());
     }
@@ -88,7 +88,7 @@ pub(super) fn configure_memory(command: &mut Command, bytes: Option<NonZeroU64>)
         rlim_cur: limit,
         rlim_max: limit,
     };
-    // The callback uses only a prepared rlimit and a syscall before exec.
+    // SAFETY: The callback uses only the prepared rlimit and an async-signal-safe syscall.
     unsafe {
         command.pre_exec(move || {
             if libc::setrlimit(libc::RLIMIT_AS, &child) == 0 {
@@ -126,7 +126,7 @@ pub(super) fn configure(command: &mut Command) -> io::Result<Vec<PathBuf>> {
             name
         }))?,
     };
-    // NOTE: Tokio applies cwd, stdio and the process group before this callback. It only reads prepared buffers, calls execve and returns raw errno; no allocation, lock or resource destruction occurs after fork. Its error handshake still reports failures before a Child is returned. The safe Command API can fall back to a shell.
+    // SAFETY: Tokio applies cwd, stdio and the process group before this callback. It only reads prepared buffers, calls execve and returns raw errno; no allocation, lock or resource destruction occurs after fork. Its error handshake still reports failures before a Child is returned. The safe Command API can fall back to a shell.
     unsafe {
         command.pre_exec(move || exec.execute());
     }
@@ -315,9 +315,11 @@ mod tests {
             &workspace, None, None,
         ).await;
         assert_eq!("ok", result.status, "{result:?}");
-        assert!(result
-            .model_content
-            .contains("shebang:literal ; > interpreted.txt"));
+        assert!(
+            result
+                .model_content
+                .contains("shebang:literal ; > interpreted.txt")
+        );
         assert!(result.model_content.contains("script-stderr"));
         assert!(!working.join("interpreted.txt").exists());
 
@@ -353,7 +355,7 @@ mod tests {
             workspace.join("working directory").canonicalize().unwrap(),
             std::env::current_dir().unwrap()
         );
-        // NOTE: getpgrp only reads the current process's group; it has no safe standard-library equivalent.
+        // SAFETY: getpgrp only reads the current process's group; it has no safe standard-library equivalent.
         assert_eq!(std::process::id() as libc::pid_t, unsafe {
             libc::getpgrp()
         });

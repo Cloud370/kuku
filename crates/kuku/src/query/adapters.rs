@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use serde_json::Value;
-use tokio::sync::{mpsc, watch, Notify};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio_stream::StreamExt;
 
 use crate::adapter::{RegisteredTool, ToolCancellation, ToolOutput, ToolStatus};
@@ -11,7 +11,7 @@ use crate::provider::types::{
     PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ResolvedProvider,
 };
 use crate::tool::builtin::run_command::output::{
-    read_output, OutputRead, OutputStream, OutputWriter, MAX_FRAME_BYTES,
+    MAX_FRAME_BYTES, OutputRead, OutputStream, OutputWriter, read_output,
 };
 use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::{ModelRequest, Result};
@@ -200,8 +200,12 @@ async fn capture_tool_result(
         .iter()
         .map(|segment| segment.text.as_str())
         .collect::<String>();
-    let reference_prefix = format!("\n\nOutput: {} ({} captured bytes; read by merged byte offset). capture_incomplete={}; preview_truncated=",
-        output.id, metadata.stored_bytes, metadata.quota_truncated || metadata.cleanup_incomplete);
+    let reference_prefix = format!(
+        "\n\nOutput: {} ({} captured bytes; read by merged byte offset). capture_incomplete={}; preview_truncated=",
+        output.id,
+        metadata.stored_bytes,
+        metadata.quota_truncated || metadata.cleanup_incomplete
+    );
     let preview_truncated = chunk.has_more
         || content.len() + reference_prefix.len() + 5 > output.limits.max_preview_bytes;
     let reference = format!("{reference_prefix}{preview_truncated}");

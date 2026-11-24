@@ -5,7 +5,7 @@ use super::details::{DetailRecord, VisibleDetail};
 use super::timing::connector_column;
 use super::window::BlockGap;
 use super::{
-    message, preview, Block, Key, Layout, ToolDetails, Transcript, TranscriptView, TurnSurface,
+    Block, Key, Layout, ToolDetails, Transcript, TranscriptView, TurnSurface, message, preview,
 };
 
 impl Transcript {

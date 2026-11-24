@@ -142,7 +142,7 @@ pub(super) fn thinking_label(label: &str, step: Option<u128>) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::{flow_excerpt, thinking_label, ThinkingFlow};
+    use super::{ThinkingFlow, flow_excerpt, thinking_label};
     use unicode_width::UnicodeWidthStr;
 
     #[test]
@@ -162,9 +162,10 @@ mod tests {
         assert!(joined.width() <= 15 && flow_excerpt(&joined, 12).width() <= 12);
         let next_burst = format!("{burst}{}", "新的内容".repeat(100));
         assert_eq!(joined, flow.sample(Some((1, &next_burst)), Some(81)));
-        assert!(flow
-            .sample(Some((1, &next_burst)), Some(82))
-            .starts_with(&joined));
+        assert!(
+            flow.sample(Some((1, &next_burst)), Some(82))
+                .starts_with(&joined)
+        );
         assert_eq!("", flow.sample(None, Some(83)));
         assert_eq!("新任务", flow.sample(Some((2, "新任务来了")), Some(84)));
         assert_ne!(

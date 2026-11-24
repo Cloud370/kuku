@@ -1,6 +1,12 @@
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "integration binaries use different subsets of the mock provider fixture"
+)]
 pub mod mock_provider;
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "integration binaries use different subsets of stream helpers"
+)]
 pub mod stream;
 
 use std::net::SocketAddr;
@@ -8,10 +14,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "integration binaries inspect different subsets of server state"
+)]
 pub struct TestServer {
     pub addr: SocketAddr,
     pub base_url: String,

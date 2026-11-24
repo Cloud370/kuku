@@ -10,6 +10,7 @@ pub(super) fn sample() -> Option<serde_json::Value> {
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
         return io.map(|io| serde_json::json!({"process_io": io}));
     }
+    // SAFETY: The successful getrusage call initialized the local buffer.
     let usage = unsafe { usage.assume_init() };
     let status = std::fs::read_to_string("/proc/self/status").ok();
     let peak_rss = status

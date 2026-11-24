@@ -7,14 +7,13 @@ use std::time::SystemTime;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::tool::ToolResultEnvelope;
 use crate::WorkspaceIoLimits;
+use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    charge_entry, ensure_active, file_read_error, glob_match, is_cancellation,
-    is_default_excluded_dir, is_io_limit, optional_positive_usize, relative_path, resolve_path,
-    verify_directory, workspace_path_blocked, FileCancellation, IoLimit, ScanDeadline,
-    WorkspaceFiles,
+    FileCancellation, IoLimit, ScanDeadline, WorkspaceFiles, charge_entry, ensure_active,
+    file_read_error, glob_match, is_cancellation, is_default_excluded_dir, is_io_limit,
+    optional_positive_usize, relative_path, resolve_path, verify_directory, workspace_path_blocked,
 };
 
 mod preview;
@@ -208,7 +207,7 @@ pub(crate) fn search_text(
             return ToolResultEnvelope::error(
                 "failed: invalid regex",
                 format!("invalid regex: {error}"),
-            )
+            );
         }
     };
     let resolved = match resolve_path(workspace, path) {
@@ -663,9 +662,11 @@ mod tests {
             &|| false,
         );
         assert!(result.model_content.starts_with("Search incomplete"));
-        assert!(result
-            .model_content
-            .contains("0 matches in the part searched"));
+        assert!(
+            result
+                .model_content
+                .contains("0 matches in the part searched")
+        );
         let facts = result.structured.unwrap();
         assert_eq!(facts["scan_complete"], false);
         assert_eq!(facts["next_offset"], Value::Null);
@@ -885,9 +886,11 @@ mod tests {
                 };
                 assert!(next > offset);
                 assert_eq!(observed.len() as u64, next);
-                assert!(result
-                    .model_content
-                    .contains(&format!("Use offset={next} to continue.")));
+                assert!(
+                    result
+                        .model_content
+                        .contains(&format!("Use offset={next} to continue."))
+                );
                 offset = next;
             }
             assert_eq!(expected, observed);

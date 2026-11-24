@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::{ensure_path_within_workspace, RevertPlan};
+use super::{RevertPlan, ensure_path_within_workspace};
 
 #[derive(Debug)]
 pub(crate) struct FileRevertTransaction {

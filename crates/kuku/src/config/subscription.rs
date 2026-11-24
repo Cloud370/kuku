@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::{
-    resolve_models_url, resolve_request_url, ProviderAuth, ProviderFormat, ProviderOptions,
-    ProviderProfile, ProviderProxy,
+    ProviderAuth, ProviderFormat, ProviderOptions, ProviderProfile, ProviderProxy,
+    resolve_models_url, resolve_request_url,
 };
 use crate::{Error, Result};
 

@@ -1,12 +1,12 @@
 use httpmock::prelude::{HttpMockRequest, MockServer, POST};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use kuku::event::EventPayload;
 use kuku::{AgentStatus, JobStatus, OutputRead, Session, WorkspaceScriptFacts};
 
 use super::{
-    command_args, committed, common, first_request, job_completed_event, submit, wait_until,
-    wire_body, wire_requests, Fixture, ACKNOWLEDGED, AGENT, CALL,
+    ACKNOWLEDGED, AGENT, CALL, Fixture, command_args, committed, common, first_request,
+    job_completed_event, submit, wait_until, wire_body, wire_requests,
 };
 
 const CONTROL: &str = "control-fixture-job";
@@ -159,9 +159,11 @@ return (await command.stdout.text()).repeat(2000);"#,
                 .filter(|msg| msg["content"].as_str() == Some(proof))
                 .count()
         );
-        assert!(!messages.iter().any(|msg| msg["content"]
-            .as_str()
-            .is_some_and(|text| text.starts_with("<kuku_job_result>"))));
+        assert!(!messages.iter().any(|msg| {
+            msg["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("<kuku_job_result>"))
+        }));
         assert_eq!(0, session.agent(AGENT).unwrap().pending_inputs);
         session.close().await.unwrap();
         let mut options = fixture.options.clone();

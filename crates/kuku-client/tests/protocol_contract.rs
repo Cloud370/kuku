@@ -1,10 +1,10 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,7 +15,7 @@ use kuku_client::{
     RetryFailureKind, RetryPhase, RetryStopReason, SubscriptionUpdate, Target, Timing,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PROTOCOL: &str =
     include_str!("../../kuku-server/tests/common/fixtures/interactive-protocol.json");
@@ -85,10 +85,12 @@ fn ledger_events_reject_non_wire_shapes_and_conflicting_event_ids() {
         json!({"id":9,"payload":{"id":10,"kind":"runtime.step_prepared"}}),
         json!({"id":9,"payload":"not an event"}),
     ] {
-        assert!(serde_json::from_value::<EventPage>(json!({
-            "events":[event],"next_after":9
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<EventPage>(json!({
+                "events":[event],"next_after":9
+            }))
+            .is_err()
+        );
     }
 }
 

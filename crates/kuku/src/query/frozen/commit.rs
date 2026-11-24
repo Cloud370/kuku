@@ -3,7 +3,7 @@ use serde_json::json;
 use crate::event::{EventPayload, EventStore};
 use crate::{Error, Result};
 
-use super::{now_timestamp, ContextCommit, PendingRun};
+use super::{ContextCommit, PendingRun, now_timestamp};
 
 fn context_batch(
     pending: &PendingRun,

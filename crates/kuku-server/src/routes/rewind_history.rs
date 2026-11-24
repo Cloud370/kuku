@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::Json;
 use kuku::event::EventStore;
 use kuku::session::{MessageRewind, SessionHistory};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{events, journal_task, manager, Params, SessionTarget};
+use super::{Params, SessionTarget, events, journal_task, manager};
+use crate::AppState;
 use crate::error_mapping::{ApiError, Result};
 use crate::run_manager::TurnLookup;
 use crate::wire::history_entry_for_agent;
-use crate::AppState;
 
 #[derive(Deserialize)]
 pub(super) struct Query {

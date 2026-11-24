@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use super::{
-    agent, common, facts, idle, last_user, options, request_body, response, MockServer, CHECKPOINT,
-    EARLIER_REPLY, POST, WIRE_LIMIT,
+    CHECKPOINT, EARLIER_REPLY, MockServer, POST, WIRE_LIMIT, agent, common, facts, idle, last_user,
+    options, request_body, response,
 };
 use kuku::event::{EventPayload, EventStore};
 use kuku::{AgentStatus, Input, NamedValueSource, OutputRead, Session};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PAGE_BYTES: usize = 8192;
 const PAGE_COUNT: usize = 15;
@@ -68,10 +68,12 @@ async fn a_large_request_with_token_headroom_only_obeys_an_explicit_byte_limit()
     .await
     .unwrap();
     assert_eq!(interrupted.status, AgentStatus::Interrupted);
-    assert!(interrupted
-        .last_error
-        .unwrap()
-        .contains("configured byte limit"));
+    assert!(
+        interrupted
+            .last_error
+            .unwrap()
+            .contains("configured byte limit")
+    );
     limited.close().await.unwrap();
     provider.assert_hits_async(1).await;
 }
@@ -516,10 +518,12 @@ async fn compaction_preserves_recent_batches_and_rewind_restores_the_predecessor
             assert_eq!(original_pages[id], payload, "a retained page changed");
         }
         if index > 0 && index + 1 != steps.len() && step["segment"] == steps[index - 1]["segment"] {
-            assert!(body["messages"]
-                .as_array()
-                .unwrap()
-                .starts_with(task_bodies[index - 1]["messages"].as_array().unwrap()));
+            assert!(
+                body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .starts_with(task_bodies[index - 1]["messages"].as_array().unwrap())
+            );
         }
     }
     let resumed = task_bodies[task_bodies.len() - 2].to_string();

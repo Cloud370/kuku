@@ -1,12 +1,15 @@
 [package]
 name = "kuku"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 license = "MIT OR Apache-2.0"
 description = "The agent explained — a readable Rust agent SDK"
 repository = "https://github.com/Cloud370/kuku"
 readme = "../../README.md"
 keywords = ["agent", "coding", "terminal", "llm", "cli"]
+
+[lints]
+workspace = true
 
 [dependencies]
 arc-swap = { workspace = true }
@@ -40,8 +43,8 @@ htmd = "0.5"
 lru = "0.18"
 rpds = { version = "1.2", features = ["serde"] }
 url = "2"
-toml = "0.8"
-toml_edit = "0.25"
+toml = { workspace = true }
+toml_edit = { workspace = true }
 tempfile = "3"
 fslock = "0.2"
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }

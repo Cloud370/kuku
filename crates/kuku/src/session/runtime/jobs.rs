@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::json;
-use tokio::sync::{watch, Notify};
+use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -12,10 +12,10 @@ use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::{Error, Result};
 
-use super::record::{timestamp, Record, State};
+use super::record::{Record, State, timestamp};
 use super::{
-    ensure_open, load_state, Activation, CleanupOutcome, Input, InputSource, InputTiming,
-    JobResult, JobSnapshot, JobStatus, Session,
+    Activation, CleanupOutcome, Input, InputSource, InputTiming, JobResult, JobSnapshot, JobStatus,
+    Session, ensure_open, load_state,
 };
 
 pub(super) const JOB_DELIVERY_PREFIX: &str = "job-completion:";

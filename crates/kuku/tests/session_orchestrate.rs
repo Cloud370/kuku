@@ -5,9 +5,9 @@ mod example;
 
 use std::path::{Path, PathBuf};
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 
 use kuku::{AgentStatus, Session, SessionOptions};
 
@@ -330,9 +330,11 @@ async fn example_controls_independent_agents_and_timer_continuation_through_publ
     let persisted =
         Session::read_agents(Path::new(report["events_path"].as_str().unwrap())).unwrap();
     assert_eq!(2, persisted.len());
-    assert!(persisted
-        .iter()
-        .all(|agent| agent.status == AgentStatus::Idle && agent.pending_inputs == 0));
+    assert!(
+        persisted
+            .iter()
+            .all(|agent| agent.status == AgentStatus::Idle && agent.pending_inputs == 0)
+    );
     assert!(
         report["orchestration"]["observation"]["committed"]
             .as_u64()
@@ -381,22 +383,28 @@ fn assert_context_and_retained_results(report: &Value) {
     assert!(settings.iter().all(
         |setting| setting["connection"] == "writer-route" && setting["model"] == "writer-test"
     ));
-    assert!(settings
-        .iter()
-        .all(|setting| setting["settings"]["reasoning_effort"] == "low"
-            && setting["settings"]["service_tier"] == "default"));
+    assert!(
+        settings
+            .iter()
+            .all(|setting| setting["settings"]["reasoning_effort"] == "low"
+                && setting["settings"]["service_tier"] == "default")
+    );
     let reviewer = report["other_agent_evidence"]["reviewer"]["provider_settings"]
         .as_array()
         .unwrap();
     assert_eq!(2, reviewer.len());
-    assert!(reviewer
-        .iter()
-        .all(|setting| setting["connection"] == "reviewer-route"
-            && setting["model"] == "reviewer-test"));
-    assert!(reviewer
-        .iter()
-        .all(|setting| setting["settings"]["reasoning_effort"] == "none"
-            && setting["settings"]["service_tier"] == "priority"));
+    assert!(
+        reviewer
+            .iter()
+            .all(|setting| setting["connection"] == "reviewer-route"
+                && setting["model"] == "reviewer-test")
+    );
+    assert!(
+        reviewer
+            .iter()
+            .all(|setting| setting["settings"]["reasoning_effort"] == "none"
+                && setting["settings"]["service_tier"] == "priority")
+    );
     let outputs = report["command_outputs"].as_array().unwrap();
     assert_eq!(2, outputs.len());
     let mut text = Vec::new();

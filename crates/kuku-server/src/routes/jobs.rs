@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
 use kuku::{JobSnapshot, Session};
 use serde::{Deserialize, Serialize};
 
-use super::{manager, Params, SessionTarget};
-use crate::error_mapping::{ApiError, Result};
+use super::{Params, SessionTarget, manager};
 use crate::AppState;
+use crate::error_mapping::{ApiError, Result};
 
 #[derive(Deserialize)]
 pub(super) struct JobTarget {

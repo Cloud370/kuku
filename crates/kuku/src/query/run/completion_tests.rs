@@ -150,7 +150,9 @@ async fn length_stop_interrupts_without_completing_the_turn() {
         event.payload,
         EventPayload::TurnInterrupted { ref reason, .. } if reason == "length"
     )));
-    assert!(!events
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::TurnCompleted { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::TurnCompleted { .. }))
+    );
 }

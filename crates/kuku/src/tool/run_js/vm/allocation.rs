@@ -173,7 +173,7 @@ unsafe fn unmap(base: *mut u8, size: usize) {
 #[cfg(windows)]
 fn map(size: usize) -> *mut u8 {
     use windows_sys::Win32::System::Memory::{
-        VirtualAlloc, MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE,
+        MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc,
     };
 
     // SAFETY: The OS chooses the page-aligned block and zero-initializes the
@@ -183,7 +183,7 @@ fn map(size: usize) -> *mut u8 {
 
 #[cfg(windows)]
 unsafe fn unmap(base: *mut u8, _: usize) {
-    use windows_sys::Win32::System::Memory::{VirtualFree, MEM_RELEASE};
+    use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualFree};
 
     // SAFETY: This is the original reservation address. MEM_RELEASE with zero
     // size releases the entire reservation.
@@ -204,9 +204,11 @@ mod tests {
             // SAFETY: The allocation is live and calloc initialized its range.
             unsafe {
                 assert_eq!(size, ScriptAllocator::usable_size(payload));
-                assert!(std::slice::from_raw_parts(payload, size)
-                    .iter()
-                    .all(|&byte| byte == 0));
+                assert!(
+                    std::slice::from_raw_parts(payload, size)
+                        .iter()
+                        .all(|&byte| byte == 0)
+                );
                 allocator.dealloc(payload);
             }
         }

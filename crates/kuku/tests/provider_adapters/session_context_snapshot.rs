@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use httpmock::Mock;
-use serde_json::{json, Value};
+use httpmock::prelude::{HttpMockRequest, MockServer, POST};
+use serde_json::{Value, json};
 
 use kuku::config::{ApiKey, ProviderAuth, ProviderProfile};
 use kuku::event::{EventPayload, EventStore, StoredEvent};
@@ -14,7 +14,10 @@ use super::common;
 
 const MODEL: &str = "claude-sonnet-4-6";
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fixture inputs identify the model, context, and workspace independently"
+)]
 pub(super) fn session_options(
     server: &MockServer,
     workspace: &Path,

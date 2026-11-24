@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::event::{EventPayload, StoredEvent};
 
-use super::{resolve_revert_path, REVERTABLE_KINDS};
+use super::{REVERTABLE_KINDS, resolve_revert_path};
 
 pub(super) fn event_turn_owners(events: &[StoredEvent]) -> HashMap<u64, String> {
     let mut owners = HashMap::new();

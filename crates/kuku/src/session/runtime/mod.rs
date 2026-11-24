@@ -32,7 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tokio::sync::{broadcast, watch, Semaphore};
+use tokio::sync::{Semaphore, broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::event::store::JournalSummary;
@@ -55,11 +55,11 @@ pub use types::{
     SessionCostSummary, SessionOptions, TurnSummary, UsageTotals, Withdrawal, WorkspaceIoLimits,
 };
 pub use values::{
-    NamedValue, NamedValueKind, NamedValueSource, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES,
+    MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES, NamedValue, NamedValueKind, NamedValueSource,
 };
 
 use receipts::{validate_address, validate_key};
-use record::{fingerprint, Command, Record, State};
+use record::{Command, Record, State, fingerprint};
 
 type WorkerOutcome = std::result::Result<(), String>;
 type CleanupOutcome = Option<WorkerOutcome>;

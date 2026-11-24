@@ -2,14 +2,14 @@
 
 use std::path::PathBuf;
 
+use kuku::UiEvent;
 use kuku::event::{EventPayload, StoredEvent};
 use kuku::execution::OutputReference;
 use kuku::session::{
     AgentConfig, AgentSnapshot, Input, InputSource, InputStatus, InputTiming, Receipt, ReplyPreview,
 };
-use kuku::UiEvent;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::run_manager::TurnLookup;
@@ -695,7 +695,7 @@ mod retry_tests {
     use kuku::event::{EventPayload, StoredEvent};
     use serde_json::json;
 
-    use super::{history_entry, retry_metadata, TurnLookup};
+    use super::{TurnLookup, history_entry, retry_metadata};
 
     #[test]
     fn history_projects_human_input_and_omits_internal_job_wakes() {

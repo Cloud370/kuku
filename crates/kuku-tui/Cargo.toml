@@ -1,12 +1,15 @@
 [package]
 name = "kuku-tui"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Interactive terminal client for kuku"
 repository = "https://github.com/Cloud370/kuku"
 readme = "../../README.md"
 publish = false
+
+[lints]
+workspace = true
 
 [dependencies]
 arboard = { version = "3.6", default-features = false }
@@ -26,13 +29,14 @@ syntect = { version = "5.3", default-features = false, features = ["default-synt
 tempfile = "3"
 time = { version = "0.3", default-features = false, features = ["std", "parsing"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-toml = "0.8"
-toml_edit = "0.22"
+toml = { workspace = true }
+toml_edit = { workspace = true, features = ["serde"] }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 url = "2"
 
 [dev-dependencies]
+kuku = { workspace = true, features = ["test_support"] }
 httpmock = "0.7"
 kuku-server = { path = "../kuku-server" }
 vt100 = "0.18"

@@ -8,7 +8,7 @@ use kuku::{
     OutputChunk, OutputRead, Receipt, Session, SessionObserver, SessionOptions,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 type AnyError = Box<dyn std::error::Error>;
 
@@ -151,7 +151,9 @@ async fn main() {
 
 pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
-        println!("session_orchestrate --workspace DIR --prompt-file FILE --review-prompt-file FILE --continue-prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --command-id KEY --writer-connection NAME --writer-tier TIER --writer-model MODEL --writer-reasoning-effort VALUE --writer-service-tier VALUE --reviewer-connection NAME --reviewer-tier TIER --reviewer-model MODEL --reviewer-reasoning-effort VALUE --reviewer-service-tier VALUE --timer-ms 250 --max-requests 16 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300]");
+        println!(
+            "session_orchestrate --workspace DIR --prompt-file FILE --review-prompt-file FILE --continue-prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --command-id KEY --writer-connection NAME --writer-tier TIER --writer-model MODEL --writer-reasoning-effort VALUE --writer-service-tier VALUE --reviewer-connection NAME --reviewer-tier TIER --reviewer-model MODEL --reviewer-reasoning-effort VALUE --reviewer-service-tier VALUE --timer-ms 250 --max-requests 16 --max-output-tokens 32768 --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300]"
+        );
         return Ok(true);
     }
     let mut settings = Settings::load(&args)?;

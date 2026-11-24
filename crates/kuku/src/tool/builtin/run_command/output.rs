@@ -724,7 +724,7 @@ fn read_frame_header(
     match file.read_exact(&mut header) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof && !metadata.complete => {
-            return Ok(None)
+            return Ok(None);
         }
         Err(error) => return Err(error),
     }

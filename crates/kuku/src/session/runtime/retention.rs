@@ -6,14 +6,14 @@ use std::sync::Weak;
 use std::time::SystemTime;
 
 use crate::tool::builtin::run_command::output::{
-    framed_bytes, output_path, validate_output_id, OUTPUT_DRAFT_SUFFIX,
+    OUTPUT_DRAFT_SUFFIX, framed_bytes, output_path, validate_output_id,
 };
 use crate::{Error, Result};
 
 use super::jobs::JobIndex;
 use super::record::{Record, State};
 use super::types::AgentStatus;
-use super::{ensure_open, Session, SessionInner};
+use super::{Session, SessionInner, ensure_open};
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct OutputStore {
@@ -408,7 +408,7 @@ fn lock_output(file: &fs::File, path: &Path, mode: OutputLock) -> io::Result<()>
 
     use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
     use windows_sys::Win32::Storage::FileSystem::{
-        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
     };
     use windows_sys::Win32::System::IO::{OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0};
 
@@ -449,10 +449,10 @@ fn lock_output(file: &fs::File, path: &Path, mode: OutputLock) -> io::Result<()>
 mod tests {
     use std::time::{Duration, SystemTime};
 
-    use crate::tool::builtin::run_command::output::{read_open_output, OutputLimits, OutputWriter};
+    use crate::tool::builtin::run_command::output::{OutputLimits, OutputWriter, read_open_output};
     use crate::{OutputRead, OutputStream};
 
-    use super::{open_retained_output, output_path, OutputStore};
+    use super::{OutputStore, open_retained_output, output_path};
 
     #[tokio::test]
     async fn capture_writes_continue_while_output_readers_hold_locks() {

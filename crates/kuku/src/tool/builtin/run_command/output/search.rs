@@ -8,8 +8,8 @@ use serde_json::json;
 use crate::tool::ToolDefinition;
 
 use super::{
-    decode_header, invalid_output, read_frame_header, CaptureMetadata, OutputStream,
-    FRAME_HEADER_BYTES, HEADER_BYTES, MAX_FRAME_BYTES, MAX_SEARCH_BYTES,
+    CaptureMetadata, FRAME_HEADER_BYTES, HEADER_BYTES, MAX_FRAME_BYTES, MAX_SEARCH_BYTES,
+    OutputStream, decode_header, invalid_output, read_frame_header,
 };
 
 pub(crate) const DEFAULT_MATCHES: usize = 32;
@@ -247,8 +247,8 @@ fn stream_index(stream: OutputStream) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{search_open_output, OutputMatch, OutputSearch, OutputStream, MAX_SCAN_BYTES};
-    use crate::tool::builtin::run_command::output::{open_output, OutputLimits, OutputWriter};
+    use super::{MAX_SCAN_BYTES, OutputMatch, OutputSearch, OutputStream, search_open_output};
+    use crate::tool::builtin::run_command::output::{OutputLimits, OutputWriter, open_output};
 
     #[tokio::test]
     async fn searches_one_stream_across_interleaving_and_resumes_in_capture_order() {

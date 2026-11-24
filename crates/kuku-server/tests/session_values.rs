@@ -1,9 +1,9 @@
 mod common;
 
-use common::mock_provider::{self, text_response};
 use common::TestServer;
+use common::mock_provider::{self, text_response};
 use httpmock::Method;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[tokio::test]
 async fn saved_values_reopen_and_dispatch_the_selected_version() {

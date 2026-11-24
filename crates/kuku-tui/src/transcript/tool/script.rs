@@ -13,19 +13,19 @@ use serde_json::Value;
 use crate::markup::{file_source, wrap_numbered};
 use crate::text::single_line;
 use crate::theme::{
-    append_line_count, tool_status, TranscriptTone, ERROR, MUTED, SUCCESS, SURFACE_TEXT, WARNING,
+    ERROR, MUTED, SUCCESS, SURFACE_TEXT, TranscriptTone, WARNING, append_line_count, tool_status,
 };
 
 use super::command::CommandPreview;
-use super::file_change::{compact_change_row, FileChange};
+use super::file_change::{FileChange, compact_change_row};
 use super::outcome::FileRead;
-use crate::transcript::details::{InlineOutput, OutputTarget, ScriptDetail};
 use crate::transcript::MAX_VISUAL_ROWS;
+use crate::transcript::details::{InlineOutput, OutputTarget, ScriptDetail};
 
 use super::{
-    body_inset, capped, finish_card, render_preview, render_rows, tool_operation_color, tool_title,
-    OutputFormat, Row, Tool, ToolDetails, ToolView, MAX_DETAIL_BYTES, MAX_INSPECTION_ROWS,
-    MAX_RESULT_ROWS, MAX_WARNING_ROWS,
+    MAX_DETAIL_BYTES, MAX_INSPECTION_ROWS, MAX_RESULT_ROWS, MAX_WARNING_ROWS, OutputFormat, Row,
+    Tool, ToolDetails, ToolView, body_inset, capped, finish_card, render_preview, render_rows,
+    tool_operation_color, tool_title,
 };
 
 #[derive(Debug, Clone)]

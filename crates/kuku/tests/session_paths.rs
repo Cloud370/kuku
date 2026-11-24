@@ -1,5 +1,5 @@
-use kuku::session::{project_home, project_policy_path, session_events_path};
 use kuku::Error;
+use kuku::session::{project_home, project_policy_path, session_events_path};
 
 #[test]
 fn maps_unix_workspace_path_under_kuku_home() {

@@ -34,7 +34,7 @@ Rust names/signatures, event framing/schema, numeric queue/output limits, parser
 
 The [workflow deliverables](../contributing/development.md#workflow-deliverables-for-the-rewrite) are part of the same rewrite. Stage 1 includes fresh-session handoff and a repeatable public-SDK/CLI acceptance path; stages 2 and 3 extend that path for protocols, independent Agents, and recovery. Align task reporting, test entrypoints, PR guidance, and CI with the delivered behavior. Do not defer the workflow until the runtime is complete or create a separate automation platform.
 
-Use the [live protocol acceptance](../contributing/testing.md#live-protocol-acceptance) for selected models, connection inputs, credentials, and paid-test limits. Run records belong to verification artifacts, not this design plan.
+Use the [live protocol acceptance](../contributing/testing-advanced.md#live-protocol-acceptance) for selected models, connection inputs, credentials, and paid-test limits. Run records belong to verification artifacts, not this design plan.
 
 ## Implementation evidence
 

@@ -452,13 +452,17 @@ cache_control = { type = "ephemeral", ttl = "1h" }
                 .body["cache_control"]["ttl"],
             "1h"
         );
-        assert!(parse(&raw.replace("X-Tenant", "aUtHoRiZaTiOn"))
-            .unwrap_err()
-            .to_string()
-            .contains("managed by the adapter"));
-        assert!(parse(&raw.replace("cache_control =", "messages ="))
-            .unwrap_err()
-            .to_string()
-            .contains("managed by the adapter"));
+        assert!(
+            parse(&raw.replace("X-Tenant", "aUtHoRiZaTiOn"))
+                .unwrap_err()
+                .to_string()
+                .contains("managed by the adapter")
+        );
+        assert!(
+            parse(&raw.replace("cache_control =", "messages ="))
+                .unwrap_err()
+                .to_string()
+                .contains("managed by the adapter")
+        );
     }
 }

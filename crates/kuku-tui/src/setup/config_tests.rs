@@ -2,14 +2,14 @@ use std::fs;
 use std::io::{self, Write};
 use std::sync::{Arc, Barrier};
 
-use kuku::config::{generate_default, load_config, ApiKey};
+use kuku::config::{ApiKey, generate_default, load_config};
 use kuku::util::private_directory;
 use kuku_client::ConnectionOptions;
-use toml_edit::{value, DocumentMut};
+use toml_edit::{DocumentMut, value};
 
-use super::{save, save_with_hook, save_with_lookup, stage_key_with_sync, Settings};
+use super::{Settings, save, save_with_hook, save_with_lookup, stage_key_with_sync};
 use crate::setup::state::SetupState;
-use crate::setup::{should_offer_setup, CredentialSource};
+use crate::setup::{CredentialSource, should_offer_setup};
 
 const INLINE_CONFIG: &str = r#"
 default_model = "balanced"
@@ -106,9 +106,11 @@ async fn assert_first_run_uses_managed_data_dir(caller_home_name: Option<&str>) 
         .stored_key
         .set_text("fixture-only-not-a-real-key".into());
     save_with_lookup(&settings, &state, &environment, || {}).unwrap();
-    assert!(fs::read_to_string(config)
-        .unwrap()
-        .contains("extra_user_paths = [\"$KUKU_HOME\"]"));
+    assert!(
+        fs::read_to_string(config)
+            .unwrap()
+            .contains("extra_user_paths = [\"$KUKU_HOME\"]")
+    );
 }
 
 #[tokio::test]
@@ -185,10 +187,12 @@ async fn valid_private_file_default_route_skips_first_run_repair() {
     document["provider"]["anthropic"]["api_key"] = value(format!("file:{}", key_path.display()));
     fs::write(&config, document.to_string()).unwrap();
 
-    assert!(Settings::load_for_first_run(options)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        Settings::load_for_first_run(options)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -315,10 +319,19 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
     const PROVIDER: &str = "_KUKU_SETUP_TEST_PROVIDER";
     const MODEL: &str = "_KUKU_SETUP_TEST_MODEL";
     const FORMAT: &str = "_KUKU_SETUP_TEST_FORMAT";
-    std::env::set_var(TIER, "balanced");
-    std::env::set_var(PROVIDER, "anthropic");
-    std::env::set_var(MODEL, "fixture-env-model");
-    std::env::set_var(FORMAT, "anthropic");
+    if !kuku::test_support::isolate_test(
+        module_path!(),
+        "saving_uses_sdk_environment_expansion_and_preserves_references",
+        |command| {
+            command
+                .env(TIER, "balanced")
+                .env(PROVIDER, "anthropic")
+                .env(MODEL, "fixture-env-model")
+                .env(FORMAT, "anthropic");
+        },
+    ) {
+        return;
+    }
 
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("custom.toml");
@@ -355,10 +368,6 @@ async fn saving_uses_sdk_environment_expansion_and_preserves_references() {
     assert_eq!("anthropic", parsed.model["strong"].provider);
     assert_eq!("fixture-env-model", parsed.model["strong"].model);
     assert_eq!("anthropic", parsed.provider["anthropic"].format.as_str());
-
-    for name in [TIER, PROVIDER, MODEL, FORMAT] {
-        std::env::remove_var(name);
-    }
 }
 
 #[tokio::test]
@@ -495,10 +504,12 @@ async fn adding_a_duplicate_model_saves_a_short_route_name_and_keeps_its_connect
     assert_eq!("anthropic", parsed.model[model].provider);
     assert_eq!("openai", parsed.model[short_route].provider);
     assert_eq!(model, parsed.model[short_route].model);
-    assert!(resolved
-        .tier_infos()
-        .iter()
-        .any(|info| info.name == short_route));
+    assert!(
+        resolved
+            .tier_infos()
+            .iter()
+            .any(|info| info.name == short_route)
+    );
     assert!(!parsed.model.contains_key("openai/gpt-6.1-terra"));
 }
 
@@ -616,10 +627,12 @@ async fn existing_file_credentials_outside_policy_migrate_on_save() {
             .unwrap();
         let state = SetupState::new(&settings);
         assert!(state.credential_ready());
-        assert!(state
-            .saved_key_hint(&settings)
-            .unwrap()
-            .contains("copy your saved key here"));
+        assert!(
+            state
+                .saved_key_hint(&settings)
+                .unwrap()
+                .contains("copy your saved key here")
+        );
 
         save(&settings, &state).unwrap();
 
@@ -631,9 +644,11 @@ async fn existing_file_credentials_outside_policy_migrate_on_save() {
         assert!(migrated.starts_with(&settings.credentials_dir));
         assert!(migrated != source.as_path());
         assert!(source.exists());
-        assert!(!fs::read_to_string(config)
-            .unwrap()
-            .contains("fixture-only-not-a-real-key"));
+        assert!(
+            !fs::read_to_string(config)
+                .unwrap()
+                .contains("fixture-only-not-a-real-key")
+        );
     }
 }
 
@@ -678,12 +693,16 @@ async fn route_changes_choose_new_defaults_but_credential_edits_preserve_setting
     state.environment.set_text("NEW_API_KEY".into());
     save(&settings, &state).unwrap();
     let after_credentials: DocumentMut = fs::read_to_string(&config).unwrap().parse().unwrap();
-    assert!(after_credentials["model"]["balanced"]
-        .get("reasoning_effort")
-        .is_some());
-    assert!(after_credentials["model"]["balanced"]
-        .get("service_tier")
-        .is_some());
+    assert!(
+        after_credentials["model"]["balanced"]
+            .get("reasoning_effort")
+            .is_some()
+    );
+    assert!(
+        after_credentials["model"]["balanced"]
+            .get("service_tier")
+            .is_some()
+    );
 
     let settings = Settings::load(options(directory.path(), Some(config.clone())))
         .await
@@ -697,9 +716,11 @@ async fn route_changes_choose_new_defaults_but_credential_edits_preserve_setting
         after_route["model"]["balanced"]["reasoning_effort"].as_str(),
         Some("none")
     );
-    assert!(after_route["model"]["balanced"]
-        .get("service_tier")
-        .is_none());
+    assert!(
+        after_route["model"]["balanced"]
+            .get("service_tier")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -785,9 +806,11 @@ async fn credential_repair_preserves_unchanged_route_environment_references() {
         route_changed["model"]["balanced"]["reasoning_effort"].as_str(),
         Some("none")
     );
-    assert!(route_changed["model"]["balanced"]
-        .get("service_tier")
-        .is_none());
+    assert!(
+        route_changed["model"]["balanced"]
+            .get("service_tier")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -897,9 +920,11 @@ async fn concurrent_config_edit_removes_only_the_newly_staged_key() {
         fs::write(&config, "external concurrent edit").unwrap();
     })
     .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("changed while settings were open"));
+    assert!(
+        error
+            .to_string()
+            .contains("changed while settings were open")
+    );
     assert_eq!(
         "external concurrent edit",
         fs::read_to_string(config).unwrap()
@@ -971,9 +996,11 @@ async fn staged_key_is_removed_when_publication_sync_fails() {
     .err()
     .unwrap();
 
-    assert!(error
-        .to_string()
-        .contains("cannot sync private credential storage"));
+    assert!(
+        error
+            .to_string()
+            .contains("cannot sync private credential storage")
+    );
     assert!(!error.to_string().contains("fixture-only-not-a-real-key"));
     assert_eq!(0, fs::read_dir(&settings.credentials_dir).unwrap().count());
 }
@@ -1009,9 +1036,11 @@ async fn stored_keys_are_private_when_data_directory_is_inside_workspace() {
         "fixture-only-not-a-real-key",
         fs::read_to_string(path).unwrap()
     );
-    assert!(!fs::read_to_string(&settings.config_path)
-        .unwrap()
-        .contains("fixture-only-not-a-real-key"));
+    assert!(
+        !fs::read_to_string(&settings.config_path)
+            .unwrap()
+            .contains("fixture-only-not-a-real-key")
+    );
 }
 
 #[cfg(unix)]

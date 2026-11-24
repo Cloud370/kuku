@@ -1,6 +1,11 @@
 #[tokio::test(flavor = "current_thread")]
 async fn anthropic_success_returns_text_and_writes_events() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(anthropic_success_returns_text_and_writes_events),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let mock = server.mock(|when, then| {
@@ -45,7 +50,12 @@ async fn anthropic_success_returns_text_and_writes_events() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn unsigned_thinking_is_durable_across_three_turns_and_profile_flip() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(unsigned_thinking_is_durable_across_three_turns_and_profile_flip),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let session_id = "s_unsigned_prefix";
 
@@ -229,10 +239,15 @@ async fn unsigned_thinking_is_durable_across_three_turns_and_profile_flip() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn unsigned_thinking_does_not_block_tool_dispatch_through_sdk() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(unsigned_thinking_does_not_block_tool_dispatch_through_sdk),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     std::fs::write(
-        env.workspace.path().join("README.md"),
+        env.workspace.as_path().join("README.md"),
         "# Unsigned thinking",
     )
     .unwrap();
@@ -314,7 +329,12 @@ async fn unsigned_thinking_does_not_block_tool_dispatch_through_sdk() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(anthropic_length_response_is_retried_once_with_frozen_notice),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let prompts_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(prompts_dir.path().join("runtime")).unwrap();
@@ -431,7 +451,12 @@ async fn anthropic_length_response_is_retried_once_with_frozen_notice() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn recovery_transport_failure_emits_invalidation_before_error() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(recovery_transport_failure_emits_invalidation_before_error),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let first = server.mock(|when, then| {
         when.method(POST)
@@ -503,7 +528,12 @@ async fn recovery_transport_failure_emits_invalidation_before_error() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn openai_success_returns_text_and_writes_events() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(openai_success_returns_text_and_writes_events),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
 
     let mock = server.mock(|when, then| {
@@ -542,7 +572,12 @@ async fn openai_success_returns_text_and_writes_events() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn openai_chat_second_length_interrupts_after_one_recovery() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(openai_chat_second_length_interrupts_after_one_recovery),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let first = server.mock(|when, then| {
         when.method(POST)
@@ -618,8 +653,13 @@ async fn openai_chat_second_length_interrupts_after_one_recovery() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn openai_responses_length_recovery_keeps_original_input_and_optional_limit() {
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(openai_responses_length_recovery_keeps_original_input_and_optional_limit),
+    ) else {
+        return;
+    };
     for (prefix, limit) in [("/recovery-limited", Some(37)), ("/recovery-default", None)] {
-        let env = TestEnv::new();
         let server = MockServer::start();
         let path = format!("{prefix}/responses");
         let first = server.mock(|when, then| {
@@ -693,7 +733,12 @@ async fn openai_responses_length_recovery_keeps_original_input_and_optional_limi
 
 #[tokio::test(flavor = "current_thread")]
 async fn http_error_writes_model_error_and_turn_end() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(http_error_writes_model_error_and_turn_end),
+    ) else {
+        return;
+    };
     let server = MockServer::start();
     let sid = "s_http_err";
 
@@ -728,7 +773,12 @@ async fn http_error_writes_model_error_and_turn_end() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn missing_config_fails_before_writing_session_events() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(missing_config_fails_before_writing_session_events),
+    ) else {
+        return;
+    };
     let sid = "s_no_cfg";
 
     let err = query("test").session(sid).run().await.unwrap_err();
@@ -748,7 +798,10 @@ async fn missing_config_fails_before_writing_session_events() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn api_key_is_not_written_to_events() {
-    let env = TestEnv::new();
+    let Some(env) = TestEnv::enter(module_path!(), stringify!(api_key_is_not_written_to_events))
+    else {
+        return;
+    };
     let server = MockServer::start();
     let sid = "s_no_leak";
 

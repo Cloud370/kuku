@@ -6,7 +6,7 @@ use kuku::config::ThinkLevel;
 use kuku::session::AgentConfig;
 use kuku_client::local::ServiceIdentity;
 use kuku_client::{Connection, ConnectionOptions};
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 use crate::editor::Editor;
 use crate::local_settings::{active_service, ensure_same_service};

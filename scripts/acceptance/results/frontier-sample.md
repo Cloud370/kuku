@@ -158,7 +158,7 @@ The published Pi and Codex trials used the same model in the Runta/Baseten envir
 
 The three new trials added **$0.168073364** in provider-reported inference costs. The pilot OpenRouter ledger then accounted **$3.113033272**, including the historical holds above.
 
-Reproduce a follow-up with a clean checkout of its recorded revision, a unique run ID and the existing OpenRouter ledger and private key file. Use the original case ID, `cancel-async-tasks`, `large-scale-text-editing` or `regex-log`. [FrontierHarness acceptance](../../../docs/en/contributing/testing.md#frontierharness-public-sample)
+Reproduce a follow-up with a clean checkout of its recorded revision, a unique run ID and the existing OpenRouter ledger and private key file. Use the original case ID, `cancel-async-tasks`, `large-scale-text-editing` or `regex-log`. [FrontierHarness acceptance](../../../docs/en/contributing/testing-advanced.md#frontierharness-public-sample)
 
 ```sh
 cargo build --locked -p kuku --example session_task

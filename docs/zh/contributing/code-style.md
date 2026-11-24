@@ -1,88 +1,33 @@
-# Code Style
+# Rust 代码规范
 
-本页是仓库代码的具体风格契约。
+可机械判断的规则由下面的检查执行。新代码采用统一的默认写法，已有模块能提供同样保证时延续它的惯例。
 
-## Markers
+## 必须通过的检查
 
-| Marker | Meaning |
-|--------|---------|
-| `MUST` | 硬性规则。违反就是 bug。 |
-| `PREFER` | 默认规则。只有在有理由时才偏离。 |
+- 由 rustfmt 管理格式。用 `cargo fmt --all -- --check` 做只读检查。编辑收尾时集中格式化改过的 Rust 文件。
+- 使用工作区的 lint 设置。Clippy 警告会使 CI 失败。本地用 `cargo clippy -p PACKAGE --all-targets -- -D warnings` 检查受影响的 crate，并加上能启用改动路径的 features。全量检查走集成验收入口。[测试指南](testing.md)
+- 即使在 `unsafe fn` 内也要把不安全操作放进显式 `unsafe` 块。在不安全代码块和实现前就近写 `// SAFETY:`，说明前提以及代码为何满足它。公开的 unsafe API 用 `# Safety` 说明调用者的责任。
+- 每处 lint 豁免都要在尽可能小的作用域写 `reason = "…"`。lint 在受检配置都应触发时，优先用 `#[expect(...)]`。豁免是否触发取决于 feature、平台或测试目标时，可以用 `#[allow(...)]`。
+- 核对涉及的平台和 feature。Cargo 的 `--all-targets` 覆盖当前所选平台的库、二进制、示例和测试等目标。
 
-## General rules
+## SDK 和运行时契约
 
-- `MUST` 每个模块只有一个职责。如果描述里需要出现 “and”，就拆分。
-- `MUST` 任何文件都不能超过 1000 行，`#[cfg(test)] mod tests` 除外。
-- `MUST` 函数只做一件事，通常保持在 10-60 行范围内。
-- `MUST` 不要过度防御。保护核心不变量、系统边界和真实面向用户的失败模式。
-- `MUST` 默认不写注释。只有在原因并不明显时才加一条。
-- `MUST` 只允许四种注释标签：`// NOTE:`、`// TODO:`、`// FIXME:`、`// HACK:`。
-- `MUST` 对有限且已知的值集合使用 enum，而不是字符串。
-- `MUST` 把每个 `pub` 项都当作 semver 承诺。
-- `MUST` 为任何 `unsafe` block 记录不变量、编译器缺失的证明，以及为什么安全替代方案不够。
+- 使用满足调用方所需的最窄可见性。对外可达的项，包括重导出的项，属于 SDK 接口。记录调用方依赖的行为，适用时说明错误、副作用和取消语义。[交付与工程选择](../architecture/core-direction.md#交付与工程选择)
+- 外部数据格式错误或超出范围时返回能定位操作和输入的错误。窄化转换要检查范围。可预见的文件、网络和 SDK 错误走 `Result`，内部 `expect` 说明不变量。可以用 `debug_assert!` 检查内部不变量。输入校验、授权和必要副作用在 release 构建也必须执行。
+- 文件操作要处理实际返回的错误。可选文件只有在 `NotFound` 时才可走默认值。必须创建新文件时用原子独占创建。路径身份保留在 `Path` 或 `PathBuf`，持久化身份用无损表示。有损转字符串用于面向人的显示。
+- 诊断输出中的凭据必须脱敏。复用已有脱敏类型，并用假凭据验证改动过的诊断路径。SDK 使用显式的工作区和设置，子进程的环境和工作目录在对应命令上设置。测试需要不同环境时注入设置，或放到独立进程里。
+- 对有副作用的任务明确所有者、上限、取消和完成条件。在异步 I/O 前退出同步锁的作用域，由资源所有者处理清理和等待完成。传递会影响结果的错误。持久化操作完成必要写入后才能确认。[核心方向](../architecture/core-direction.md#等待与资源生命周期)
+- 闭合状态用枚举表达，状态转换、授权决策和错误映射要穷举处理。开放协议的未知值要有明确处理方式。易混用的标识符或单位用不同类型。必须持有才生效的自定义句柄标注 `#[must_use]`。
 
-## Naming
+## 日常写法
 
-- `MUST` Tool 函数遵循 `<tool_name>(args, workspace, ...)`，并把 args 和 workspace 放在前面。
-- `MUST` Tool 请求解析器遵循 `<tool_name>_request(args) -> Result<Request, ToolResultEnvelope>`。
-- `MUST` 渲染器使用 `render_<what>(...)`。
-- `MUST` 名为 `find_<what>` 的查找函数返回 `Option<Snapshot>`。
-- `PREFER` 构造器在模块内一致地使用 `Xxx::new(...)` 或 `fn tool(...)`。
-- `MUST` 测试名使用具有描述性的 snake_case。
+- 按职责组织业务逻辑。一个步骤能用一个清楚的名字表达时可提取函数，行为相同时复用已有实现。长文件沿所有权边界考虑拆分。注释写代码本身难以表达的不变量、平台约束和设计理由。
+- 错误传播优先用 `?`，需要提前退出时优先用 `let ... else`。局部分支用 `if let`，判断用 `matches!`，各分支有不同结果时用 `match`。绑定和条件共同表达一次检查时可以用 Rust 2024 的 let chain。有语义明确的标准库操作就复用，例如按字节截断 UTF-8 使用 `floor_char_boundary`。
+- 导入按标准库、第三方 crate、本地 crate 分组，优先显式导入。测试模块可以用 `use super::*` 导入父模块。名称体现领域含义，在同一个模块里采用一致惯例。
+- 单元测试靠近实现，公开契约从实际入口验证。断言失败难以定位时补充上下文。复用现有夹具，付费调用显式开启。[测试指南](testing.md)
 
-## Imports and visibility
+## 依赖
 
-- `MUST` import 顺序是 `std`、外部 crate、`crate::`，组与组之间留一个空行。
-- `MUST` 禁止通配符 import，单元测试中的 `use super::*` 除外。
-- `PREFER` 使用 `use std::fs;`，而不是 import 很多个单独的 `std::fs::*` 项。
-- `MUST` 内部项默认使用 `pub(crate)`。
-- `MUST` 私有 helper 不写可见性修饰符。
-- `MUST` 函数顺序是 `pub`、`pub(crate)`、私有。
-- `MUST` 对 crate 内部模块使用 `pub(crate) mod`，对私有子模块使用裸 `mod`。
+多个工作区成员直接使用同一个库时，在 `[workspace.dependencies]` 共享版本，各 crate 明确自己所需的 features。一起审查 manifest 和锁文件的变化。
 
-## Documentation in code
-
-- `MUST` 给每个 `pub` 项添加 `///`，用一句话说明用途。
-- `MUST` 在公开模块边界文件中添加 `//!` 模块文档。
-- `MUST` 不要给 `pub(crate)` 或私有项添加文档注释。
-- `MUST` 保持 docstring 简短。不要把很长的设计理由放进代码注释。
-
-## Formatting and types
-
-- `MUST` 把 `impl` block 紧跟在相关类型定义之后。
-- `MUST` 使用默认设置的 `rustfmt`。
-- `MUST` 让 `clippy` 保持零 warning。任何 `#[allow(clippy::...)]` 都需要简短理由。
-- `MUST` 条目之间只留一个空行，不要有行尾空白。
-
-## Derives and constants
-
-- `MUST` derive 顺序是 `Debug`、`Clone`、`PartialEq`、`Eq`、`Hash`、`Serialize`、`Deserialize`。
-- `PREFER` 当默认值很明显时，优先 `derive(Default)` 而不是手写 `Default`。
-- `MUST` 所有常量都使用 `SCREAMING_SNAKE_CASE`。
-- `MUST` 常量应放在文件顶部 import 之后，除非该常量只用一次且写在函数内部更清晰。
-- `MUST` 对有语义意义的数字命名，不要把 magic number 直接写在行内。
-
-## Control flow and errors
-
-- `MUST` 对 enum 做穷尽匹配。不要用 `_ =>` 隐藏未来变体。
-- `MUST` 单变体检查使用 `if let`，两个或更多分支使用 `match`。
-- `MUST` 错误消息要能定位问题。
-- `PREFER` 只有在实践中不可能失败的不变量场景才使用 `unwrap()`。
-
-## Assertions and tests
-
-- `MUST` 按 `assert_eq!(expected, actual)` 书写，并把 expected 放在前面。
-- `MUST` 如果失败原因否则不清楚，就添加断言消息。
-- `MUST` 不要在生产路径中使用 `debug_assert!`。
-- `MUST` 单元测试保留在源文件内部的 `#[cfg(test)] mod tests` 中。
-- `MUST` 集成测试放在 `tests/<domain>_<aspect>.rs`，每个文件只对应一个领域边界。
-- `MUST` live provider smoke test 保留在 `tests/provider_live.rs`，并用环境变量和 `#[ignore]` 控制。
-- `MUST` 共享测试基础设施放在 `tests/common/mod.rs`。
-- `PREFER` 使用简单 helper 函数，而不是复杂的测试 builder。
-
-## Commits
-
-- `MUST` 每个 commit 只包含一个已完成的逻辑块。
-- `MUST` 使用 conventional commit message：`type: description` 或 `type(scope): description`。
-- `MUST` 不要 amend 已经 push 的 commit。
-- `MUST` 用 `--ff-only` 合并 worktree 分支。
+改动依赖时，用 `cargo tree --locked --workspace --target all --duplicates` 找多版本，用 `cargo tree --locked --target all --invert NAME@VERSION` 追查特定版本。在评估发布构建时，用 `cargo tree --locked -p kuku-app --edges normal --duplicates` 看应用的普通依赖图。上游或测试专用的多版本可以共存，并作为审查依据。更换拥有配置或平台行为的库时，验证对应行为。

@@ -8,8 +8,8 @@ use crate::event::StoredEvent;
 use crate::tool::ToolResultEnvelope;
 
 use super::common::{
-    file_read_error, find_covering_read, optional_positive_usize, requested_line_count,
-    required_path, resolve_path, ExecutorObservation, ExecutorObservationSource, FileCancellation,
+    ExecutorObservation, ExecutorObservationSource, FileCancellation, file_read_error,
+    find_covering_read, optional_positive_usize, requested_line_count, required_path, resolve_path,
 };
 
 mod scan;
@@ -181,7 +181,10 @@ fn read_file_impl(
         if view.truncated {
             use std::fmt::Write;
             if let Some(line) = sampled_line {
-                let _ = write!(view.model_content, "\n[Line {line} exceeds the preview limit. This is a prefix. To extract locally, try run_js tools.read_file with offset={line}, limit=1. Check truncated.");
+                let _ = write!(
+                    view.model_content,
+                    "\n[Line {line} exceeds the preview limit. This is a prefix. To extract locally, try run_js tools.read_file with offset={line}, limit=1. Check truncated."
+                );
             } else {
                 let end_line = request.offset + view.line_count - 1;
                 let _ = write!(
@@ -287,14 +290,18 @@ mod tests {
         let structured = result.structured.unwrap();
         assert_eq!(structured["kind"], "file_content");
         assert_eq!(structured["path"], "README.md");
-        assert!(structured["canonical_path"]
-            .as_str()
-            .unwrap()
-            .ends_with("README.md"));
-        assert!(structured["content_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
+        assert!(
+            structured["canonical_path"]
+                .as_str()
+                .unwrap()
+                .ends_with("README.md")
+        );
+        assert!(
+            structured["content_hash"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
         assert_eq!(structured["read_event_id"], 17);
         assert_eq!(structured["start_line"], 2);
         assert_eq!(structured["line_count"], 2);
@@ -524,9 +531,11 @@ mod tests {
 
         assert!(result.truncated);
         assert!(result.model_content.len() <= TEST_PREVIEW_BYTES);
-        assert!(result
-            .model_content
-            .starts_with(&format!("1\t{}\n", "文".repeat(85))));
+        assert!(
+            result
+                .model_content
+                .starts_with(&format!("1\t{}\n", "文".repeat(85)))
+        );
         assert!(result.model_content.ends_with("Continue with offset=2.]"));
         let facts = result.structured.unwrap();
         assert_eq!(1, facts["sampled_line"]);

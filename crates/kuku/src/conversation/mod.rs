@@ -3,4 +3,4 @@
 pub mod address;
 pub mod reducer;
 
-pub use reducer::{active_turn, conversation_events, TurnState};
+pub use reducer::{TurnState, active_turn, conversation_events};

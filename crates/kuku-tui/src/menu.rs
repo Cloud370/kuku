@@ -671,10 +671,12 @@ mod tests {
     #[test]
     fn aliases_find_exactly_one_canonical_action() {
         let mut picker = Picker::new(PickerKind::Commands, 1, Choice::commands());
-        assert!(!picker
-            .visible_choices()
-            .iter()
-            .any(|choice| choice.label == "/web"));
+        assert!(
+            !picker
+                .visible_choices()
+                .iter()
+                .any(|choice| choice.label == "/web")
+        );
         for (alias, canonical) in [
             ("new-session", "/new"),
             ("sessions", "/resume"),

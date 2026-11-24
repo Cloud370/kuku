@@ -5,23 +5,23 @@ use std::process::{Command, Stdio};
 use std::ptr;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{Duration, sleep, timeout};
 use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Console::{GetConsoleProcessList, GetConsoleWindow};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, TerminateProcess, WaitForSingleObject, DETACHED_PROCESS,
-    PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    DETACHED_PROCESS, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 };
 
 use crate::tool::ToolResultEnvelope;
 
 use super::super::test_helpers::workspace;
 use super::{
-    read_output, run_command, run_command_with_output, CommandEvent, OutputLimits, OutputRead,
-    OutputStream,
+    CommandEvent, OutputLimits, OutputRead, OutputStream, read_output, run_command,
+    run_command_with_output,
 };
 
 const CHILD_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -153,7 +153,7 @@ fn command_console_fixture() {
 
 fn own_console() -> (bool, u32) {
     let mut pid = 0;
-    // NOTE: These APIs only inspect the calling process's console. One writable slot suffices to query the process count.
+    // SAFETY: These APIs only inspect the calling process's console. One writable slot suffices to query the process count.
     unsafe {
         (
             !GetConsoleWindow().is_null(),
@@ -189,17 +189,17 @@ struct ObservedProcess {
 impl ObservedProcess {
     fn open(pid: u32) -> Self {
         let access = PROCESS_QUERY_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE;
-        // NOTE: The pid was written by this test's owned child; the requested rights only inspect, wait for, or clean up that process.
+        // SAFETY: The pid was written by this test's owned child; the requested rights only inspect, wait for, or clean up that process.
         let raw = unsafe { OpenProcess(access, 0, pid) };
         assert!(
             !raw.is_null(),
             "could not observe child {pid}: {}",
             io::Error::last_os_error()
         );
-        // NOTE: OpenProcess returned a new valid unique handle, whose ownership is transferred to OwnedHandle.
+        // SAFETY: OpenProcess returned a new valid unique handle, whose ownership is transferred to OwnedHandle.
         let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
         let mut in_job = 0;
-        // NOTE: The live process handle has query rights, and the writable result remains valid for this call.
+        // SAFETY: The live process handle has query rights, and the writable result remains valid for this call.
         assert_ne!(0, unsafe {
             IsProcessInJob(handle.as_raw_handle(), ptr::null_mut(), &mut in_job)
         });
@@ -212,7 +212,7 @@ impl ObservedProcess {
     }
 
     fn is_running(&self) -> bool {
-        // NOTE: This owned process handle has synchronize rights and remains valid until this observer is dropped.
+        // SAFETY: This owned process handle has synchronize rights and remains valid until this observer is dropped.
         match unsafe { WaitForSingleObject(self.handle.as_raw_handle(), 0) } {
             WAIT_OBJECT_0 => false,
             WAIT_TIMEOUT => true,
@@ -233,7 +233,7 @@ impl ObservedProcess {
         .await
         .unwrap_or_else(|_| panic!("command left descendant {} running", self.pid));
         let mut code = 0;
-        // NOTE: This live handle has process query rights, and the exit-code pointer stays writable throughout the call.
+        // SAFETY: This live handle has process query rights, and the exit-code pointer stays writable throughout the call.
         assert_ne!(0, unsafe {
             GetExitCodeProcess(self.handle.as_raw_handle(), &mut code)
         });
@@ -247,9 +247,9 @@ impl ObservedProcess {
 impl Drop for ObservedProcess {
     fn drop(&mut self) {
         if self.is_running() {
-            // NOTE: This handle identifies only a descendant created by this test; terminate rights were requested for failure cleanup.
+            // SAFETY: This handle identifies only a descendant created by this test; terminate rights were requested for failure cleanup.
             unsafe { TerminateProcess(self.handle.as_raw_handle(), 1) };
-            // NOTE: The same owned process handle remains live while bounded failure cleanup waits for its exit.
+            // SAFETY: The same owned process handle remains live while bounded failure cleanup waits for its exit.
             unsafe {
                 WaitForSingleObject(
                     self.handle.as_raw_handle(),
@@ -483,11 +483,13 @@ async fn windows_timeout_stops_children_and_grandchildren() {
 async fn windows_dropped_command_future_stops_children_and_grandchildren() {
     let mut tree = RunningTree::start(20).await;
     tree.worker.abort();
-    assert!(timeout(PROCESS_EXIT_TIMEOUT, &mut tree.worker)
-        .await
-        .unwrap()
-        .unwrap_err()
-        .is_cancelled());
+    assert!(
+        timeout(PROCESS_EXIT_TIMEOUT, &mut tree.worker)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .is_cancelled()
+    );
     tree.assert_descendants_exited().await;
 }
 
@@ -514,10 +516,12 @@ async fn windows_large_output_is_bounded_and_reopens_without_event_consumers() {
     let reopened = read_output(&outputs, "large", OutputRead::default()).unwrap();
     assert!(reopened.complete);
     assert!(reopened.capture_truncated);
-    assert!(reopened
-        .segments
-        .iter()
-        .all(|segment| segment.text.bytes().all(|byte| byte == b'x')));
+    assert!(
+        reopened
+            .segments
+            .iter()
+            .all(|segment| segment.text.bytes().all(|byte| byte == b'x'))
+    );
     eprintln!(
         "{}",
         serde_json::json!({"windows_output_file_bytes": file_bytes, "reopened_payload_bytes": reopened.total_bytes, "facts": facts})
@@ -535,9 +539,11 @@ async fn windows_batch_execution_requires_an_explicit_cmd_interpreter() {
     let native = serde_json::json!({"program":"./fixture.cmd","args":[],"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let rejected = run_command(&native, dir.path(), None, None).await;
     assert_eq!("error", rejected.status);
-    assert!(rejected
-        .model_content
-        .contains("explicit cmd.exe invocation"));
+    assert!(
+        rejected
+            .model_content
+            .contains("explicit cmd.exe invocation")
+    );
     let shell = serde_json::json!({"program":"cmd.exe","args":["/D","/S","/C","fixture.cmd"],"cwd":".","timeout":CHILD_START_TIMEOUT.as_secs()});
     let explicit = run_command(&shell, dir.path(), None, None).await;
     assert_eq!("ok", explicit.status, "{explicit:?}");

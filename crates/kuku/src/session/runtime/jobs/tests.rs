@@ -13,7 +13,7 @@ use crate::config::{
 };
 
 use super::super::{AgentConfig, SessionOptions};
-use super::{timestamp, JobRequest, Record};
+use super::{JobRequest, Record, timestamp};
 
 fn dispatch_recorded_call(path: &Path, tool: &str, id: &str, turn: u64) -> EventStore {
     let mut store = EventStore::open(path).unwrap();

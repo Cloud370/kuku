@@ -1,15 +1,15 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Modal, ThinkingPicker};
 use crate::keys::Shortcut;
 use crate::menu::{Choice, ChoiceKind, CommandMenu, Picker, PickerKind};
 use crate::text::{effort_label, shorten, with_suffix};
-use crate::theme::{compact_padding, emphasis, focused_row, surface, ACCENT, ERROR, MUTED};
+use crate::theme::{ACCENT, ERROR, MUTED, compact_padding, emphasis, focused_row, surface};
 
 use super::{picker_line, popup, render_editor, render_popup};
 

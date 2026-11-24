@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 
 use super::hook::HookInstance;
-use super::output::{handle_overflow, merge_outputs, parse_stdout, HookOutput};
+use super::output::{HookOutput, handle_overflow, merge_outputs, parse_stdout};
 
 const SIGTERM_GRACE: Duration = Duration::from_secs(2);
 
@@ -21,7 +21,10 @@ pub(crate) struct HookInput {
 
 /// Result of executing a single hook, including output, timing, and exit status.
 #[derive(Debug)]
-#[allow(dead_code)] // used only as opaque type; fields consumed by host integration (TBD)
+#[allow(
+    dead_code,
+    reason = "internal hook status fields are reserved for host integration"
+)]
 pub(crate) struct HookExecResult {
     pub output: HookOutput,
     pub exit_code: i32,
@@ -195,7 +198,7 @@ fn build_matcher_vars(input: &HookInput) -> std::collections::HashMap<String, St
             }
             vars.insert(key.clone(), json_to_string(value));
             if key == "args" {
-                if let serde_json::Value::Object(ref args_map) = value {
+                if let serde_json::Value::Object(args_map) = value {
                     for (arg_key, arg_val) in args_map {
                         vars.insert(format!("args.{arg_key}"), json_to_string(arg_val));
                     }

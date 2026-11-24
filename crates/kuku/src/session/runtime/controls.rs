@@ -7,9 +7,9 @@ use crate::{Error, Result};
 use super::jobs::await_job_cleanup;
 use super::receipts::{validate_address, validate_key};
 use super::record::{
-    fingerprint, timestamp, AgentState, Command, InterruptedExecution, Record, State,
+    AgentState, Command, InterruptedExecution, Record, State, fingerprint, timestamp,
 };
-use super::{ensure_open, AgentStatus, InputStatus, Receipt, Session, Withdrawal};
+use super::{AgentStatus, InputStatus, Receipt, Session, Withdrawal, ensure_open};
 
 impl Session {
     /// Hide a committed user message and the following visible history for one Agent.
@@ -850,12 +850,14 @@ mod rewind_guard_tests {
                 },
             )
             .unwrap();
-        assert!(state
-            .agent("main")
-            .unwrap()
-            .accepted
-            .iter()
-            .any(|d| d.input.command_id == "new"));
+        assert!(
+            state
+                .agent("main")
+                .unwrap()
+                .accepted
+                .iter()
+                .any(|d| d.input.command_id == "new")
+        );
     }
 
     #[test]

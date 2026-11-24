@@ -8,8 +8,8 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 use crate::text::single_line;
 use crate::theme::{
-    code_surface, CardFrame, CODE_COMMENT, CODE_KEYWORD, CODE_LITERAL, CODE_NAME, CODE_STRING,
-    CODE_TEXT, ERROR,
+    CODE_COMMENT, CODE_KEYWORD, CODE_LITERAL, CODE_NAME, CODE_STRING, CODE_TEXT, CardFrame, ERROR,
+    code_surface,
 };
 
 use super::{append, document, wrap_bounded};

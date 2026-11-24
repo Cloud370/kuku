@@ -4,14 +4,14 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use crate::context::runtime::StartupCache;
-use crate::event::store::{JournalSummary, Replay};
-use crate::event::EventStore;
 use crate::Result;
+use crate::context::runtime::StartupCache;
+use crate::event::EventStore;
+use crate::event::store::{JournalSummary, Replay};
 
 use super::jobs::JobReplay;
 use super::record::{AgentState, State};
-use super::{reduce_event, retention, InputStatus};
+use super::{InputStatus, reduce_event, retention};
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct Projection {
@@ -85,7 +85,7 @@ pub(super) fn pack(writer: EventStore, events: &Path, id: &str, max_bytes: usize
 }
 
 pub(super) fn report_pack_failure(data_dir: &Path, id: &str, error: impl std::fmt::Display) {
-    use crate::log::{runtime_log_path, BufferedLogWriter, LogLevel, LogRecord, LogScope};
+    use crate::log::{BufferedLogWriter, LogLevel, LogRecord, LogScope, runtime_log_path};
 
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -177,9 +177,9 @@ fn recover_state(
 #[cfg(test)]
 mod tests {
     use super::{EventStore, Projection, Replay, StartupCache};
+    use crate::AgentConfig;
     use crate::event::EventPayload;
     use crate::session::runtime::record::Record;
-    use crate::AgentConfig;
 
     #[test]
     fn sealed_listing_reads_only_the_state_it_projects() {
@@ -260,8 +260,10 @@ mod tests {
         assert_eq!(actual, expected);
 
         let mut packing = Projection::new(&outputs, "session", new_limit).unwrap();
-        assert!(!packing
-            .observe(Replay::Checkpoint(&checkpoint), Some(new_limit))
-            .unwrap());
+        assert!(
+            !packing
+                .observe(Replay::Checkpoint(&checkpoint), Some(new_limit))
+                .unwrap()
+        );
     }
 }

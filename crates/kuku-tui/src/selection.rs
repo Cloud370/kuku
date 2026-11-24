@@ -278,10 +278,10 @@ mod tests {
 
     use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use kuku_client::{HistoryEntry, HistoryKind};
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::style::Modifier;
-    use ratatui::Terminal;
 
     use crate::app::App;
     use crate::jobs::Job;
@@ -326,9 +326,11 @@ mod tests {
             .unwrap()
             .buffer;
         assert!(buffer[emoji].modifier.contains(Modifier::REVERSED));
-        assert!(!buffer[(emoji.0 - 1, emoji.1)]
-            .modifier
-            .contains(Modifier::REVERSED));
+        assert!(
+            !buffer[(emoji.0 - 1, emoji.1)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
         app.event(mouse(MouseEventKind::Up(left), end), buffer);
         assert!(
             matches!(app.effects.as_slice(), [Job::Copy(text)] if text == "中\n  de\u{301}tail\n👩‍💻! after\n\nAssistant\n✓")

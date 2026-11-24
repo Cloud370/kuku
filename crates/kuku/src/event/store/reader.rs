@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-use super::{StoredEvent, MAX_RECORD_BYTES};
+use super::{MAX_RECORD_BYTES, StoredEvent};
 
 pub(super) struct EventRecord {
     pub(super) event: StoredEvent,

@@ -26,7 +26,7 @@ The medians come from three fresh processes per program on the same WSL2 Linux x
 | Steady short turn | 192 ms | 188 ms |
 | SDK's latest 40 events (`events_before`) | 0.49 ms | 1.68 ms |
 
-These figures measure the SDK process. Active Agents, loaded context, and tool subprocesses add memory in a real workload. The wall times come from three paired fresh-process runs on Linux with a warm OS page cache, the same size-optimized release profile, and a fixed SDK model adapter. The read counts come from a separate syscall trace. The synthetic history contains repeated logs, which compress especially well. First sealing took about 3 s. Sealed history pages decompress the frames they traverse. Linux process-kill tests on both sides of publication preserved all 198,454 original committed events. [Evidence and conditions](https://github.com/Cloud370/kuku/issues/151#issuecomment-7075736730) · [Opt-in Session probe](../contributing/testing.md#long-session-profile)
+These figures measure the SDK process. Active Agents, loaded context, and tool subprocesses add memory in a real workload. The wall times come from three paired fresh-process runs on Linux with a warm OS page cache, the same size-optimized release profile, and a fixed SDK model adapter. The read counts come from a separate syscall trace. The synthetic history contains repeated logs, which compress especially well. First sealing took about 3 s. Sealed history pages decompress the frames they traverse. Linux process-kill tests on both sides of publication preserved all 198,454 original committed events. [Evidence and conditions](https://github.com/Cloud370/kuku/issues/151#issuecomment-7075736730) · [Opt-in Session probe](../contributing/testing-advanced.md#long-session-profile)
 
 ### TUI resume
 

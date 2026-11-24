@@ -169,10 +169,12 @@ fn edit_file_replaces_unique_text_or_all_matches() {
         structured["raw_text_after"].as_str().unwrap(),
         "alpha\ngamma\nalpha\n"
     );
-    assert!(structured["content_hash_after"]
-        .as_str()
-        .unwrap()
-        .starts_with("sha256:"));
+    assert!(
+        structured["content_hash_after"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
 
     let changed = b"alpha\ngamma\nalpha\n";
     let second_snapshot = read_snapshot_event(

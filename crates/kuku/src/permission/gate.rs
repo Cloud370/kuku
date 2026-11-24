@@ -288,7 +288,10 @@ fn shell_guard_reason(command: &str) -> Option<&'static str> {
         })
 }
 
-#[allow(clippy::collapsible_str_replace)]
+#[allow(
+    clippy::collapsible_str_replace,
+    reason = "normalize compound separators before processing their individual characters"
+)]
 fn split_command_separators(input: &str) -> String {
     // Order matters: && must be replaced before & to avoid double-splitting
     input

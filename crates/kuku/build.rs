@@ -36,10 +36,10 @@ fn main() {
 }
 
 fn watch_git_path(name: &str) {
-    if let Some(path) = git(&["rev-parse", "--git-path", name]) {
-        if Path::new(&path).exists() {
-            println!("cargo:rerun-if-changed={path}");
-        }
+    if let Some(path) = git(&["rev-parse", "--git-path", name])
+        && Path::new(&path).exists()
+    {
+        println!("cargo:rerun-if-changed={path}");
     }
 }
 

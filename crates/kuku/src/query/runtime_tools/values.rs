@@ -1,11 +1,11 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::session::runtime::OutputSelector;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{
-    Error, NamedValueSource, OutputReference, Result, Session, MAX_INPUT_VALUES,
-    MAX_VALUE_NAME_BYTES,
+    Error, MAX_INPUT_VALUES, MAX_VALUE_NAME_BYTES, NamedValueSource, OutputReference, Result,
+    Session,
 };
 
 const MAX_LIST_VALUES: usize = 32;

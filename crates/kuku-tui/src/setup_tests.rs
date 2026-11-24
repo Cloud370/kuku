@@ -2,8 +2,8 @@ use std::fs;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use kuku_client::ConnectionOptions;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 use super::config::Settings;
 use super::state::{ReviewAction, SetupState, SetupStep};
@@ -55,10 +55,12 @@ fn init_gate_requires_a_terminal_and_local_options_without_creating_paths() {
 
     let mut remote = options.clone();
     remote.remote = Some("https://service.invalid".into());
-    assert!(super::validate_entry(&remote, true, "guidance")
-        .unwrap_err()
-        .to_string()
-        .contains("local-only"));
+    assert!(
+        super::validate_entry(&remote, true, "guidance")
+            .unwrap_err()
+            .to_string()
+            .contains("local-only")
+    );
     assert!(!data_dir.exists());
 }
 
@@ -167,11 +169,13 @@ async fn minimum_size_renders_the_working_connection_choices() {
     assert!(rendered.contains("Choose a provider"));
     assert!(rendered.contains("› New custom connection"));
     assert!(rendered.find("New custom connection") < rendered.find("Preset"));
-    assert!(rendered
-        .lines()
-        .nth(18)
-        .unwrap()
-        .starts_with("│Esc previous step"));
+    assert!(
+        rendered
+            .lines()
+            .nth(18)
+            .unwrap()
+            .starts_with("│Esc previous step")
+    );
     assert!(rendered.contains("Preset · Anthropic"));
     assert!(rendered.contains("Preset · OpenAI"));
 

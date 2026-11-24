@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use super::{load_config, show_redacted, ApiKey};
+use super::{ApiKey, load_config, show_redacted};
 use crate::util::private_directory;
 
 const CONFIG: &str = r#"
@@ -92,14 +92,18 @@ fn secret_values_are_redacted_from_debug_and_config_display() {
 
     let file = load_config(&config_path).unwrap();
     assert!(!format!("{file:?}").contains("fixture-only-not-a-real-key"));
-    assert!(!format!(
-        "{:?}",
-        ApiKey::Plaintext("fixture-only-not-a-real-key".into())
-    )
-    .contains("fixture-only-not-a-real-key"));
-    assert!(!show_redacted(&config_path)
-        .unwrap()
-        .contains("fixture-only-not-a-real-key"));
+    assert!(
+        !format!(
+            "{:?}",
+            ApiKey::Plaintext("fixture-only-not-a-real-key".into())
+        )
+        .contains("fixture-only-not-a-real-key")
+    );
+    assert!(
+        !show_redacted(&config_path)
+            .unwrap()
+            .contains("fixture-only-not-a-real-key")
+    );
 }
 
 #[test]

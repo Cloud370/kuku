@@ -9,13 +9,13 @@ use unicode_width::UnicodeWidthStr;
 use crate::markup::{render_diff, render_literal};
 use crate::text::{cap, shorten, single_line};
 use crate::theme::{
-    emphasis, tool_operation_color, tool_status, TranscriptTone, ACCENT, MODEL, MUTED,
-    SURFACE_TEXT, WARNING,
+    ACCENT, MODEL, MUTED, SURFACE_TEXT, TranscriptTone, WARNING, emphasis, tool_operation_color,
+    tool_status,
 };
 
 use super::agent::{AgentCard, AgentRequest};
 use super::details::{InlineOutput, ScriptDetail};
-use super::{append_bounded, body_inset, capped, render_rows, Row, ToolDetails};
+use super::{Row, ToolDetails, append_bounded, body_inset, capped, render_rows};
 
 mod activity;
 mod command;
@@ -28,7 +28,7 @@ mod session;
 use file_change::FileChange;
 use file_change::OutputFormat;
 use outcome::{Outcome, State};
-use session::{is_session_read, query_target, Observation};
+use session::{Observation, is_session_read, query_target};
 
 const MAX_DETAIL_BYTES: usize = 12 * 1024;
 const MAX_LABEL_BYTES: usize = 256;
