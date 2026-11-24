@@ -279,7 +279,17 @@ async fn provider_context_reflects_each_agents_tools_and_keeps_main_frozen() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("AGENTS.md"), "PROJECT_POLICY_MARKER").unwrap();
-    let (original, path) = options(&server, workspace.path(), data.path());
+    let prompts = tempfile::tempdir().unwrap();
+    let blocks = prompts.path().join("blocks");
+    std::fs::create_dir(&blocks).unwrap();
+    let catalog = kuku::builtin_prompt_catalog();
+    let policy = catalog.blocks["project-policy"]
+        .text
+        .replace("\r\n", "\n")
+        .replace('\n', "\r\n");
+    std::fs::write(blocks.join("project-policy.md"), policy).unwrap();
+    let (mut original, path) = options(&server, workspace.path(), data.path());
+    original.prompts_dir = Some(prompts.path().to_owned());
     let model = server
         .mock_async(|when, then| {
             when.method(POST)

@@ -1,3 +1,7 @@
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use crate::error::Result;
 use crate::event::types::{ContextMessage, EventPayload, StoredEvent};
 use crate::prompt::{ProjectContextInput, render_project_context};
@@ -195,15 +199,16 @@ fn render_project_policy(
     let project_policy = catalog.blocks.get("project-policy").ok_or_else(|| {
         crate::error::Error::PromptRender("missing project-policy template".into())
     })?;
+    static MODEL_TIERS_SECTION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\r?\n<kuku_models>\r?\n\{\{model_tiers_rendered\}\}\r?\n</kuku_models>\r?\n")
+            .expect("model tiers section pattern is valid")
+    });
     let without_models;
     let template = if can_select_model {
-        &project_policy.text
+        project_policy.text.as_str()
     } else {
-        without_models = project_policy.text.replace(
-            "\n<kuku_models>\n{{model_tiers_rendered}}\n</kuku_models>\n",
-            "",
-        );
-        &without_models
+        without_models = MODEL_TIERS_SECTION.replace_all(&project_policy.text, "");
+        without_models.as_ref()
     };
     render_project_context(
         template,
