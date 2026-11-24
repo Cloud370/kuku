@@ -25,6 +25,7 @@ def workspace_permissions(client):
     restart_pending_script(client, workspace, approved=False)
     restart_pending_script(client, workspace, approved=True)
     cli_script_permission(client, workspace)
+    cli_detached_script_permission(client, workspace)
 
 
 def exercise_permissions(client, workspace, outside):
@@ -144,6 +145,12 @@ def exercise_permissions(client, workspace, outside):
         result.text("The existing file stays intact.")
         terminal.expect("The existing file stays intact.")
         assert direct.read_text(encoding="utf-8") == "direct write"
+        assert client.request("PUT", path, payload="read-only").as_json() == "read-only"
+        eventually("the statusline to show Read-only",
+                   lambda: terminal.request("screen")["screen"].splitlines()[-1].strip().startswith("Read-only"))
+        assert client.request("PUT", path, payload="ask").as_json() == "ask"
+        eventually("the statusline to show Ask",
+                   lambda: terminal.request("screen")["screen"].splitlines()[-1].strip().startswith("Ask"))
         terminal.exit_cleanly()
 
     print("Applied workspace modes and verified native tool and Agent directories, background approval, and terminal sound settings.")
@@ -242,3 +249,31 @@ def cli_script_permission(client, workspace):
         client.provider.next("cli-script").text("The command-line client approved the write.")
         client.finish(process)
     assert (workspace / "cli.txt").read_text(encoding="utf-8") == "approved"
+
+
+def cli_detached_script_permission(client, workspace):
+    prompt = "Continue a detached script with two approvals"
+    with client.command(workspace, "run", "--json", prompt) as process:
+        client.provider.next(prompt).tool(
+            "run_js", "cli-detached",
+            background=True,
+            code=(
+                'await tools.write_file({path:"cli-first.txt",content:"first"});'
+                'return await tools.write_file({path:"cli-second.txt",content:"second"});'
+            ),
+        )
+        output, _ = client.finish(process)
+    waiting = json.loads(output)
+    session = waiting["session_id"]
+    client.provider.next("cli-detached").text("The script is running in the background.")
+    eventually("the Agent to be idle", lambda: client.snapshot(workspace, session)["status"] == "idle")
+
+    with client.command(workspace, "reply", session, waiting["permission"]["id"], "--allow") as process:
+        output, _ = client.finish(process)
+    second = json.loads(output.splitlines()[-1])["permission"]
+    assert second["arguments"]["path"] == "cli-second.txt", output
+    assert (workspace / "cli-first.txt").read_text(encoding="utf-8") == "first"
+    assert not (workspace / "cli-second.txt").exists()
+
+    client.cli(workspace, "reply", session, second["id"], "--allow")
+    assert (workspace / "cli-second.txt").read_text(encoding="utf-8") == "second"

@@ -355,6 +355,7 @@ pub(crate) struct App {
     pub(crate) terminal_bell: crate::notifications::TerminalBell,
     pub(crate) permission_mode: Option<kuku_client::PermissionMode>,
     permission_mode_loading: bool,
+    permission_mode_refresh_pending: bool,
     permission_mode_saving: bool,
     permission_mode_ticket: u64,
     approvals: Vec<kuku_client::PendingApproval>,
@@ -441,6 +442,7 @@ impl App {
             terminal_bell: crate::notifications::TerminalBell::default(),
             permission_mode: Some(kuku_client::PermissionMode::Full),
             permission_mode_loading: false,
+            permission_mode_refresh_pending: false,
             permission_mode_saving: false,
             permission_mode_ticket: 0,
             approvals: Vec::new(),
@@ -692,6 +694,11 @@ impl App {
             Update::WatchFailed(selection, error) if selection == self.selection() => {
                 self.watch_failed(error);
             }
+            Update::Observation(selection, Observation::WorkspacePermission { mode })
+                if selection == self.selection() =>
+            {
+                self.observe_workspace_permission(mode);
+            }
             Update::Observation(selection, event) if selection == self.selection() => {
                 let last_event = self.pane().last_event;
                 self.terminal_bell
@@ -877,14 +884,9 @@ impl App {
         self.begin_observing();
         self.permission_mode = None;
         self.approval_after_mode_save = None;
-        self.permission_mode_ticket = self.permission_mode_ticket.wrapping_add(1);
-        self.permission_mode_loading = true;
+        self.permission_mode_refresh_pending = false;
         self.permission_mode_saving = false;
-        self.effects.push(Job::WorkspacePermission {
-            ticket: self.permission_mode_ticket,
-            workspace: self.workspace.clone(),
-            mode: None,
-        });
+        self.refresh_workspace_permission();
         self.effects.push(Job::Pending);
     }
 

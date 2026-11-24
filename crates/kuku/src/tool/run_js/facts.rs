@@ -59,13 +59,6 @@ impl WorkspaceScriptOperation {
         }
     }
 
-    pub(crate) fn permission_name(self) -> &'static str {
-        match self {
-            Self::SearchOutput => Self::ReadOutput.name(),
-            _ => self.name(),
-        }
-    }
-
     pub(crate) const ALL: [Self; 15] = [
         Self::FindFiles,
         Self::ReadFile,

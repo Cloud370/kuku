@@ -176,7 +176,6 @@ impl WorkspaceHost {
             ));
         }
         let name = call.op.name();
-        let permission_name = call.op.permission_name();
         let Some(definition) = self.methods.iter().find(|method| method.name == name) else {
             return Ok(ToolResultEnvelope::blocked(
                 "tool unavailable to this Agent",
@@ -190,7 +189,7 @@ impl WorkspaceHost {
             self.actions.session.events_path(),
             &self.actions.workspace,
             self.turn,
-            permission_name,
+            name,
             &call.args,
             &id,
             &mut context,
@@ -242,10 +241,8 @@ impl WorkspaceHost {
             }
             self.actions.workspace.clone()
         };
-        let candidate =
-            permission_candidate(&self.home, &self.actions.workspace, permission_name, &args);
-        let mut schema = super::runtime_tools::schema(definition);
-        schema.name = permission_name.into();
+        let candidate = permission_candidate(&self.home, &self.actions.workspace, name, &args);
+        let schema = super::runtime_tools::schema(definition);
         let action = ToolAuthorization {
             session_id: self.actions.session.id().into(),
             agent: self.actions.agent.clone(),

@@ -100,6 +100,11 @@ pub enum Observation {
         /// Number of missed transient frames, or zero after a reconnect with an unknown count.
         skipped: u64,
     },
+    /// The service changed the effective permission mode for the workspace.
+    WorkspacePermission {
+        /// Latest saved permission mode for the observed workspace.
+        mode: Option<crate::PermissionMode>,
+    },
     /// An idle connection is still healthy.
     Heartbeat,
 }

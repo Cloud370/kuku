@@ -209,6 +209,7 @@ export type Observation =
       event: LiveEvent;
     }
   | { type: "lagged"; skipped: number }
+  | { type: "workspace_permission"; mode: "full" | "ask" | "read-only" | null }
   | { type: "heartbeat" };
 
 export interface OutputSegment {
@@ -384,6 +385,12 @@ function decodeObservation(line: string): Observation {
   ) {
     return frame as Observation;
   }
+  if (
+    frame?.type === "workspace_permission" &&
+    frame.mode !== undefined &&
+    [null, "full", "ask", "read-only"].includes(frame.mode)
+  )
+    return frame as Observation;
   if (frame?.type === "heartbeat") return { type: frame.type };
   if (frame?.type === "lagged" && Number.isSafeInteger(frame.skipped)) return frame as Observation;
   throw new Error("The server returned an invalid observation frame.");

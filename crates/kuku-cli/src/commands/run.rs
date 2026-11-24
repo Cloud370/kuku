@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use kuku_client::{
     Acknowledgement, Action, AgentConfig, AgentSnapshot, AgentStatus, Command, Connection, Error,
-    Observation, PendingApproval, PermissionRequest, Snapshot, Target, Timing, new_id,
+    JobStatus, Observation, PendingApproval, PermissionRequest, Snapshot, Target, Timing, new_id,
 };
 use serde_json::json;
 
@@ -100,9 +100,9 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
             .pending_approvals(&command.target)
             .await?
             .into_iter()
-            .map(|approval| approval.request)
-            .find(|request| {
-                request.id == *request_id && request.conversation.as_str() == command.target.agent
+            .find(|approval| {
+                approval.request.id == *request_id
+                    && approval.request.conversation.as_str() == command.target.agent
             })
     } else {
         None
@@ -111,10 +111,10 @@ pub async fn reply(args: ReplyArgs, options: &ConnectionArgs) -> CliResult {
     if acknowledgement.replayed {
         return render_acknowledgement(&connection, &command.target, acknowledgement, true).await;
     }
-    if let Some(request) = &request {
+    if let Some(approval) = &request {
         let decision = if args.allow { "allow" } else { "deny" };
         write_json(&permission_decision_line(
-            request,
+            &approval.request,
             decision.into(),
             "host".into(),
         ))?;
@@ -321,7 +321,7 @@ async fn settle(
     acknowledgement: Acknowledgement,
     mut renderer: Option<&mut RunRenderer>,
     stream_json: bool,
-    replied_to: Option<&PermissionRequest>,
+    replied_to: Option<&PendingApproval>,
 ) -> Result<AgentSnapshot, Box<dyn std::error::Error>> {
     let receipt_cursor = acknowledgement.receipt.event_id;
     let mut observer = connection
@@ -329,6 +329,8 @@ async fn settle(
         .subscribe_session(target, receipt_cursor.saturating_sub(1));
     let mut settled = connection.client.snapshot(target).await?;
     let mut approvals = connection.client.pending_approvals(target).await?;
+    let job_id = replied_to.and_then(|approval| approval.job_id.as_deref());
+    let mut job_running = observed_job_running(connection, target, job_id).await?;
     loop {
         if let Some(request) =
             observed_script_approval(&settled.agent, &approvals, receipt_cursor, replied_to)
@@ -336,15 +338,22 @@ async fn settle(
             settled.agent.permission = Some(request.clone());
             return Ok(settled.agent);
         }
-        if is_settled(&settled, receipt_cursor, &approvals)
-            && (!stream_json || observer.cursor() >= settled.cursor)
-        {
+        let complete = if job_id.is_some() {
+            !job_running
+        } else {
+            is_settled(&settled, receipt_cursor, &approvals)
+        };
+        if complete && (!stream_json || observer.cursor() >= settled.cursor) {
             break;
         }
         let event = tokio::select! {
             result = observer.next() => result?,
             signal = tokio::signal::ctrl_c() => {
                 signal?;
+                if let Some(job_id) = job_id {
+                    connection.client.cancel_job(target, job_id).await?;
+                    return Err("job cancelled after cleanup".into());
+                }
                 if let Some(execution_id) = settled.execution_id() {
                     submit(connection, &Command { target: target.clone(), command_id: new_id(), action: Action::Cancel { execution_id } }).await?;
                     return Ok(connection.client.snapshot(target).await?.agent);
@@ -368,6 +377,9 @@ async fn settle(
                 if state_changed && id > settled.cursor {
                     settled = connection.client.snapshot(target).await?;
                 }
+                if operation.as_deref() == Some("job_finished") {
+                    job_running = observed_job_running(connection, target, job_id).await?;
+                }
                 if matches!(
                     operation.as_deref(),
                     Some(
@@ -390,8 +402,11 @@ async fn settle(
                 }
                 settled = connection.client.snapshot(target).await?;
                 approvals = connection.client.pending_approvals(target).await?;
+                job_running = observed_job_running(connection, target, job_id).await?;
             }
-            Observation::Live { .. } | Observation::Heartbeat => {}
+            Observation::Live { .. }
+            | Observation::WorkspacePermission { .. }
+            | Observation::Heartbeat => {}
         }
     }
     if let Some(renderer) = renderer.filter(|renderer| renderer.needs_preview()) {
@@ -414,11 +429,20 @@ async fn settle(
     Ok(settled.agent)
 }
 
+async fn observed_job_running(
+    connection: &Connection,
+    target: &Target,
+    job_id: Option<&str>,
+) -> Result<bool, Error> {
+    let Some(id) = job_id else { return Ok(false) };
+    Ok(connection.client.job(target, id).await?.status == JobStatus::Running)
+}
+
 fn observed_script_approval<'a>(
     agent: &AgentSnapshot,
     approvals: &'a [PendingApproval],
     receipt_cursor: u64,
-    replied_to: Option<&PermissionRequest>,
+    replied_to: Option<&PendingApproval>,
 ) -> Option<&'a PermissionRequest> {
     approvals.iter().find_map(|approval| {
         let request = &approval.request;
@@ -429,9 +453,12 @@ fn observed_script_approval<'a>(
             && (request.turn >= receipt_cursor
                 || approval.job_id.is_none() && agent.status == AgentStatus::Running);
         let same_script = replied_to.is_some_and(|replied| {
-            replied.turn == request.turn && replied.tool_call_id == request.tool_call_id
+            replied.request.turn == request.turn
+                && replied.request.tool_call_id == request.tool_call_id
         });
-        (current_turn || same_script).then_some(request)
+        let relevant = same_script
+            || (current_turn && replied_to.is_none_or(|approval| approval.job_id.is_none()));
+        relevant.then_some(request)
     })
 }
 

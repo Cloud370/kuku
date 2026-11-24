@@ -106,6 +106,7 @@ impl AgentActivities {
             Observation::Committed { .. }
             | Observation::Live { .. }
             | Observation::Lagged { .. }
+            | Observation::WorkspacePermission { .. }
             | Observation::Heartbeat => false,
         };
         if changed {

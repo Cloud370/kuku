@@ -112,6 +112,24 @@ impl App {
         });
     }
 
+    pub(super) fn refresh_workspace_permission(&mut self) {
+        self.permission_mode_ticket = self.permission_mode_ticket.wrapping_add(1);
+        self.permission_mode_loading = true;
+        self.effects.push(Job::WorkspacePermission {
+            ticket: self.permission_mode_ticket,
+            workspace: self.workspace.clone(),
+            mode: None,
+        });
+    }
+
+    pub(super) fn observe_workspace_permission(&mut self, mode: Option<PermissionMode>) {
+        if self.permission_mode_loading || self.permission_mode_saving {
+            self.permission_mode_refresh_pending = true;
+        } else {
+            self.permission_mode = mode;
+        }
+    }
+
     pub(super) fn workspace_permission_loaded(
         &mut self,
         saving: bool,
@@ -146,6 +164,9 @@ impl App {
                 self.approval_after_mode_save = None;
                 self.problem(format!("Workspace permissions · {error}"));
             }
+        }
+        if std::mem::take(&mut self.permission_mode_refresh_pending) {
+            self.refresh_workspace_permission();
         }
     }
 

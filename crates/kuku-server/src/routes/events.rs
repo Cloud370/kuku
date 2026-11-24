@@ -576,9 +576,13 @@ async fn follow(
     send: &FrameWriter,
 ) -> Result<()> {
     let mut changes = manager.changes();
+    let mut permission_mode = None;
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        if !observe_workspace_permission(manager, target, &mut permission_mode, send).await {
+            return Ok(());
+        }
         if let Some(session) = manager.open_session(&target.path) {
             let turns = TurnLookup::Live(session.clone());
             let mut observer = match agent.filter(|_| include_agent_activity) {
@@ -588,6 +592,12 @@ async fn follow(
             loop {
                 let observation = tokio::select! {
                     _ = send.closed() => return Ok(()),
+                    _ = changes.changed() => {
+                        if !observe_workspace_permission(manager, target, &mut permission_mode, send).await {
+                            return Ok(());
+                        }
+                        continue;
+                    }
                     _ = ping.tick() => {
                         if !write_frame(send, json!({"type":"heartbeat"})).await {
                             return Ok(());
@@ -675,6 +685,17 @@ async fn follow(
             }
         }
     }
+}
+
+async fn observe_workspace_permission(
+    manager: &RunManager,
+    target: &SessionTarget,
+    previous: &mut Option<kuku::permission::PermissionMode>,
+    send: &FrameWriter,
+) -> bool {
+    let mode = manager.cached_workspace_permission(&target.workspace);
+    let changed = std::mem::replace(previous, mode) != mode;
+    !changed || write_frame(send, json!({"type":"workspace_permission", "mode":mode})).await
 }
 
 async fn write_frame(send: &FrameWriter, frame: Value) -> bool {

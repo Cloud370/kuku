@@ -27,6 +27,16 @@ impl RunManager {
         Ok(mode)
     }
 
+    pub(crate) fn cached_workspace_permission(&self, workspace: &Path) -> Option<PermissionMode> {
+        self.inner
+            .workspace_permissions
+            .lock()
+            .unwrap()
+            .get(workspace)
+            .copied()
+            .flatten()
+    }
+
     pub(crate) fn set_workspace_permission(
         &self,
         home: &Path,
@@ -50,6 +60,7 @@ impl RunManager {
                 session.set_permission_mode(mode);
             }
         }
+        self.inner.changed.send_replace(());
         Ok(())
     }
 

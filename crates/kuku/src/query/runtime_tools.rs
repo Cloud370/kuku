@@ -469,10 +469,7 @@ fn prepared_authorization(
     queued: &QueuedToolCall,
     definition: &ToolDefinition,
 ) -> crate::permission::ToolAuthorization {
-    let mut tool = schema(definition);
-    if tool.name == "search_output" {
-        tool.name = "read_output".into();
-    }
+    let tool = schema(definition);
     let workspace = if queued.tool_call.name == "run_command" {
         queued.tool_call.args["cwd"]
             .as_str()
