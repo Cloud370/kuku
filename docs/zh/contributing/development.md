@@ -28,7 +28,7 @@
 
 本次重构的本地入口为已忽略的 `benchmarks/rewrite-state.json`，它指向选定的私有 Project 和任务标识；任务状态仅在该 Project 维护。保留此入口并沿引用继续，不创建第二看板。其他 checkout 可能没有该文件，因此分派任务时附上跟踪入口。可复现命令维护在[验收选择入口](testing.md#选择验证范围)，从选定任务引用有界运行记录，不写平行交接页。
 
-凭据加载和本地证据位置由[测试指南](testing.md#凭据与运行产物)维护。交接引用配置，不复制 key 或私有请求正文。
+本地证据位置见[测试指南](testing.md#测试归属与证据)，凭据加载见[专项验收](testing-advanced.md#凭据与运行产物)。交接引用配置，不复制 key 或私有请求正文。
 
 ## 工作循环
 
@@ -38,7 +38,7 @@
 4. 对照任务和证据审阅实际 diff。修复失败，或准确记录缺失验证；跳过真实模型测试不算真实测试通过。
 5. 提交逻辑完整的结果并更新任务。PR 说明问题、最终行为、实际执行的相关检查和重要限制。引用尚未完成的上级任务，不宣称整次重构已经完成。
 
-修改 TUI 交互时，开发者和编码 Agent 可以用[可选的 tmux 联调流程](testing.md#共同观察-tui-运行可选)，在不同窗口对照原界面和重建后的界面。
+修改 TUI 交互时，开发者和编码 Agent 可以用[可选的 tmux 联调流程](testing-advanced.md#共同观察-tui-运行可选)，在不同窗口对照原界面和重建后的界面。
 
 ## 重构中的工作流交付要求
 
@@ -58,16 +58,11 @@
 
 ```bash
 cargo check
-python3 scripts/acceptance/run.py contract
-python3 scripts/acceptance/run.py protocol
-python3 scripts/acceptance/run.py integration
-python3 scripts/acceptance/run.py interactive
-cargo fmt --all -- --check
 make build
 make release-linux
 ```
 
-选择入口记录实际执行的内容；选择过某项检查不证明未选择的真实或平台覆盖。[测试指南](testing.md)维护 feature 选择、原始 benchmark 环境／判定器、费用预留和真实调用前提。日常开发使用默认 glibc target，musl 路径仅用于发布打包。
+从[测试指南](testing.md)选择验证命令。Benchmark 复现和真实调用前提见[专项验收](testing-advanced.md)。日常开发使用默认 glibc target，发布打包使用 musl。
 
 ## Git 与平台规则
 

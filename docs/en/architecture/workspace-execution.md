@@ -70,7 +70,7 @@ Use the actual captured format in every family. A rule borrowed from RTK may dep
 1. Stabilize the native command interface and generic preview. Cover the one-second Job observation and result delivery in the same public execution workflow.
 2. Add Rust-backed literal search through the existing retained-output reader and JS host boundary.
 3. Land the shared rule format with one full Cargo slice, including diagnostics, source ranges and replay tests. Add the remaining rule families in independently verified batches before claiming first-release coverage.
-4. Compare the full candidate and the generic-preview baseline through the SDK, installed TUI and representative tasks. Use the recorded evidence to select the next improvement. [Command output acceptance](../contributing/testing.md#command-output-and-long-task-acceptance)
+4. Compare the full candidate and the generic-preview baseline through the SDK, installed TUI and representative tasks. Use the recorded evidence to select the next improvement. [Command output acceptance](../contributing/testing-advanced.md#command-output-and-long-task-acceptance)
 
 ## Output and named data
 

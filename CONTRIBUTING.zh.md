@@ -17,14 +17,7 @@ Issue 和 PR 推荐使用中文，英文也欢迎。Commit 信息遵循 [Convent
 
 ## 代码风格
 
-kuku 会自动检查代码风格。提交前请运行以下命令。
-
-```bash
-cargo fmt --all
-cargo clippy -- -D warnings
-```
-
-完整规范见[代码风格](docs/zh/contributing/code-style.md)。
+遵循[代码风格](docs/zh/contributing/code-style.md)，编辑完成后格式化改动的 Rust 文件。
 
 ## 开发
 
@@ -32,8 +25,8 @@ cargo clippy -- -D warnings
 # 构建
 cargo build
 
-# 运行测试
-cargo test -p kuku -p kuku-cli -p kuku-server
+# 验证工作区契约
+python3 scripts/acceptance/run.py contract
 
 # 运行 CLI
 cargo run -- run say hello
@@ -43,7 +36,7 @@ cargo run -- run say hello
 
 - **每个 PR 都必须关联一个 Issue。** 如果还没有对应的 Issue，请先创建。未关联 Issue 的 PR 会被关闭。
 - 让每个 PR 聚焦一个逻辑完整的改动。
-- 推送前运行 `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-cli -p kuku-server`。
+- 推送前按[测试指南](docs/zh/contributing/testing.md)验证改动。
 - 遵循 PR 模板。
 
 未遵循这些规则的 PR 可能被关闭。

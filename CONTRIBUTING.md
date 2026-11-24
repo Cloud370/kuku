@@ -17,14 +17,7 @@ Chinese (中文) is preferred for issues and pull requests. English is also welc
 
 ## Code Style
 
-kuku enforces code style automatically. Before committing, run:
-
-```bash
-cargo fmt --all
-cargo clippy -- -D warnings
-```
-
-See [docs/en/contributing/code-style.md](docs/en/contributing/code-style.md) for the full convention.
+Follow the [code style](docs/en/contributing/code-style.md) and format the edited Rust files after editing.
 
 ## Development
 
@@ -32,8 +25,8 @@ See [docs/en/contributing/code-style.md](docs/en/contributing/code-style.md) for
 # Build
 cargo build
 
-# Run tests
-cargo test -p kuku -p kuku-cli -p kuku-server
+# Run workspace contracts
+python3 scripts/acceptance/run.py contract
 
 # Run the CLI
 cargo run -- run say hello
@@ -43,7 +36,7 @@ cargo run -- run say hello
 
 - **Every PR must be linked to an issue.** If no issue exists, open one first. Unlinked PRs will be closed.
 - Keep PRs focused — one logical change per PR
-- Run `cargo fmt --all && cargo clippy -- -D warnings && cargo test -p kuku -p kuku-cli -p kuku-server` before pushing
+- Follow [Testing](docs/en/contributing/testing.md) to verify the change before pushing.
 - Follow the PR template
 
 PRs that ignore these guidelines may be closed.
