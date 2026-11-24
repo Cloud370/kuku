@@ -291,7 +291,7 @@ def shared_model_editor(binary, bridge, directory):
             )["screen"]
             terminal.press("\x1b[B\r")
             settings_review = terminal.expect(
-                "Model capabilities", also=("Provider default", "Costs", "Save and exit"),
+                "Model capabilities", also=("medium", "Costs", "Save and exit"),
                 absent=("API URL",),
             )["screen"]
             terminal.press("\x1b")
@@ -305,7 +305,8 @@ def shared_model_editor(binary, bridge, directory):
             terminal.submit("Use the first saved default")
             first = client.provider.next("Use the first saved default")
             assert first.request["model"] == "beta"
-            assert "thinking" not in first.request and "output_config" not in first.request
+            assert first.request["thinking"] == {"type": "adaptive"}
+            assert first.request["output_config"]["effort"] == "medium"
             first.text("Saved default sent a text turn.")
             terminal.expect("Saved default sent a text turn.", state="Finished")
 
