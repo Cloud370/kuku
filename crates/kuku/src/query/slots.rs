@@ -505,7 +505,8 @@ mod tests {
     #[tokio::test]
     async fn simple_slot_scopes_file_snapshot_to_active_conversation() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("visible.txt");
+        let workspace = dir.path().canonicalize().unwrap();
+        let path = workspace.join("visible.txt");
         let content = "alpha\nalpha\n";
         std::fs::write(&path, content).unwrap();
         let main_read = read_event(1, dir.path(), None, content, 1);
@@ -525,7 +526,7 @@ mod tests {
             "edit_file".to_string(),
             args.clone(),
             "edit".to_string(),
-            dir.path().to_path_buf(),
+            workspace.clone(),
             dir.path().to_path_buf(),
             vec![main_read.clone()],
             event_tx.clone(),
@@ -549,7 +550,7 @@ mod tests {
             "edit_file".to_string(),
             args,
             "edit".to_string(),
-            dir.path().to_path_buf(),
+            workspace,
             dir.path().to_path_buf(),
             vec![main_read, review_read],
             event_tx,

@@ -11,7 +11,6 @@ mod unpersisted_resume;
 mod wait_support;
 
 #[cfg(unix)]
-#[cfg(unix)]
 use std::time::Duration;
 
 use httpmock::Mock;
@@ -19,7 +18,6 @@ use httpmock::prelude::{HttpMockRequest, MockServer, POST};
 use serde_json::{Value, json};
 
 use kuku::event::EventPayload;
-#[cfg(unix)]
 use kuku::{Activation, AgentConfig, AgentStatus, Input, OutputRead, Session, SessionOptions};
 #[cfg(unix)]
 use wait_support::wait_for_agent_during;
@@ -712,7 +710,6 @@ async fn command_output_failure_after_a_side_effect_stops_model_dispatch() {
     }
 }
 
-#[cfg(unix)]
 #[cfg(unix)]
 #[tokio::test]
 async fn dropping_a_polled_close_keeps_cleanup_owned_and_allows_reconnecting() {
