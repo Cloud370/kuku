@@ -249,23 +249,31 @@ fn parse_chatgpt_models(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
         slug: String,
         display_name: Option<String>,
         visibility: Option<String>,
-        service_tiers: Option<Vec<ServiceTier>>,
+        service_tiers: Option<Vec<CatalogValue>>,
+        supported_reasoning_levels: Option<Vec<CatalogValue>>,
+        default_reasoning_level: Option<String>,
     }
     #[derive(Deserialize)]
     #[serde(untagged)]
-    enum ServiceTier {
+    enum CatalogValue {
         Id(String),
-        Described { id: String },
+        ServiceTier { id: String },
+        ReasoningLevel { effort: String },
         Unknown(serde::de::IgnoredAny),
     }
 
-    impl ServiceTier {
-        fn id(self) -> Option<String> {
-            match self {
-                Self::Id(id) | Self::Described { id } => Some(id),
-                Self::Unknown(_) => None,
-            }
-        }
+    fn declared_values(values: Option<Vec<CatalogValue>>) -> Option<Vec<String>> {
+        let values = values?;
+        let empty = values.is_empty();
+        let ids: Vec<_> = values
+            .into_iter()
+            .filter_map(|value| match value {
+                CatalogValue::Id(id) | CatalogValue::ServiceTier { id } => Some(id),
+                CatalogValue::ReasoningLevel { effort } => Some(effort),
+                CatalogValue::Unknown(_) => None,
+            })
+            .collect();
+        (empty || !ids.is_empty()).then_some(ids)
     }
 
     let catalog: Catalog = serde_json::from_slice(bytes)
@@ -283,11 +291,9 @@ fn parse_chatgpt_models(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
             id: model.slug,
             name: model.display_name,
             capabilities: ModelCapabilityDeclaration {
-                service_tiers: model.service_tiers.and_then(|declared| {
-                    let empty = declared.is_empty();
-                    let ids: Vec<_> = declared.into_iter().filter_map(ServiceTier::id).collect();
-                    (empty || !ids.is_empty()).then_some(ids)
-                }),
+                service_tiers: declared_values(model.service_tiers),
+                reasoning_efforts: declared_values(model.supported_reasoning_levels),
+                reasoning_default: model.default_reasoning_level,
                 ..ModelCapabilityDeclaration::default()
             },
         })
@@ -405,7 +411,9 @@ mod tests {
                 {"id":"priority","name":"Fast","description":"Faster processing"},
                 {"id":"ultrafast","name":"Ultrafast","description":"Lowest latency"},
                 {"name":"Unrecognized"}, "default"
-            ]},
+            ], "supported_reasoning_levels":[{"effort":"low","description":"Low"},
+                {"effort":"high","description":"High"},{"name":"Unrecognized"}],
+               "default_reasoning_level":"low"},
             {"slug":"hidden","visibility":"private"},
             {"slug":"first","display_name":"First","visibility":"list"},
             {"slug":"first","display_name":"Ignore duplicate","visibility":"list"}
@@ -428,6 +436,15 @@ mod tests {
             models[0].capabilities.service_tiers
         );
         assert_eq!(None, models[1].capabilities.service_tiers);
+        assert_eq!(
+            Some(vec!["low".into(), "high".into()]),
+            models[0].capabilities.reasoning_efforts
+        );
+        assert_eq!(
+            Some("low"),
+            models[0].capabilities.reasoning_default.as_deref()
+        );
+        assert_eq!(None, models[1].capabilities.reasoning_efforts);
     }
 
     #[test]
