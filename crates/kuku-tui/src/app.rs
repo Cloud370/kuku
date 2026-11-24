@@ -687,9 +687,6 @@ impl App {
                     }
                 }
             }
-            Update::SpeedLoaded(ticket, result, requested) => {
-                self.speed_loaded(ticket, result, requested)
-            }
             Update::SpeedFinished(ticket, target, result) => {
                 self.speed_work_finished(ticket, target, result)
             }

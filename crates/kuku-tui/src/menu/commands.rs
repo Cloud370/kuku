@@ -123,7 +123,12 @@ impl CommandMenu {
                 "Select thinking effort",
                 Some(Shortcut::CYCLE_THINKING),
             ),
-            Self::Speed => ("speed", &[], "Choose the main Agent's service tier", None),
+            Self::Speed => (
+                "speed",
+                &[],
+                "Choose the selected Agent's service tier",
+                None,
+            ),
             Self::Fast => ("fast", &[], "Select fast · /speed fast", None),
             Self::Ultrafast => (
                 "ultrafast",

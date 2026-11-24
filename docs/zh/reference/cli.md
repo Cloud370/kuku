@@ -111,7 +111,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `/agents` | `/agent`、`/subagents` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。 |
 | `/jobs` | `/job`、`/ps` | 列出当前 Agent 的后台 Job，读取实时输出或取消（`/jobs cancel <id>`）。 |
 | `/model` | `/models` | Enter 切换到高亮路由，`d` 设为默认并切换，`e` 编辑，`/` 搜索。Ctrl+L 打开同一个列表。 |
-| `/speed [档位]` | `/fast`、`/ultra`、`/ultrafast` | 在会话输入框上方选择主 Agent 的服务档位。快捷命令选择 `fast` 或 `ultrafast`。选择 **Follow model default** 清除覆盖设置。添加未知档位时可以选择是否探测。 |
+| `/speed [档位]` | `/fast`、`/ultra`、`/ultrafast` | 在会话输入框上方选择当前 Agent 的服务档位。快捷命令选择 `fast` 或 `ultrafast`。选择 **Follow model default** 清除覆盖设置。添加未知档位时可以选择是否探测。 |
 | `/thinking` | `/think`、`/effort` | 设置当前 Agent 思考等级，选 **Use default** 清除覆盖，或在可写本地路由上按 `D` + `Enter` 设为模型默认。 |
 | `/statusline` | `/status-line` | 预览、开关、排序并保存状态栏字段到 `tui.toml`。 |
 | `/save` | `/save-value` | 发送前为粘贴内容或草稿命名保存。 |
@@ -135,7 +135,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 
 底部状态栏默认显示生效模型、思考等级和已配置的服务档位，例如 `gpt-6.2-sol xhigh ultrafast`、连接提示、当前 Agent、工作区、上下文用量、缓存命中率、平均 TPS、累计输入和输出 token 以及请求费用。待生效的设置显示在 **Next model request**。
 
-如果下一条消息将使用与该 Agent 上一次请求不同的模型路由，输入框上方会显示两条路由并提醒缓存可能无法复用。再按一次 Enter，按原先的时机发送。Esc 收起提示并保留草稿。
+如果下一条消息的模型路由或生效服务档位与该 Agent 上一次请求不同，输入框上方会显示变化并提醒缓存可能无法复用。再按一次 Enter，按原先的时机发送。Esc 收起提示并保留草稿。
 
 输入区上方显示收件人（`To <agent>`）、输入投递状态（`Draft`、`Awaiting receipt`、`Input queued`、`Input accepted`）、当前 Turn 实时耗时及执行状态：
 

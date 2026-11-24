@@ -41,7 +41,7 @@ pub(crate) async fn custom_service_tier(
     let route =
         inspect_model(&settings.resolved, &target.config).map_err(|error| error.to_string())?;
     if !target.same_route(&route) {
-        return Err("The main Agent's model changed. Reopen /speed.".into());
+        return Err("The selected Agent's model changed. Reopen /speed.".into());
     }
     let provider = settings
         .resolved

@@ -1,11 +1,11 @@
 use kuku::config::CustomServiceTier;
-use kuku_client::{Action, AgentConfig, ModelSelection, Snapshot};
+use kuku_client::{AgentConfig, ModelSelection, Snapshot};
 
 use crate::jobs::{Job, Selection};
 use crate::menu::{Choice, ChoiceKind, PickerKind};
 use crate::setup::service_tier::{valid_tier, SpeedResult, SpeedWork};
 
-use super::{Address, App, Modal, PendingStage};
+use super::{App, Modal};
 
 const COMMON_TIERS: [&str; 3] = ["flex", "fast", "ultrafast"];
 
@@ -17,15 +17,17 @@ pub(crate) struct SpeedTarget {
 }
 
 impl SpeedTarget {
-    pub(crate) fn from_snapshot(origin: Selection, snapshot: &Snapshot) -> Result<Self, String> {
+    fn from_snapshot(origin: Selection, snapshot: &Snapshot) -> Result<Self, String> {
         if snapshot.pending_selection_error.is_some() || snapshot.selection_error.is_some() {
-            return Err("Resolve the main Agent's model before selecting a service tier.".into());
+            return Err(
+                "Resolve the selected Agent's model before selecting a service tier.".into(),
+            );
         }
         let model = snapshot
             .pending_selection
             .as_ref()
             .or(snapshot.selection.as_ref())
-            .ok_or("Wait for the main Agent's model to resolve.")?;
+            .ok_or("Wait for the selected Agent's model to resolve.")?;
         Ok(Self {
             origin,
             config: snapshot.agent.config.clone(),
@@ -162,53 +164,13 @@ impl App {
         if !self.require_service() {
             return;
         }
-        let origin = self.selection();
-        let main = Address::main(self.active.session.clone());
-        if self.speed_change_pending(&main) {
-            self.problem("Wait for the main Agent's settings to finish.");
+        if self.model_change_in_flight() {
+            self.problem("Wait for the selected Agent's settings to finish.");
             return;
         }
-        if main != self.active {
-            let target = self.target(&main);
-            let picker = self.picker(PickerKind::Speed, Vec::new());
-            picker.header = "Loading the main Agent's model…".into();
-            picker.loading = true;
-            let ticket = picker.ticket.id;
-            self.effects
-                .push(Job::LoadSpeed(ticket, origin, target, requested));
-            return;
-        }
-        let route = if let Some(snapshot) = &self.pane().snapshot {
-            SpeedTarget::from_snapshot(origin, snapshot).map(Box::new)
-        } else if let Some(model) = &self.pane().initial_model {
-            Ok(Box::new(SpeedTarget {
-                origin,
-                config: self.pane().config().clone(),
-                model: model.clone(),
-            }))
-        } else {
-            Err("Wait for the main Agent's model to resolve or choose a model with /model.".into())
-        };
-        self.show_speed(route, requested);
-    }
-
-    pub(super) fn speed_loaded(
-        &mut self,
-        ticket: u64,
-        route: Result<Box<SpeedTarget>, String>,
-        requested: Option<String>,
-    ) {
-        if matches!(&self.modal, Some(Modal::Picker(picker)) if picker.kind == PickerKind::Speed && picker.ticket.id == ticket)
-        {
-            self.show_speed(route, requested);
-        }
-    }
-
-    fn show_speed(&mut self, route: Result<Box<SpeedTarget>, String>, requested: Option<String>) {
-        let target = match route {
-            Ok(target) => target,
+        let target = match self.speed_target() {
+            Ok(target) => Box::new(target),
             Err(error) => {
-                self.close_picker();
                 self.problem(error);
                 return;
             }
@@ -219,7 +181,7 @@ impl App {
             None => {
                 let choices = target.choices("");
                 let picker = self.picker(PickerKind::Speed, choices);
-                picker.header = format!("main · {}", target.model.model);
+                picker.header = format!("{} · {}", target.origin.target.agent, target.model.model);
                 picker.speed = Some(target);
             }
         }
@@ -280,7 +242,10 @@ impl App {
         picker.header = if accepted {
             format!("{tier} · Request accepted, actual tier unconfirmed")
         } else {
-            format!("{tier} · {}", target.model.model)
+            format!(
+                "{tier} · {} · {}",
+                target.origin.target.agent, target.model.model
+            )
         };
         picker.speed = Some(target);
     }
@@ -288,7 +253,7 @@ impl App {
     fn start_speed_work(&mut self, target: Box<SpeedTarget>, work: SpeedWork) {
         if !self.speed_target_current(&target) {
             self.close_picker();
-            self.problem("The main Agent's settings changed. Reopen /speed.");
+            self.problem("The selected Agent's settings changed. Reopen /speed.");
             return;
         }
         let picker = self.picker(PickerKind::CustomSpeed, Vec::new());
@@ -340,49 +305,44 @@ impl App {
     fn apply_speed(&mut self, target: &SpeedTarget, tier: Option<String>) {
         self.close_picker();
         if !self.speed_target_current(target) {
-            self.problem("The main Agent's settings changed. Reopen /speed.");
+            self.problem("The selected Agent's settings changed. Reopen /speed.");
             return;
         }
         let label = tier.as_deref().unwrap_or("follow model default");
-        let message = format!("main · Service tier · {label}");
+        let agent = &target.origin.target.agent;
+        let message = format!("{agent} · Service tier · {label}");
         if target.config.service_tier != tier {
             let mut config = target.config.clone();
             config.service_tier = tier;
-            let main = Address::main(self.active.session.clone());
-            if self.active == main {
-                self.configure(config);
-            } else {
-                self.issue(
-                    main,
-                    Action::Configure {
-                        config: Box::new(config),
-                    },
-                );
-            }
+            self.configure(config);
         }
         self.confirmation(message);
     }
 
-    fn speed_change_pending(&self, main: &Address) -> bool {
-        self.panes
-            .get(main)
-            .is_some_and(|pane| pane.waiting_for_configuration())
-            || self.pending.values().any(|item| {
-                item.command.target == self.target(main)
-                    && matches!(item.command.action, Action::Configure { .. })
-                    && !matches!(item.stage, PendingStage::Rejected(_))
+    fn speed_target(&self) -> Result<SpeedTarget, String> {
+        let pane = self.pane();
+        let origin = self.selection();
+        if let Some(snapshot) = &pane.snapshot {
+            SpeedTarget::from_snapshot(origin, snapshot)
+        } else if let Some(model) = &pane.initial_model {
+            Ok(SpeedTarget {
+                origin,
+                config: pane.config().clone(),
+                model: model.clone(),
             })
+        } else {
+            Err(
+                "Wait for the selected Agent's model to resolve or choose a model with /model."
+                    .into(),
+            )
+        }
     }
 
     fn speed_target_current(&self, target: &SpeedTarget) -> bool {
-        let main = Address::main(self.active.session.clone());
         target.origin == self.selection()
-            && !self.speed_change_pending(&main)
-            && (main != self.active
-                || self.pane().config() == &target.config
-                    && self.resolved_model_route().is_ok_and(|route| {
-                        route.connection == target.model.connection
-                            && route.model == target.model.model
-                    }))
+            && !self.model_change_in_flight()
+            && self.speed_target().is_ok_and(|current| {
+                current.config == target.config && target.same_route(&current.model)
+            })
     }
 }

@@ -36,7 +36,7 @@ impl App {
             return;
         }
         if self.send_route_is_updating() {
-            self.problem("Wait for the model switch · draft kept");
+            self.problem("Wait for model settings · draft kept");
             return;
         }
         let change = self.send_route_change();

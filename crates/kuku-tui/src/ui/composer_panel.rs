@@ -61,7 +61,7 @@ pub(super) fn render(
         }
         Modal::SendRouteConfirmation(review) => {
             let width = usize::from(inner.width);
-            let [previous, next] = review.model_labels().map(|label| {
+            let [previous, next] = review.change_labels().map(|label| {
                 crate::text::shorten_middle(
                     &crate::text::single_line(&label),
                     width.saturating_sub(3) / 2,

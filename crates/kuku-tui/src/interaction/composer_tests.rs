@@ -509,6 +509,57 @@ fn speed_uses_the_composer_and_applies_declared_tiers_without_probing() {
             && config.reasoning_effort.as_deref() == Some("high")))));
 }
 
+fn reviewer_speed_fixture() -> App {
+    let mut app = connected_app();
+    load_model(&mut app, Some("low"), None);
+    let reviewer = crate::app::Address::new(app.active.session.clone(), "reviewer".into());
+    app.select(reviewer, true, String::new());
+    load_model(&mut app, Some("high"), None);
+    let mut snapshot = app.pane().snapshot.clone().unwrap();
+    snapshot.cursor += 1;
+    snapshot.agent.config.service_tier = Some("priority".into());
+    let model = snapshot.selection.as_mut().unwrap();
+    model.model = "reviewer-model".into();
+    model.connection = "reviewer-gateway".into();
+    model.settings.service_tier = Some("priority".into());
+    model.capabilities.service_tiers.push("ultrafast".into());
+    app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
+    app.effects.clear();
+    app
+}
+
+#[test]
+fn speed_commands_configure_the_selected_agent() {
+    for (command, tier) in [
+        ("speed", "provider-custom"),
+        ("fast", "fast"),
+        ("ultrafast", "ultrafast"),
+        ("ultra", "ultrafast"),
+    ] {
+        let mut app = reviewer_speed_fixture();
+        action_picker(&mut app, command);
+        press(&mut app, KeyCode::Enter);
+        if command == "speed" {
+            assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+                if picker.kind == PickerKind::Speed && picker.header == "reviewer · reviewer-model"));
+            app.paste(tier);
+            press(&mut app, KeyCode::Enter);
+        }
+        let mut changes = app.effects.iter().filter_map(|job| match job {
+            Job::Save(command) => Some(command),
+            _ => None,
+        });
+        let change = changes
+            .next()
+            .expect("selected Agent configuration command");
+        assert_eq!(change.target.agent, "reviewer");
+        assert!(matches!(&change.action, Action::Configure { config }
+            if config.service_tier.as_deref() == Some(tier) && config.reasoning_effort.as_deref() == Some("high")));
+        assert!(changes.next().is_none());
+        assert!(!app.notice.as_ref().unwrap().text.contains("Cache may miss"));
+    }
+}
+
 #[test]
 fn custom_speed_can_be_saved_without_probing_and_then_applied() {
     use kuku::config::CustomServiceTier;

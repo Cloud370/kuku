@@ -9,6 +9,7 @@ use super::{App, Modal, PendingStage};
 pub(crate) struct RouteChange {
     previous: ModelRequestRoute,
     next: ModelRequestRoute,
+    tier_changed: bool,
 }
 
 #[derive(Debug)]
@@ -23,7 +24,9 @@ pub(crate) struct SendRouteConfirmation {
 
 impl SendRouteConfirmation {
     pub(crate) fn title(&self) -> &'static str {
-        if self.change.previous.model == self.change.next.model
+        if self.change.previous.same_route(&self.change.next) {
+            "Service tier changed · Cache may miss"
+        } else if self.change.previous.model == self.change.next.model
             && self.change.previous.connection == self.change.next.connection
         {
             "Model endpoint changed · Cache may miss"
@@ -32,18 +35,32 @@ impl SendRouteConfirmation {
         }
     }
 
-    pub(crate) fn model_labels(&self) -> [String; 2] {
+    pub(crate) fn change_labels(&self) -> [String; 2] {
         let routes = [&self.change.previous, &self.change.next];
+        let tier_label = |index: usize| {
+            routes[index]
+                .service_tier()
+                .flatten()
+                .unwrap_or("Provider default")
+        };
+        if routes[0].same_route(routes[1]) {
+            return std::array::from_fn(|index| tier_label(index).to_owned());
+        }
         let show_connection = routes[0].connection != routes[1].connection;
         std::array::from_fn(|index| {
             let model = &routes[index].model;
+            let model = if self.change.tier_changed {
+                format!("{model} {}", tier_label(index))
+            } else {
+                model.clone()
+            };
             if show_connection {
                 let label = self.labels[index]
                     .as_deref()
                     .unwrap_or(["Previous connection", "New connection"][index]);
                 format!("{model} · {label}")
             } else {
-                model.clone()
+                model
             }
         })
     }
@@ -61,7 +78,18 @@ impl App {
             .as_ref()
             .or(snapshot.selection.as_ref())?;
         let next = ModelRequestRoute::from_selection(selection)?;
-        (previous != next).then_some(RouteChange { previous, next })
+        let tier_changed = match (previous.service_tier(), next.service_tier()) {
+            (Some(Some(previous)), Some(Some(next))) => !selection
+                .capabilities
+                .equivalent_service_tiers(previous, next),
+            (Some(previous), Some(next)) => previous != next,
+            _ => false,
+        };
+        (!previous.same_route(&next) || tier_changed).then_some(RouteChange {
+            previous,
+            next,
+            tier_changed,
+        })
     }
 
     pub(super) fn send_route_is_updating(&self) -> bool {
@@ -71,17 +99,18 @@ impl App {
         if snapshot.agent.last_model_route.is_none() {
             return false;
         }
-        let route_changed = |config: &AgentConfig| {
+        let settings_changed = |config: &AgentConfig| {
             let observed = &snapshot.agent.config;
             config.tier != observed.tier
                 || config.connection != observed.connection
                 || config.model != observed.model
+                || config.service_tier != observed.service_tier
         };
         let target = self.target(&self.active);
-        route_changed(self.pane().config())
+        settings_changed(self.pane().config())
             || self.pending.values().any(|item| {
                 item.command.target == target && !matches!(item.stage, PendingStage::Rejected(_))
-                    && matches!(&item.command.action, Action::Configure { config } if route_changed(config))
+                    && matches!(&item.command.action, Action::Configure { config } if settings_changed(config))
             })
     }
 
@@ -211,7 +240,7 @@ mod tests {
         let Some(Modal::SendRouteConfirmation(review)) = &app.modal else {
             panic!("confirmation expected")
         };
-        assert_eq!(review.model_labels(), ["first", "second"]);
+        assert_eq!(review.change_labels(), ["first", "second"]);
         key(
             &mut app,
             KeyCode::Enter,
@@ -237,7 +266,7 @@ mod tests {
             panic!("confirmation expected")
         };
         assert_eq!(
-            review.model_labels(),
+            review.change_labels(),
             ["same · Previous connection", "same · New connection"]
         );
         key(
@@ -284,17 +313,58 @@ mod tests {
         let Some(Modal::SendRouteConfirmation(review)) = &app.modal else {
             panic!("new confirmation expected")
         };
-        assert_eq!(review.model_labels(), ["first", "third"]);
+        assert_eq!(review.change_labels(), ["first", "third"]);
         assert!(sent(&app).is_empty());
     }
 
     #[test]
-    fn changes_to_thinking_and_service_tier_on_the_same_route_send_directly() {
-        let previous = model("gateway", "same");
+    fn changed_reasoning_and_equivalent_service_tiers_send_directly() {
+        let mut previous = model("gateway", "same");
+        previous.settings.service_tier = Some("priority".into());
         let mut next = previous.clone();
+        next.capabilities.profile = kuku::config::ProviderProfile::OpenAi;
         next.settings.reasoning_effort = Some("high".into());
         next.settings.service_tier = Some("fast".into());
         let mut app = ready(&previous, next);
+        app.send(Timing::Steer);
+        assert!(app.modal.is_none());
+        assert_eq!(sent(&app), [Timing::Steer]);
+    }
+
+    #[test]
+    fn a_changed_service_tier_prompts_on_send_and_shows_the_previous_tier() {
+        let previous = model("gateway", "same");
+        let mut next = previous.clone();
+        next.settings.service_tier = Some("ultrafast".into());
+        let mut app = ready(&previous, next);
+        app.send(Timing::Steer);
+        let Some(Modal::SendRouteConfirmation(review)) = &app.modal else {
+            panic!("service tier confirmation expected")
+        };
+        assert_eq!(review.title(), "Service tier changed · Cache may miss");
+        assert_eq!(review.change_labels(), ["Provider default", "ultrafast"]);
+        assert!(sent(&app).is_empty());
+        key(
+            &mut app,
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        );
+        assert_eq!(sent(&app), [Timing::Steer]);
+    }
+
+    #[test]
+    fn unknown_previous_service_tier_sends_directly() {
+        let previous = model("gateway", "same");
+        let mut next = previous.clone();
+        next.settings.service_tier = Some("ultrafast".into());
+        let mut app = ready(&previous, next);
+        let mut snapshot = app.pane().snapshot.clone().unwrap();
+        snapshot.cursor += 1;
+        let mut previous = serde_json::to_value(snapshot.agent.last_model_route).unwrap();
+        previous.as_object_mut().unwrap().remove("service_tier");
+        snapshot.agent.last_model_route = serde_json::from_value(previous).unwrap();
+        app.update(Update::Refreshed(app.selection(), Ok(snapshot)));
         app.send(Timing::Steer);
         assert!(app.modal.is_none());
         assert_eq!(sent(&app), [Timing::Steer]);

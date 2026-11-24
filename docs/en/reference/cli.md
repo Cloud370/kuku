@@ -112,7 +112,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 | `/agents` | `/agent`, `/subagents` | Search Session Agents, switch recipients, or create an Agent. |
 | `/jobs` | `/job`, `/ps` | List background Jobs for the selected Agent, read live output, or cancel (`/jobs cancel <id>`). |
 | `/model` | `/models` | Enter switches to the highlighted route. `d` saves it as the default and switches, `e` edits it, and `/` searches. Ctrl+L opens the same list. |
-| `/speed [tier]` | `/fast`, `/ultra`, `/ultrafast` | Choose the main Agent's service tier above the conversation input. The shortcuts choose `fast` or `ultrafast`. Select **Follow model default** to clear the override. An unknown tier can be added with an optional short probe. |
+| `/speed [tier]` | `/fast`, `/ultra`, `/ultrafast` | Choose the selected Agent's service tier above the conversation input. The shortcuts choose `fast` or `ultrafast`. Select **Follow model default** to clear the override. An unknown tier can be added with an optional short probe. |
 | `/thinking` | `/think`, `/effort` | Pick a thinking level for the current Agent, choose **Use default** to clear the override, or press `D` + `Enter` on a writable local route to save as the model default. |
 | `/statusline` | `/status-line` | Preview, toggle, reorder, and save status-line fields to `tui.toml`. |
 | `/save` | `/save-value` | Name pasted text or the current draft before sending. |
@@ -136,7 +136,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 
 The default bottom status bar shows the active model, resolved thinking level, and configured service tier, for example `gpt-6.2-sol xhigh ultrafast`, connection notices, Agent, workspace, context usage, cache hit rate, average TPS, total input and output tokens, and request cost. Pending settings show under **Next model request**.
 
-If the next message would use a different model route from this Agent’s last request, the composer shows both routes and warns that the cached prefix may miss. Press Enter again to send using the original send timing. Esc closes the notice and keeps the draft.
+If the next message would use a different model route or effective service tier from this Agent’s last request, the composer shows the change and warns that the cached prefix may miss. Press Enter again to send using the original send timing. Esc closes the notice and keeps the draft.
 
 Above the composer, kuku displays the recipient (`To <agent>`), input delivery state (`Draft`, `Awaiting receipt`, `Input queued`, `Input accepted`), live elapsed Turn timer, and Agent execution state:
 

@@ -290,11 +290,17 @@ impl TurnIndex {
             return;
         };
         turn.prepared_model_route = (|| {
+            let service_tier = match value["settings"].get("service_tier") {
+                Some(serde_json::Value::String(name)) => Some(Some(name.as_str())),
+                Some(serde_json::Value::Null) => Some(None),
+                _ => None,
+            };
             ModelRequestRoute::new(
                 value["connection"].as_str()?,
                 value["model"].as_str()?,
                 value["protocol"].as_str()?.parse().ok()?,
                 value["url"].as_str()?,
+                service_tier,
             )
         })();
         turn.cache.prepare(value);
@@ -402,12 +408,12 @@ mod tests {
         let mut store = EventStore::open(&path).unwrap();
         let main = accept(&mut store, 1, "main", None);
         let peer = accept(&mut store, 2, "reviewer", None);
-        let mut record = |agent: &str, turn, model: &str| {
+        let mut record = |agent: &str, turn, model: &str, tier: Option<&str>| {
             store
                 .append(EventPayload::Unknown(json!({
                     "kind": "runtime.step_prepared", "agent": agent, "turn": turn,
                     "connection": "gateway", "model": model, "protocol": "openai-responses",
-                    "url": "http://fixture/v1/responses"
+                    "url": "http://fixture/v1/responses", "settings": {"service_tier": tier}
                 })))
                 .unwrap();
             store
@@ -424,8 +430,8 @@ mod tests {
                 })
                 .unwrap();
         };
-        record("main", main, "first");
-        record("reviewer", peer, "peer");
+        record("main", main, "first", None);
+        record("reviewer", peer, "peer", Some("flex"));
         finish(&mut store, 4, "main", main, UsageTotals::default());
         let next = accept(&mut store, 5, "main", None);
         store
@@ -437,28 +443,19 @@ mod tests {
             .unwrap();
         finish(&mut store, 6, "main", next, UsageTotals::default());
         let (index, _) = TurnIndex::read(&path).unwrap();
-        assert_eq!(
+        let route = |agent, turn| {
             index
-                .indexed("main", main)
+                .indexed(agent, turn)
                 .unwrap()
                 .1
                 .last_model_route
                 .as_ref()
                 .unwrap()
-                .model,
-            "first"
-        );
-        assert_eq!(
-            index
-                .indexed("reviewer", peer)
-                .unwrap()
-                .1
-                .last_model_route
-                .as_ref()
-                .unwrap()
-                .model,
-            "peer"
-        );
+        };
+        assert_eq!(route("main", main).model, "first");
+        assert_eq!(route("main", main).service_tier(), Some(None));
+        assert_eq!(route("reviewer", peer).model, "peer");
+        assert_eq!(route("reviewer", peer).service_tier(), Some(Some("flex")));
         assert!(index
             .indexed("main", next)
             .unwrap()

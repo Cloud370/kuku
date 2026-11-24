@@ -95,7 +95,6 @@ pub(crate) enum Job {
     SendRouteLabels(u64, [String; 2]),
     AgentModels(u64),
     ThinkingDefaults(u64, AgentConfig, ResolvedModel),
-    LoadSpeed(u64, Selection, Target, Option<String>),
     CustomSpeed(
         u64,
         Box<crate::app::speed::SpeedTarget>,
@@ -176,11 +175,6 @@ pub(crate) enum Update {
     SendRouteLabels(u64, [Option<String>; 2]),
     AgentModels(u64, Result<ModelCatalog, Error>),
     ThinkingDefaults(u64, crate::setup::ThinkingDefaults),
-    SpeedLoaded(
-        u64,
-        Result<Box<crate::app::speed::SpeedTarget>, String>,
-        Option<String>,
-    ),
     SpeedFinished(
         u64,
         Box<crate::app::speed::SpeedTarget>,
@@ -344,24 +338,6 @@ impl Jobs {
                         )
                         .await,
                     )
-                }));
-            }
-            Job::LoadSpeed(ticket, origin, target, requested) => {
-                Self::abort(&mut self.finder);
-                let connection = self.connection.clone();
-                self.finder = Some(self.spawn(async move {
-                    let result = async {
-                        let connection = connection.ok_or("Reconnect with Ctrl+R")?;
-                        let snapshot = connection
-                            .client
-                            .snapshot(&target)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        crate::app::speed::SpeedTarget::from_snapshot(origin, &snapshot)
-                            .map(Box::new)
-                    }
-                    .await;
-                    Update::SpeedLoaded(ticket, result, requested)
                 }));
             }
             Job::CustomSpeed(ticket, target, work) => {
@@ -680,7 +656,6 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
         | Job::Find(_, _)
         | Job::SendRouteLabels(..)
         | Job::ThinkingDefaults(..)
-        | Job::LoadSpeed(..)
         | Job::CustomSpeed(..)
         | Job::ClosePicker
         | Job::PrepareRestart(_)

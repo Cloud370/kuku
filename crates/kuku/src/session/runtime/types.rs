@@ -730,6 +730,22 @@ pub struct ModelRequestRoute {
     pub model: String,
     protocol: ProviderFormat,
     endpoint_hash: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_known_service_tier"
+    )]
+    service_tier: Option<Option<String>>,
+}
+
+fn deserialize_known_service_tier<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // A recorded null means provider default. An absent field means the tier is unknown.
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 impl ModelRequestRoute {
@@ -740,7 +756,21 @@ impl ModelRequestRoute {
             &selection.model,
             selection.protocol,
             &selection.request_url,
+            Some(selection.settings.service_tier.as_deref()),
         )
+    }
+
+    /// Whether both requests use the same connection, model, protocol and endpoint.
+    pub fn same_route(&self, other: &Self) -> bool {
+        self.connection == other.connection
+            && self.model == other.model
+            && self.protocol == other.protocol
+            && self.endpoint_hash == other.endpoint_hash
+    }
+
+    /// The known encoded tier, with `Some(None)` for a request that used the provider default.
+    pub fn service_tier(&self) -> Option<Option<&str>> {
+        self.service_tier.as_ref().map(|tier| tier.as_deref())
     }
 
     pub(super) fn new(
@@ -748,12 +778,14 @@ impl ModelRequestRoute {
         model: &str,
         protocol: ProviderFormat,
         endpoint: &str,
+        service_tier: Option<Option<&str>>,
     ) -> Option<Self> {
         (!connection.is_empty() && !model.is_empty() && !endpoint.is_empty()).then(|| Self {
             connection: connection.into(),
             model: model.into(),
             protocol,
             endpoint_hash: format!("{:x}", Sha256::digest(endpoint.as_bytes())),
+            service_tier: service_tier.map(|tier| tier.map(str::to_owned)),
         })
     }
 }
