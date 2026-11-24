@@ -86,13 +86,15 @@ pub(super) fn render_model_settings(
             line(frame, area, row, "Proxy address", ACCENT);
             field(frame, area, row, &mut state.proxy_address);
             line(frame, area, row, "HTTP · http://127.0.0.1:7890", MUTED);
-            line(
-                frame,
-                area,
-                row,
-                "SOCKS5 · socks5://127.0.0.1:1080 · local DNS",
-                MUTED,
-            );
+            if state.enrollment.is_none() {
+                line(
+                    frame,
+                    area,
+                    row,
+                    "SOCKS5 · socks5://127.0.0.1:1080 · local DNS",
+                    MUTED,
+                );
+            }
             line(
                 frame,
                 area,

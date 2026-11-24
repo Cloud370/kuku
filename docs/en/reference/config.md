@@ -106,7 +106,7 @@ cache_read = 0.1
 - **`api_key`**: `$NAME` reads only that env var; `file:/absolute/path` validates and reads only that file at request time (no relative paths, no URL syntax, no fallback between sources). Setup writes unencrypted keys under `<data-dir>/credentials/`; `kuku config show` prints only the reference. [File layout](file-layout.md)
 - Any other string config value starting with `$` resolves that env var before validation.
 
-A subscription connection uses its account reference as the credential source. ChatGPT subscriptions use the official OpenAI Responses and models endpoints and require an explicit HTTP or SOCKS5H proxy. The connection's proxy also applies to the account's authentication requests. [Subscription sign-in](../start/configuration.md#sign-in-to-a-subscription-on-a-headless-host)
+A subscription connection uses its account reference as the credential source. ChatGPT subscriptions use the official OpenAI Responses and models endpoints. The connection's network mode also applies to the account's authentication requests. Explicit SOCKS proxies use `socks5h://` for proxy-side DNS. [Subscription sign-in](../start/configuration.md#sign-in-to-a-subscription-on-a-headless-host)
 
 ## `discovery`
 

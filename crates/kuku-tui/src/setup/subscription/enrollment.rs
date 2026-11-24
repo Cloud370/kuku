@@ -22,9 +22,7 @@ const LINK_ROW: u16 = 2;
 
 pub(in crate::setup) struct Enrollment {
     channel: SubscriptionChannel,
-    proxy: Editor,
     name: Editor,
-    editing_name: bool,
     callback: Editor,
     stage: Stage,
     next_poll: Option<Instant>,
@@ -45,11 +43,7 @@ enum Stage {
 
 impl Drop for Enrollment {
     fn drop(&mut self) {
-        match &self.stage {
-            Stage::Preparing(_, task) => task.abort(),
-            Stage::Verifying(_, task) => task.abort(),
-            _ => {}
-        }
+        self.abort_pending();
     }
 }
 
@@ -57,36 +51,44 @@ impl Enrollment {
     fn new(channel: SubscriptionChannel) -> Self {
         Self {
             channel,
-            proxy: Editor::default(),
             name: Editor::default(),
-            editing_name: false,
             callback: Editor::default(),
             stage: Stage::Settings,
             next_poll: None,
         }
     }
 
-    fn begin(&mut self, settings: &Settings) -> Result<(), String> {
+    fn abort_pending(&self) {
+        match &self.stage {
+            Stage::Preparing(_, task) => task.abort(),
+            Stage::Verifying(_, task) => task.abort(),
+            _ => {}
+        }
+    }
+
+    fn begin(&mut self, settings: &Settings, selected_proxy: &ProviderProxy) -> Result<(), String> {
         let data_dir = settings
             .private_data_dir()
             .map_err(|err| err.to_string())?
             .to_owned();
         let channel = self.channel;
         let name = self.name.text().trim();
-        let url = self.proxy.text().trim();
+        let mut proxy = selected_proxy.clone();
         let saved_proxy = settings
             .subscription_connection(channel, name)
             .map(|(_, _, connection)| &connection.options.proxy);
-        let proxy = match saved_proxy {
-            Some(saved) if url.is_empty() => saved.clone(),
-            Some(saved @ ProviderProxy::Explicit { url: saved_url, .. }) if url == saved_url => {
-                saved.clone()
+        if let (
+            ProviderProxy::Explicit { url, auth },
+            Some(ProviderProxy::Explicit {
+                url: saved_url,
+                auth: saved_auth,
+            }),
+        ) = (&mut proxy, saved_proxy)
+        {
+            if url == saved_url && auth.is_none() {
+                *auth = saved_auth.clone();
             }
-            _ => ProviderProxy::Explicit {
-                url: url.to_owned(),
-                auth: None,
-            },
-        };
+        }
         let name = (!name.is_empty()).then(|| name.to_owned());
         let login_proxy = proxy.clone();
         let task = tokio::spawn(async move {
@@ -184,25 +186,9 @@ impl Enrollment {
         line(frame, area, row, "Sign in with ChatGPT", ACCENT);
         match self.stage {
             Stage::Settings => {
-                line(frame, area, row, "Proxy · HTTP or SOCKS5H", MUTED);
-                if self.editing_name {
-                    line(frame, area, row, &format!("> {}", self.proxy.text()), MUTED);
-                } else {
-                    field(frame, area, row, &mut self.proxy);
-                }
                 line(frame, area, row, "Account name · optional", MUTED);
-                if self.editing_name {
-                    field(frame, area, row, &mut self.name);
-                } else {
-                    line(frame, area, row, &format!("> {}", self.name.text()), MUTED);
-                }
-                line(
-                    frame,
-                    area,
-                    row,
-                    "Tab switches field · Enter continues",
-                    MUTED,
-                );
+                field(frame, area, row, &mut self.name);
+                line(frame, area, row, "Enter to continue", MUTED);
             }
             Stage::Preparing(..) => line(frame, area, row, "Preparing authorization…", MUTED),
             Stage::Authorizing(..) => {
@@ -265,7 +251,7 @@ fn ready<T>(task: &mut JoinHandle<kuku::Result<T>>) -> Option<Result<T, String>>
 impl SetupState {
     pub(in crate::setup) fn open_subscription(&mut self, channel: SubscriptionChannel) {
         self.enrollment = Some(Enrollment::new(channel));
-        self.step = SetupStep::SubscriptionSignIn;
+        self.step = SetupStep::Network;
     }
 
     pub(in crate::setup) fn subscription_input(&mut self, event: Event, settings: &Settings) {
@@ -277,8 +263,15 @@ impl SetupState {
                 return;
             }
             if key.code == KeyCode::Esc {
-                self.enrollment = None;
-                self.previous();
+                if matches!(flow.stage, Stage::Settings) {
+                    self.previous();
+                } else {
+                    flow.abort_pending();
+                    flow.stage = Stage::Settings;
+                    flow.next_poll = None;
+                    flow.callback.set_text(String::new());
+                    self.problem = None;
+                }
                 return;
             }
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -288,28 +281,14 @@ impl SetupState {
         }
         self.problem = match (&flow.stage, event) {
             (Stage::Settings, Event::Key(key)) if key.code == KeyCode::Enter => {
-                flow.begin(settings).err()
+                flow.begin(settings, &self.proxy).err()
             }
-            (Stage::Settings, Event::Key(key))
-                if matches!(
-                    key.code,
-                    KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down
-                ) =>
-            {
-                flow.editing_name = !flow.editing_name;
+            (Stage::Settings, Event::Key(key)) => {
+                edit_field(&mut flow.name, key);
                 None
             }
-            (Stage::Settings, event) => {
-                let editor = if flow.editing_name {
-                    &mut flow.name
-                } else {
-                    &mut flow.proxy
-                };
-                match event {
-                    Event::Key(key) => edit_field(editor, key),
-                    Event::Paste(text) => editor.insert(&text),
-                    _ => {}
-                }
+            (Stage::Settings, Event::Paste(text)) => {
+                flow.name.insert(&text);
                 None
             }
             (Stage::Authorizing(..), event) => flow.edit_callback(event).err(),

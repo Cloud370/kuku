@@ -46,13 +46,13 @@ TUI、`kuku run` 和浏览器界面都通过 kuku 服务提交任务。本地客
 
 | 命令 | 用途 |
 |---|---|
-| `kuku auth login chatgpt [名称] --proxy URL` | 添加账号或重新授权已保存的账号 |
+| `kuku auth login chatgpt [名称]` | 添加账号或重新授权已保存的账号 |
 | `kuku auth list` | 查看账号名称、脱敏邮箱和登录状态 |
 | `kuku auth models chatgpt <名称>` | 列出该账号可用的模型 |
-| `kuku auth proxy chatgpt <名称> --proxy URL` | 修改已保存账号的代理 |
+| `kuku auth proxy chatgpt <名称> (--proxy URL \| --proxy-from-env \| --no-proxy)` | 修改已保存账号的网络模式 |
 | `kuku auth logout chatgpt <名称>` | 清除该账号的令牌并尝试远程撤销 |
 
-对已保存的账号执行 `login` 时，省略 `--proxy` 会沿用原有代理。代理需要认证时，传入 `--proxy-user` 和 `--proxy-password-env` 或 `--proxy-password-file` 之一。密码从引用的来源读取。[无头登录流程](../start/configuration.md#在无头主机登录订阅)
+执行 `login` 时省略网络选项，则已保存的账号沿用原设置，新账号跟随环境。代理需要认证时，传入 `--proxy-user` 和 `--proxy-password-env` 或 `--proxy-password-file` 之一。密码从引用的来源读取。[无头登录流程](../start/configuration.md#在无头主机登录订阅)
 
 ## 终端界面
 

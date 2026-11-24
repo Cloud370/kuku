@@ -35,6 +35,19 @@ impl SubscriptionChannel {
             Self::ChatGpt => "https://chatgpt.com/settings/usage",
         }
     }
+
+    /// Validate network settings for a subscription channel.
+    pub fn validate_proxy(self, proxy: &ProviderProxy) -> Result<()> {
+        proxy.validate()?;
+        match self {
+            Self::ChatGpt if matches!(proxy, ProviderProxy::Explicit { url, .. } if Url::parse(url).is_ok_and(|url| url.scheme() == "socks5")) => {
+                Err(Error::ConfigLoad(
+                    "Use socks5h:// for proxy-side DNS on ChatGPT connections.".into(),
+                ))
+            }
+            Self::ChatGpt => Ok(()),
+        }
+    }
 }
 
 /// Reference to one named registration in the runtime's private subscription store.
@@ -90,7 +103,7 @@ impl SubscriptionAccount {
         options: &ProviderOptions,
     ) -> Result<()> {
         self.validate_path()?;
-        Self::validate_proxy(&options.proxy)?;
+        self.channel.validate_proxy(&options.proxy)?;
         match self.channel {
             SubscriptionChannel::ChatGpt => {
                 if format != ProviderFormat::OpenAiResponses
@@ -131,18 +144,6 @@ impl SubscriptionAccount {
             return Err(invalid_reference());
         }
         Ok(())
-    }
-
-    pub(crate) fn validate_proxy(proxy: &ProviderProxy) -> Result<()> {
-        proxy.validate()?;
-        if matches!(proxy, ProviderProxy::Explicit { url, .. } if Url::parse(url)
-            .is_ok_and(|url| matches!(url.scheme(), "http" | "socks5h")))
-        {
-            return Ok(());
-        }
-        Err(Error::ConfigLoad(
-            "subscription requests require an explicit HTTP or SOCKS5H proxy".into(),
-        ))
     }
 }
 

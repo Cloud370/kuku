@@ -146,12 +146,18 @@ impl From<SubscriptionChannelArg> for kuku::config::SubscriptionChannel {
     }
 }
 
-/// Settings for an explicit subscription proxy.
+/// Network settings for a subscription account.
 #[derive(Args)]
 pub struct SubscriptionProxyArgs {
-    /// HTTP or SOCKS5H proxy URL. A saved account can reuse its configured proxy.
+    /// HTTP or SOCKS5H proxy URL.
     #[arg(long)]
     pub proxy: Option<String>,
+    /// Use the proxy settings from the environment.
+    #[arg(long, conflicts_with = "proxy")]
+    pub proxy_from_env: bool,
+    /// Connect directly, ignoring proxy settings from the environment.
+    #[arg(long, conflicts_with_all = ["proxy", "proxy_from_env"])]
+    pub no_proxy: bool,
     /// Username for the proxy.
     #[arg(long, requires = "proxy")]
     pub proxy_user: Option<String>,
@@ -181,7 +187,7 @@ pub enum SubscriptionAuthCommand {
         channel: SubscriptionChannelArg,
         name: String,
     },
-    /// Change the proxy for a saved account.
+    /// Change the network settings for a saved account.
     Proxy {
         channel: SubscriptionChannelArg,
         name: String,

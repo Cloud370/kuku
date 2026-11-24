@@ -60,10 +60,10 @@ pub(super) async fn run(command: SubscriptionAuthCommand, target: &ConnectionArg
             proxy,
         } => {
             let (_, account, _) = saved_connection(&settings, channel.into(), &name)?;
-            let proxy =
-                proxy_settings(proxy).ok_or("supply --proxy with an HTTP or SOCKS5H address")?;
+            let proxy = proxy_settings(proxy)
+                .ok_or("choose --proxy URL, --proxy-from-env, or --no-proxy")?;
             let name = settings.save_connection(account, &proxy)?;
-            println!("Saved proxy for {name}. The service uses it after reloading configuration.");
+            println!("Saved network settings for {name}. The service uses them after reloading configuration.");
             Ok(())
         }
         SubscriptionAuthCommand::Models { channel, name } => {
@@ -97,7 +97,7 @@ async fn login(
             name.and_then(|name| settings.connection(channel, name))
                 .map(|(_, _, connection)| connection.options.proxy.clone())
         })
-        .ok_or("supply --proxy with an HTTP or SOCKS5H address")?;
+        .unwrap_or_default();
     let attempt =
         SubscriptionLogin::start(settings.private_data_dir()?, channel, name, proxy.clone())
             .await?;
@@ -138,6 +138,12 @@ fn saved_connection<'a>(
 }
 
 fn proxy_settings(args: SubscriptionProxyArgs) -> Option<ProviderProxy> {
+    if args.no_proxy {
+        return Some(ProviderProxy::Direct);
+    }
+    if args.proxy_from_env {
+        return Some(ProviderProxy::Environment);
+    }
     let url = args.proxy?;
     let auth = args.proxy_user.map(|username| ProxyAuth {
         username,

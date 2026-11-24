@@ -239,7 +239,7 @@ impl PendingLogin {
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TokenFailure {
-    #[error("could not contact OpenAI through the configured proxy")]
+    #[error("could not contact OpenAI using the selected network settings")]
     Transport,
     #[error("OpenAI returned an invalid sign-in response")]
     InvalidResponse,
@@ -521,7 +521,7 @@ fn random_bytes(bytes: &mut [u8]) -> Result<()> {
 }
 
 fn proxy_client(proxy: &ProviderProxy) -> Result<Client> {
-    SubscriptionAccount::validate_proxy(proxy)?;
+    SubscriptionChannel::ChatGpt.validate_proxy(proxy)?;
     crate::provider::http_client::api_client(proxy)
 }
 
@@ -750,11 +750,24 @@ mod tests {
     #[tokio::test]
     async fn manual_sign_in_contacts_only_the_configured_proxy() {
         let root = tempfile::tempdir().unwrap();
+        for mode in [ProviderProxy::Environment, ProviderProxy::Direct] {
+            assert!(SubscriptionLogin::start(
+                root.path(),
+                SubscriptionChannel::ChatGpt,
+                None,
+                mode
+            )
+            .await
+            .is_ok());
+        }
         assert!(SubscriptionLogin::start(
             root.path(),
             SubscriptionChannel::ChatGpt,
             None,
-            ProviderProxy::Direct
+            ProviderProxy::Explicit {
+                url: "socks5://127.0.0.1:1080".into(),
+                auth: None
+            }
         )
         .await
         .is_err());
@@ -809,7 +822,7 @@ mod tests {
         let Err(error) = result else {
             panic!("the failing proxy must stop sign-in")
         };
-        assert!(error.to_string().contains("configured proxy"));
+        assert!(error.to_string().contains("selected network settings"));
         let captured = intercepted.await.unwrap();
         assert!(captured.starts_with("CONNECT auth.openai.com:443 "));
         assert!(!captured.contains("fake-private-code"));

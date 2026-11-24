@@ -106,7 +106,7 @@ cache_read = 0.1
 - **`api_key`**：`$NAME` 仅读环境变量；`file:/绝对路径` 在请求时校验并读取文件（不接受相对路径、非 URL 语法、两类来源不互退）。交互式配置将明文密钥写入 `<data-dir>/credentials/`，`kuku config show` 只展示引用。[文件布局](file-layout.md)
 - 配置中其余以 `$` 开头的字符串值均会在校验前展开环境变量。
 
-订阅连接通过账号引用读取凭据。ChatGPT 订阅使用 OpenAI 官方 Responses 和模型目录地址，要求显式配置 HTTP 或 SOCKS5H 代理。账号认证请求也使用该连接的代理。[订阅登录](../start/configuration.md#在无头主机登录订阅)
+订阅连接通过账号引用读取凭据。ChatGPT 订阅使用 OpenAI 官方 Responses 和模型目录地址。账号认证也沿用该连接的网络模式。手动设置 SOCKS 代理时，使用 `socks5h://` 由代理解析地址。[订阅登录](../start/configuration.md#在无头主机登录订阅)
 
 ## `discovery`
 

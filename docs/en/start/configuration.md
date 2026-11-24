@@ -38,11 +38,11 @@ Environment variables are resolved by the server process, not the terminal clien
 
 ### Sign in to a subscription on a headless host
 
-In `kuku init` or **Add model** in `/model`, choose **Preset · ChatGPT subscription**. Enter your proxy and optionally name the account. Open the full authorization link in your own browser, then paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The pasted URL stays hidden. After sign-in, the account is saved and setup starts finding models for that account.
+In `kuku init` or **Add model** in `/model`, choose **Preset · ChatGPT subscription**. Choose the network mode and optionally name the account. Open the full authorization link in your own browser, then paste the callback URL from its address bar into kuku. If the browser cannot reach the callback page, copy the address from the error page. The pasted URL stays hidden. After sign-in, the account is saved and setup starts finding models for that account.
 
-From a shell you can also run `kuku auth login chatgpt [name] --proxy URL` on the host running kuku. To reauthorize a saved account, use its saved name. Omit the name to derive one from the authorized identity.
+From a shell you can also run `kuku auth login chatgpt [name]` on the host running kuku. To reauthorize a saved account, use its saved name. Omit the name to derive one from the authorized identity.
 
-Choose the account's proxy before sign-in. All subscription requests from kuku use that connection's proxy, including token exchange, renewal, model discovery, and inference. If the proxy is missing or fails, the request stops. You can change the connection's proxy later. The browser follows its own network settings.
+Setup defaults to the environment's proxy settings, with options for direct access or an explicit proxy. The selected mode applies to token exchange, renewal, model discovery, and inference. An explicit proxy failure stops the request. Set a SOCKS proxy to `socks5h://` to resolve provider addresses at the proxy. The browser follows its own network settings.
 
 Adding or editing a ChatGPT model refreshes the model list with the selected account's access token. Setup shows the account name and masked email when available. Give registrations distinct names if you use multiple workspaces with the same email. OpenAI's public sign-in API does not specify a field for the plan name, such as Plus or Pro.
 

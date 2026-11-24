@@ -238,12 +238,34 @@ mod tests {
 
         state.handle(key(KeyCode::Up), &settings, SetupMode::Init);
         state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        assert_eq!(SetupStep::Network, state.step);
+        terminal
+            .draw(|frame| ui::render(frame, &settings, &mut state, SetupMode::Init))
+            .unwrap();
+        let network = terminal.backend().to_string();
+        assert!(network.contains("› Use proxy from environment"));
+        assert!(network.contains("No proxy"));
+        assert!(network.contains("Enter proxy URL"));
+
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
         assert_eq!(SetupStep::SubscriptionSignIn, state.step);
+        assert_eq!(ProviderProxy::Environment, state.proxy);
+        state.handle(key(KeyCode::Esc), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Down), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        assert_eq!(SetupStep::SubscriptionSignIn, state.step);
+        assert_eq!(ProviderProxy::Direct, state.proxy);
+        state.handle(key(KeyCode::Esc), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Up), &settings, SetupMode::Init);
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        assert_eq!(SetupStep::ProxyAddress, state.step);
         state.handle(
             Event::Paste(format!("http://{}", proxy.local_addr().unwrap())),
             &settings,
             SetupMode::Init,
         );
+        state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
+        assert_eq!(SetupStep::SubscriptionSignIn, state.step);
         state.handle(key(KeyCode::Enter), &settings, SetupMode::Init);
         poll_registration(&mut state, &mut settings).await;
 
@@ -340,12 +362,12 @@ mod tests {
         assert_eq!(Some(&account), subscription.options.subscription.as_ref());
         assert_eq!(second, subscription.options.proxy);
         assert!(subscription.api_key.is_empty());
-        assert!(live
-            .save_connection(
-                subscription.options.subscription.as_ref().unwrap(),
-                &ProviderProxy::Direct
-            )
-            .is_err());
+        for mode in [ProviderProxy::Direct, ProviderProxy::Environment] {
+            let settings = SubscriptionSettings::load(options.clone()).await.unwrap();
+            settings.save_connection(&account, &mode).unwrap();
+            let current = load_config(&path).unwrap();
+            assert_eq!(mode, current.provider["chatgpt-work"].options.proxy);
+        }
 
         let mut settings = Settings::load(options.clone()).await.unwrap();
         settings.subscription_info.insert(

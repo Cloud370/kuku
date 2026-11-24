@@ -67,7 +67,7 @@ pub(crate) async fn authorization_token(
     account: &SubscriptionAccount,
     proxy: &ProviderProxy,
 ) -> Result<String> {
-    SubscriptionAccount::validate_proxy(proxy)?;
+    account.channel().validate_proxy(proxy)?;
     let store = AccountStore::new(account)?;
     let record = store.read()?.ok_or_else(|| sign_in_required(account))?;
     if let Some(access) = current_access(&record) {

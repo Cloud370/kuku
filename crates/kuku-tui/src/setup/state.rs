@@ -629,11 +629,17 @@ impl SetupState {
         self.step = match self.step {
             SetupStep::Consent => return,
             SetupStep::ManualConfig | SetupStep::Connection => SetupStep::Consent,
-            SetupStep::SubscriptionSignIn => SetupStep::Connection,
+            SetupStep::SubscriptionSignIn
+                if matches!(self.proxy, ProviderProxy::Explicit { .. }) =>
+            {
+                SetupStep::ProxyAddress
+            }
+            SetupStep::SubscriptionSignIn => SetupStep::Network,
             SetupStep::Protocol if self.protocol_picker_from_review => SetupStep::ReviewSettings,
             SetupStep::Protocol => SetupStep::CheckingApi,
             SetupStep::Address if matches!(self.intent, SetupIntent::Edit(_)) => SetupStep::Consent,
             SetupStep::Address => SetupStep::Connection,
+            SetupStep::Network if self.enrollment.take().is_some() => SetupStep::Connection,
             SetupStep::AddressKind | SetupStep::Network => SetupStep::Address,
             SetupStep::ProxyAddress => SetupStep::Network,
             SetupStep::CredentialSource => SetupStep::Network,

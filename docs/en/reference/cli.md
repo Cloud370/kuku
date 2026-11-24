@@ -47,13 +47,13 @@ For `kuku run`, place all options before the prompt — remaining words are trea
 
 | Command | Purpose |
 |---|---|
-| `kuku auth login chatgpt [name] --proxy URL` | Add an account or reauthorize a saved account |
+| `kuku auth login chatgpt [name]` | Add an account or reauthorize a saved account |
 | `kuku auth list` | Show account names, masked emails, and sign-in status |
 | `kuku auth models chatgpt <name>` | List the account's available models |
-| `kuku auth proxy chatgpt <name> --proxy URL` | Change the saved account's proxy |
+| `kuku auth proxy chatgpt <name> (--proxy URL \| --proxy-from-env \| --no-proxy)` | Change the saved account's network mode |
 | `kuku auth logout chatgpt <name>` | Clear that account's tokens and attempt remote revocation |
 
-A saved account uses its existing proxy when `login` is run without `--proxy`. For proxy authentication, pass `--proxy-user` and either `--proxy-password-env` or `--proxy-password-file`. The password is read from the referenced source. [Headless sign-in](../start/configuration.md#sign-in-to-a-subscription-on-a-headless-host)
+Without a network flag, `login` uses the saved account setting or follows the environment for a new account. For proxy authentication, pass `--proxy-user` and either `--proxy-password-env` or `--proxy-password-file`. The password is read from the referenced source. [Headless sign-in](../start/configuration.md#sign-in-to-a-subscription-on-a-headless-host)
 
 ## Terminal interface
 

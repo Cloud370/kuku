@@ -672,19 +672,28 @@ impl SetupState {
     pub(super) fn choose_network(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Enter {
             self.problem = None;
+            let next = self.after_network();
             self.step = match self.models.cursor {
                 0 => {
                     self.proxy = ProviderProxy::Environment;
-                    SetupStep::Credential
+                    next
                 }
                 1 => {
                     self.proxy = ProviderProxy::Direct;
-                    SetupStep::Credential
+                    next
                 }
                 _ => SetupStep::ProxyAddress,
             };
         } else {
             self.models.move_cursor(key.code, 3);
+        }
+    }
+
+    fn after_network(&self) -> SetupStep {
+        if self.enrollment.is_some() {
+            SetupStep::SubscriptionSignIn
+        } else {
+            SetupStep::Credential
         }
     }
 
@@ -696,10 +705,14 @@ impl SetupState {
                 _ => None,
             };
             let proxy = ProviderProxy::Explicit { url, auth };
-            match proxy.validate() {
+            let valid = match self.choice() {
+                ConnectionChoice::Subscription(channel) => channel.validate_proxy(&proxy),
+                _ => proxy.validate(),
+            };
+            match valid {
                 Ok(()) => {
                     self.proxy = proxy;
-                    self.step = SetupStep::Credential;
+                    self.step = self.after_network();
                     self.problem = None;
                 }
                 Err(error) => self.problem = Some(error.to_string()),
