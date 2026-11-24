@@ -175,7 +175,9 @@ async fn switching_to_text_only_reports_modalities_and_omits_a_recent_image() {
             when.method(POST)
                 .path(SWITCH_ENDPOINT)
                 .matches(initial_image_request)
-                .body_contains("This route accepts text, image.")
+                .body_contains("You receive text, image.")
+                .body_contains("You can see image attachments in kuku.")
+                .body_contains("When the task depends on the visual contents of an existing workspace image, prefer view_image if available.")
                 .body_contains("Image input is supported. The view_image tool is available.");
             then.status(200)
                 .header("content-type", "text/event-stream")
@@ -215,7 +217,8 @@ async fn switching_to_text_only_reports_modalities_and_omits_a_recent_image() {
                 .body_contains(
                     "Image input is unsupported by the model. The view_image tool is unavailable.",
                 )
-                .body_contains("you cannot see any images in kuku")
+                .body_contains("You receive text.")
+                .body_contains("You cannot see any images in kuku.")
                 .body_contains("Never guess what an unseen image contains.");
             then.status(200)
                 .header("content-type", "text/event-stream")
@@ -296,6 +299,9 @@ fn body(request: &HttpMockRequest) -> Value {
 fn initial_image_request(request: &HttpMockRequest) -> bool {
     let body = body(request);
     !has_tool_results(&body)
+        && !body
+            .to_string()
+            .contains("You cannot see any images in kuku.")
         && body["tools"]
             .as_array()
             .unwrap()

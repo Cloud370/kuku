@@ -722,6 +722,10 @@ pub(super) fn set_model_modalities(
     use crate::context::assembly::render_modalities;
 
     let image_input = resolved.capabilities.image_input_support(builtin_adapter);
+    let image_visibility = match image_input {
+        crate::config::ImageInputSupport::Supported => "can see image attachments",
+        _ => "cannot see any images",
+    };
     let output = match resolved.output {
         crate::config::RequestedOutput::Text => "text",
         crate::config::RequestedOutput::Image => "image",
@@ -755,6 +759,7 @@ pub(super) fn set_model_modalities(
         .replace("{{route_input}}", &image_input.modalities().join(", "))
         .replace("{{output_modality}}", output)
         .replace("{{image_input}}", image_input.label())
+        .replace("{{image_visibility}}", image_visibility)
         .replace("{{view_image}}", view_image);
     let message = CanonicalMessage::user_text(format!(
         "{MODEL_MODALITIES_TAG}\n{}\n</kuku_model_modalities>",
