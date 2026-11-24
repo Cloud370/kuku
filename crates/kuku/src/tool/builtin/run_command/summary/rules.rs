@@ -157,7 +157,7 @@ impl Rule {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        (actual == fixture.expected)
+        (actual == fixture.expected.replace("\r\n", "\n"))
             .then_some(())
             .ok_or_else(|| format!("fixture {:?} did not match", fixture.name))
     }
@@ -207,6 +207,12 @@ pub(super) fn select(command: &str) -> Option<&'static Rule> {
 #[cfg(test)]
 mod tests {
     use super::{BUILTIN, load};
+
+    #[test]
+    fn built_in_fixtures_accept_crlf() {
+        let source = BUILTIN.replace("\n", "\r\n");
+        assert_eq!(load(&source).unwrap().len(), load(BUILTIN).unwrap().len());
+    }
 
     #[test]
     fn built_in_fixtures_and_unsupported_rule_fields_are_checked() {
