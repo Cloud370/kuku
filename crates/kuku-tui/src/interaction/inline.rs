@@ -268,7 +268,7 @@ impl App {
                     input_command_id: input_id,
                 },
                 "Withdraw queued Agent message?",
-                &format!("The message from Agent {sender} will not be delivered.\n\n{preview}"),
+                format!("The message from Agent {sender} will not be delivered.\n\n{preview}"),
             );
             return;
         }
