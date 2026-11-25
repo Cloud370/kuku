@@ -380,7 +380,12 @@ fn model_definition_advertises_only_selected_script_methods() {
             .description
             .contains("read_file({path,offset?,limit?}) returns result.raw_text")
     );
-    assert!(script.description.contains("r.result.raw_text : r.error"));
+    assert!(
+        script
+            .description
+            .contains("If a single action has a matching direct tool")
+    );
+    assert!(!script.description.contains("Read example:"));
     assert!(
         script
             .description
@@ -395,6 +400,13 @@ fn model_definition_advertises_only_selected_script_methods() {
         "boolean",
         script.input_schema["properties"]["background"]["type"]
     );
+
+    let mut script_only = [super::super::definition()];
+    super::super::describe_selected_tools(&mut script_only, None, std::path::Path::new("."));
+    let description = &script_only[0].description;
+    assert!(description.contains("If a single action has a matching direct tool"));
+    assert!(description.contains("create_output({}) returns result.id"));
+    assert!(!description.contains("read_file("));
 }
 
 #[test]
@@ -411,6 +423,12 @@ fn managed_cli_prefix_survives_direct_and_script_command_descriptions() {
         tools
     };
     let managed = definitions(Some(program.as_path()));
+    assert!(
+        managed[1]
+            .description
+            .contains("tools.run_command({program,args?,cwd?})")
+    );
+    assert!(!managed[1].description.contains("Command example:"));
     let methods = super::super::method_definitions(|op| {
         managed.iter().find(|tool| tool.name == op.name()).cloned()
     });
