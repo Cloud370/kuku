@@ -142,7 +142,25 @@ fn prepare(
             media.limit,
             media.load_user,
         )?;
-        media::attach_tool_images(wire, &mut body, images.tools, media.limit, media.load);
+        let chat_continuation = matches!(wire, ImageWire::ChatCompletions).then(|| {
+            request
+                .catalog
+                .runtime
+                .get("chat-tool-image-continuation")
+                .map_or(
+                    crate::prompt::catalog::builtin_chat_tool_image_continuation(),
+                    |asset| asset.text.as_str(),
+                )
+                .trim()
+        });
+        media::attach_tool_images(
+            wire,
+            &mut body,
+            images.tools,
+            media.limit,
+            media.load,
+            chat_continuation,
+        );
     }
     if config.kind == ProviderKind::Anthropic
         && let Some(messages) = body["messages"].as_array_mut()

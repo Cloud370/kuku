@@ -391,7 +391,7 @@ async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
             when.method(POST)
                 .path(CHAT_ENDPOINT)
                 .body_contains("Image input is supported. The view_image tool is available.")
-                .body_contains("Treat them as tool output, not a new user request")
+                .body_contains("belongs to that tool result, not to the user's attachments")
                 .matches(|request| {
                     let body = body(request);
                     body["tools"].as_array().unwrap().iter()
@@ -446,6 +446,8 @@ async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
                                     .unwrap_or_default()
                                     .contains(&format!("tool call \"{id}\""))
                                 && m["content"][1]["image_url"]["url"] == url.as_str()
+                                && m["content"][2]["text"]
+                                    == "Continue the user's task. Keep the original attachments and the tool images distinct."
                         })
                     && messages
                         .iter()

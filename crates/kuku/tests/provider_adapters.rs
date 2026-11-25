@@ -54,7 +54,7 @@ mod execution {
 }
 
 mod prompt {
-    pub use kuku::prompt::{PromptCatalog, builtin_prompt_catalog};
+    pub use kuku::prompt::{PromptCatalog, builtin_prompt_catalog, catalog};
 }
 
 mod provider {

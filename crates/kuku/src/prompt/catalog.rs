@@ -74,6 +74,13 @@ pub fn builtin_handoff_instruction() -> &'static str {
     ))
 }
 
+pub fn builtin_chat_tool_image_continuation() -> &'static str {
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/prompts/runtime/chat-tool-image-continuation.md"
+    ))
+}
+
 pub fn builtin_prompt_catalog() -> PromptCatalog {
     macro_rules! p {
         ($subdir:literal, $name:literal) => {
@@ -139,6 +146,13 @@ pub fn builtin_prompt_catalog() -> PromptCatalog {
             m.insert("current-date".into(), p!("runtime", "current-date"));
             m.insert("permission-mode".into(), p!("runtime", "permission-mode"));
             m.insert("model-modalities".into(), p!("runtime", "model-modalities"));
+            m.insert(
+                "chat-tool-image-continuation".into(),
+                asset(
+                    "prompts/runtime/chat-tool-image-continuation.md",
+                    builtin_chat_tool_image_continuation(),
+                ),
+            );
             m.insert("handoff-context".into(), p!("runtime", "handoff-context"));
             m.insert(
                 "compaction-context".into(),

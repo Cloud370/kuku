@@ -91,6 +91,7 @@ pub(super) fn attach_tool_images(
     images: Vec<(ToolImageTarget, ModelImage)>,
     limit: usize,
     load: &mut dyn FnMut(&ModelImage) -> crate::Result<Vec<u8>>,
+    chat_continuation: Option<&str>,
 ) {
     if images.is_empty() {
         return;
@@ -126,12 +127,16 @@ pub(super) fn attach_tool_images(
             }
             ImageWire::ChatCompletions => {
                 let content = format!(
-                    "Image from view_image tool call {} (tool output, not a new user request).",
+                    "Image from view_image tool call {} (tool output, not a user attachment).",
                     item["tool_call_id"]
                 );
+                let mut content = vec![json!({"type": "text", "text": content}), part];
+                if let Some(note) = chat_continuation.filter(|note| !note.is_empty()) {
+                    content.push(json!({"type": "text", "text": note}));
+                }
                 let message = json!({
                     "role": "user",
-                    "content": [{"type": "text", "text": content}, part],
+                    "content": content,
                 });
                 let delta = json_bytes(&message) + 1; // comma in the messages array
                 (message, delta)
@@ -326,6 +331,7 @@ mod tests {
             candidates.clone(),
             usize::MAX,
             &mut |_| Ok(vec![0; 4]),
+            None,
         );
         let exact = json_bytes(&preview);
         assert_eq!(preview["input"][0]["output"], "first");
@@ -341,6 +347,7 @@ mod tests {
             candidates.clone(),
             exact,
             &mut |_| Ok(vec![0; 4]),
+            None,
         );
         assert_eq!(limited, preview);
         redact_images(ImageWire::Responses, &mut limited);
@@ -354,6 +361,7 @@ mod tests {
             candidates.into_iter().skip(1).collect(),
             exact - 1,
             &mut |_| panic!("image above the byte limit must never load"),
+            None,
         );
         assert_eq!(recent_only, body);
     }
@@ -440,6 +448,7 @@ mod tests {
             vec![(target, image.clone())],
             exact,
             &mut |_| Ok(vec![0; 4]),
+            None,
         );
         assert_eq!(fitted, expected);
         redact_images(wire, &mut fitted);
@@ -455,6 +464,7 @@ mod tests {
             vec![(target, image)],
             exact - 1,
             &mut |_| panic!("over-budget tool image must not load"),
+            None,
         );
         assert_eq!(unfitted, body);
     }
