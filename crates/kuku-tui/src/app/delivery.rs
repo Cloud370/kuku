@@ -32,6 +32,7 @@ pub(super) struct PendingQueueAction {
 pub(crate) struct DeliveryRow {
     pub(crate) id: String,
     pub(crate) text: String,
+    pub(crate) agent_sender: Option<String>,
     pub(crate) timing: Timing,
     pub(crate) status: SubmissionStatus,
     pub(crate) replacement: bool,
@@ -121,7 +122,7 @@ impl Deliveries {
         let mut queue: HashMap<_, _> = snapshot
             .pending
             .iter()
-            .filter(|entry| ordinary_input(entry))
+            .filter(|entry| listed_input(entry))
             .map(|entry| (entry.receipt.command_id.as_str(), entry))
             .collect();
         self.rows.retain(|row| {
@@ -141,7 +142,7 @@ impl Deliveries {
         for entry in &snapshot.pending {
             let id = &entry.receipt.command_id;
             if queue.contains_key(id.as_str()) && !self.settled.iter().any(|known| known == id) {
-                self.push(
+                let row = self.push(
                     id,
                     &entry.input.text,
                     input_timing(entry),
@@ -149,6 +150,9 @@ impl Deliveries {
                     Some(entry.receipt.event_id),
                     false,
                 );
+                if let InputSource::Agent(sender) = &entry.input.source {
+                    row.agent_sender = Some(sender.clone());
+                }
             }
         }
     }
@@ -214,7 +218,7 @@ impl Deliveries {
         status: SubmissionStatus,
         receipt: Option<u64>,
         replacement: bool,
-    ) {
+    ) -> &mut DeliveryRow {
         let prefix = cap(text, MAX_PREVIEW_BYTES);
         let text = if text.len() == prefix.len() {
             prefix.to_owned()
@@ -224,12 +228,14 @@ impl Deliveries {
         self.rows.push(DeliveryRow {
             id: id.to_owned(),
             text,
+            agent_sender: None,
             timing,
             status,
             replacement,
             receipt,
             withdrawal: None,
         });
+        self.rows.last_mut().expect("delivery row just added")
     }
 
     fn remember_settled(&mut self, id: &str) {
@@ -269,6 +275,10 @@ pub(super) fn ordinary_input(entry: &QueuedInput) -> bool {
     matches!(&entry.input.source, InputSource::Host(caller) if caller == "http")
 }
 
+fn listed_input(entry: &QueuedInput) -> bool {
+    ordinary_input(entry) || matches!(entry.input.source, InputSource::Agent(_))
+}
+
 impl App {
     pub(crate) fn queue_input_ids(&self) -> impl DoubleEndedIterator<Item = &str> {
         self.pane()
@@ -276,14 +286,19 @@ impl App {
             .rows()
             .iter()
             .filter(|row| {
-                row.status == SubmissionStatus::Queued && self.queue_input_available(&row.id)
+                row.status == SubmissionStatus::Queued
+                    && (self.snapshot_queue_input(&row.id).is_some()
+                        || self.pending_queue_receipt(&row.id).is_some())
             })
             .map(|row| row.id.as_str())
     }
 
     pub(crate) fn queue_input_available(&self, id: &str) -> bool {
-        self.queued_for_edit()
-            .any(|entry| entry.receipt.command_id == id)
+        self.listed_queued_input(id).is_some() || self.pending_queue_receipt(id).is_some()
+    }
+
+    pub(crate) fn queue_input_editable(&self, id: &str) -> bool {
+        self.listed_queued_input(id).is_some_and(ordinary_input)
             || self.pending_queue_receipt(id).is_some()
     }
 
@@ -297,12 +312,12 @@ impl App {
             self.problem("A change to this queued input is already pending");
             return;
         }
-        if self
-            .queued_for_edit()
-            .any(|entry| entry.receipt.command_id == id)
-        {
+        if let Some(entry) = self.listed_queued_input(&id) {
             match action {
-                QueueAction::Edit => self.edit_queued(id),
+                QueueAction::Edit if ordinary_input(entry) => self.edit_queued(id),
+                QueueAction::Edit => {
+                    self.problem("Agent messages cannot be edited · Delete to withdraw")
+                }
                 QueueAction::Withdraw => self.withdraw_queued(id),
             }
             return;
@@ -338,9 +353,7 @@ impl App {
             return;
         }
         if self.pending_queue_receipt(&pending.input_id).is_some()
-            && !self
-                .queued_for_edit()
-                .any(|entry| entry.receipt.command_id == pending.input_id)
+            && self.editable_queued_input(&pending.input_id).is_none()
         {
             self.pending_queue_action = Some(pending);
             return;
@@ -352,17 +365,28 @@ impl App {
         self.queue_input_ids().next().is_some()
     }
 
-    pub(crate) fn queued_for_edit(&self) -> impl Iterator<Item = &QueuedInput> {
-        let pane = self.pane();
-        pane.snapshot
+    fn editable_queued_input(&self, id: &str) -> Option<&QueuedInput> {
+        self.listed_queued_input(id)
+            .filter(|entry| ordinary_input(entry))
+    }
+
+    pub(crate) fn listed_queued_input(&self, id: &str) -> Option<&QueuedInput> {
+        let entry = self.snapshot_queue_input(id)?;
+        self.pane()
+            .deliveries
+            .rows()
             .iter()
-            .flat_map(|snapshot| &snapshot.pending)
-            .filter(|entry| {
-                ordinary_input(entry)
-                    && pane.deliveries.rows().iter().any(|row| {
-                        row.id == entry.receipt.command_id && row.status == SubmissionStatus::Queued
-                    })
-            })
+            .any(|row| row.id == id && row.status == SubmissionStatus::Queued)
+            .then_some(entry)
+    }
+
+    fn snapshot_queue_input(&self, id: &str) -> Option<&QueuedInput> {
+        self.pane()
+            .snapshot
+            .as_ref()?
+            .pending
+            .iter()
+            .find(|entry| entry.receipt.command_id == id && listed_input(entry))
     }
 
     pub(crate) fn edit_queued(&mut self, input_command_id: String) {
@@ -371,8 +395,7 @@ impl App {
             return;
         }
         let text = self
-            .queued_for_edit()
-            .find(|entry| entry.receipt.command_id == input_command_id)
+            .editable_queued_input(&input_command_id)
             .map(|entry| entry.input.clone());
         let Some(input) = text else {
             self.problem("Input has already left the queue");
@@ -419,10 +442,7 @@ impl App {
         text: String,
         draft_images: Vec<kuku_client::ImageAttachment>,
     ) -> bool {
-        if !self
-            .queued_for_edit()
-            .any(|entry| entry.receipt.command_id == input_command_id)
-        {
+        if self.editable_queued_input(&input_command_id).is_none() {
             self.problem("Selected input is no longer queued");
             return false;
         }

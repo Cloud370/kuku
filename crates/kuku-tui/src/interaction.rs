@@ -294,6 +294,18 @@ impl App {
             }
             return;
         }
+        if let PromptKind::WithdrawAgentInput {
+            selection,
+            input_command_id,
+        } = &prompt.kind
+        {
+            if Shortcut::ENTER.matches(key) && key.kind == KeyEventKind::Press {
+                let (selection, input_command_id) = (selection.clone(), input_command_id.clone());
+                self.modal = None;
+                self.confirm_agent_input_withdrawal(selection, input_command_id);
+            }
+            return;
+        }
         if Shortcut::ENTER.matches(key) {
             if let PromptKind::RewindMessage {
                 event_id,
@@ -386,6 +398,7 @@ impl App {
                 PromptKind::QueuedInput { .. } => unreachable!("queued input edited above"),
                 PromptKind::RewindMessage { .. } => unreachable!("rewind confirmed above"),
                 PromptKind::HistoryJump(_) => unreachable!("history switch confirmed above"),
+                PromptKind::WithdrawAgentInput { .. } => unreachable!("withdrawal confirmed above"),
             }
         } else if let PromptKind::RewindMessage { restore_files, .. } = &mut prompt.kind {
             if key.code == KeyCode::Char(' ')

@@ -17,13 +17,24 @@ impl App {
         }
         if pane.snapshot.as_ref().is_some_and(|snapshot| {
             snapshot.cleaning_up
-                || snapshot.agent.pending_inputs > 0
                 || matches!(
                     snapshot.agent.status,
                     AgentStatus::Running | AgentStatus::Waiting
                 )
         }) {
-            self.problem("Wait for the Agent and its pending input to settle before switching");
+            self.problem("Wait for the Agent to finish, or stop it before switching");
+            return;
+        }
+        if pane
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.agent.pending_inputs > 0)
+        {
+            self.problem(if self.has_queued_input() {
+                "Queued input blocks switching · select it in Pending inputs and press Delete"
+            } else {
+                "Pending runtime input blocks switching · use Continue to process it"
+            });
             return;
         }
         if !self.require_service() {

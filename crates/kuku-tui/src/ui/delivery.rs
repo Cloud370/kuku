@@ -116,10 +116,20 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
         ));
     }
     if app.has_queued_input() {
-        title.push_str(&format!(
-            " · {} select · Enter edit · Del remove",
-            Shortcut::UP.label
-        ));
+        title.push_str(&format!(" · {} select", Shortcut::UP.label));
+        if selected_id.map_or_else(
+            || {
+                rows.iter().any(|row| {
+                    row.agent_sender.is_none()
+                        && row.status == SubmissionStatus::Queued
+                        && app.queue_input_editable(&row.id)
+                })
+            },
+            |id| app.queue_input_editable(id),
+        ) {
+            title.push_str(" · Enter edit");
+        }
+        title.push_str(" · Del remove");
     }
     let (title, recovery_range) = recovery.as_ref().map_or_else(
         || (Line::styled(shorten(&title, width), emphasis(MUTED)), None),
@@ -213,10 +223,14 @@ fn message(
     } else {
         emphasis(MUTED)
     };
+    let sender = row.agent_sender.as_deref().map_or_else(
+        || "You".to_owned(),
+        |agent| format!("Agent {}", single_line(agent)),
+    );
     let heading = if stale {
-        "You · No longer queued".to_owned()
+        format!("{sender} · No longer queued")
     } else {
-        format!("{}You · {label}", if selected { "› " } else { "  " })
+        format!("{}{sender} · {label}", if selected { "› " } else { "  " })
     };
     let heading_style = if selected { focused_row() } else { style };
     if height == 1 {
