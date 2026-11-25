@@ -1,12 +1,13 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use kuku_client::{Action, Error, MessageDraft, Target};
+use kuku_client::{Action, Error, InputSource, MessageDraft, Target};
 use ratatui::style::Style;
 
 use crate::app::{App, KeyboardFocus, PendingStage, QueueAction};
 use crate::jobs::{Job, Selection};
 use crate::keys::Shortcut;
 use crate::markup::{render_literal, wrap_bounded};
-use crate::text::single_line;
+use crate::menu::PromptKind;
+use crate::text::{shorten, single_line};
 
 impl App {
     pub(super) fn inline_key(&mut self, key: KeyEvent) -> bool {
@@ -246,8 +247,7 @@ impl App {
 
     pub(crate) fn withdraw_queued(&mut self, input_id: String) {
         let Some(input) = self
-            .queued_for_edit()
-            .find(|entry| entry.receipt.command_id == input_id)
+            .listed_queued_input(&input_id)
             .map(|entry| entry.input.clone())
         else {
             self.problem("Selected input is no longer queued");
@@ -260,6 +260,18 @@ impl App {
         if !self.require_service() {
             return;
         }
+        if let InputSource::Agent(sender) = &input.source {
+            let preview = shorten(&single_line(&input.text), 140);
+            self.prompt(
+                PromptKind::WithdrawAgentInput {
+                    selection: self.selection(),
+                    input_command_id: input_id,
+                },
+                "Withdraw queued Agent message?",
+                &format!("The message from Agent {sender} will not be delivered.\n\n{preview}"),
+            );
+            return;
+        }
         if self.pane().draft.text().is_empty() && !input.images.is_empty() {
             self.read_queued_draft(input_id, QueueAction::Withdraw);
             return;
@@ -269,6 +281,24 @@ impl App {
             images: Vec::new(),
         });
         self.issue_withdrawal(input_id, draft);
+    }
+
+    pub(super) fn confirm_agent_input_withdrawal(
+        &mut self,
+        selection: Selection,
+        input_id: String,
+    ) {
+        if selection != self.selection()
+            || !self
+                .listed_queued_input(&input_id)
+                .is_some_and(|entry| matches!(entry.input.source, InputSource::Agent(_)))
+        {
+            self.problem("Selected Agent message is no longer queued");
+        } else if self.queue_mutation_pending(&input_id) {
+            self.problem("A change to this queued input is already pending");
+        } else if self.require_service() {
+            self.issue_withdrawal(input_id, None);
+        }
     }
 
     pub(crate) fn read_queued_draft(&mut self, input_id: String, action: QueueAction) {

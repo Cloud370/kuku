@@ -701,6 +701,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
                 | PromptKind::RewindMessage { .. }
                 | PromptKind::SavePaste => PICKER_HEIGHT,
                 PromptKind::SaveValue { .. } => SHORT_PROMPT_HEIGHT,
+                PromptKind::WithdrawAgentInput { .. } => SHORT_PROMPT_HEIGHT,
                 PromptKind::HistoryJump(_) => unreachable!("history switch rendered above"),
             };
             let width = if rewind {
@@ -915,9 +916,12 @@ fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (us
         render_literal(&prompt.instructions, Style::default().fg(MUTED)),
         width,
     );
-    let header_rows = instructions
-        .len()
-        .min(usize::from(inner.height.saturating_sub(3)) / 2);
+    let withdraw = matches!(&prompt.kind, PromptKind::WithdrawAgentInput { .. });
+    let header_rows = instructions.len().min(if withdraw {
+        usize::from(inner.height.saturating_sub(1))
+    } else {
+        usize::from(inner.height.saturating_sub(3)) / 2
+    });
     prompt.instructions_top = prompt
         .instructions_top
         .min(instructions.len().saturating_sub(header_rows));
@@ -937,19 +941,25 @@ fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (us
         ),
         info,
     );
-    render_editor(frame, editor, &mut prompt.editor, true, "Type here…");
+    let hint = if withdraw {
+        format!(
+            "{} Withdraw · {} Keep queued",
+            Shortcut::ENTER.label,
+            Shortcut::ESCAPE.label
+        )
+    } else {
+        render_editor(frame, editor, &mut prompt.editor, true, "Type here…");
+        format!(
+            "{} Confirm · {} Clear · {}/{} Details · {} Close",
+            Shortcut::ENTER.label,
+            Shortcut::CLEAR.label,
+            Shortcut::PAGE_UP.label,
+            Shortcut::PAGE_DOWN.label,
+            Shortcut::ESCAPE.label,
+        )
+    };
     frame.render_widget(
-        Paragraph::new(Line::styled(
-            format!(
-                "{} Confirm · {} Clear · {}/{} Details · {} Close",
-                Shortcut::ENTER.label,
-                Shortcut::CLEAR.label,
-                Shortcut::PAGE_UP.label,
-                Shortcut::PAGE_DOWN.label,
-                Shortcut::ESCAPE.label,
-            ),
-            Style::default().fg(MUTED),
-        )),
+        Paragraph::new(Line::styled(hint, Style::default().fg(MUTED))),
         help,
     );
     (usize::from(editor.width).max(1), header_rows)

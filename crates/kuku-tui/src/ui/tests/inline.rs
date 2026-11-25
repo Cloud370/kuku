@@ -57,6 +57,105 @@ fn begin_withdrawal(app: &mut App) -> kuku_client::Command {
     saved_input(app)
 }
 
+fn interrupted_with_agent_input(app: &App) -> Box<kuku_client::Snapshot> {
+    let mut state = snapshot(app, "interrupted", json!(null), json!(null));
+    state.cursor = 60;
+    state.agent.pending_inputs = 1;
+    state.agent.last_error = Some("HTTP 422: hard limit".into());
+    let mut input = Input::new(
+        "queued-agent-message",
+        "main",
+        "A queued update from the worker",
+    );
+    input.source = InputSource::Agent("worker".into());
+    state.pending.push(QueuedInput {
+        input,
+        receipt: Receipt {
+            command_id: "queued-agent-message".into(),
+            event_id: 60,
+            agent: "main".into(),
+        },
+    });
+    state
+}
+
+#[test]
+fn interrupted_agent_can_show_and_confirm_withdrawal_of_a_blocking_agent_message() {
+    let mut app = app();
+    let state = interrupted_with_agent_input(&app);
+    load(&mut app, state.clone());
+    app.effects.clear();
+    app.open_history_jump();
+    assert!(app.modal.is_none());
+    let rendered = screen(&mut app, 112, 28);
+    assert!(rendered.contains("Agent worker") && rendered.contains("A queued update"));
+    assert!(rendered.contains("Queued input blocks switching"));
+    key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(
+        Some("queued-agent-message"),
+        app.pane().selected_queue_input.as_deref()
+    );
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.modal.is_none());
+    key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    let rendered = screen(&mut app, 60, 20);
+    assert!(rendered.contains("Withdraw queued Agent message?"));
+    assert!(rendered.contains("Enter Withdraw"));
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, crate::jobs::Job::Save(_)))
+    );
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.queue_input_available("queued-agent-message"));
+    app.pane_mut().draft.insert("my unsent text");
+    app.focus_queue_input("queued-agent-message".into());
+    key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let command = saved_input(&app);
+    assert!(
+        matches!(&command.action, Action::Withdraw { input_command_id, draft: None }
+        if input_command_id == "queued-agent-message")
+    );
+    acknowledge_withdrawal(&mut app, &command, Some(InputStatus::Withdrawn));
+    assert_eq!("my unsent text", app.pane().draft.text());
+
+    let mut cleared = state;
+    cleared.cursor = 101;
+    cleared.pending.clear();
+    cleared.agent.pending_inputs = 0;
+    load(&mut app, cleared);
+    app.open_history_jump();
+    assert!(
+        matches!(&app.modal, Some(Modal::Picker(picker)) if picker.kind == PickerKind::HistoryJump)
+    );
+}
+
+#[test]
+fn confirmation_does_not_withdraw_a_different_queued_agent_message() {
+    let mut app = app();
+    let mut state = interrupted_with_agent_input(&app);
+    load(&mut app, state.clone());
+    app.focus_queue_input("queued-agent-message".into());
+    key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(prompt)) if matches!(&prompt.kind, PromptKind::WithdrawAgentInput { .. }))
+    );
+    state.cursor = 62;
+    state.pending[0].receipt.command_id = "other-message".into();
+    state.pending[0].input.command_id = "other-message".into();
+    state.pending[0].receipt.event_id = 62;
+    load(&mut app, state);
+    app.effects.clear();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, crate::jobs::Job::Save(_)))
+    );
+    assert!(app.queue_input_available("other-message"));
+}
+
 fn acknowledge_withdrawal(
     app: &mut App,
     command: &kuku_client::Command,

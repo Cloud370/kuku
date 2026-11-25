@@ -604,6 +604,10 @@ pub(crate) enum PromptKind {
         input_command_id: String,
         images: Vec<kuku_client::ImageAttachment>,
     },
+    WithdrawAgentInput {
+        selection: crate::jobs::Selection,
+        input_command_id: String,
+    },
     RewindMessage {
         event_id: u64,
         text: String,

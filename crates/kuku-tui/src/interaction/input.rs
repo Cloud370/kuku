@@ -166,7 +166,9 @@ impl App {
                 self.picker_query_changed();
             }
         } else if let Some(Modal::Prompt(prompt)) = &mut self.modal {
-            if prompt.kind.multiline() {
+            if matches!(&prompt.kind, PromptKind::WithdrawAgentInput { .. }) {
+                return;
+            } else if prompt.kind.multiline() {
                 prompt.editor.insert(text);
             } else {
                 prompt.editor.insert(&text.replace(['\r', '\n'], " "));
