@@ -168,13 +168,17 @@ pub(crate) fn resolve_capabilities(
         |entry| entry.input_modalities.as_ref(),
         |entry| entry.input_modalities.as_ref(),
     );
-    let media_adapter = if kind == ProviderKind::OpenAiResponses
-        && profile == ProviderProfile::DeepSeek
-        && input_modalities
-            .as_ref()
-            .is_some_and(|input| input.value.iter().any(|modality| modality == "image"))
+    let media_adapter = if input_modalities
+        .as_ref()
+        .is_some_and(|input| input.value.iter().any(|modality| modality == "image"))
     {
-        MediaAdapterSupport::ResponsesImageToolResults
+        match kind {
+            ProviderKind::OpenAiCompatible => MediaAdapterSupport::ChatCompletionsImageParts,
+            ProviderKind::OpenAiResponses if profile == ProviderProfile::DeepSeek => {
+                MediaAdapterSupport::ResponsesImageToolResults
+            }
+            _ => MediaAdapterSupport::TextOnly,
+        }
     } else {
         MediaAdapterSupport::TextOnly
     };

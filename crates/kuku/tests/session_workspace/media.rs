@@ -18,6 +18,7 @@ use super::{common, until};
 const PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
 const ENDPOINT: &str = "/workspace-media/responses";
+const CHAT_ENDPOINT: &str = "/workspace-media-chat/chat/completions";
 
 #[derive(Debug)]
 struct Gate;
@@ -355,6 +356,176 @@ fn tool_response(calls: &[(&str, &str)]) -> String {
         }})
     ));
     stream
+}
+
+#[tokio::test]
+async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let png = STANDARD.decode(PNG).unwrap();
+    let other = png_with_comment(32, b'A');
+    std::fs::create_dir(work.path().join("pics")).unwrap();
+    std::fs::write(work.path().join("pics/screenshot.png"), &png).unwrap();
+    std::fs::write(work.path().join("pics/other.png"), &other).unwrap();
+    std::fs::write(work.path().join("pics/hidden.png"), &other).unwrap();
+    let tool_calls = [
+        ("first", "screenshot"),
+        ("second", "other"),
+        ("denied", "hidden"),
+    ]
+    .map(|(id, file)| {
+        json!({"id": id, "type": "function", "function": {
+            "name": "view_image",
+            "arguments": json!({"path": format!("pics/{file}.png")}).to_string(),
+        }})
+    });
+    let tools = common::openai_sse_response(json!({"choices": [{
+        "message": {"tool_calls": tool_calls}, "finish_reason": "tool_calls",
+    }]}));
+    let done = common::openai_sse_response(json!({"choices": [{
+        "message": {"content": "image check complete"}, "finish_reason": "stop",
+    }]}));
+    let initial = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(CHAT_ENDPOINT)
+                .body_contains("Image input is supported. The view_image tool is available.")
+                .matches(|request| {
+                    let body = body(request);
+                    body["tools"].as_array().unwrap().iter()
+                        .any(|tool| tool["function"]["name"] == "view_image")
+                })
+                .matches(|request| {
+                    let body = body(request);
+                    let messages = body["messages"].as_array().unwrap();
+                    let content = &messages.last().unwrap()["content"];
+                    content == &json!([
+                        {"type": "text", "text": "Compare this attachment and the files"},
+                        {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{PNG}")}},
+                    ])
+                    && !messages.iter().any(|message| message["role"] == "tool")
+                });
+            then.status(200).header("content-type", "text/event-stream").body(tools);
+        })
+        .await;
+    let continuation = server
+        .mock_async(|when, then| {
+            when.method(POST).path(CHAT_ENDPOINT).matches(|request| {
+                let body = body(request);
+                let messages = body["messages"].as_array().unwrap();
+                let screenshot = format!("data:image/png;base64,{PNG}");
+                let other_url = format!(
+                    "data:image/png;base64,{}",
+                    STANDARD.encode(png_with_comment(32, b'A'))
+                );
+                let Some(batch) = messages
+                    .windows(6)
+                    .find(|batch| batch[0]["tool_calls"].is_array())
+                else {
+                    return false;
+                };
+                body["model"] == "vision-fixture"
+                    && batch[0]["role"] == "assistant"
+                    && ["first", "second", "denied"]
+                        .into_iter()
+                        .zip(&batch[1..4])
+                        .all(|(id, m)| {
+                            m["role"] == "tool"
+                                && m["tool_call_id"] == id
+                                && m["content"].is_string()
+                        })
+                    && [("first", &screenshot), ("second", &other_url)]
+                        .into_iter()
+                        .zip(&batch[4..6])
+                        .all(|((id, url), m)| {
+                            m["role"] == "user"
+                                && m["content"][0]["text"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .contains(&format!("tool call \"{id}\""))
+                                && m["content"][1]["image_url"]["url"] == url.as_str()
+                        })
+                    && messages
+                        .iter()
+                        .filter_map(|m| m["content"].as_array())
+                        .flatten()
+                        .filter(|part| part["type"] == "image_url")
+                        .count()
+                        == 3
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(&done);
+        })
+        .await;
+    let text_only = server
+        .mock_async(|when, then| {
+            when.method(POST).path(CHAT_ENDPOINT).matches(|request| {
+                let body = body(request);
+                body["model"] == "text-fixture"
+                    && !body.to_string().contains("data:image/")
+                    && body["tools"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|tool| tool["function"]["name"] != "view_image")
+            });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(&done);
+        })
+        .await;
+    let mut config = media_config(&server, "/workspace-media-chat");
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.format = ProviderFormat::OpenAiChat;
+    provider.options.profile = ProviderProfile::Compatible;
+    let mut options = SessionOptions::new(work.path(), data.path(), config);
+    options.authorizer = Arc::new(Gate);
+    options.limits.output_retention_secs = 0;
+    let session = Session::open(options.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    assert_eq!(
+        session.agent_selection("main").unwrap().image_input,
+        ImageInputSupport::Supported
+    );
+    let mut input = Input::new("input", "main", "Compare this attachment and the files");
+    input
+        .images
+        .push(session.save_input_image("main", &png).await.unwrap());
+    session.send(input).unwrap();
+    let state = session.wait_for_agent("main").await.unwrap();
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.last_output.as_deref(), Some("image check complete"));
+    options.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+    std::fs::remove_file(work.path().join("pics/screenshot.png")).unwrap();
+
+    let reopened = Session::open(options).await.unwrap();
+    run(&reopened, "replay", "Compare the images again").await;
+    reopened
+        .configure_agent(
+            "switch",
+            "main",
+            AgentConfig {
+                connection: Some("openai".into()),
+                model: Some("text-fixture".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    run(&reopened, "text", "A text-only question").await;
+    reopened.close().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(reopened.events_path())
+            .unwrap()
+            .contains(PNG)
+    );
+    initial.assert_hits_async(1).await;
+    continuation.assert_hits_async(2).await;
+    text_only.assert_hits_async(1).await;
 }
 
 #[tokio::test]

@@ -263,9 +263,7 @@ impl ProviderCapabilities {
         if !modalities.value.iter().any(|modality| modality == "image") {
             return ImageInputSupport::UnsupportedByModel;
         }
-        if builtin_adapter
-            && self.media_adapter == crate::config::MediaAdapterSupport::ResponsesImageToolResults
-        {
+        if builtin_adapter && self.media_adapter != crate::config::MediaAdapterSupport::TextOnly {
             ImageInputSupport::Supported
         } else {
             ImageInputSupport::UnsupportedOnRoute

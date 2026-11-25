@@ -12,18 +12,15 @@ use super::sse::{parse_sse_frame, stream_sse_events};
 use super::transport::{TransportResponse, send_prepared};
 use super::types::{PreparedProviderRequest, ProviderFailure, ResolvedProvider};
 
-#[path = "openai_responses/media.rs"]
-mod media;
 #[path = "openai_responses/reasoning.rs"]
 mod reasoning;
 #[path = "openai_responses/render.rs"]
 mod render;
 
-pub(super) use media::{attach_tool_images, attach_user_images, redact_images};
 use reasoning::{PublishedReasoning, ReasoningText};
 #[cfg(test)]
 pub(crate) use render::render_body;
-pub(crate) use render::{ImageTargets, render_body_with_images};
+pub(crate) use render::render_body_with_images;
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before response.completed";
 

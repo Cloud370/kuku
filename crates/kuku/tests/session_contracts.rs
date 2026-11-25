@@ -464,8 +464,8 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && created["effective_tools"] == json!(["send_message", "list_agents"])
                 && created["model_selection"]["input_modalities"] == json!(["text", "image"])
                 && created["model_selection"]["output_modalities"] == json!(["text"])
-                && created["model_selection"]["effective_input_modalities"] == json!(["text"])
-                && created["model_selection"]["image_input"] == "unsupported_on_route"
+                && created["model_selection"]["effective_input_modalities"] == json!(["text", "image"])
+                && created["model_selection"]["image_input"] == "supported"
                 && content("unknown-preset").contains("Available examples:")
                 && content("unknown-preset").contains("review")
                 && content("wrong-route").contains("is not configured")

@@ -6,6 +6,7 @@ pub(crate) mod cost;
 mod discovery;
 pub(crate) mod error;
 pub(crate) mod http_client;
+mod media;
 pub(crate) mod openai_compat;
 pub(crate) mod openai_responses;
 mod openrouter_catalog;

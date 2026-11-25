@@ -2,18 +2,11 @@ use serde_json::{Value, json};
 
 use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
-use crate::execution::{InputImage, ModelImage};
+use crate::execution::ModelImage;
 
+use super::super::media::ImageTargets;
 use super::super::replay::native_replay;
 use super::super::types::ProviderRequest;
-
-#[derive(Default)]
-pub(crate) struct ImageTargets {
-    pub(crate) tools: Vec<(usize, ModelImage)>,
-    pub(crate) user: Vec<(usize, InputImage)>,
-    pub(crate) current_user_index: Option<usize>,
-    pub(crate) current_input_offset: Option<usize>,
-}
 
 fn convert_to_input_items(
     message: &CanonicalMessage,

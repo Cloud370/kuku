@@ -81,8 +81,8 @@ async fn send(
                     *field = serde_json::json!("<redacted>");
                 }
             }
-            if prepared.kind == ProviderKind::OpenAiResponses {
-                super::openai_responses::redact_images(&mut body);
+            if let Some(wire) = super::media::ImageWire::for_kind(prepared.kind) {
+                super::media::redact_images(wire, &mut body);
             }
             body
         });
