@@ -451,6 +451,7 @@ async fn sigint_during_snapshot_respects_the_submission_boundary() {
         config: Arc::new(Arc::new(config).into()),
         password: Some(token.into()),
         kuku_home: home.path().to_owned(),
+        managed_cli: None,
         authorizer: Arc::new(kuku::permission::TrustedLocal),
     });
     let arrived = Arc::new(Notify::new());

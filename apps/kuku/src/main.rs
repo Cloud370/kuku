@@ -18,9 +18,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
         None => kuku_tui::run(cli.target.options(), kuku_server::BUILD_VERSION).await?,
         Some(Command::ManagedServer(args)) => {
-            let mut args = args.into_server_args(&cli.target);
-            args.managed = true;
-            kuku_server::service::serve(args, web::assets()).await?;
+            kuku_server::service::serve_managed(args.into_server_args(&cli.target), web::assets())
+                .await?;
         }
         Some(Command::Server(args)) => match args.command {
             Some(command) => manage(command, cli.target.options()).await?,

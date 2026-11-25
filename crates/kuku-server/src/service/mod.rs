@@ -131,6 +131,23 @@ struct ServiceStatus {
 
 /// Run the selected HTTP service until shutdown or orderly replacement.
 pub async fn serve(args: ServerArgs, web: Option<Router>) -> Result<(), Box<dyn Error>> {
+    serve_with_cli(args, web, None).await
+}
+
+/// Serve from the installed CLI's managed entrypoint.
+pub async fn serve_managed(
+    mut args: ServerArgs,
+    web: Option<Router>,
+) -> Result<(), Box<dyn Error>> {
+    args.managed = true;
+    serve_with_cli(args, web, std::env::current_exe().ok()).await
+}
+
+async fn serve_with_cli(
+    args: ServerArgs,
+    web: Option<Router>,
+    managed_cli: Option<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -179,6 +196,7 @@ pub async fn serve(args: ServerArgs, web: Option<Router>) -> Result<(), Box<dyn 
         config: config_store,
         password,
         kuku_home: data_dir,
+        managed_cli,
         authorizer: Arc::new(kuku::permission::TrustedLocal),
     });
     let service = Arc::new(ServiceState::new(
@@ -471,6 +489,7 @@ mod tests {
             config: Arc::new(ArcSwap::from_pointee(config)),
             password: None,
             kuku_home: Default::default(),
+            managed_cli: None,
             authorizer: Arc::new(kuku::permission::TrustedLocal),
         });
         let service = Arc::new(ServiceState::new(app, None, None, None));

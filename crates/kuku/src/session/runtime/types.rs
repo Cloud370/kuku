@@ -125,6 +125,8 @@ pub struct SessionOptions {
     pub config: Config,
     /// Optional host-published route updates for later preparation boundaries.
     pub model_config_updates: Option<Arc<arc_swap::ArcSwap<Config>>>,
+    /// Exact CLI executable on the execution host, if one is provided by that host.
+    pub managed_cli: Option<PathBuf>,
     /// Optional external prompt asset directory.
     pub prompts_dir: Option<PathBuf>,
     /// Session resource limits.
@@ -165,6 +167,7 @@ impl SessionOptions {
             session_id: None,
             config,
             model_config_updates: None,
+            managed_cli: None,
             prompts_dir: None,
             limits: RuntimeLimits::default(),
             workspace_host: crate::WorkspaceExecutionHost::default(),

@@ -64,6 +64,7 @@ kuku config show
 kuku config validate
 kuku config models
 kuku config models --discover --connection work
+kuku config test --connection work --model MODEL_ID
 ```
 
 Replace `work` with a connection saved in your config. To create or edit a config from a script, see [Run a task](../guides/run-a-task.md).

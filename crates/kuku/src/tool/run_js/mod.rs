@@ -152,7 +152,14 @@ pub(crate) fn method_definitions(
     methods
 }
 
-pub(crate) fn describe_selected_tools(tools: &mut [ToolDefinition]) {
+pub(crate) fn describe_selected_tools(
+    tools: &mut [ToolDefinition],
+    managed_cli: Option<&std::path::Path>,
+    data_dir: &std::path::Path,
+) {
+    if let Some(command) = tools.iter_mut().find(|tool| tool.name == "run_command") {
+        outputs::describe_config_cli(command, managed_cli, data_dir);
+    }
     let Some(index) = tools.iter().position(|tool| tool.name == "run_js") else {
         return;
     };

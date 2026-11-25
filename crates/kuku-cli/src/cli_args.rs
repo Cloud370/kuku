@@ -12,11 +12,24 @@ use kuku_client::{Client, Connection, ConnectionOptions, Error};
 #[derive(Parser)]
 #[command(name = "kuku", version = kuku_server::BUILD_VERSION, about = "file-native agent runtime")]
 pub struct Cli {
+    /// Refuse to run a command if this executable no longer matches the service build.
+    #[arg(long, global = true, hide = true, value_parser = require_build)]
+    pub require_build: Option<String>,
     /// Select the service and workspace for the requested action.
     #[command(flatten)]
     pub target: ConnectionArgs,
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+fn require_build(expected: &str) -> Result<String, String> {
+    if expected == kuku_server::BUILD_VERSION {
+        return Ok(expected.to_owned());
+    }
+    Err(format!(
+        "CLI build {} does not match the running service; ask the operator to align them before retrying",
+        kuku_server::BUILD_VERSION
+    ))
 }
 
 /// Shared command-line connection choices.
@@ -531,6 +544,13 @@ pub struct ConfigArgs {
     pub cmd: Option<ConfigSubcommand>,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum ModelTestKind {
+    Text,
+    Image,
+    Tools,
+}
+
 #[derive(Subcommand)]
 pub enum ConfigSubcommand {
     /// Show current configuration with credentials redacted.
@@ -550,6 +570,18 @@ pub enum ConfigSubcommand {
     },
     /// Validate the file and report whether the managed service loaded it.
     Validate,
+    /// Run a bounded synthetic provider check using the selected configuration.
+    Test {
+        #[arg(long)]
+        connection: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long, value_enum, default_value = "text")]
+        check: ModelTestKind,
+        /// Override the configured reasoning effort for a text test.
+        #[arg(long)]
+        reasoning_effort: Option<String>,
+    },
     /// Update a scalar field or apply a literal TOML patch in one write.
     Set {
         /// TOML dotted path for a scalar field.

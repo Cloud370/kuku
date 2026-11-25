@@ -265,11 +265,12 @@ Deletes a Session after closing it if needed. Active executions, cleanup, and Jo
 kuku config show [--json]
 kuku config models [--discover --connection NAME]
 kuku config validate
+kuku config test --connection NAME --model ID [--check text|image|tools] [--reasoning-effort LEVEL]
 kuku config set <KEY> <VALUE>
 kuku config set --patch <TOML>
 ```
 
-All four commands select the local file in this order.
+These commands select the local file in this order.
 
 1. The path passed with `--config PATH`.
 2. The running managed service's config path for this data directory.
@@ -280,6 +281,12 @@ All four commands select the local file in this order.
 `validate` checks the local file and its model settings without making a provider request. Read `service.state` to see whether the current file version is `loaded`, `pending_reload`, `different_path`, `stopped`, or `unknown`. Config commands can run while the service is stopped. Repeat validation to confirm the loaded version. [Configuration](../start/configuration.md)
 
 `models` lists configured connection and model pairs. Each row contains `selection` or an `error` for that pair. With `--discover --connection NAME`, it queries that connection's model-list endpoint and returns the discovered exact IDs in `models[].id`.
+
+`test` runs the same synthetic checks as interactive setup, using one exact registered connection and model. `--check text` (the default) or `--check image` sends one model request. `--check tools` sends up to two: one to request a synthetic tool call and, if the model returns it, another with its result. These requests can incur provider charges. A `tested` status means the probe returned evidence, not that the advertised capability passed; check `evidence.text_returned`, `evidence.image_match`, or `evidence.tool_round_trip` respectively.
+
+Text tests use the configured reasoning setting unless you give `--reasoning-effort LEVEL`. Probes use their own output budget, not the Agent's output limit. Try a draft with `kuku --config ./draft.toml config test --connection NAME --model ID`; the command neither writes the configuration nor starts the service.
+
+When the managed service advertises a config command to its Agents, it gives the executable's absolute path and a required CLI build version. An older CLI or one with a different reported build will reject the guarded invocation before dispatch. This checks the reported version, not binary integrity. If the CLI is unavailable or no managed CLI is advertised, use a verified CLI on the service host rather than guessing a binary from `PATH`.
 
 `set KEY VALUE` updates one scalar. Quote a TOML dotted path that contains a quoted model ID, for example `kuku config set 'model.work."your-model-id".max_output_tokens' 8192`. Use `--patch` for a complete change or to create a missing file. Pass TOML text as one argument.
 

@@ -54,7 +54,5 @@ pub(super) async fn standalone(args: ServerCommandArgs, target: &ConnectionArgs)
 }
 
 pub(super) async fn managed(args: ServerCommandArgs, target: &ConnectionArgs) -> CliResult {
-    let mut args = args.into_server_args(target);
-    args.managed = true;
-    kuku_server::service::serve(args, None).await
+    kuku_server::service::serve_managed(args.into_server_args(target), None).await
 }

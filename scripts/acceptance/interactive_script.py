@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from urllib.parse import urlencode
 
-from interactive_fixture import Response, eventually, http_fixture, local_request
+from interactive_fixture import Response, eventually, http_fixture, json_response, local_request
 
 
 def remote_authorization_and_script_json(client, workspace):
@@ -248,6 +248,21 @@ def native_permission_continuations(client):
     print("A delayed native permission reply observed its own wait and left the next approval's execution running.")
 
 
+def managed_cli_invocation(call, tool_name, client):
+    tool = next(tool for tool in call.request["tools"] if tool["name"] == tool_name)
+    marker = "Kuku config invocation prefix: "
+    if marker in tool["description"]:
+        description = tool["description"]
+    else:
+        description = tool["input_schema"]["properties"]["program"]["description"]
+    invocation, _ = json.JSONDecoder().raw_decode(description.split(marker, 1)[1])
+    assert Path(invocation["program"]).samefile(client.binary)
+    args = invocation["args"]
+    assert args[0] == "--require-build" and args[1]
+    assert args[2] == "--data-dir" and Path(args[3]).samefile(client.home)
+    return invocation
+
+
 def patch_config_through_agent(client, workspace):
     default_config = client.home / "config.toml"
     active_config = workspace / "service config.toml"
@@ -255,6 +270,13 @@ def patch_config_through_agent(client, workspace):
     active_original = b"# Custom managed fixture configuration\n" + original
     active_config.write_bytes(active_original)
     active_config = active_config.resolve()
+    if os.name != "nt":
+        shadow = workspace / "shadow-bin"
+        shadow.mkdir()
+        old = shadow / "kuku"
+        old.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+        old.chmod(0o700)
+        client.env["PATH"] = str(shadow) + os.pathsep + client.env.get("PATH", os.defpath)
     stdout, _ = client.cli(workspace, "--config", str(active_config), "server", "restart")
     reported = Path(json.loads(stdout)["service"]["config_path"])
     assert reported.samefile(active_config), (reported, active_config)
@@ -265,43 +287,148 @@ def patch_config_through_agent(client, workspace):
     explicit = json.loads(stdout)
     assert Path(explicit["path"]).samefile(default_config), explicit["path"]
     assert explicit["service"]["state"] == "different_path"
-    prompt = "Change the managed service default through the installed CLI"
-    model = "fixture-patched-model"
-    patch = f'''default_model = {{ connection = "test-anthropic", model = "{model}" }}
-
-[model.test-anthropic."{model}"]
-think = "off"
-max_output_tokens = 2048
-'''
-    with client.command(workspace, "run", "--json", prompt) as process:
-        call = client.provider.next(prompt)
-        assert call.request["model"] == "claude-sonnet-4-6"
-        call.tool("run_command", "patch-active-config", program=str(client.binary),
-                  args=["config", "set", "--patch", patch])
-        patched = client.provider.next("patch-active-config")
-        tool_result = patched.tool_result("patch-active-config")
-        assert active_config.name in str(tool_result["content"])
-        patched.text("The active configuration was updated.")
-        stdout, _ = client.finish(process)
-    assert json.loads(stdout)["status"] == "completed"
-    assert default_config.read_bytes() == original
-    assert active_config.read_bytes() != active_original
 
     def active_config_loaded():
         stdout, _ = client.cli(workspace, "config", "validate")
         result = json.loads(stdout)
-        reported = Path(result["path"])
-        assert reported.samefile(active_config), (reported, active_config)
+        assert Path(result["path"]).samefile(active_config), result["path"]
         return result["service"]["state"] == "loaded"
 
-    eventually("the service to load its patched configuration", active_config_loaded)
-    catalog = client.request("GET", "/models").as_json()
-    assert catalog["default_model"] == {"connection": "test-anthropic", "model": model}
+    prompt = "Change the managed service default through the installed CLI"
+    model = "fixture-patched-model"
+    patch = f"""default_model = {{ connection = "test-anthropic", model = "{model}" }}
+
+[model.test-anthropic."{model}"]
+think = "off"
+max_output_tokens = 2048
+purpose = "Fixture configured role"
+"""
+    with client.command(workspace, "run", "--json", prompt) as process:
+        call = client.provider.next(prompt)
+        assert call.request["model"] == "claude-sonnet-4-6"
+        assert "<kuku_models>" not in str(call.request["messages"])
+        assert "Fixture configured role" not in str(call.request["messages"])
+        invocation = managed_cli_invocation(call, "run_command", client)
+        call.tool("list_models", "models-before-patch")
+        initial = client.provider.next("models-before-patch")
+        initial_models = initial.tool_result("models-before-patch")["content"]
+        assert model not in str(initial_models) and "claude-sonnet-4-6" in str(initial_models)
+        initial.tool("run_command", "patch-active-config", program=invocation["program"],
+                     args=[*invocation["args"], "config", "set", "--patch", patch])
+        patched = client.provider.next("patch-active-config")
+        assert active_config.name in str(patched.tool_result("patch-active-config")["content"])
+        eventually("the service to load its patched configuration", active_config_loaded)
+        catalog = client.request("GET", "/models").as_json()
+        assert catalog["default_model"] == {"connection": "test-anthropic", "model": model}
+        # Keep the current Turn open until after reload; its startup Config is now stale.
+        patched.tool("list_models", "models-after-patch")
+        listing = client.provider.next("models-after-patch")
+        content = str(listing.tool_result("models-after-patch")["content"])
+        assert model in content and "claude-sonnet-4-6" in content, content
+        assert "Fixture configured role" in content, content
+        assert listing.request["model"] == "claude-sonnet-4-6"
+        listing.tool("create_agent", "create-patched-agent", address="patched",
+                     connection="test-anthropic", model=model, tools=[])
+        created = client.provider.next("create-patched-agent")
+        assert model in str(created.tool_result("create-patched-agent")["content"])
+        created.text("The live route is available in the same Turn.")
+        stdout, _ = client.finish(process)
+    result = json.loads(stdout)
+    assert result["status"] == "completed"
+    session = result["session_id"]
+    assert default_config.read_bytes() == original
+    assert active_config.read_bytes() != active_original
+
+    with client.command(workspace, "run", "--json", "--session", session, "--agent", "patched",
+                        "Confirm the explicitly selected route") as process:
+        call = client.provider.next("Confirm the explicitly selected route")
+        assert call.request["model"] == model and call.request["max_tokens"] == 2048
+        call.text("Selected route confirmed.")
+        stdout, _ = client.finish(process)
+    assert json.loads(stdout)["response"] == "Selected route confirmed."
     with client.command(workspace, "run", "--json", "Use the newly configured default") as process:
         call = client.provider.next("Use the newly configured default")
         assert call.request["model"] == model and call.request["max_tokens"] == 2048
         call.text("Patched model confirmed.")
         stdout, _ = client.finish(process)
     assert json.loads(stdout)["response"] == "Patched model confirmed."
+
+    journal = next(path for path in client.home.rglob("events.jsonl") if path.parent.name == session)
+    prepared = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    prepared = [step for step in prepared if step.get("kind") == "runtime.step_prepared"
+                and step.get("agent") == "main"]
+    assert len(prepared) == 5, prepared
+    assert len({step["turn"] for step in prepared}) == 1
+    assert len({(step["segment"], step["prefix_hash"]) for step in prepared}) == 1
+    print("A managed CLI update was visible to list_models in the same Turn without changing its prefix.")
+
+    verify_candidate_probes(client, workspace, active_config, session)
     client.provider.assert_idle()
-    print(f"An Agent updated {active_config.name} through config set and a new Session used {model}.")
+
+
+def verify_candidate_probes(client, workspace, active_config, session):
+    requests = []
+
+    def probe(method, path, headers, body):
+        if headers.get("x-api-key") == "fixture-rejected-key":
+            assert (method, path) == ("POST", "/v1/messages")
+            return json_response({
+                "error": {"type": "authentication_error", "message": "Rejected fixture credential."},
+            }, 401)
+        assert headers.get("x-api-key") == "fixture-probe-key"
+        requests.append((method, path))
+        if method == "GET":
+            assert path == "/v1/models", path
+            return json_response({"data": [{"id": "candidate-model"}]})
+        assert path == "/v1/messages"
+        request = json.loads(body)
+        assert request["model"] == "candidate-model" and not request.get("stream")
+        return json_response({"content": [{"type": "text", "text": "377"}]})
+
+    previous = active_config.read_bytes()
+    with http_fixture(probe) as endpoint:
+        candidate = (workspace / "candidate config.toml").resolve()
+        candidate.write_text(f"""default_model = {{ connection = "candidate", model = "candidate-model" }}
+
+[provider.candidate]
+format = "anthropic"
+base_url = "{endpoint}"
+api_key = "fixture-probe-key"
+profile = "compatible"
+
+[model.candidate.candidate-model]
+think = "off"
+max_output_tokens = 1024
+""", encoding="utf-8")
+        flags = ("--config", str(candidate), "config")
+        stdout, _ = client.cli(workspace, *flags, "validate")
+        assert json.loads(stdout)["status"] == "valid" and not requests
+        stdout, _ = client.cli(workspace, *flags, "models", "--discover", "--connection", "candidate")
+        assert json.loads(stdout)["models"][0]["id"] == "candidate-model"
+
+        prompt = "Test the draft through the installed CLI from a script"
+        with client.command(workspace, "run", "--json", "--session", session, prompt) as process:
+            call = client.provider.next(prompt)
+            invocation = managed_cli_invocation(call, "run_js", client)
+            args = [*invocation["args"], *flags, "test", "--connection", "candidate", "--model", "candidate-model"]
+            command = json.dumps({"program": invocation["program"], "args": args})
+            code = f"""const schema = JSON.stringify(tools.schema("run_command"));
+if (!schema.includes("Kuku config invocation prefix: ")) throw new Error("missing managed CLI guidance");
+const command = await tools.run_command({command});
+return JSON.parse(await command.stdout.text());"""
+            call.tool("run_js", "trial-draft", code=code)
+            trial = client.provider.next("trial-draft")
+            trial.expect_tool_output("trial-draft", "text_returned")
+            trial.text("Draft probe succeeded.")
+            stdout, _ = client.finish(process)
+        assert json.loads(stdout)["response"] == "Draft probe succeeded."
+
+        candidate.write_text(candidate.read_text(encoding="utf-8").replace(
+            "fixture-probe-key", "fixture-rejected-key"), encoding="utf-8")
+        stdout, stderr = client.cli(workspace, *flags, "test", "--connection", "candidate",
+                                    "--model", "candidate-model", success=False)
+        assert json.loads(stdout)["diagnostics"][0]["code"] == "model_test_failed"
+        assert "fixture-rejected-key" not in stdout + stderr
+    assert requests == [("GET", "/v1/models"), ("POST", "/v1/messages")], requests
+    assert active_config.read_bytes() == previous
+    print("The managed run_js tool verified a draft through native CLI probes without publishing it.")

@@ -31,6 +31,8 @@ pub struct AppState {
     pub password: Option<String>,
     /// User data directory containing the Sessions.
     pub kuku_home: PathBuf,
+    /// Exact CLI executable on this host, when supplied by the managed launcher.
+    pub managed_cli: Option<PathBuf>,
     /// Authority consulted before exact tool actions are dispatched.
     pub authorizer: Arc<dyn kuku::permission::ToolAuthorizer>,
 }
@@ -54,6 +56,7 @@ pub async fn start_server(
         config: config_store,
         password,
         kuku_home,
+        managed_cli: None,
         authorizer: Arc::new(kuku::permission::TrustedLocal),
     });
 

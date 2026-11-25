@@ -70,6 +70,7 @@ impl TestServer {
             config: config_store,
             password,
             kuku_home: home.path().to_path_buf(),
+            managed_cli: None,
             authorizer,
         });
 
@@ -95,6 +96,7 @@ impl TestServer {
             config: self.state.config.clone(),
             password: self.state.password.clone(),
             kuku_home: self.home.path().into(),
+            managed_cli: self.state.managed_cli.clone(),
             authorizer: self.state.authorizer.clone(),
         });
         let (addr, handle) = listen(state.clone()).await;
