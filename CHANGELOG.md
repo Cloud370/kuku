@@ -16,6 +16,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Version injection at build time (`kuku --version`)
 - Makefile with build-web, build, build-all targets
 
+## [0.1.0-alpha.6]
+
+这版扩展了普通会话的图片输入，同时改进终端里的打断、消息排队、Agent 切换和工具结果阅读。
+
+### 新增功能
+
+- **更多模型路线支持图片。** 声明支持图像输入的 Chat Completions、Anthropic Messages 和 DeepSeek Responses 路线可接收用户图片，也可在允许工具调用时使用 `view_image`。其他 Responses 路线通过图像测试或显式声明图像输入能力后，可接收用户附件，但不支持工具结果图片。每条消息最多四张 PNG/JPEG，提交图片每张不超过 1 MiB；工具图片仍受文件读取授权和请求字节预算限制。
+- **模型设置保留图像测试结果。** 保存成功验证的精确模型和路线后，下次可直接粘贴图片。手工声明优先，失败测试不判定模型不支持图像。CLI 的 `config test` 仍只报告结果、不修改配置。
+
+### 体验改进
+
+- **打断和停止分开。** 输入框聚焦时按 Esc 打断当前 Turn，成功清理后按原顺序继续已排队输入，不重试被打断的 Turn，也不发送草稿；明确 Stop 才暂停队列。排队中的 Agent 消息显示发送者，可以确认撤回，但不能编辑或变成草稿。
+- `/model` 可直接输入或粘贴筛选，`Alt+D` 设为新 Session 的默认模型，`Alt+E` 编辑。Agent 列表与快捷切换按创建顺序排列，主 Agent 单独标记。
+- 活动状态更准确地显示当前请求、工具、等待与失败；最新可读工具活动自动展开，长活动保留有界预览，命令和后台 Job 可查看实际参数、耗时及原始输出。历史阅读位置更稳定，卡片时间按终端所在时区显示，同轮统计不再重复占用空间。
+- 改进 Agent 工具指引：单步操作优先直接调用已有工具，`run_js` 用于组合操作或处理结果；普通委派沿用预设或默认可用工具，不改变授权规则。
+
+### Bug 修复
+
+- 修复普通发送被误显示为需要恢复的排队消息、重连后执行和 Agent 列表状态不准确，以及过期问题或审批操作可能被重复提交的问题。答案草稿按具体问题保留，问题和回答更易阅读。
+- 修复历史回退被不可见 Agent 消息阻塞，以及图片编码升级后重开已有 Session 时可能无法继续使用已有图像的问题。
+
+### 安装与升级
+
+- **Session HTTP 协议升级到 3。** 终端、Web 客户端和服务端须对应升级；独立或远程服务请同步更新。已有受管服务在空闲时自动切换。SDK 使用者需留意 `MediaAdapterSupport`、`CapabilitySource` 的新增枚举值及图像探测字段。
+- **Provider Trace 默认改为完整记录。** 保存有界的推理请求、响应头、SSE 及有限的 HTTP 错误正文。可识别的凭据会脱敏，但提示词、图片及工具结果仍可能留在本地 trace；如不希望保存，启动服务前设置 `KUKU_PROVIDER_TRACE=0`。包含图片的请求出错时，Session 不再复制可能回显图片的上游错误正文。
+- 预发布覆盖 Linux x86-64 / ARM64、Apple Silicon macOS 和 Windows x86-64；安装后用 `kuku --version` 核对版本。参阅[升级指南](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.6/docs/zh/guides/upgrade-kuku.md)。跟踪后续预发布可运行 `kuku config set --patch 'update.channel = "alpha"'`。
+
 ## [0.1.0-alpha.5]
 
 这版把模型配置、内置帮助和中断后的继续操作接到同一套终端流程。首次打开 kuku 时，如果尚未配置模型，会直接进入配置页面。
