@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use kuku::event::{EventPayload, EventStore};
 use kuku::{
     Activation, AgentConfig, AgentStatus, Input, InputSource, InputStatus, InputTiming, Session,
 };
@@ -182,6 +183,20 @@ async fn close_cancels_a_turn_waiting_on_bundle_publication() {
     assert!(!version.exists());
     assert!(!version.with_extension("bundle").exists());
     assert!(model.requests.lock().unwrap().is_empty());
+    let events = EventStore::replay(session.events_path()).unwrap();
+    let turn = events.iter().find_map(|event| match &event.payload {
+        EventPayload::MessageUser { text, turn, .. } if text == "Use the available Skills." => {
+            Some(*turn)
+        }
+        _ => None,
+    });
+    assert!(
+        turn.is_some(),
+        "accepted input remains visible when startup is cancelled"
+    );
+    assert!(events.iter().any(|event| {
+        matches!(&event.payload, EventPayload::TurnCancelled { turn: cancelled, .. } if Some(*cancelled) == turn)
+    }));
 }
 
 #[cfg(unix)]
@@ -312,6 +327,98 @@ async fn adding_a_skill_mid_turn_does_not_interrupt_the_running_agent() {
         );
     }
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn input_with_removed_queued_skill_can_be_rewound_after_reopen() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let skills_root = workspace.path().join(".fixture");
+    let skill = skills_root.join("skills/removed-skill/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        &skill,
+        "---\nname: removed-skill\ndescription: Initially available.\n---\nLocal Skill instructions.\n",
+    )
+    .unwrap();
+    let model = Model::new(data.path(), [Reply::Text, Reply::Text]);
+    let mut settings = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    settings.session_id = Some("queued-skill-removed".into());
+    settings.config.discovery.extra_project_paths = vec![skills_root];
+    let session = Session::open(settings.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("earlier", "main", "Keep this earlier input."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+
+    const ORIGINAL: &str = "Use the Skill that was available when queued.";
+    let mut input = Input::new("queued", "main", ORIGINAL);
+    input.activation = Activation::Enqueue;
+    input.bootstrap_skill = Some("removed-skill".into());
+    let receipt = session.send(input.clone()).unwrap();
+    assert_eq!(
+        session.input_status("main", "queued").unwrap(),
+        InputStatus::Queued
+    );
+    std::fs::remove_file(skill).unwrap();
+    session.advance("main").unwrap();
+    let failed = settled(&session, AgentStatus::Interrupted).await;
+    assert!(failed.last_error.unwrap().contains("removed-skill"));
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
+    session.close().await.unwrap();
+
+    let reopened = Session::open(settings).await.unwrap();
+    assert_eq!(
+        reopened.agent("main").unwrap().status,
+        AgentStatus::Interrupted
+    );
+    assert_eq!(
+        reopened.input_status("main", "queued").unwrap(),
+        InputStatus::Accepted
+    );
+    let events = EventStore::replay(reopened.events_path()).unwrap();
+    let mut matches = events.iter().filter(|event| {
+        matches!(&event.payload, EventPayload::MessageUser { text, .. } if text == ORIGINAL)
+    });
+    let target = matches
+        .next()
+        .expect("accepted input has a rewindable user event");
+    assert!(matches.next().is_none());
+    assert!(events.iter().any(|event| {
+        matches!(&event.payload, EventPayload::TurnInterrupted { turn, .. } if Some(*turn) == failed.turn)
+    }));
+    reopened
+        .rewind_message("rewind", "main", target.id, ORIGINAL, false)
+        .unwrap();
+    assert_eq!(
+        reopened.input_status("main", "queued").unwrap(),
+        InputStatus::Withdrawn
+    );
+    assert_eq!(reopened.send(input).unwrap(), receipt);
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
+
+    let mut replacement = Input::new("replacement", "main", "Use this replacement.");
+    replacement.activation = Activation::Enqueue;
+    reopened.send(replacement).unwrap();
+    reopened.advance("main").unwrap();
+    settled(&reopened, AgentStatus::Idle).await;
+    {
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let wire = requests[1].0.to_string();
+        assert!(wire.contains("Use this replacement."));
+        assert!(wire.contains("Keep this earlier input."));
+        assert!(!wire.contains(ORIGINAL));
+    }
+    reopened.close().await.unwrap();
 }
 
 #[tokio::test]
