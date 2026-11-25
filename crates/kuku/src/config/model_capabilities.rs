@@ -31,7 +31,8 @@ pub enum MediaAdapterSupport {
 }
 
 impl MediaAdapterSupport {
-    pub(crate) fn supports_tool_images(self) -> bool {
+    /// Whether this adapter can send images returned by tools, rather than just user attachments.
+    pub fn supports_tool_images(self) -> bool {
         matches!(
             self,
             Self::ResponsesImageToolResults
