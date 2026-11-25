@@ -111,7 +111,7 @@ def open_focused_results(terminal):
 
 
 def start_custom(terminal, address, key):
-    terminal.open_first_model_settings()
+    terminal.expect_first_model_settings()
     terminal.expect("Find and test models")
     terminal.press("\r")
     choose(terminal, 0, "New custom connection")

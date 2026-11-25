@@ -123,10 +123,9 @@ def first_run_credential_repair(binary, bridge, directory):
     for workspace, legacy_key in ((login, None), (project, "fixture-unused-legacy-key")):
         env = environment if legacy_key is None else {**environment, "OPENROUTER_API_KEY": legacy_key}
         with Terminal(bridge, binary, workspace, env) as terminal:
-            terminal.expect("New session")
             terminal.request("resize", rows=20, cols=60)
             terminal.expect("Set up a model", rows=20)
-            terminal.open_first_model_settings()
+            terminal.expect_first_model_settings()
             terminal.press("\r")
             terminal.expect("Choose a provider")
             terminal.press("\x1b[A")
@@ -136,6 +135,11 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\r\r\r")
             terminal.expect("Paste your API key")
             terminal.press("\x03")
+            terminal.expect("New session", also=("/model", "Set up a model"),
+                            absent=("kuku service offline", "F2 Reconnect", "Enter steer"))
+            terminal.press("\x0c")
+            terminal.expect_first_model_settings()
+            terminal.press("\x1b")
             terminal.expect("New session", also=("/model", "Set up a model"))
             terminal.exit_cleanly()
     assert not (login / ".kuku" / "config.toml").exists()
@@ -167,7 +171,7 @@ def first_run_credential_repair(binary, bridge, directory):
         workspace = client.directory
         prompt = "Verify the repaired first-run settings"
         with client.terminal(workspace) as terminal:
-            terminal.open_first_model_settings()
+            terminal.expect_first_model_settings()
             terminal.expect("Find and test models")
             client.provider.assert_idle()
             terminal.press("\r")
@@ -262,7 +266,7 @@ def shared_model_editor(binary, bridge, directory):
         workspace = client.workspace("work-model-setup")
         with client.terminal(workspace) as terminal:
             terminal.request("resize", rows=32, cols=110)
-            terminal.open_first_model_settings()
+            terminal.expect_first_model_settings()
             terminal.expect("Set up a model", also=("Esc exit",))
             terminal.press("\r")
             providers = terminal.expect("› New custom connection", also=("Esc previous step",))["screen"]
@@ -521,7 +525,7 @@ def setup_probe_progress(binary, bridge, directory):
             endpoint = re.search(r'base_url = "(http://127\.0\.0\.1:[0-9]+)"', config.read_text(encoding="utf-8"))[1]
             config.write_text("", encoding="utf-8")
             with client.terminal(client.workspace("work-probe-progress")) as terminal:
-                terminal.open_first_model_settings()
+                terminal.expect_first_model_settings()
                 terminal.expect("Find and test models", also=("Edit config file",))
                 terminal.press("\x1b[B\r")
                 terminal.expect("Manual configuration", also=("config.toml",))

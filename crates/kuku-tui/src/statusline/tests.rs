@@ -179,6 +179,31 @@ fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
 }
 
 #[test]
+fn first_run_prompts_for_model_setup_instead_of_service_recovery() {
+    let mut app = App::new(PathBuf::from("/workspace"), None);
+    app.update(Update::SetupRequired);
+    assert!(app.effects.iter().any(|job| matches!(
+        job,
+        Job::OpenModelEditor(_, crate::setup::SetupIntent::Default)
+    )));
+    // The welcome screen is shown again after leaving model setup.
+    app.modal = None;
+    for (width, height) in [(140, 32), (60, 20), (29, 10)] {
+        let rows = screen(&mut app, &StatusLine::default(), width, height);
+        let rendered = rows.join("\n");
+        assert!(rendered.contains("/model"), "{rendered}");
+        assert!(!rendered.contains("offline"), "{rendered}");
+        assert!(!rendered.contains("Reconnect"), "{rendered}");
+        assert!(!rendered.contains("Enter steer"), "{rendered}");
+    }
+    assert!(
+        !app.contextual_controls()
+            .iter()
+            .any(|control| matches!(control, crate::contextual::ContextControl::Reconnect { .. }))
+    );
+}
+
+#[test]
 fn question_stays_visible_when_execution_is_hidden_or_the_service_is_offline() {
     let mut app = connected_app();
     load_agent(

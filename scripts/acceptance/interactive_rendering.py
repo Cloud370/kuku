@@ -317,20 +317,23 @@ def file_change_cards(client):
         client.provider.next("summary").text("Saved the example.")
         edit = "Edited   hello.py"
         write = "Added    notes.md"
-        screen = terminal.expect("Saved the example.", also=(
+        screen = terminal.expect("Saved the example.", state="Finished", also=(
             "1 file read · 3 file changes", "Added    hello.py", f"{edit} (+1 -1)", f"{write} (+5 -0)",
             "3 + - Prepared the example.", "5 + - Checked the greeting.",
             '1 - print("Hello")', '1 + print("Welcome")',
         ))["screen"]
         blank_row = re.compile(r"\b2 \+ +│")
         assert not blank_row.search(screen), screen
-        terminal.click_text(screen, edit)
+        # The short one-line edit has the same compact and expanded text.
+        # Expand the write card first so the second click uses an observed
+        # post-click frame instead of the original, possibly stale viewport.
+        terminal.click_text(screen, write)
+        written = terminal.expect("│ 2 + ", also=(f"{write} (+5 -0)", "5 + - Checked the greeting."))["screen"]
+        assert "# Report" in written and blank_row.search(written), written
+        terminal.click_text(written, edit)
         changed = terminal.expect('1 - print("Hello")', also=('1 + print("Welcome")', edit, "(+1 -1)", write))["screen"]
         assert "Requested arguments · edit_file" not in changed, changed
         assert "Read hello.py" not in changed, changed
-        terminal.click_text(changed, write)
-        written = terminal.expect("│ 2 + ", also=(f"{write} (+5 -0)", "5 + - Checked the greeting."))["screen"]
-        assert "# Report" in written and blank_row.search(written), written
         settled = terminal.expect("Saved the example.", state="Finished")["screen"]
         assert "Input accepted" not in settled and "Finished 0s" not in settled, settled
         assert (workspace / "hello.py").read_text() == 'print("Welcome")\n'

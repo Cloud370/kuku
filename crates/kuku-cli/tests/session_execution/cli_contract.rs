@@ -4,7 +4,6 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use httpmock::{Method, MockServer};
-use kuku::session::AgentStatus;
 use kuku_client::local::LocalService;
 use serde_json::{Value, json};
 
@@ -718,6 +717,6 @@ async fn sigint_withdraws_this_queued_input_and_leaves_the_earlier_execution_run
     assert!(terminal["response"].is_null());
     assert_eq!(Some(kuku_client::InputStatus::Withdrawn), submitted.status);
     assert!(state.pending.is_empty());
-    assert_eq!(AgentStatus::Running, state.agent.status);
+    assert_eq!(kuku::session::AgentStatus::Running, state.agent.status);
     assert_eq!(Some(earlier_execution), state.execution_id());
 }

@@ -84,20 +84,28 @@ python3 scripts/acceptance/run.py workspace --binary PATH_TO_BINARY
 
 ## 共同观察 TUI 运行（可选）
 
-在待测 checkout 使用独立的 tmux server。以下配置启用颜色并使用 tmux 默认键位。
+在待测 checkout 使用独立的 tmux server。以下配置启用颜色，允许 kuku 使用终端剪贴板复制，并避免个人 tmux 配置中的快捷键冲突。
 
 ```sh
 cargo build --locked -p kuku-app --bin kuku
+review_dir="$(mktemp -d "$PWD/target/kuku-review.XXXXXX")"
+ln "$PWD/target/debug/kuku" "$review_dir/kuku"
 tmux -L kuku-review -f /dev/null new-session -d -s kuku-review -c "$PWD"
 tmux -L kuku-review set-option -g default-terminal tmux-256color
 tmux -L kuku-review set-option -t kuku-review mouse on
+tmux -L kuku-review set-option -s escape-time 10
+tmux -L kuku-review set-option -s set-clipboard on
 tmux -L kuku-review respawn-pane -k -t kuku-review \
-  env -u NO_COLOR "$PWD/target/debug/kuku" --workspace "$PWD"
+  env -u NO_COLOR "$review_dir/kuku" --workspace "$PWD"
 tmux -L kuku-review capture-pane -p -t kuku-review
 tmux -L kuku-review attach -t kuku-review
 ```
 
-等待 `Ready` 后，一方操作复现，另一方读取同一个 pane，并用 `kuku events SESSION_ID --limit 40` 核对相关事件。对比前后版本时分别使用独立窗口、夹具副本、数据目录和明确的服务配置，保持终端尺寸一致。颜色或 Alt 键异常时检查 `TERM`、`NO_COLOR` 和 `tmux list-keys -T root`。[终端操作](../reference/cli.md#终端界面) · [远程连接](../guides/run-the-server.md#显式启动服务)
+硬链接固定了可执行文件，避免后续 Cargo 构建替换 `target/debug/kuku` 时，运行中的客户端失去启动受管服务所需的文件。在对应客户端和服务退出前保留固定路径。为下一轮联调重新构建时创建新的固定路径。
+
+等待 `Ready`，或完成需要时自动打开的模型配置。一方操作复现，另一方读取同一个 pane，并用 `kuku events SESSION_ID --limit 40` 核对相关事件。对比前后版本时分别使用独立窗口、夹具副本、数据目录和明确的服务配置，保持终端尺寸一致。颜色或 Alt 键异常时检查 `TERM`、`NO_COLOR` 和 `tmux -L kuku-review list-keys -T root`。[终端操作](../reference/cli.md#终端界面) · [远程连接](../guides/run-the-server.md#显式启动服务)
+
+使用 tmux 复制模式（`Ctrl+B [`）选取普通终端文本。如希望在所有页面直接用鼠标拖选进入复制模式，运行 `tmux -L kuku-review bind-key -T root MouseDrag1Pane copy-mode -M`。WSL 启用了 Windows 互操作时，可用 `tmux -L kuku-review set-option -s copy-command 'iconv -f UTF-8 -t UTF-16LE | clip.exe'` 将 tmux 选中的内容直接复制到 Windows 剪贴板。验证 kuku 自身的文本选择行为时，保留默认拖选绑定。
 
 ## 原始 benchmark 任务
 

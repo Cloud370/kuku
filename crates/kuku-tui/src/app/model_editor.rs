@@ -12,6 +12,7 @@ impl App {
         self.connecting = false;
         self.setup_required = true;
         self.connection_problem = None;
+        self.open_models();
     }
 
     pub(crate) fn open_models(&mut self) {

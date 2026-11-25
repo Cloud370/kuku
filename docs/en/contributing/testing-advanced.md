@@ -84,20 +84,28 @@ Use controlled fixtures for what the model can receive and budgeted live tasks f
 
 ## Watch a TUI run together (optional)
 
-Use a dedicated tmux server in the checkout under test. This setup enables color and uses default tmux bindings.
+Use a dedicated tmux server in the checkout under test. This setup enables color, allows kuku to copy through the terminal clipboard, and avoids bindings from your personal tmux configuration.
 
 ```sh
 cargo build --locked -p kuku-app --bin kuku
+review_dir="$(mktemp -d "$PWD/target/kuku-review.XXXXXX")"
+ln "$PWD/target/debug/kuku" "$review_dir/kuku"
 tmux -L kuku-review -f /dev/null new-session -d -s kuku-review -c "$PWD"
 tmux -L kuku-review set-option -g default-terminal tmux-256color
 tmux -L kuku-review set-option -t kuku-review mouse on
+tmux -L kuku-review set-option -s escape-time 10
+tmux -L kuku-review set-option -s set-clipboard on
 tmux -L kuku-review respawn-pane -k -t kuku-review \
-  env -u NO_COLOR "$PWD/target/debug/kuku" --workspace "$PWD"
+  env -u NO_COLOR "$review_dir/kuku" --workspace "$PWD"
 tmux -L kuku-review capture-pane -p -t kuku-review
 tmux -L kuku-review attach -t kuku-review
 ```
 
-Wait for `Ready`. Let one person drive the reproduction while the other reads the same pane and checks relevant events with `kuku events SESSION_ID --limit 40`. For before/after comparisons keep separate windows, fixture copies, data directories, and explicit service configs. Hold terminal sizes fixed. Check `TERM`, `NO_COLOR`, and `tmux list-keys -T root` when colors or Alt keys behave unexpectedly. [Terminal controls](../reference/cli.md#terminal-interface) · [Remote connection](../guides/run-the-server.md#start-an-explicit-server)
+The hard link pins the executable while later Cargo builds replace `target/debug/kuku`; the running client needs its executable to launch the managed service. Keep the pinned path until its client and service have exited. Create a new pinned path when rebuilding for the next review.
+
+Wait for `Ready`, or complete the model setup that opens automatically when required. Let one person drive the reproduction while the other reads the same pane and checks relevant events with `kuku events SESSION_ID --limit 40`. For before/after comparisons keep separate windows, fixture copies, data directories, and explicit service configs. Hold terminal sizes fixed. Check `TERM`, `NO_COLOR`, and `tmux -L kuku-review list-keys -T root` when colors or Alt keys behave unexpectedly. [Terminal controls](../reference/cli.md#terminal-interface) · [Remote connection](../guides/run-the-server.md#start-an-explicit-server)
+
+For plain terminal text selection, use tmux copy mode (`Ctrl+B [`). If you prefer to enter copy mode on a mouse drag in every screen, run `tmux -L kuku-review bind-key -T root MouseDrag1Pane copy-mode -M`. On WSL with Windows interoperability enabled, you can copy tmux selections directly to the Windows clipboard with `tmux -L kuku-review set-option -s copy-command 'iconv -f UTF-8 -t UTF-16LE | clip.exe'`. Leave the default drag binding unchanged when testing kuku's own selection behavior.
 
 ## Original benchmark tasks
 

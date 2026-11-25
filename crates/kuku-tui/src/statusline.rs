@@ -299,6 +299,7 @@ impl Field {
                 Priority::Agent,
             ),
             Self::Workspace => Segment::workspace(app.resolved_workspace()),
+            Self::Model if app.setup_required => return None,
             Self::Model => {
                 let pane = app.pane();
                 if let Some((id, connection, effort)) = pane.effective_model_identity() {
@@ -715,6 +716,7 @@ fn connection(app: &App, show_connected: bool) -> Option<Segment> {
     }
     let (color, priority) = match status {
         ServiceStatus::Connected => (Color::Reset, Priority::Connected),
+        ServiceStatus::SetupRequired => (WARNING, Priority::ConnectionProblem),
         ServiceStatus::Connecting | ServiceStatus::Reconnecting | ServiceStatus::Restarting => {
             (MUTED, Priority::ConnectionProblem)
         }
@@ -723,6 +725,7 @@ fn connection(app: &App, show_connected: bool) -> Option<Segment> {
         }
     };
     let mut labels = match status {
+        ServiceStatus::SetupRequired => vec![status.label().into()],
         ServiceStatus::Offline => vec![
             "kuku service offline".into(),
             "kuku service offline · Ctrl+R".into(),
@@ -736,7 +739,7 @@ fn connection(app: &App, show_connected: bool) -> Option<Segment> {
             vec![status.label().to_owned()]
         }
     };
-    if show_connected {
+    if show_connected && status != ServiceStatus::SetupRequired {
         let kind = if app.remote { "Remote" } else { "Local" };
         labels.push(format!("{} {kind}", status.label()));
     }
