@@ -638,8 +638,8 @@ def recover_from_provider_failure(client):
         terminal.resume(prompt)
         terminal.expect(
             "Automatic retry stopped; see transcript for details.",
-            state="Interrupted",
-            also=("No automatic retry", "HTTP 400", "F2 Continue"),
+            state="Model request failed",
+            also=("Reply interrupted", "No automatic retry", "HTTP 400", "F2 Continue"),
         )
         terminal.submit(recovery)
         try:

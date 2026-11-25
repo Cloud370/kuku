@@ -996,7 +996,7 @@ def runtime_credential_repair(binary, bridge, directory):
         with client.terminal(workspace) as terminal:
             terminal.expect("New session", state="Ready")
             terminal.submit(prompt)
-            failure = terminal.expect("Authentication error", state="Interrupted", also=("No automatic retry",))["screen"]
+            failure = terminal.expect("Authentication error", state="Model request failed", also=("No automatic retry",))["screen"]
             session = client.session(workspace)
             original = client.connection()
             original_config = config_path.read_text(encoding="utf-8")
