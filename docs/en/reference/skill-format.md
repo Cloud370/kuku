@@ -80,7 +80,7 @@ Use the location marker to find a user or project Skill's supporting files. Rela
 
 ## Skill resources
 
-`kuku-docs` provides the embedded `docs/` tree under `references/docs/`. The read-only `skill_resources` tool can read it without first loading the instructions. On first load or resource access, kuku retains the bundled version so an interrupted Turn can keep using it after a service upgrade. Start with `references/docs/en/index.md` or `references/docs/zh/index.md` for an overview, or read the page directly for a specific question.
+`kuku-docs` provides the embedded `docs/` tree under `references/docs/`. The read-only `skill_resources` tool can read it without first loading the instructions. Kuku retains the bundled version on first load or resource access, or before an active Turn pauses for a resumable permission request. The paused Turn can then still access its pinned version after a service upgrade. Start with `references/docs/en/index.md` or `references/docs/zh/index.md` for an overview, or read the page directly for a specific question.
 
 | Action | Arguments | Result |
 |---|---|---|

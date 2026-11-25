@@ -226,7 +226,13 @@ pub(super) async fn compact(
     };
     let waiting_for_input = completed
         && can_admit_input
-        && session.has_admissible_step_input(&agent, pending.skill_registry.as_ref())?;
+        && session.has_admissible_step_input(
+            &agent,
+            pending
+                .skill_registry
+                .as_ref()
+                .map_or(&[], |registry| registry.names()),
+        )?;
     pending.model_request_count += 1;
     let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let pricing = RequestPricing::new(

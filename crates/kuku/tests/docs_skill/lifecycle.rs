@@ -1,11 +1,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kuku::{AgentConfig, AgentStatus, Input, InputTiming, Session};
+use kuku::{Activation, AgentConfig, AgentStatus, Input, InputSource, InputTiming, Session};
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use super::{Gate, Model, NAME, Reply, SKILL_BODY, options, settled, tool_result};
+use super::{
+    Gate, INDEX, Model, NAME, Reply, SKILL_BODY, TOOL, common, docs_archive_lock, options, settled,
+    tool_result,
+};
 
 #[tokio::test]
 async fn adding_a_skill_mid_turn_does_not_interrupt_the_running_agent() {
@@ -71,6 +74,144 @@ async fn adding_a_skill_mid_turn_does_not_interrupt_the_running_agent() {
         );
     }
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_ineligible_queued_skill_does_not_interrupt_a_workspace_script() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("fixture.txt"), "available fixture").unwrap();
+    let model = Model::new(
+        data.path(),
+        [
+            Reply::Call(
+                "script",
+                "run_js",
+                json!({"code": r#"return await tools.read_file({path:"fixture.txt"});"#}),
+            ),
+            Reply::Text,
+        ],
+    );
+    let session = Session::open(options(
+        workspace.path(),
+        data.path(),
+        model,
+        Arc::new(Gate::default()),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let mut original = Input::new("run-script", "main", "Read the fixture.");
+    original.activation = Activation::Enqueue;
+    session.send(original).unwrap();
+    let mut later = Input::new("use-skill", "main", "Read this using another Skill.");
+    later.activation = Activation::Enqueue;
+    later.source = InputSource::Host("second-source".into());
+    later.bootstrap_skill = Some("not-installed".into());
+    session.send(later).unwrap();
+    session.advance("main").unwrap();
+
+    let done = settled(&session, AgentStatus::Idle).await;
+    assert_eq!(done.pending_inputs, 1);
+    assert_eq!(tool_result(&session, "script").0, "ok");
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn first_docs_access_retains_the_pinned_archive_before_permission_wait() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(
+        data.path(),
+        [
+            Reply::Call(
+                "defer",
+                TOOL,
+                json!({"skill_name":NAME,"action":"read","path":INDEX}),
+            ),
+            Reply::Text,
+        ],
+    );
+    let mut settings = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    settings.session_id = Some("first-resource-permission".into());
+    let (archive, lock) = docs_archive_lock(&settings, &model);
+    drop(lock);
+    assert!(!archive.exists());
+    let session = Session::open(settings.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("ask", "main", "Read the bundled documentation."))
+        .unwrap();
+    let waiting = settled(&session, AgentStatus::Waiting)
+        .await
+        .permission
+        .unwrap();
+    assert!(archive.is_file());
+    assert!(!model.extracted());
+    session.close().await.unwrap();
+
+    let reopened = Session::open(settings).await.unwrap();
+    reopened
+        .reply_permission("approve", "main", &waiting.id, true)
+        .unwrap();
+    settled(&reopened, AgentStatus::Idle).await;
+    let (status, page, facts) = tool_result(&reopened, "defer");
+    assert_eq!(status, "ok");
+    assert!(page.contains(INDEX));
+    assert_eq!(
+        facts["version"].as_str(),
+        archive.file_stem().and_then(|name| name.to_str())
+    );
+    for (body, _) in model.requests.lock().unwrap().iter() {
+        assert!(!body.to_string().contains(SKILL_BODY));
+    }
+    reopened.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn standalone_bootstrap_retains_the_exact_programmatic_body_across_turns() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let server = httpmock::MockServer::start_async().await;
+    let body = "Programmatic Skill body not present in any registry.";
+    let reply = server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/chat/completions")
+                .body_contains(body);
+            then.status(200).body(common::openai_sse_response(json!({
+                "choices": [{"finish_reason": "stop", "message": {"content": "done"}}]
+            })));
+        })
+        .await;
+    let mut config = common::test_config();
+    let model = common::set_test_model(&mut config, "openai", "standalone-bootstrap");
+    model.think = kuku::config::ThinkLevel::Off;
+    model.max_output_tokens = Some(256);
+    config.providers.get_mut("openai").unwrap().base_url = server.base_url();
+    let query = |prompt| {
+        kuku::query(prompt)
+            .session("programmatic-bootstrap")
+            .config(config.clone())
+            .kuku_home(data.path())
+            .workspace(workspace.path())
+    };
+    query("First turn.")
+        .bootstrap_skill("programmatic", body.into())
+        .run()
+        .await
+        .unwrap();
+    query("Follow-up turn.").run().await.unwrap();
+    reply.assert_hits_async(2).await;
 }
 
 #[tokio::test]

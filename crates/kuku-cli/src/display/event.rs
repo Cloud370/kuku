@@ -108,6 +108,12 @@ fn event_details(payload: &EventPayload, verbose: bool) -> String {
             bootstrap_loaded,
             ..
         } => {
+            if let Some(snapshot) = registry.get("snapshot").and_then(|value| value.as_str()) {
+                return format!(
+                    "snapshot={snapshot}  bootstrap_loaded={}",
+                    bootstrap_loaded.len()
+                );
+            }
             let skill_count = registry
                 .get("names")
                 .and_then(|v| v.as_array())
@@ -298,6 +304,25 @@ pub fn derive_final_output_for_conversation(
 mod tests {
     use super::{derive_final_output, render_event_brief};
     use kuku::event::{EventPayload, StoredEvent};
+
+    #[test]
+    fn render_skill_catalog_reference_without_guessing_inventory_size() {
+        let event = StoredEvent {
+            id: 1,
+            payload: EventPayload::ContextSkills {
+                conversation: "main".into(),
+                turn: 1,
+                ts: "t".into(),
+                registry: serde_json::json!({"snapshot": "1234abcd"}),
+                bootstrap_loaded: Vec::new(),
+            },
+        };
+        for verbose in [false, true] {
+            let rendered = render_event_brief(&event, verbose);
+            assert!(rendered.contains("snapshot=1234abcd"));
+            assert!(!rendered.contains("skills=0"));
+        }
+    }
 
     #[test]
     fn derive_final_output_uses_last_model_response_before_turn_end() {

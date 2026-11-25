@@ -30,11 +30,11 @@ pub(crate) struct StepBoundary {
     pub(crate) skills: Vec<String>,
 }
 
-fn skill_is_eligible(input: &Input, catalog: Option<&SkillRegistry>) -> bool {
+fn skill_is_eligible(input: &Input, skill_names: &[String]) -> bool {
     input
         .bootstrap_skill
         .as_ref()
-        .is_none_or(|name| catalog.is_some_and(|catalog| catalog.get(name).is_some()))
+        .is_none_or(|name| skill_names.binary_search(name).is_ok())
 }
 
 impl Session {
@@ -66,7 +66,12 @@ impl Session {
             &input.target,
             turn,
         )?;
-        if skill_is_eligible(input, snapshot.as_ref().map(|snapshot| &snapshot.registry)) {
+        if skill_is_eligible(
+            input,
+            snapshot
+                .as_ref()
+                .map_or(&[], |snapshot| snapshot.registry.names()),
+        ) {
             Ok(())
         } else {
             Err(Error::InvalidArgument(format!(
@@ -101,8 +106,9 @@ impl Session {
                 skills: Vec::new(),
             });
         }
+        let skill_names = catalog.map(SkillRegistry::names).unwrap_or_default();
         let inputs = self.select_inputs(agent, Some(InputTiming::NextStep), |input| {
-            skill_is_eligible(input, catalog)
+            skill_is_eligible(input, skill_names)
         });
         let config = update_model_selection(&agent.snapshot);
         if inputs.iter().any(|entry| !entry.input.images.is_empty()) {
@@ -336,23 +342,15 @@ impl Session {
         }))
     }
 
-    pub(crate) fn has_step_input(&self, address: &str) -> Result<bool> {
-        let state = self.inner.state.lock().unwrap();
-        Ok(state
-            .agent(address)?
-            .inbox
-            .iter()
-            .any(|entry| entry.input.timing == InputTiming::NextStep))
-    }
-
     pub(crate) fn has_admissible_step_input(
         &self,
         address: &str,
-        catalog: Option<&SkillRegistry>,
+        skill_names: &[String],
     ) -> Result<bool> {
         let state = self.inner.state.lock().unwrap();
         Ok(state.agent(address)?.inbox.iter().any(|entry| {
-            entry.input.timing == InputTiming::NextStep && skill_is_eligible(&entry.input, catalog)
+            entry.input.timing == InputTiming::NextStep
+                && skill_is_eligible(&entry.input, skill_names)
         }))
     }
 

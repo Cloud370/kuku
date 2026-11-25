@@ -150,13 +150,18 @@ impl Query {
             Some(path) => path.clone(),
             None => session_events_path(&kuku_home, &workspace, &session_id)?,
         };
-        let existing_events = if let Some(runtime) = &self.runtime {
-            crate::Session {
-                inner: runtime
+        let runtime = self
+            .runtime
+            .as_ref()
+            .map(|runtime| {
+                runtime
                     .upgrade()
-                    .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?,
-            }
-            .read_agent_events(self.conversation.as_str())?
+                    .map(|inner| crate::Session { inner })
+                    .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))
+            })
+            .transpose()?;
+        let existing_events = if let Some(runtime) = &runtime {
+            runtime.read_agent_events(self.conversation.as_str())?
         } else {
             EventStore::replay(&events_path)?
         };
@@ -276,10 +281,12 @@ impl Query {
                                 skill.body = body;
                             }
                         }
-                        skill_record = Some((
-                            crate::skill::session::persist_catalog(&kuku_home, &registry)?,
-                            bootstrap_loaded,
-                        ));
+                        let catalog = if let Some(runtime) = &runtime {
+                            runtime.persist_skill_catalog(&registry)?
+                        } else {
+                            crate::skill::session::persist_catalog(&kuku_home, &registry, None)?
+                        };
+                        skill_record = Some((catalog, bootstrap_loaded));
                         Some(registry)
                     }
                     Err(_) => None,

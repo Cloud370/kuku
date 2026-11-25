@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -101,10 +102,33 @@ fn catalog_path(home: &Path, digest: &str) -> PathBuf {
 
 /// Record just a reference in the journal. The immutable snapshot is shared by
 /// unchanged Turns; reopening a Turn never reads changed workspace files in its place.
-pub(crate) fn persist_catalog(home: &Path, registry: &SkillRegistry) -> Result<Value> {
+pub(crate) fn persist_catalog(
+    home: &Path,
+    registry: &SkillRegistry,
+    last_durable: Option<&Mutex<Option<String>>>,
+) -> Result<Value> {
+    persist_catalog_with_sync(home, registry, last_durable, |path| {
+        crate::util::fs_sync::sync_parent(path)?;
+        #[cfg(unix)]
+        crate::util::fs_sync::sync_parent(path.parent().expect("catalog has a parent"))?;
+        Ok(())
+    })
+}
+
+fn persist_catalog_with_sync(
+    home: &Path,
+    registry: &SkillRegistry,
+    last_durable: Option<&Mutex<Option<String>>>,
+    sync: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<Value> {
     let bytes = serde_json::to_vec(registry)?;
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let path = catalog_path(home, &digest);
+    if last_durable.is_some_and(|last| last.lock().unwrap().as_ref() == Some(&digest))
+        && path.is_file()
+    {
+        return Ok(json!({"snapshot": digest}));
+    }
     if !path.is_file() {
         let parent = path.parent().expect("catalog has a parent");
         crate::util::private_directory(parent)?;
@@ -112,13 +136,15 @@ pub(crate) fn persist_catalog(home: &Path, registry: &SkillRegistry) -> Result<V
         staged.write_all(&bytes)?;
         staged.as_file().sync_all()?;
         match staged.persist_noclobber(&path) {
-            Ok(_) => {
-                #[cfg(unix)]
-                std::fs::File::open(parent)?.sync_all()?;
-            }
+            Ok(_) => {}
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.error.into()),
         }
+    }
+    // Another writer can publish the name before finishing its durability barrier.
+    sync(&path)?;
+    if let Some(last) = last_durable {
+        *last.lock().unwrap() = Some(digest.clone());
     }
     Ok(json!({"snapshot": digest}))
 }
@@ -287,6 +313,38 @@ mod tests {
 
     fn event(id: u64, payload: EventPayload) -> StoredEvent {
         StoredEvent { id, payload }
+    }
+
+    #[test]
+    fn a_visible_catalog_is_not_a_durable_reference_until_synced() {
+        let home = tempfile::tempdir().unwrap();
+        let registry = skill_registry(&["alpha"]);
+        let last_durable = Mutex::new(None);
+        let sync_error =
+            |_: &Path| Err(std::io::Error::other("publication interrupted before sync"));
+
+        assert!(persist_catalog_with_sync(home.path(), &registry, None, sync_error).is_err());
+        assert_eq!(
+            std::fs::read_dir(home.path().join("skill-catalogs"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(
+            persist_catalog_with_sync(home.path(), &registry, Some(&last_durable), sync_error)
+                .is_err()
+        );
+        assert!(last_durable.lock().unwrap().is_none());
+
+        let reference = persist_catalog(home.path(), &registry, Some(&last_durable)).unwrap();
+        assert_eq!(read_catalog(home.path(), &reference).unwrap(), registry);
+        assert_eq!(
+            persist_catalog_with_sync(home.path(), &registry, Some(&last_durable), |_| {
+                panic!("already durable catalog must not force a new sync")
+            })
+            .unwrap(),
+            reference
+        );
     }
 
     #[test]

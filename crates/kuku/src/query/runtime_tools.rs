@@ -14,7 +14,7 @@ use crate::{Error, Result};
 
 use super::helpers::{
     append_permission_decision, append_permission_request, now_timestamp, permission_candidate,
-    permission_rule,
+    permission_rule, resolved_tool_available,
 };
 use super::job_slots::ForegroundJob;
 use super::run::find_tool_definition;
@@ -106,6 +106,16 @@ pub(super) async fn advance(
                     slot: None,
                     event: None,
                 });
+            }
+            // A resumed Turn may first need these pinned bytes after a service upgrade.
+            if (resolved_tool_available(&pending, "use_skill")
+                || resolved_tool_available(&pending, crate::skill::bundle::resources::TOOL_NAME))
+                && let Some(version) = pending
+                    .skill_registry
+                    .as_ref()
+                    .and_then(|registry| registry.docs_bundle())
+            {
+                crate::skill::bundle::retain(&pending.kuku_home, version).await?;
             }
             let request = PermissionRequest {
                 id: queued.tool_call.id.clone(),

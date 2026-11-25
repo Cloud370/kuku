@@ -80,7 +80,7 @@ Before writing any code:
 
 ## Skill 资料
 
-`kuku-docs` 将内置的 `docs/` 树提供在 `references/docs/`。Agent 可直接用只读的 `skill_resources` 工具访问，不要求先加载正文。首次加载或读取资料时，kuku 保留内置资料的版本，方便中断的 Turn 在服务升级后继续使用。综合问题可先看 `references/docs/zh/index.md` 或 `references/docs/en/index.md`，具体问题可直接读对应页面。
+`kuku-docs` 将内置的 `docs/` 树提供在 `references/docs/`。Agent 可直接用只读的 `skill_resources` 工具访问，不要求先加载正文。首次加载或读取资料时，或当前 Turn 因可恢复的权限请求暂停前，kuku 会保留内置资料的版本。暂停的 Turn 在服务升级后仍可访问原来的版本。综合问题可先看 `references/docs/zh/index.md` 或 `references/docs/en/index.md`，具体问题可直接读对应页面。
 
 | 操作 | 参数 | 结果 |
 |---|---|---|

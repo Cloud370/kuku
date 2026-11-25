@@ -38,7 +38,13 @@ pub(crate) async fn retain(home: &Path, version: &str) -> io::Result<()> {
     // The blocking worker can observe the caller dropping this future.
     let (cancel, waiting) = tokio::sync::oneshot::channel::<()>();
     let result = tokio::task::spawn_blocking(move || {
-        retain_cancellable(&home, &version, &|| cancel.is_closed())
+        let archive = retain_archive(&home, &version, &|| cancel.is_closed())?;
+        crate::util::fs_sync::sync_parent(&archive)?;
+        #[cfg(unix)]
+        for directory in archive.ancestors().skip(1).take(2) {
+            crate::util::fs_sync::sync_parent(directory)?;
+        }
+        Ok(())
     })
     .await
     .map_err(io::Error::other)?;
@@ -51,27 +57,36 @@ pub(crate) fn retain_cancellable(
     version: &str,
     cancelled: &impl Fn() -> bool,
 ) -> io::Result<()> {
+    retain_archive(home, version, cancelled).map(drop)
+}
+
+fn retain_archive(
+    home: &Path,
+    version: &str,
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<PathBuf> {
     ensure_active(cancelled)?;
     let path = version_path(home, version)?;
     let archive = path.with_extension("bundle");
     if version != CURRENT {
         let bytes = read_regular(&archive, MAX_ARCHIVE_BYTES)?;
         archive_parts(&bytes, version)?;
-        return Ok(());
+        return Ok(archive);
     }
     if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
-        return Ok(());
+        return Ok(archive);
     }
     let _lock = lock(&path, cancelled)?;
     if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
-        return Ok(());
+        return Ok(archive);
     }
     let mut staged = tempfile::NamedTempFile::new_in(path.parent().expect("cache has a parent"))?;
     staged.write_all(CONTENT)?;
     staged.as_file().sync_all()?;
     ensure_active(cancelled)?;
     staged.persist(&archive).map_err(|error| error.error)?;
-    sync_cache_parent(&archive)
+    sync_cache_parent(&archive)?;
+    Ok(archive)
 }
 
 struct Cache {

@@ -158,6 +158,19 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
     }
+    let bootstrap = pending.bootstrap_skill.as_ref();
+    let generic_bootstrap = bootstrap.filter(|skill| {
+        skill.name.as_deref() != Some(crate::skill::bundle::NAME) && !skill.body.is_empty()
+    });
+    let bootstrap_was_frozen = generic_bootstrap
+        .and_then(|skill| skill.name.as_ref())
+        .is_some_and(|name| {
+            existing_events.iter().any(|event| {
+                matches!(&event.payload, EventPayload::PromptSnapshot { conversation, turn, bootstrap_loaded, .. }
+                    if conversation == pending.conversation.as_str() && *turn == pending.turn
+                        && bootstrap_loaded.contains(name))
+            })
+        });
 
     // Inject the skill catalog into the snapshot prelude (first turn only;
     // subsequent turns reuse the frozen snapshot)
@@ -168,6 +181,11 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     .prelude_messages
                     .push(CanonicalMessage::user_text(skills_text));
             }
+        }
+        if let Some(skill) = generic_bootstrap {
+            assembly
+                .prelude_messages
+                .push(CanonicalMessage::user_text(&skill.body));
         }
     }
 
@@ -219,9 +237,14 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     };
     let dynamic_turn_prefix = assembly_runtime_prefix(
         assembly.runtime_context.as_deref(),
-        pending
-            .bootstrap_skill
-            .as_ref()
+        bootstrap
+            .filter(|skill| {
+                skill.name.as_deref() == Some(crate::skill::bundle::NAME)
+                    || (!bootstrap_was_frozen
+                        && !assembly.prelude_messages.iter().any(|message| {
+                            matches!(message.blocks.as_slice(), [MessageBlock::Text(text)] if *text == skill.body)
+                        }))
+            })
             .map(|skill| skill.body.as_str()),
         runtime_date.as_deref(),
         &catalog,
