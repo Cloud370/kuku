@@ -824,7 +824,11 @@ async fn same_batch_resources_do_not_depend_on_skill_body_admission() {
 }
 
 #[tokio::test]
-async fn project_skill_reuses_admitted_revision_and_refreshes_large_catalog_on_next_turn() {
+async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_survives() {
+    const FILLER_SKILLS: usize = 1_200;
+    const TARGET: &str = "zz-project-fixture";
+    const FIRST_REVISION: &str = "unique project revision AAA with catalogneedle-aaa";
+    const NEXT_REVISION: &str = "unique project revision BBB with catalogneedle-bbb";
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let root = workspace.path().join(".kuku/skills");
@@ -837,18 +841,32 @@ async fn project_skill_reuses_admitted_revision_and_refreshes_large_catalog_on_n
         )
         .unwrap();
     };
-    for index in 0..512 {
-        write_skill(&format!("other-{index}"), &"x".repeat(2400));
+    let filler_body = "bystander-body-mark ".repeat(120);
+    for index in 0..FILLER_SKILLS {
+        write_skill(&format!("other-{index:04}"), &filler_body);
     }
-    let name = "project-fixture";
-    let load = |id| Reply::Call(id, "use_skill", json!({"skill_name":name}));
-    write_skill(name, "unique project revision AAA");
+    let load = |id| Reply::Call(id, "use_skill", json!({"skill_name":TARGET}));
+    write_skill(TARGET, FIRST_REVISION);
     let model = Model::new(
         data.path(),
         [
+            Reply::Batch(vec![
+                ("front-page", "list_skills", json!({})),
+                ("tail-page", "list_skills", json!({"offset": FILLER_SKILLS})),
+                (
+                    "search-first",
+                    "search_skills",
+                    json!({"query": "catalogneedle-aaa"}),
+                ),
+            ]),
             load("project-first"),
             load("project-repeat"),
             Reply::Text,
+            Reply::Call(
+                "search-next",
+                "search_skills",
+                json!({"query": "catalogneedle-bbb"}),
+            ),
             load("project-next"),
             Reply::Text,
         ],
@@ -868,8 +886,25 @@ async fn project_skill_reuses_admitted_revision_and_refreshes_large_catalog_on_n
         .send(Input::new("first", "main", "Read project fixture."))
         .unwrap();
     settled(&session, AgentStatus::Idle).await;
+    let (_, _, first_page) = tool_result(&session, "front-page");
+    assert_eq!(first_page["total"], FILLER_SKILLS + 2);
+    assert_eq!(first_page["skills"].as_array().unwrap().len(), 20);
+    assert!(
+        first_page["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|skill| skill["name"] != TARGET)
+    );
+    let (_, _, last_page) = tool_result(&session, "tail-page");
+    assert_eq!(last_page["skills"].as_array().unwrap().len(), 2);
+    assert_eq!(last_page["skills"][1]["name"], TARGET);
+    let (_, _, first_hit) = tool_result(&session, "search-first");
+    assert_eq!(first_hit["total"], 1);
+    assert_eq!(first_hit["skills"][0]["name"], TARGET);
+    assert_eq!(first_hit["skills"][0]["loaded"], false);
     assert_eq!(tool_result(&session, "project-repeat").2["reused"], true);
-    write_skill(name, "unique project revision BBB");
+    write_skill(TARGET, NEXT_REVISION);
     session
         .send(Input::new(
             "second",
@@ -878,31 +913,25 @@ async fn project_skill_reuses_admitted_revision_and_refreshes_large_catalog_on_n
         ))
         .unwrap();
     settled(&session, AgentStatus::Idle).await;
+    let (_, _, next_hit) = tool_result(&session, "search-next");
+    assert_eq!(next_hit["total"], 1);
+    assert_eq!(next_hit["skills"][0]["name"], TARGET);
+    assert_eq!(next_hit["skills"][0]["loaded"], false);
     assert_eq!(tool_result(&session, "project-next").2["reused"], false);
-    let requests = model.requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 5);
-    assert_eq!(
-        requests[2]
-            .0
-            .to_string()
-            .matches("unique project revision AAA")
-            .count(),
-        1
-    );
-    assert!(
-        !requests[3]
-            .0
-            .to_string()
-            .contains("unique project revision BBB")
-    );
-    assert_eq!(
-        requests[4]
-            .0
-            .to_string()
-            .matches("unique project revision BBB")
-            .count(),
-        1
-    );
+    {
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests.len(), 7);
+        let initial = requests[0].0.to_string();
+        assert!(!initial.contains("other-0000") && !initial.contains(TARGET));
+        assert!(
+            requests
+                .iter()
+                .all(|(body, _)| !body.to_string().contains("bystander-body-mark"))
+        );
+        assert_eq!(requests[3].0.to_string().matches(FIRST_REVISION).count(), 1);
+        assert!(!requests[4].0.to_string().contains(NEXT_REVISION));
+        assert_eq!(requests[6].0.to_string().matches(NEXT_REVISION).count(), 1);
+    }
     let records = session.events(0, 512).unwrap();
     let refs: Vec<_> = records
         .iter()
