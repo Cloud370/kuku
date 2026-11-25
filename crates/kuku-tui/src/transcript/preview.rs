@@ -152,7 +152,7 @@ impl Transcript {
             > self.recent.position_of(&answer, layout)
         {
             self.reading = Some(super::Reading {
-                window: self.recent.clone(),
+                window: self.recent.reading_copy(),
                 anchor: position.top,
                 newer: Default::default(),
                 rebase_after_page: false,

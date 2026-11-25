@@ -45,6 +45,7 @@ fn snapshot(
             "progress": progress,
             "agent": {
                 "address": app.active.agent,
+                "creation_event_id": 1,
                 "status": status,
                 "turn": 5,
                 "pending_inputs": queued,
@@ -950,4 +951,149 @@ fn first_attachment_observes_input_already_accepted_after_queued_receipt() {
         Some(SubmissionStatus::Accepted),
         app.input_status().submission
     );
+}
+
+#[test]
+fn permission_decision_clears_wait_even_when_the_resumed_snapshot_retains_the_request() {
+    use super::WaitKind;
+
+    for allow in [true, false] {
+        let mut app = connected();
+        app.select(app.active.clone(), true, String::new());
+        let request = json!({
+            "id":"approval-1", "conversation":"main", "turn":5,
+            "tool_call_id":"write", "tool":"write_file", "risk":"write",
+            "summary":"write file", "candidate":"path", "source":"tool"
+        });
+        let mut waiting = snapshot(&app, 6, "waiting", Some(5), 0, Value::Null, None);
+        waiting.agent.permission = Some(serde_json::from_value(request.clone()).unwrap());
+        loaded(&mut app, waiting, vec![]);
+        assert_eq!(Some(WaitKind::Permission), app.pane().waiting_kind(&[]));
+        committed(
+            &mut app,
+            7,
+            "runtime.operation",
+            json!({
+                "operation":"permission_replied","state_changed":true,
+                "entry":{"id":7,"agent":"main","type":"permission_reply","request_id":"approval-1","allow":allow}
+            }),
+        );
+        assert_ne!(Some(WaitKind::Permission), app.pane().waiting_kind(&[]));
+        // Resume intentionally retains the original request to dispatch or
+        // record its denial, but it is no longer asking the user.
+        let mut resumed = snapshot(&app, 8, "running", Some(5), 0, Value::Null, None);
+        resumed.agent.permission = Some(serde_json::from_value(request).unwrap());
+        app.update(Update::Refreshed(app.selection(), Ok(resumed)));
+        assert_ne!(Some(WaitKind::Permission), app.pane().waiting_kind(&[]));
+        assert_ne!(Activity::Waiting, app.pane().activity());
+    }
+}
+
+#[test]
+fn script_wait_is_bound_to_active_call_and_individual_request() {
+    use super::WaitKind;
+
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let state = snapshot(
+        &app,
+        6,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"waiting_for_model"}),
+        None,
+    );
+    loaded(&mut app, state, vec![]);
+    streaming(&mut app, 7);
+    let permission = |app: &mut App, id, turn, call_id, request_id| {
+        committed(
+            app,
+            id,
+            "runtime.operation",
+            json!({
+                "operation":"script_permission_waiting","state_changed":true,
+                "entry":{"id":id,"agent":"main","type":"permission","turn":turn,
+                    "request":{"id":request_id,"tool_call_id":call_id}}
+            }),
+        );
+    };
+    // A prior, detached script may ask for approval during this live reply.
+    permission(&mut app, 8, 1, "detached", "script:old");
+    assert_eq!(None, app.pane().waiting_kind(&[]));
+    assert_eq!(Activity::Streaming, app.pane().activity());
+    assert!(
+        app.pane_mut()
+            .transcript
+            .project(80, 20)
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens"))
+    );
+
+    committed(&mut app, 9, "model.response", json!({}));
+    committed(
+        &mut app,
+        10,
+        "tool.call",
+        json!({
+            "entry":{"id":10,"agent":"main","type":"tool_call","turn":5,"tool":"run_js",
+                "tool_call_id":"foreground","args":{"code":"work()"}}
+        }),
+    );
+    committed(
+        &mut app,
+        11,
+        "runtime.tool_dispatched",
+        json!({"tool_call_id":"foreground"}),
+    );
+    permission(&mut app, 12, 1, "foreground", "script:old-call-id");
+    assert_eq!(None, app.pane().waiting_kind(&[]));
+    permission(&mut app, 13, 5, "foreground", "script:one");
+    permission(&mut app, 14, 5, "foreground", "script:two");
+    assert_eq!(Some(WaitKind::Permission), app.pane().waiting_kind(&[]));
+    let reply = |app: &mut App, id, request_id, operation| {
+        committed(
+            app,
+            id,
+            "runtime.operation",
+            json!({
+                "operation":operation,"state_changed":true,
+                "entry":{"id":id,"agent":"main","type":"permission_reply","request_id":request_id,"allow":true}
+            }),
+        );
+    };
+    let approval: kuku_client::PendingApproval = serde_json::from_value(json!({
+        "job_id":null,
+        "request":{"id":"script:one","conversation":"main","turn":5,
+            "tool_call_id":"foreground","tool":"run_js","risk":"write",
+            "summary":"write file","candidate":"path","source":"script"}
+    }))
+    .unwrap();
+    reply(&mut app, 15, "script:old", "script_permission_replied");
+    assert_eq!(Some(WaitKind::Permission), app.pane().waiting_kind(&[]));
+    reply(&mut app, 16, "script:one", "script_permission_replied");
+    assert_eq!(Some(WaitKind::Permission), app.pane().waiting_kind(&[]));
+    reply(&mut app, 17, "script:two", "script_permission_ended");
+    assert_eq!(None, app.pane().waiting_kind(&[]));
+    // The approvals endpoint can lag the durable reply; it cannot revive
+    // a settled approval for this still-active script.
+    assert_eq!(
+        None,
+        app.pane().waiting_kind(std::slice::from_ref(&approval))
+    );
+    let mut unobserved = approval;
+    unobserved.request.id = "script:unobserved".into();
+    assert_eq!(
+        Some(WaitKind::Permission),
+        app.pane().waiting_kind(std::slice::from_ref(&unobserved))
+    );
+    unobserved.job_id = Some("job-23".into());
+    assert_eq!(None, app.pane().waiting_kind(&[unobserved]));
+    permission(&mut app, 18, 5, "foreground", "script:three");
+    assert_eq!(Some(WaitKind::Permission), app.pane().waiting_kind(&[]));
+    tool_result(&mut app, 19, "foreground");
+    assert_eq!(None, app.pane().waiting_kind(&[]));
+    permission(&mut app, 20, 5, "foreground", "script:detached-now");
+    assert_eq!(None, app.pane().waiting_kind(&[]));
 }

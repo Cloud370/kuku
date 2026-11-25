@@ -137,6 +137,11 @@ impl RunManager {
                     .cancel_execution(command_id, address, execution_id)
                     .await
             }
+            Command::Interrupt { execution_id } => {
+                open.session
+                    .interrupt_execution(command_id, address, execution_id)
+                    .await
+            }
         };
         open.release_idle_permits();
         let receipt = result?;
@@ -188,7 +193,8 @@ fn activating(command: &Command, session: &Session, address: &str) -> bool {
         | Command::RewindMessage { .. }
         | Command::HistoryJump { .. }
         | Command::RestoreContext
-        | Command::Cancel { .. } => false,
+        | Command::Cancel { .. }
+        | Command::Interrupt { .. } => false,
     }
 }
 

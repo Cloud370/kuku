@@ -54,13 +54,11 @@ impl App {
         if !self.focus_request_id(target, request_id.clone()) {
             return false;
         }
-        if self.pane().snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .agent
-                .question
-                .as_ref()
-                .is_some_and(|request| request.id == request_id)
-        }) {
+        if self
+            .pane()
+            .question()
+            .is_some_and(|request| request.id == request_id)
+        {
             self.answer_question();
         }
         true
@@ -82,19 +80,7 @@ impl App {
     }
 
     fn pending_request_id(&self) -> Option<String> {
-        let snapshot = self.pane().snapshot.as_ref()?;
-        snapshot
-            .agent
-            .question
-            .as_ref()
-            .map(|request| request.id.clone())
-            .or_else(|| {
-                snapshot
-                    .agent
-                    .permission
-                    .as_ref()
-                    .map(|request| request.id.clone())
-            })
+        self.pane().pending_request_id().map(str::to_owned)
     }
 
     fn queue_key(&mut self, key: KeyEvent) -> bool {
@@ -157,12 +143,7 @@ impl App {
             self.problem("This request is no longer waiting for this Agent");
             return true;
         }
-        if self
-            .pane()
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.agent.question.is_some())
-        {
+        if self.pane().question().is_some() {
             if Shortcut::ENTER.matches(key) {
                 self.answer_question();
             }
@@ -207,12 +188,7 @@ impl App {
     }
 
     fn request_scroll_end(&self, page: usize) -> usize {
-        let Some(request) = self
-            .pane()
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.agent.permission.as_ref())
-        else {
+        let Some(request) = self.pane().permission() else {
             return 0;
         };
         let details = format!(

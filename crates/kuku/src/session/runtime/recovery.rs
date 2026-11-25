@@ -198,6 +198,63 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_without_agent_creation_identity_is_rejected_for_journal_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = dir.path().join("events.jsonl");
+        let outputs = dir.path().join("outputs");
+        let mut writer = EventStore::open(&events).unwrap();
+        let mut saved = Projection::new(&outputs, "session", 4096).unwrap();
+        let created = ["main", "z-review", "a-tests"]
+            .into_iter()
+            .map(|address| {
+                writer
+                    .append(
+                        Record::AgentCreated {
+                            command_id: format!("create-{address}"),
+                            fingerprint: "fingerprint".into(),
+                            address: address.into(),
+                            config: AgentConfig::default(),
+                        }
+                        .payload()
+                        .unwrap(),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        for event in &created {
+            saved.observe(Replay::Event(event.clone()), None).unwrap();
+        }
+        let mut old = serde_json::to_value(&saved).unwrap();
+        for agent in old["state"]["agents"].as_object_mut().unwrap().values_mut() {
+            agent["snapshot"]
+                .as_object_mut()
+                .unwrap()
+                .remove("creation_event_id");
+        }
+        let checkpoint = serde_json::value::to_raw_value(&old).unwrap();
+        let mut recovered = Projection::new(&outputs, "session", 4096).unwrap();
+        assert!(
+            !recovered
+                .observe(Replay::Checkpoint(&checkpoint), None)
+                .unwrap()
+        );
+        assert!(super::decode_listing(Default::default(), &checkpoint).is_none());
+        for event in created {
+            recovered.observe(Replay::Event(event), None).unwrap();
+        }
+        let mut agents = recovered.state.snapshots();
+        agents.sort_by_key(|agent| agent.creation_event_id);
+        assert_eq!(
+            [("main", 1), ("z-review", 2), ("a-tests", 3)],
+            agents
+                .iter()
+                .map(|agent| (agent.address.as_str(), agent.creation_event_id))
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+    }
+
+    #[test]
     fn changing_request_limit_keeps_committed_state_and_rebuilds_startup_facts() {
         let dir = tempfile::tempdir().unwrap();
         let events = dir.path().join("events.jsonl");

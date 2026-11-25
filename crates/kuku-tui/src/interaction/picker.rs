@@ -84,7 +84,6 @@ impl App {
             key if Shortcut::PAGE_UP.matches(key) => picker.move_by(-page),
             key if Shortcut::PAGE_DOWN.matches(key) => picker.move_by(page),
             _ if picker.kind.searchable()
-                && (picker.kind != PickerKind::Models || picker.search_focused)
                 && super::edit(&mut picker.query, key, self.modal_editor_width, false) =>
             {
                 self.picker_query_changed();
@@ -97,16 +96,13 @@ impl App {
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return false;
         };
-        if picker.kind != PickerKind::Models || picker.search_focused || !key.modifiers.is_empty() {
+        if picker.kind != PickerKind::Models || self.remote {
             return false;
         }
-        if key.code == KeyCode::Char('/') && key.kind == KeyEventKind::Press {
-            picker.search_focused = true;
-            return true;
-        }
-        let KeyCode::Char(action @ ('d' | 'e')) = key.code else {
+        let set_default = Shortcut::MODEL_DEFAULT.matches(key);
+        if !set_default && !Shortcut::MODEL_EDIT.matches(key) {
             return false;
-        };
+        }
         if key.kind != KeyEventKind::Press {
             return true;
         }
@@ -115,7 +111,7 @@ impl App {
         };
         let route = ModelRef::new(&model.connection, &model.model);
         self.close_picker();
-        if action == 'd' {
+        if set_default {
             self.prepare_model_default(Some(route));
         } else {
             self.open_model_editor(crate::setup::SetupIntent::Edit(route));

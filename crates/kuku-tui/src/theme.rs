@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Padding;
 
 pub(crate) const ACCENT: Color = Color::Rgb(70, 161, 163);
+pub(crate) const MAIN_AGENT: Color = Color::Rgb(135, 200, 242);
 pub(crate) const MUTED: Color = Color::Rgb(133, 146, 157);
 pub(crate) const SURFACE: Color = Color::Rgb(38, 48, 58);
 pub(crate) const SUBAGENT_SURFACE: Color = Color::Rgb(30, 37, 50);

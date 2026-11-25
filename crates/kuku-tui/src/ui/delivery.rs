@@ -268,26 +268,63 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
             detail_page_size: 0,
         };
     }
-    let Some(snapshot) = app.pane().snapshot.as_ref() else {
-        return RequestView {
-            lines: Vec::new(),
-            permission_choices: None,
-            detail_page_size: 0,
-        };
-    };
     let focused = app.pane().keyboard_focus == KeyboardFocus::Request;
-    if let Some(request) = &snapshot.agent.question {
-        let title = if focused {
-            "Question · Enter answer · Esc back"
+    if let Some(request) = app.pane().question() {
+        let agent = single_line(&request.agent);
+        let hint = if !app.available() {
+            "Last seen waiting"
+        } else if focused {
+            "Enter reply · Esc back"
         } else {
-            "Question · F2 answer"
+            "F2 Reply"
         };
-        let mut lines = vec![Line::styled(
-            shorten(title, width),
-            emphasis(crate::theme::WARNING),
-        )];
-        if limit > 1 {
-            lines.push(Line::raw(shorten(&single_line(&request.text), width)));
+        let title = if app.available() {
+            format!("Question · Waiting · {agent} · {hint}")
+        } else {
+            format!("Question · {agent} · {hint}")
+        };
+        let compact = format!("Question · {hint}");
+        let title_style = if focused {
+            focused_row().fg(crate::theme::WARNING)
+        } else {
+            emphasis(crate::theme::WARNING)
+        };
+        let mut lines = if title.width() <= width {
+            vec![Line::styled(title, title_style)]
+        } else if limit > 1
+            && format!("Question · {agent}").width() <= width
+            && hint.width() <= width
+        {
+            let status = if app.available() && format!("Waiting · {hint}").width() <= width {
+                format!("Waiting · {hint}")
+            } else {
+                hint.to_owned()
+            };
+            vec![
+                Line::styled(format!("Question · {agent}"), title_style),
+                Line::styled(status, Style::default().fg(crate::theme::WARNING)),
+            ]
+        } else {
+            vec![Line::styled(shorten(&compact, width), title_style)]
+        };
+        if app.pane().transcript.contains_question(&request.id) {
+            // Keep a cue at the dock when the full question has scrolled out of
+            // view, but never duplicate its complete text in the transcript.
+            let excerpt = single_line(&request.text);
+            if lines.len() < usize::from(limit) && excerpt.width() >= 8 {
+                let budget = width.min(48).min(excerpt.width().saturating_sub(1));
+                lines.push(Line::styled(
+                    shorten(&excerpt, budget),
+                    Style::default().fg(MUTED),
+                ));
+            }
+        } else {
+            let remaining = usize::from(limit).saturating_sub(lines.len());
+            lines.extend(wrap_bounded(
+                render_literal(&request.text, Style::default()),
+                width,
+                remaining,
+            ));
         }
         return RequestView {
             lines: lines.into_iter().take(limit as usize).collect(),
@@ -295,7 +332,7 @@ pub(super) fn request_lines(app: &App, width: usize, limit: u16) -> RequestView 
             detail_page_size: 0,
         };
     }
-    let Some(request) = &snapshot.agent.permission else {
+    let Some(request) = app.pane().permission() else {
         return RequestView {
             lines: Vec::new(),
             permission_choices: None,

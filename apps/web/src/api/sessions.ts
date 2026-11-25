@@ -35,7 +35,8 @@ export type Command =
   | { type: "reply_permission"; request_id: string; allow: boolean }
   | { type: "withdraw"; input_command_id: string }
   | { type: "advance" }
-  | { type: "cancel"; execution_id: number };
+  | { type: "cancel"; execution_id: number }
+  | { type: "interrupt"; execution_id: number };
 
 export type Intent = Target & { commandId: string; command: Command };
 
@@ -67,6 +68,7 @@ export interface QuestionRequest {
 
 export interface AgentSummary {
   address: string;
+  creation_event_id: number;
   status: AgentStatus;
   turn: number | null;
   execution_id: number | null;

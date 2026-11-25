@@ -23,6 +23,14 @@ impl App {
         {
             self.close_picker();
         }
+        if self.modal.is_none()
+            && Shortcut::ESCAPE.matches(key)
+            && self.text_selection.is_selecting()
+        {
+            self.text_selection.cancel_drag();
+            self.rewind_armed = false;
+            return;
+        }
         if self.modal.is_some() {
             self.modal_selection.cancel_drag();
         } else if !(self.opens_command_menu(key)
@@ -38,15 +46,6 @@ impl App {
             self.rewind_armed = false;
         }
         if Shortcut::ESCAPE.matches(key) {
-            if let Some(Modal::Picker(picker)) = &mut self.modal {
-                if key.kind == KeyEventKind::Press
-                    && picker.kind == PickerKind::Models
-                    && picker.search_focused
-                {
-                    picker.search_focused = false;
-                    return;
-                }
-            }
             if key.kind == KeyEventKind::Repeat
                 || self.back_from_thinking_confirmation()
                 || self.back_from_agent_setup()
@@ -159,9 +158,7 @@ impl App {
         let draft = self.pane().draft.text().to_owned();
         let atoms = self.pane().draft.atom_count();
         if let Some(Modal::Picker(picker)) = &mut self.modal {
-            if picker.kind.searchable()
-                && (picker.kind != PickerKind::Models || picker.search_focused)
-            {
+            if picker.kind.searchable() {
                 picker.query.insert(&text.replace(['\r', '\n'], " "));
                 self.picker_query_changed();
             }

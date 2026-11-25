@@ -372,18 +372,18 @@ impl App {
             match prompt.kind {
                 PromptKind::Agent => self.begin_agent_setup(content.trim().to_owned()),
                 PromptKind::Question { request_id, target } => {
-                    self.restore_question_composer(&target);
                     if self.selection().target != target
-                        || !self.pane().snapshot.as_ref().is_some_and(|snapshot| {
-                            snapshot
-                                .agent
-                                .question
-                                .as_ref()
-                                .is_some_and(|request| request.id == request_id)
-                        })
+                        || !self
+                            .pane()
+                            .question()
+                            .is_some_and(|request| request.id == request_id)
                     {
+                        self.save_question_draft(&target, &request_id, prompt.editor);
                         self.problem("This question is no longer waiting for this Agent");
+                    } else if !self.require_service() {
+                        self.save_question_draft(&target, &request_id, prompt.editor);
                     } else {
+                        self.restore_question_composer(&target);
                         self.issue(
                             self.active.clone(),
                             Action::ReplyQuestion {
@@ -637,18 +637,13 @@ impl App {
     }
 
     fn answer_question(&mut self) {
-        let Some(request) = self
-            .pane()
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.agent.question.as_ref())
-        else {
+        let Some(request) = self.pane().question() else {
             self.problem("No request is waiting for this Agent");
             return;
         };
         let request_id = request.id.clone();
         let target = self.selection().target;
-        let title = format!("Answer {}", request.agent);
+        let title = format!("Question · {}", request.agent);
         let instructions = request.text.clone();
         let editor = self
             .pane_mut()
@@ -742,7 +737,11 @@ impl App {
     }
 
     fn pending_choices(&self) -> Vec<Choice> {
-        let mut commands: Vec<_> = self.pending.values().collect();
+        let mut commands: Vec<_> = self
+            .pending
+            .values()
+            .filter(|item| item.stage.needs_recovery())
+            .collect();
         commands.sort_by(|left, right| left.command.command_id.cmp(&right.command.command_id));
         commands
             .into_iter()
@@ -888,7 +887,8 @@ fn pending_label(item: &PendingItem) -> String {
         Action::RestoreContext => "Restore context".to_owned(),
         Action::HistoryJump { .. } => "Switch conversation branch".to_owned(),
         Action::Advance => "Continue Agent".to_owned(),
-        Action::Cancel { .. } => "Interrupt execution".to_owned(),
+        Action::Cancel { .. } => "Stop execution".to_owned(),
+        Action::Interrupt { .. } => "Interrupt execution · continue queue".to_owned(),
     }
 }
 

@@ -177,6 +177,8 @@ pub(super) enum Record {
         command: Option<Command>,
         #[serde(default)]
         cleanup_pending: bool,
+        #[serde(default)]
+        continue_queued: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         interruption: Option<InterruptedExecution>,
     },
@@ -295,6 +297,8 @@ pub(super) struct AgentState {
     #[serde(skip)]
     pub(super) active_epoch: Option<u64>,
     pub(super) stopped_at: Option<u64>,
+    #[serde(default)]
+    pub(super) continue_queued: bool,
     pub(super) model_usage: AgentUsage,
     pub(super) manual_compaction: Option<ManualCompaction>,
     pub(super) summary_request: Option<SummaryRequest>,
@@ -419,6 +423,7 @@ impl State {
                     AgentState {
                         snapshot: AgentSnapshot {
                             address,
+                            creation_event_id: event_id,
                             config,
                             active_config: None,
                             status: AgentStatus::Idle,
@@ -446,6 +451,7 @@ impl State {
                         permission_reply: None,
                         active_epoch: None,
                         stopped_at: None,
+                        continue_queued: false,
                         model_usage: AgentUsage::default(),
                         manual_compaction: None,
                         summary_request: None,
@@ -782,6 +788,7 @@ impl State {
                 address,
                 command,
                 cleanup_pending,
+                continue_queued,
                 ..
             } => {
                 if let Some(command) = command {
@@ -803,6 +810,7 @@ impl State {
                 agent.snapshot.permission = None;
                 agent.permission_reply = None;
                 agent.stopped_at = Some(event_id);
+                agent.continue_queued = continue_queued;
             }
             Record::AgentResumed {
                 address,
@@ -812,14 +820,28 @@ impl State {
                 if let Some(command) = command {
                     self.remember_command(command, event_id, address.clone());
                 }
+                // If the service stopped before the interruption could settle, keep
+                // its accepted turn out of the next execution on explicit recovery.
+                let discarded_turn = restore
+                    && self.agent(&address)?.continue_queued
+                    && self.agent(&address)?.stopped_at.is_some();
+                if discarded_turn {
+                    self.values
+                        .release_turn(&address, self.agent(&address)?.snapshot.turn);
+                }
                 let agent = self.agent_mut(&address)?;
                 if restore {
                     agent.snapshot.status = AgentStatus::Idle;
                     agent.snapshot.execution_id = None;
                     agent.stopped_at = None;
+                    agent.continue_queued = false;
                     if agent.permission_reply.is_none() {
                         agent.set_active_config(None);
-                        agent.inbox.extend(agent.accepted.drain(..));
+                        if discarded_turn {
+                            agent.accepted.clear();
+                        } else {
+                            agent.inbox.extend(agent.accepted.drain(..));
+                        }
                         agent
                             .inbox
                             .make_contiguous()

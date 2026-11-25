@@ -34,7 +34,7 @@ pub(crate) fn live_recovery(event: &Value) -> RetryMetadata {
     .unwrap_or_default()
 }
 
-pub(crate) fn banner(retry: &RetryMetadata, now: OffsetDateTime) -> String {
+pub(crate) fn banner(retry: &RetryMetadata, now: OffsetDateTime, can_interrupt: bool) -> String {
     let mut parts = vec![match decision(retry) {
         Some(false) => stopped_reason(retry),
         None => "Retry decision recorded".to_owned(),
@@ -48,7 +48,7 @@ pub(crate) fn banner(retry: &RetryMetadata, now: OffsetDateTime) -> String {
     if let Some(attempt) = attempt_label(retry) {
         parts.push(attempt);
     }
-    if decision(retry) == Some(true) {
+    if can_interrupt && decision(retry) == Some(true) {
         parts.push("Esc stop".to_owned());
     }
     parts.join(" · ")
@@ -245,17 +245,17 @@ mod tests {
             will_retry: Some(true),
             ..RetryMetadata::default()
         };
-        assert!(banner(&retry, timestamp("2025-01-01T00:00:00Z")).contains("Retry in 5s"));
-        assert!(banner(&retry, timestamp("2025-01-01T00:00:03Z")).contains("Retry in 2s"));
+        assert!(banner(&retry, timestamp("2025-01-01T00:00:00Z"), true).contains("Retry in 5s"));
+        assert!(banner(&retry, timestamp("2025-01-01T00:00:03Z"), true).contains("Retry in 2s"));
         let missing_timestamp = RetryMetadata {
             ts: None,
             ..retry.clone()
         };
         assert!(
-            banner(&missing_timestamp, timestamp("2025-01-01T00:00:00Z"))
+            banner(&missing_timestamp, timestamp("2025-01-01T00:00:00Z"), true)
                 .contains("Scheduled wait 5s")
         );
-        let due = banner(&retry, timestamp("2025-01-01T00:00:08Z"));
+        let due = banner(&retry, timestamp("2025-01-01T00:00:08Z"), true);
         assert!(due.contains("Retry due"));
         assert!(!due.contains("Retry in 0s"));
     }
@@ -277,8 +277,12 @@ mod tests {
             ..RetryMetadata::default()
         };
 
-        let summary = banner(&retry, timestamp("2025-01-01T00:00:03Z"));
+        let summary = banner(&retry, timestamp("2025-01-01T00:00:03Z"), true);
         assert_eq!("Retry in 2s · attempt 2/4 · Esc stop", summary);
+        assert_eq!(
+            "Retry in 2s · attempt 2/4",
+            banner(&retry, timestamp("2025-01-01T00:00:03Z"), false)
+        );
         assert!(!summary.contains("服务"));
         let diagnostic = detail(&retry);
         assert!(diagnostic.contains("服务暂时不可用"));
@@ -332,7 +336,7 @@ mod tests {
             attempt: Some(3),
             ..RetryMetadata::default()
         };
-        let text = banner(&retry, timestamp("2025-01-01T00:00:00Z"));
+        let text = banner(&retry, timestamp("2025-01-01T00:00:00Z"), true);
         assert!(text.contains("Retry decision recorded"));
         assert!(!text.contains("Esc stop"));
         assert!(!text.contains("Retry in"));

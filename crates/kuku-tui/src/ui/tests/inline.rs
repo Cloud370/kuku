@@ -242,10 +242,7 @@ fn inline_queue_click_scroll_and_edit_keep_the_selected_identity() {
     assert_eq!("independent draft", app.pane().draft.text());
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
-    assert!(app.effects.iter().any(|job| matches!(job,
-        crate::jobs::Job::Save(command)
-            if matches!(command.action, Action::Cancel { execution_id: 49 })
-    )));
+    assert!(app.effects.is_empty());
     app.effects.clear();
     app.focus_queue_input(selected_id);
 
@@ -528,6 +525,242 @@ fn question_reply_restores_composer_after_request_clears() {
     load(&mut app, idle);
     key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
     assert_eq!("existing draftx", app.pane().draft.text());
+}
+
+#[test]
+fn committed_question_settlement_blocks_stale_answer_before_snapshot_refresh() {
+    for operation in [
+        "question_replied",
+        "agent_stopped",
+        "question_requested",
+        "turn_settled",
+    ] {
+        let mut app = app();
+        let question = json!({
+            "id":"q-1", "agent":"main", "turn":1,
+            "tool_call_id":"tool-1", "text":"Which test target?"
+        });
+        let state = snapshot(&app, "waiting", question.clone(), json!(null));
+        load(&mut app, state.clone());
+        app.effects.clear();
+        app.pane_mut().draft.insert("main draft");
+        app.focus_request();
+        let Some(Modal::Prompt(prompt)) = &mut app.modal else {
+            panic!("question popup expected")
+        };
+        prompt.editor.set_text("unsent answer".into());
+
+        let replacement = json!({
+            "id":"q-2", "agent":"main", "turn":2,
+            "tool_call_id":"tool-2", "text":"What should run instead?"
+        });
+        let entry = match operation {
+            "question_replied" => {
+                json!({"id":53,"agent":"main","type":"question_reply","request_id":"q-1","text":"Answered elsewhere"})
+            }
+            "question_requested" => {
+                json!({"id":53,"agent":"main","turn":2,"type":"question","request":replacement,"text":"What should run instead?"})
+            }
+            _ => json!(null),
+        };
+        let settlement = if operation == "turn_settled" {
+            json!({"status":"interrupted","turn":1})
+        } else {
+            json!(null)
+        };
+        app.update(Update::Observation(
+            app.selection(),
+            serde_json::from_value(json!({
+                "type":"committed","id":53,"agent":"main","kind":"runtime.operation",
+                "operation":operation,"state_changed":true,"entry":entry,"settlement":settlement,
+            }))
+            .unwrap(),
+        ));
+        assert_eq!(
+            app.pane()
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .agent
+                .question
+                .as_ref()
+                .unwrap()
+                .id,
+            "q-1"
+        );
+        assert!(app.pane().question().is_none());
+        assert!(!app.contextual_controls().iter().any(|control| matches!(control,
+            crate::contextual::ContextControl::Request { request_id, .. } if request_id == "q-1"
+        )));
+        // Enter immediately, while the old snapshot is still installed.
+        app.effects.clear();
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.modal.is_none() && app.composer_focused());
+        assert!(
+            !app.effects
+                .iter()
+                .any(|effect| matches!(effect, crate::jobs::Job::Save(command)
+            if matches!(command.action, Action::ReplyQuestion { .. })))
+        );
+        assert_eq!(app.pane().draft.text(), "main draft");
+        assert_eq!(app.pane().question_drafts["q-1"].text(), "unsent answer");
+
+        app.update(Update::Refreshed(app.selection(), Ok(state)));
+        assert!(app.pane().question().is_none());
+        let mut fresh = snapshot(&app, "waiting", replacement, json!(null));
+        fresh.cursor = 54;
+        app.update(Update::Refreshed(app.selection(), Ok(fresh)));
+        assert_eq!(app.pane().question().unwrap().id, "q-2");
+        app.focus_request();
+        assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+            if matches!(&prompt.kind, PromptKind::Question { request_id, .. } if request_id == "q-2")
+                && prompt.editor.text().is_empty()));
+    }
+}
+
+#[test]
+fn unrelated_permission_and_peer_question_commits_do_not_invalidate_pending_answer() {
+    let mut app = app();
+    let state = snapshot(
+        &app,
+        "waiting",
+        json!({
+            "id":"q-1", "agent":"main", "turn":1,
+            "tool_call_id":"tool-1", "text":"Which target?"
+        }),
+        json!(null),
+    );
+    load(&mut app, state);
+    app.focus_request();
+    let Some(Modal::Prompt(prompt)) = &mut app.modal else {
+        panic!("question popup expected")
+    };
+    prompt.editor.set_text("use Rust".into());
+    for (id, agent, operation) in [
+        (53, "main", "permission_waiting"),
+        (54, "reviewer", "question_replied"),
+        (55, "main", "turn_settled"),
+    ] {
+        let settlement = if operation == "turn_settled" {
+            json!({"status":"waiting","turn":1})
+        } else {
+            json!(null)
+        };
+        app.update(Update::Observation(
+            app.selection(),
+            serde_json::from_value(json!({
+                "type":"committed","id":id,"agent":agent,"kind":"runtime.operation",
+                "operation":operation,"state_changed":true,"settlement":settlement
+            }))
+            .unwrap(),
+        ));
+    }
+    assert_eq!(app.pane().question().unwrap().id, "q-1");
+    app.effects.clear();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        app.effects
+            .iter()
+            .any(|effect| matches!(effect, crate::jobs::Job::Save(command)
+        if matches!(&command.action, Action::ReplyQuestion { request_id, text }
+            if request_id == "q-1" && text == "use Rust")))
+    );
+}
+
+#[test]
+fn retained_question_in_non_answerable_snapshot_never_submits() {
+    for status in ["idle", "interrupted", "stopped"] {
+        let mut app = app();
+        let question = json!({
+            "id":"q-1","agent":"main","turn":1,"tool_call_id":"ask","text":"Which target?"
+        });
+        let state = snapshot(&app, "running", question.clone(), json!(null));
+        load(&mut app, state);
+        app.focus_request();
+        let Some(Modal::Prompt(prompt)) = &mut app.modal else {
+            panic!("question prompt expected while running")
+        };
+        prompt.editor.set_text("pending answer".into());
+        let mut settled = snapshot(&app, status, question, json!(null));
+        settled.cursor = 53;
+        app.update(Update::Refreshed(app.selection(), Ok(settled)));
+        assert!(app.pane().question().is_none());
+        app.effects.clear();
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.modal.is_none());
+        assert!(
+            !app.effects
+                .iter()
+                .any(|effect| matches!(effect, crate::jobs::Job::Save(command)
+            if matches!(command.action, Action::ReplyQuestion { .. })))
+        );
+        assert_eq!(app.pane().question_drafts["q-1"].text(), "pending answer");
+        app.focus_request();
+        assert!(
+            app.modal.is_none(),
+            "{status} snapshot still activates a question"
+        );
+    }
+}
+
+#[test]
+fn peer_question_settlement_invalidates_cached_pane_before_switch_back_refresh() {
+    let mut app = app();
+    let state = snapshot(
+        &app,
+        "waiting",
+        json!({
+            "id":"q-1","agent":"main","turn":1,"tool_call_id":"ask","text":"Which target?"
+        }),
+        json!(null),
+    );
+    load(&mut app, state);
+    app.pane_mut().draft.insert("main draft");
+    app.focus_request();
+    let Some(Modal::Prompt(prompt)) = &mut app.modal else {
+        panic!("question prompt expected")
+    };
+    prompt.editor.set_text("pending answer".into());
+    let main = app.active.clone();
+    let reviewer = crate::app::Address::new(main.session.clone(), "reviewer".into());
+    app.select(reviewer, true, "Reviewer".into());
+    let idle = snapshot(&app, "idle", json!(null), json!(null));
+    load(&mut app, idle);
+
+    // Peer history entries are omitted by the selected Agent's observation;
+    // the committed operation and addressed Agent still invalidate the cache.
+    app.update(Update::Observation(
+        app.selection(),
+        serde_json::from_value(json!({
+            "type":"committed","id":53,"agent":"main","kind":"runtime.operation",
+            "operation":"question_replied","state_changed":true
+        }))
+        .unwrap(),
+    ));
+    app.select(main, true, "Main".into());
+    assert!(
+        app.pane()
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .agent
+            .question
+            .is_some()
+    );
+    assert!(app.pane().question().is_none());
+    app.effects.clear();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.modal.is_none() && app.composer_focused());
+    assert!(
+        !app.effects
+            .iter()
+            .any(|effect| matches!(effect, crate::jobs::Job::Save(command)
+        if matches!(command.action, Action::ReplyQuestion { .. })))
+    );
+    assert_eq!(app.pane().question_drafts["q-1"].text(), "pending answer");
+    assert_eq!(app.pane().draft.text(), "main draft");
+    app.focus_request();
+    assert!(app.modal.is_none());
 }
 
 #[test]

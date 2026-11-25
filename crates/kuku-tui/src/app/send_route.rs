@@ -219,7 +219,7 @@ mod tests {
         app.complete_test_permissions();
         let snapshot: Snapshot = serde_json::from_value(json!({
             "session_id": app.active.session, "workspace": app.workspace, "cursor": 8,
-            "agent": {"address":"main", "status":"idle", "config":{}, "pending_inputs":0,
+            "agent": {"address":"main", "creation_event_id":1, "status":"idle", "config":{}, "pending_inputs":0,
                 "last_model_route": ModelRequestRoute::from_selection(previous)},
             "pending": [], "agents": [], "selection": selection
         }))

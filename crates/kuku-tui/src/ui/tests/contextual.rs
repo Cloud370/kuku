@@ -19,7 +19,10 @@ fn load_snapshot(app: &mut crate::app::App, status: &str, with_input: bool) {
     if with_input {
         snapshot.agent.pending_inputs = 1;
         snapshot.pending.push(QueuedInput {
-            input: Input::new("queued-command", app.active.agent.clone(), "waiting"),
+            input: Input {
+                source: kuku_client::InputSource::Host("http".into()),
+                ..Input::new("queued-command", app.active.agent.clone(), "waiting")
+            },
             receipt: Receipt {
                 command_id: "queued-command".into(),
                 event_id: 53,
@@ -37,6 +40,114 @@ fn load_snapshot(app: &mut crate::app::App, status: &str, with_input: bool) {
         },
     ));
     app.effects.clear();
+}
+
+#[test]
+fn answer_popup_separates_scrolling_question_focused_editor_and_actions() {
+    let mut app = app();
+    let text = "Which target?\nReview the proposed approach.\nConfirm each necessary check.\nKeep any existing local changes.\nDo not modify unrelated files.\nPlease choose the final verification.\nFinal check?";
+    let request =
+        json!({"id":"question-popup","agent":"main","turn":1,"tool_call_id":"ask","text":text});
+    let waiting = super::snapshot(&app, "waiting", request.clone(), json!(null));
+    let history = serde_json::from_value(json!({
+        "id":42,"agent":"main","turn":1,"type":"question","request":request,"text":text
+    }))
+    .unwrap();
+    app.update(Update::Loaded(
+        app.selection(),
+        waiting,
+        HistoryPage {
+            entries: vec![history],
+            rewind_groups: vec![],
+            next_before: None,
+        },
+    ));
+    app.pane_mut().draft.insert("independent main draft");
+    let pending = screen(&mut app, 82, 28);
+    assert_eq!(1, pending.matches("Final check?").count(), "{pending}");
+    assert!(pending.contains("Waiting · main · F2 Reply"), "{pending}");
+
+    let mut terminal = Terminal::new(TestBackend::new(82, 28)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let point = (app.request_area.x, app.request_area.y);
+    click(&mut app, buffer, point);
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(prompt)) if matches!(&prompt.kind, crate::menu::PromptKind::Question { request_id, .. } if request_id == "question-popup"))
+    );
+    let wide = screen(&mut app, 82, 28);
+    for marker in [
+        "Question · main",
+        "Which target?",
+        "Final check?",
+        "Your reply",
+        "Enter reply",
+        "Esc back",
+    ] {
+        assert!(wide.contains(marker), "{marker} missing in\n{wide}");
+    }
+
+    let mut terminal = Terminal::new(TestBackend::new(26, 15)).unwrap();
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let label = super::text_position(buffer, "Your reply");
+    assert_eq!(buffer[label].bg, crate::theme::focused_row().bg.unwrap());
+    let cursor = terminal.get_cursor_position().unwrap();
+    assert_eq!(cursor.y, label.1 + 1);
+    let narrow = screen(&mut app, 26, 15);
+    for marker in [
+        "Which target?",
+        "Your reply",
+        "Enter reply",
+        "Esc back",
+        "PgUp/PgDn question",
+    ] {
+        assert!(narrow.contains(marker), "{marker} missing in\n{narrow}");
+    }
+    for _ in 0..8 {
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        let view = screen(&mut app, 26, 15);
+        if view.contains("Final check?") {
+            break;
+        }
+    }
+    let end = screen(&mut app, 26, 15);
+    assert!(
+        end.contains("Final check?") && end.contains("Your reply"),
+        "{end}"
+    );
+    assert!(
+        end.contains("Enter reply") && end.contains("Esc back"),
+        "{end}"
+    );
+
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!("independent main draft", app.pane().draft.text());
+    assert!(app.composer_focused());
+    let buffer = terminal
+        .draw(|frame| render(frame, &mut app))
+        .unwrap()
+        .buffer;
+    let point = (app.request_area.x, app.request_area.y);
+    click(&mut app, buffer, point);
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt)) if prompt.editor.text() == "a"));
+    let restored = screen(&mut app, 26, 15);
+    assert!(
+        restored.contains("Which target?") && restored.contains("Your reply"),
+        "{restored}"
+    );
+    app.effects.clear();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.effects.iter().any(|effect| matches!(effect,
+        Job::Save(command) if matches!(&command.action, Action::ReplyQuestion { request_id, text }
+            if request_id == "question-popup" && text == "a")
+    )));
+    assert_eq!("independent main draft", app.pane().draft.text());
 }
 
 #[test]
@@ -224,7 +335,7 @@ fn continue_confirmation_is_transient_and_does_not_replace_an_error() {
 
 #[test]
 fn contextual_escape_hints_remain_complete_at_32_and_33_columns() {
-    for (status, expected) in [("running", "Esc stop"), ("idle", "Esc back")] {
+    for status in ["running", "idle"] {
         let mut app = app();
         load_snapshot(&mut app, status, false);
         let control = app
@@ -241,7 +352,7 @@ fn contextual_escape_hints_remain_complete_at_32_and_33_columns() {
         app.focus_context_control(control);
         for columns in [32, 33] {
             let view = screen(&mut app, columns, 20);
-            assert!(view.contains(expected), "{columns} columns:\n{view}");
+            assert!(view.contains("Esc back"), "{columns} columns:\n{view}");
             assert!(app.pane().contextual_focus.active);
         }
     }
@@ -272,7 +383,11 @@ fn pending_send(app: &mut crate::app::App) -> kuku_client::Command {
     let Some(Job::Save(command)) = app.effects.pop() else {
         panic!("send command should be saved")
     };
-    app.update(Update::Pending(Ok(vec![command.clone()])));
+    app.update(Update::Saved(command.clone(), Ok(())));
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Err(Error::Io(std::io::Error::other("receipt lost"))),
+    ));
     command
 }
 
@@ -467,8 +582,7 @@ fn focused_control_hints_render_with_default_and_custom_statuslines() {
     load_snapshot(&mut running, "running", false);
     key(&mut running, KeyCode::F(2), KeyModifiers::NONE);
     let running_view = screen(&mut running, 82, 20);
-    assert!(running_view.contains("Esc stop"));
-    assert!(!running_view.contains("Esc back"));
+    assert!(running_view.contains("Esc back"));
 
     let mut custom = app();
     custom.pane_mut().exists = true;
@@ -691,17 +805,23 @@ fn continue_enter_preserves_composer_draft_and_revalidates_input_identity() {
 }
 
 #[test]
-fn focused_escape_interrupts_a_running_task_and_returns_to_composer() {
+fn focused_escape_returns_to_composer_before_interrupting_a_running_task() {
     let mut app = app();
-    load_snapshot(&mut app, "running", false);
+    load_snapshot(&mut app, "running", true);
+    app.pane_mut().draft.insert("draft not submitted");
     key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
     assert!(app.pane().contextual_focus.active);
     key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!app.pane().contextual_focus.active);
+    assert!(app.effects.is_empty());
+    assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.effects.iter().any(|job| matches!(job,
-        Job::Save(command) if matches!(command.action, Action::Cancel { execution_id: 49 })
+        Job::Save(command) if matches!(command.action, Action::Interrupt { execution_id: 49 })
     )));
     assert_eq!(KeyboardFocus::Composer, app.pane().keyboard_focus);
+    assert_eq!("draft not submitted", app.pane().draft.text());
+    assert_eq!(1, app.pane().deliveries.rows().len());
 }
 
 #[test]
@@ -760,25 +880,18 @@ fn pending_recovery_requires_the_same_saved_command_identity() {
 #[test]
 fn failed_configure_and_other_saved_action_open_recovery_without_a_send() {
     let mut app = app();
-    for (id, action) in [
-        (
-            "configure-command",
-            Action::Configure {
-                config: Box::default(),
-            },
-        ),
-        (
-            "create-agent-command",
-            Action::CreateAgent {
-                config: Box::default(),
-            },
-        ),
+    for action in [
+        Action::Configure {
+            config: Box::default(),
+        },
+        Action::CreateAgent {
+            config: Box::default(),
+        },
     ] {
         app.issue(app.active.clone(), action);
-        let Some(Job::Save(mut command)) = app.effects.pop() else {
+        let Some(Job::Save(command)) = app.effects.pop() else {
             panic!("saved action should be queued")
         };
-        command.command_id = id.into();
         app.update(Update::Saved(command.clone(), Ok(())));
         app.update(Update::Sent(
             command.command_id.clone(),

@@ -144,7 +144,7 @@ mod tests {
         };
         app.pane_mut().snapshot = Some(Box::new(serde_json::from_value(serde_json::json!({
             "session_id":"fixture", "workspace":"/workspace", "cursor":4, "agents":[], "pending":[],
-            "agent":{"address":"main", "config":kuku_client::AgentConfig::default(), "status":"idle",
+            "agent":{"address":"main", "creation_event_id":1, "config":kuku_client::AgentConfig::default(), "status":"idle",
                 "pending_inputs":0, "cache_warning":warning}
         })).unwrap()));
         assert!(app.focus_context_control(ContextControl::CacheWarning { since_turn: 4 }));

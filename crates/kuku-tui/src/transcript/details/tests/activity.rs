@@ -2,7 +2,482 @@ use serde_json::json;
 
 use crate::transcript::{HISTORY_PAGE, MAX_RECORDS};
 
-use super::{HistoryPage, HistoryRequest, Journal, Transcript, TranscriptView, line, text};
+use super::{
+    HistoryPage, HistoryRequest, Journal, Transcript, TranscriptView, collapse_auto_group, line,
+    text,
+};
+
+#[test]
+fn latest_activity_opens_only_the_readable_group_and_respects_manual_choices() {
+    let mut journal = Journal::default();
+    for path in ["old-first.txt", "old-second.txt", "old-third.txt"] {
+        journal.read(7, "main", path);
+    }
+    let mut transcript = Journal(journal.0.clone()).load();
+    let first = text(&transcript.project(100, 60));
+    assert!(first.contains("Read old-first.txt"), "{first}");
+    assert!(
+        !first.contains("contents for old-first.txt") && !first.contains("Requested arguments")
+    );
+    let boundary = journal.0.len();
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"Now check the other files."}),
+    );
+    journal.read(7, "main", "fresh-first.txt");
+    journal.read(7, "main", "fresh-second.txt");
+    journal.push(7, "main", json!({"type":"tool_call","tool":"read_file","tool_call_id":"pending","args":{"path":"fresh-third.txt"}}));
+    for entry in journal.0[boundary..].iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    let view = transcript.project(100, 60);
+    let second = text(&view);
+    assert!(!second.contains("Read old-first.txt"), "{second}");
+    assert!(second.contains("Read fresh-first.txt"), "{second}");
+    let current = transcript
+        .detail_items
+        .visible
+        .iter()
+        .find(|item| item.key.kind == super::DetailKind::Group && item.open)
+        .expect("one open group")
+        .key
+        .clone();
+    assert!(transcript.toggle_detail(&current));
+    transcript.live(
+        49,
+        Some(7),
+        None,
+        &json!({"type":"tool_start","tool":"read_file","id":"pending"}),
+    );
+    transcript.project(100, 60);
+    assert!(
+        transcript
+            .detail_items
+            .visible
+            .iter()
+            .filter(|item| item.key.kind == super::DetailKind::Group)
+            .all(|item| !item.open)
+    );
+
+    let boundary = journal.0.len();
+    journal.push(7, "main", json!({"type":"tool_result","tool":"read_file","tool_call_id":"pending","status":"ok","summary":"Read third","model_content":"Do not expose raw result","structured":{"kind":"file_content","path":"fresh-third.txt","start_line":1,"line_count":1,"total_lines":1}}));
+    transcript.apply(journal.0[boundary].clone(), Some(49));
+    let settled = transcript.project(100, 60);
+    assert!(
+        transcript
+            .detail_items
+            .visible
+            .iter()
+            .filter(|item| item.key.kind == super::DetailKind::Group)
+            .all(|item| !item.open),
+        "{}",
+        text(&settled)
+    );
+    assert!(!text(&settled).contains("Do not expose raw result"));
+
+    let old = transcript
+        .detail_at(line(&settled, "Read 3 files"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_detail(&old));
+    let boundary = journal.0.len();
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"Third batch next."}),
+    );
+    for path in ["last-first.txt", "last-second.txt", "last-third.txt"] {
+        journal.read(7, "main", path);
+    }
+    for entry in journal.0[boundary..].iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    let third = text(&transcript.project(100, 80));
+    assert!(
+        third.contains("Read old-first.txt") && third.contains("Read last-first.txt"),
+        "{third}"
+    );
+    assert!(!third.contains("Read fresh-first.txt"), "{third}");
+    assert_eq!(
+        2,
+        transcript
+            .detail_items
+            .visible
+            .iter()
+            .filter(|item| item.key.kind == super::DetailKind::Group && item.open)
+            .count()
+    );
+
+    // An already-readable card takes over without opening its raw details.
+    journal.push(7, "main", json!({"type":"job_finished","job_id":"review-job","status":"completed","summary":"Background report ready"}));
+    transcript.apply(journal.0.last().unwrap().clone(), None);
+    let job = text(&transcript.project(100, 80));
+    assert!(
+        job.contains("Background report ready") && job.contains("Read old-first.txt"),
+        "{job}"
+    );
+    assert!(!job.contains("Read last-first.txt"), "{job}");
+}
+
+#[test]
+fn oversized_latest_activity_uses_the_compact_preview_until_explicitly_opened() {
+    use crate::transcript::window::MAX_AUTO_GROUP_MEMBERS;
+
+    let mut journal = Journal::default();
+    for index in 0..MAX_AUTO_GROUP_MEMBERS {
+        journal.read(7, "main", &format!("bounded-{index}.txt"));
+    }
+    let mut transcript = Journal(journal.0.clone()).load();
+    assert!(text(&transcript.project(100, 60)).contains("Read bounded-0.txt"));
+    let boundary = journal.0.len();
+    journal.read(7, "main", "one-more.txt");
+    for entry in journal.0[boundary..].iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    let collapsed = transcript.project(100, 60);
+    assert!(!text(&collapsed).contains("Read bounded-0.txt"));
+    assert!(collapsed.lines.len() <= 9);
+    let group = transcript
+        .detail_items
+        .visible
+        .iter()
+        .find(|item| item.key.kind == super::DetailKind::Group && !item.open)
+        .unwrap()
+        .key
+        .clone();
+    assert!(transcript.toggle_detail(&group));
+    assert!(text(&transcript.project(100, 60)).contains("Read bounded-0.txt"));
+    let boundary = journal.0.len();
+    journal.read(7, "main", "another.txt");
+    for entry in journal.0[boundary..].iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    assert!(text(&transcript.project(100, 60)).contains("Read bounded-0.txt"));
+}
+
+#[test]
+fn oversized_mixed_activity_keeps_the_newest_result_and_priority_previews() {
+    let mut journal = Journal::default();
+    for index in 0..4 {
+        journal.read(7, "main", &format!("reference-{index}.txt"));
+    }
+    journal.tool(
+        "write_file",
+        json!({"path":"changed.txt"}),
+        json!({
+            "status":"ok","structured":{"kind":"file_write","path":"changed.txt",
+            "line_count":1,"raw_text_after":"Saved line"}
+        }),
+    );
+    journal.tool(
+        "run_command",
+        json!({"program":"failed-check"}),
+        json!({
+            "status":"error","model_content":"Important failure","structured":{"exit_code":1}
+        }),
+    );
+    for program in ["first-check", "second-check", "newest-check"] {
+        journal.tool(
+            "run_command",
+            json!({"program":program}),
+            json!({
+                "status":"ok","model_content":"Raw command result","structured":{"exit_code":0}
+            }),
+        );
+    }
+    let mut transcript = Journal(journal.0.clone()).load();
+    let commands = transcript.project(100, 60);
+    let rendered = text(&commands);
+    assert!(
+        rendered.contains("changed.txt") && rendered.contains("Important failure"),
+        "{rendered}"
+    );
+    assert!(
+        commands.lines.iter().any(|row| {
+            let row = row.to_string();
+            row.contains("newest-check") && row.contains("ok · exit 0")
+        }),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Read reference-0.txt") && !rendered.contains("Raw command result"));
+    assert!(
+        transcript
+            .detail_items
+            .visible
+            .iter()
+            .any(|item| item.key.kind == super::DetailKind::Group && !item.open)
+    );
+
+    let boundary = journal.0.len();
+    journal.read(7, "main", "latest-read.txt");
+    for entry in journal.0[boundary..].iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    let current = transcript.project(100, 60);
+    let rendered = text(&current);
+    assert!(
+        rendered.contains("Read latest-read.txt")
+            && rendered.contains("Important failure")
+            && rendered.contains("changed.txt"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("contents for latest-read.txt"));
+    assert!(!rendered.contains("Read reference-0.txt"));
+    transcript.scroll(-100, 100, 60);
+    assert_eq!(rendered, text(&transcript.project(100, 60)));
+}
+
+#[test]
+fn reading_freezes_the_automatic_group_even_when_newer_history_arrives() {
+    let mut journal = Journal::default();
+    journal.push(
+        7,
+        "main",
+        json!({"type":"user","text":"Inspect the files."}),
+    );
+    for path in ["first.txt", "second.txt", "third.txt"] {
+        journal.read(7, "main", path);
+    }
+    let mut transcript = Journal(journal.0.clone()).load();
+    transcript.project(90, 6);
+    transcript.scroll(-100, 90, 6);
+    // Reading from the top keeps the original group open rather than changing
+    // its layout at the moment the reader leaves follow mode.
+    let before = text(&transcript.project(90, 6));
+    let anchor = transcript.reading_anchor().cloned();
+    let boundary = journal.0.len();
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"Another inspection."}),
+    );
+    for path in ["new-first.txt", "new-second.txt", "new-third.txt"] {
+        journal.read(7, "main", path);
+    }
+    let newer = journal.0[boundary..].to_vec();
+    for entry in newer.iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    assert_eq!(before, text(&transcript.project(90, 6)));
+    assert_eq!(anchor.as_ref(), transcript.reading_anchor());
+    let cursor = journal.0[boundary - 1].id;
+    transcript.reading.as_mut().unwrap().newer = Some(cursor);
+    transcript.apply_forward_page(
+        HistoryRequest::Newer(cursor),
+        kuku_client::ForwardHistoryPage {
+            page: HistoryPage {
+                entries: newer,
+                rewind_groups: Vec::new(),
+                next_before: None,
+            },
+            next_after: None,
+        },
+    );
+    assert_eq!(before, text(&transcript.project(90, 6)));
+    assert_eq!(anchor.as_ref(), transcript.reading_anchor());
+    let resized = text(&transcript.project(90, 60));
+    assert!(
+        resized.contains("Read first.txt") && !resized.contains("Read new-first.txt"),
+        "{resized}"
+    );
+    assert_eq!(anchor.as_ref(), transcript.reading_anchor());
+    transcript.show_latest();
+    let latest = text(&transcript.project(90, 60));
+    assert!(
+        !latest.contains("Read first.txt") && latest.contains("Read new-first.txt"),
+        "{latest}"
+    );
+}
+
+#[test]
+fn inspecting_an_auto_open_member_pins_its_group_until_the_user_folds_it() {
+    let mut journal = Journal::default();
+    for path in [
+        "inspect-first.txt",
+        "inspect-second.txt",
+        "inspect-third.txt",
+    ] {
+        journal.read(7, "main", path);
+    }
+    let mut transcript = Journal(journal.0.clone()).load();
+    let auto = transcript.project(100, 60);
+    let group = transcript
+        .detail_at(line(&auto, "Read 3 files"))
+        .unwrap()
+        .clone();
+    let member = transcript
+        .detail_at(line(&auto, "Read inspect-first.txt"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_detail(&member));
+    assert!(text(&transcript.project(100, 60)).contains("contents for inspect-first.txt"));
+
+    let boundary = journal.0.len();
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"Another batch next."}),
+    );
+    for path in ["later-first.txt", "later-second.txt", "later-third.txt"] {
+        journal.read(7, "main", path);
+    }
+    for entry in journal.0[boundary..].iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    let both = text(&transcript.project(100, 60));
+    assert!(
+        both.contains("contents for inspect-first.txt") && both.contains("Read later-first.txt"),
+        "{both}"
+    );
+    assert!(transcript.toggle_detail(&group));
+    let folded = text(&transcript.project(100, 60));
+    assert!(
+        !folded.contains("contents for inspect-first.txt")
+            && folded.contains("Read later-first.txt"),
+        "{folded}"
+    );
+    // Choosing the existing hidden inspection reopens its parent without
+    // closing the inspection, so explicit group folds still take precedence.
+    assert!(transcript.toggle_detail(&member));
+    assert!(text(&transcript.project(100, 60)).contains("contents for inspect-first.txt"));
+}
+
+#[test]
+fn a_group_fold_remains_explicit_after_its_first_member_is_evicted_and_reloaded() {
+    let mut journal = Journal::default();
+    for index in 0..3 {
+        journal.read(7, "main", &format!("read-{index}.txt"));
+    }
+    let mut transcript = Journal(journal.0.clone()).load();
+    let original = transcript.project(100, 60);
+    let initial = transcript
+        .detail_at(line(&original, "Read 3 files"))
+        .unwrap()
+        .clone();
+    assert!(transcript.toggle_detail(&initial));
+    for index in 3..MAX_RECORDS + 64 {
+        let boundary = journal.0.len();
+        journal.read(7, "main", &format!("read-{index}.txt"));
+        for entry in journal.0[boundary..].iter().cloned() {
+            transcript.apply(entry, None);
+        }
+    }
+    assert!(!transcript.recent.contains(&initial.record));
+    assert_eq!(MAX_RECORDS, transcript.recent.records.len());
+    assert_eq!(
+        Some(false),
+        transcript
+            .detail_items
+            .group_choice(&transcript.recent.records)
+            .map(|choice| choice.open)
+    );
+    transcript.project(100, 60);
+    assert!(
+        transcript
+            .detail_items
+            .visible
+            .iter()
+            .any(|item| item.key.kind == super::DetailKind::Group && !item.open)
+    );
+    // A reconnect loads a narrower latest page. Move the alias onto the
+    // surviving suffix rather than losing the manual fold at that boundary.
+    let entries = journal.0[journal.0.len() - 6..].to_vec();
+    transcript.replace_recent(HistoryPage {
+        next_before: Some(entries[0].id),
+        entries,
+        rewind_groups: Vec::new(),
+    });
+    transcript.project(100, 60);
+    let group = transcript
+        .detail_items
+        .visible
+        .iter()
+        .find(|item| item.key.kind == super::DetailKind::Group && !item.open)
+        .expect("reloaded suffix preserves the manual fold")
+        .key
+        .clone();
+    assert!(transcript.toggle_detail(&group));
+    transcript.project(100, 60);
+    assert!(
+        transcript
+            .detail_items
+            .visible
+            .iter()
+            .any(|item| item.key.kind == super::DetailKind::Group && item.open)
+    );
+    assert!(
+        transcript
+            .detail_items
+            .groups
+            .iter()
+            .map(|choice| choice.keys.len())
+            .sum::<usize>()
+            <= MAX_RECORDS
+    );
+}
+
+#[test]
+fn paging_a_long_group_keeps_its_frozen_auto_expansion_after_trimming_the_tail() {
+    let mut journal = Journal::default();
+    for index in 0..MAX_RECORDS * 2 + 5 {
+        journal.read(7, "main", &format!("long-{index}.txt"));
+    }
+    let recent = journal.0.split_off(MAX_RECORDS * 4);
+    let middle = journal.0.split_off(MAX_RECORDS * 2);
+    let cursor = recent[0].id;
+    let older_cursor = middle[0].id;
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(HistoryPage {
+        entries: recent,
+        next_before: Some(cursor),
+        rewind_groups: Vec::new(),
+    });
+    assert_eq!(
+        Some(HistoryRequest::Older(cursor)),
+        transcript.scroll(-1000, 100, 5)
+    );
+    transcript.apply_page(
+        HistoryRequest::Older(cursor),
+        HistoryPage {
+            entries: middle,
+            next_before: Some(older_cursor),
+            rewind_groups: Vec::new(),
+        },
+    );
+    assert_eq!(
+        Some(HistoryRequest::Older(older_cursor)),
+        transcript.scroll(-1000, 100, 5)
+    );
+    transcript.scroll(2, 100, 5);
+    let before = text(&transcript.project(100, 5));
+    let anchor = transcript.reading_anchor().cloned();
+    let activity = transcript
+        .reading
+        .as_ref()
+        .unwrap()
+        .window
+        .latest_activity()
+        .unwrap()
+        .clone();
+    transcript.apply_page(
+        HistoryRequest::Older(older_cursor),
+        HistoryPage {
+            entries: journal.0,
+            next_before: None,
+            rewind_groups: Vec::new(),
+        },
+    );
+    let window = &transcript.reading.as_ref().unwrap().window;
+    assert!(!window.contains(&activity));
+    assert!(
+        window
+            .latest_activity()
+            .is_some_and(|key| window.contains(key))
+    );
+    assert_eq!(before, text(&transcript.project(100, 5)));
+    assert_eq!(anchor.as_ref(), transcript.reading_anchor());
+}
 
 #[test]
 fn reloaded_file_results_group_even_when_the_calls_are_on_an_older_page() {
@@ -14,6 +489,7 @@ fn reloaded_file_results_group_even_when_the_calls_are_on_an_older_page() {
         .0
         .retain(|entry| entry.kind == kuku_client::HistoryKind::ToolResult);
     let mut transcript = journal.load();
+    collapse_auto_group(&mut transcript);
     let screen = transcript.project(80, 20);
     let group = transcript
         .detail_at(line(&screen, "Read 3 files"))
@@ -50,6 +526,7 @@ fn loading_previous_call_records_keeps_completed_read_order_and_expansion() {
         next_before: Some(3),
         rewind_groups: Vec::new(),
     });
+    collapse_auto_group(&mut transcript);
     let initial = transcript.project(90, 20);
     let key = transcript
         .detail_at(line(&initial, "Read 3 files"))
@@ -415,6 +892,7 @@ fn repeated_workspace_diagnostics_keep_single_preview_and_individual_calls() {
         journal.tool("run_js", serde_json::json!({"title":name}), fail.clone());
     }
     let mut transcript = journal.load();
+    collapse_auto_group(&mut transcript);
     let view = transcript.project(82, 32);
     let collapsed = text(&view);
     assert_eq!(1, collapsed.matches("2 file reads").count());
@@ -515,6 +993,7 @@ fn repeated_global_toggles_follow_the_group_state_before_the_next_frame() {
     journal.read(7, "main", "third.txt");
     let mut transcript = journal.load();
     transcript.project(80, 20);
+    assert!(!transcript.toggle_details());
     assert!(transcript.toggle_details());
     assert!(!transcript.toggle_details());
     let collapsed = text(&transcript.project(80, 20));

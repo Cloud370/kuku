@@ -211,6 +211,16 @@ async fn model_fixture<'a>(
     tool: &str,
     args: Value,
 ) -> (Mock<'a>, Mock<'a>) {
+    model_fixture_with_delay(server, route, tool, args, Duration::ZERO).await
+}
+
+async fn model_fixture_with_delay<'a>(
+    server: &'a MockServer,
+    route: &str,
+    tool: &str,
+    args: Value,
+    continuation_delay: Duration,
+) -> (Mock<'a>, Mock<'a>) {
     let path = format!("{route}/chat/completions");
     let first = common::openai_sse_response(json!({
         "choices":[{"message":{"tool_calls":[{
@@ -240,11 +250,47 @@ async fn model_fixture<'a>(
                 .matches(|request| !first_request(&wire_body(request)))
                 .matches(common::capture_http_request);
             then.status(200)
+                .delay(continuation_delay)
                 .header("content-type", "text/event-stream")
                 .body(continuation);
         })
         .await;
     (start, finish)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn interrupting_a_reply_does_not_cancel_its_independent_background_job() {
+    let server = MockServer::start_async().await;
+    let route = "/interrupt-detached-job";
+    let fixture = Fixture::new(&server, route, SHORT_FOREGROUND_MS);
+    let (_start, _end) = model_fixture_with_delay(
+        &server,
+        route,
+        "run_js",
+        script_args(true),
+        Duration::from_secs(4),
+    )
+    .await;
+    let session = fixture.open().await;
+    let mut observer = session.observe(0);
+    submit(&session);
+    let (_, receipt) = first_result(&mut observer).await;
+    let id = job_id(&receipt);
+    assert_eq!(JobStatus::Running, session.job(AGENT, id).unwrap().status);
+    let execution = session.agent(AGENT).unwrap().execution_id.unwrap();
+    session
+        .interrupt_execution("escape", AGENT, execution)
+        .await
+        .unwrap();
+    assert_eq!(AgentStatus::Stopped, session.agent(AGENT).unwrap().status);
+    assert_eq!(JobStatus::Running, session.job(AGENT, id).unwrap().status);
+    fixture.release();
+    let completed = session.wait_job(AGENT, id).await.unwrap();
+    assert_eq!(JobStatus::Completed, completed.status);
+    assert_eq!(AgentStatus::Stopped, session.agent(AGENT).unwrap().status);
+    assert_one_completion(&session, id);
+    fixture.assert_launch();
+    session.close().await.unwrap();
 }
 
 async fn committed(

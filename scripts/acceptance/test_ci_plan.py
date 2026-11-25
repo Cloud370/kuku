@@ -20,9 +20,26 @@ class CiPlanTests(TestCase):
         self.assertEqual("selected", jobs[0]["installed"])
         cases = jobs[0]["cases"].split(",")
         self.assertIn("agent-setup", cases)
+        self.assertIn("model-search", cases)
         self.assertIn("keyboard-queue", cases)
         self.assertIn("statusline", cases)
+        self.assertIn("interrupt", cases)
+        self.assertIn("send-status", cases)
         self.assertFalse(jobs[0]["web"])
+
+    def test_runtime_delivery_pr_selects_interruption_and_send_recovery(self):
+        jobs, _, _ = plan("pull_request", paths=("crates/kuku/src/session/runtime/driver.rs",))
+        core, = jobs
+        cases = core["cases"].split(",")
+        self.assertIn("interrupt", cases)
+        self.assertIn("send-status", cases)
+        self.assertIn("provider-failure", cases)
+        self.assertIn("lost-receipt", cases)
+
+    def test_transcript_changes_select_reading_activity_acceptance(self):
+        jobs, _, _ = plan("pull_request", paths=("crates/kuku-tui/src/transcript/window.rs",))
+        core, = jobs
+        self.assertIn("reading-activities", core["cases"].split(","))
 
     def test_cli_configuration_pr_exercises_the_installed_headless_contract(self):
         jobs, _, verify_web = plan("pull_request", paths=("crates/kuku-cli/src/commands/config.rs",))

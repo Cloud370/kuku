@@ -280,6 +280,7 @@ async fn missing_argument_buffers_are_rejected_before_calls_are_persisted() {
         poll,
         Ok(Some(crate::query::UiEvent::ModelProgress {
             phase: crate::query::ModelPhase::ToolArguments,
+            preparing_file_contents: false,
         }))
     ));
     let poll = Run::poll_stream_chunk(&cancel_token, &mut state).await;
@@ -973,5 +974,61 @@ async fn empty_and_literal_object_tool_buffers_are_valid_empty_objects() {
                     EventPayload::ToolCall { args, .. } if args == &serde_json::json!({})
                 ))
         );
+    }
+}
+
+#[tokio::test]
+async fn file_arguments_have_a_distinct_progress_hint_without_exposing_arguments() {
+    use crate::provider::chunk::ProviderChunk;
+    use crate::query::{ModelPhase, UiEvent};
+
+    let dir = tempfile::tempdir().unwrap();
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+    let pending = make_test_pending(dir.path().join("events.jsonl"), dir.path(), cancel.clone());
+    let mut state = tool_stream_state(
+        pending,
+        vec![
+            ProviderChunk::ToolCallStart {
+                index: 0,
+                id: "write".into(),
+                name: "write_file".into(),
+            },
+            ProviderChunk::ToolCallArgDelta {
+                index: 0,
+                fragment: "{\"content\":\"private".into(),
+            },
+            ProviderChunk::ToolCallArgDelta {
+                index: 0,
+                fragment: " content\"}".into(),
+            },
+            ProviderChunk::ToolCallStart {
+                index: 1,
+                id: "read".into(),
+                name: "read_file".into(),
+            },
+            ProviderChunk::ToolCallStop { index: 1 },
+            ProviderChunk::ToolCallArgDelta {
+                index: 0,
+                fragment: " ".into(),
+            },
+        ],
+    );
+    for expected in [true, false, true] {
+        let event = Run::poll_stream_chunk(&cancel, &mut state)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event, UiEvent::ModelProgress { phase: ModelPhase::ToolArguments, preparing_file_contents } if preparing_file_contents == expected)
+        );
+        let wire = crate::wire::to_wire(&event).unwrap();
+        assert_eq!("tool_arguments", wire["type"]);
+        assert_eq!(
+            expected,
+            wire["preparing_file_contents"]
+                .as_bool()
+                .unwrap_or_default()
+        );
+        assert!(!wire.to_string().contains("private"));
     }
 }

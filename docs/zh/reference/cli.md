@@ -61,7 +61,7 @@ TUI 和 `kuku run` 都通过 kuku 服务提交任务。本地客户端复用所�
 | 立即发送 | 按 `Enter`。Agent 正在工作时，可能在当前 Turn 收到这条消息。 |
 | 排队到下一轮 | 按 `Alt+Enter` 放进 **Pending inputs** 队列。 |
 | 编辑排队消息 | 点击消息，或在空白输入框按 `↑` 选中；`Enter` 编辑，`Delete` 移出队列。 |
-| 停止当前 Turn | Agent 运行时按 `Esc`，已显示的内容会保留。 |
+| 打断当前 Turn | Agent 运行时按 `Esc`，已显示的内容会保留；成功清理后，已排队输入按原顺序继续，未提交的草稿不会发送。需要暂停队列时使用明确的 Stop 控件。 |
 
 在输入框使用终端的常规粘贴快捷键。终端转发 `Ctrl+V` 或 `Ctrl+Shift+V` 按键时，kuku 会读取本地剪贴板。接收到空的括号粘贴事件时，kuku 也会尝试读取图片。如果终端自行处理快捷键且只转发非空文本，可以用 `Ctrl+Alt+V` 直接触发剪贴板读取。图片在草稿中显示为有颜色的 `[Image #1]`。光标会一次跨过整个标记，在标记旁按退格键或 Delete 可以移除整张附件。文本仍可使用终端的常规粘贴快捷键。粘贴一个可读取的 PNG 或 JPEG 文件路径也会添加图片附件。在 WSL 中，kuku 会将 Windows 盘符路径解析到已挂载的磁盘。输入框上方会显示图片张数，以及是否使用 PNG 保留透明度。
 
@@ -83,7 +83,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 |---|---|
 | `Ctrl+C` | 有草稿时清空草稿；草稿为空时退出 TUI（服务端工作继续）。在编辑弹窗中只清空当前输入框。 |
 | `Shift+Enter` 或 `Ctrl+J` | 草稿中换行。 |
-| `Esc` | 关闭弹窗、退出聚焦控件，或运行/清理期间打断执行。关闭答复编辑器保留草稿；空闲且草稿为空时连按两次 `Esc` 打开对话历史。 |
+| `Esc` | 关闭弹窗或退出聚焦控件，不提交消息；输入框聚焦时打断正在运行的 Turn。关闭答复编辑器保留草稿；空闲且草稿为空时连按两次 `Esc` 打开对话历史。 |
 | `Ctrl+P` 或 `F1` | 查看快捷键和用法帮助入口，保留当前草稿。 |
 | 空草稿按 `/`，或 `Ctrl+P` 后按 `/` | 搜索斜杠命令和 Skill；选中 Skill 会填入可编辑的 `/skill:NAME` 前缀。 |
 | `@` 或 `Tab` | 补全工作区相对路径。 |
@@ -115,7 +115,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `/compact` | `/compress`、`/summarize` | 空闲时压缩当前 Agent 的较早上下文（支持 `/compact retry` 与 `/compact undo`）。 |
 | `/agents` | `/agent`、`/subagents` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。 |
 | `/jobs` | `/job`、`/ps` | 列出当前 Agent 的后台 Job，读取实时输出或取消（`/jobs cancel <id>`）。 |
-| `/model` | `/models` | Enter 为当前 Agent 选择高亮的连接和模型。`d` 打开设为新 Session 默认的确认页，`e` 编辑，`/` 搜索。`Ctrl+L` 打开同一个列表。 |
+| `/model` | `/models` | 直接输入或粘贴即可筛选，用 ↑/↓ 和 Enter 为当前 Agent 选择连接和模型。在本地服务上，`Alt+D` 打开将高亮路由设为新 Session 默认的确认页，`Alt+E` 编辑。Esc 关闭列表。`Ctrl+L` 打开同一个列表。 |
 | `/speed [档位]` | `/fast`、`/ultra`、`/ultrafast` | 在会话输入框上方选择当前 Agent 的服务档位。快捷命令选择 `fast` 或 `ultrafast`。选择 **Follow model default** 清除覆盖设置。输入可筛选已有档位，按 Tab 补全选中的档位。添加未知档位时可以选择是否探测。 |
 | `/thinking` | `/think`、`/effort` | 设置当前 Agent 思考等级，选 **Use default** 清除覆盖，或在可写本地路由上按 `D` + `Enter` 设为模型默认。 |
 | `/statusline` | `/status-line` | 预览、开关、排序并保存状态栏字段到 `tui.toml`。 |

@@ -45,7 +45,7 @@ mod thinking;
 mod timing;
 mod values;
 
-pub(crate) use activity::{Activity, OutputTokens, ServiceStatus, SubmissionStatus};
+pub(crate) use activity::{Activity, OutputTokens, ServiceStatus, SubmissionStatus, WaitKind};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
 use delivery::{Deliveries, PendingQueueAction};
@@ -125,6 +125,8 @@ pub(crate) struct Pane {
     pub(crate) request_scroll: usize,
     pub(crate) request_detail_page_size: usize,
     pub(crate) snapshot: Option<Box<Snapshot>>,
+    question_state_floor: u64,
+    permission_state_floor: u64,
     observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,
     pub(crate) pending_selected_reply_copy: Option<u64>,
@@ -164,6 +166,65 @@ pub(crate) struct Pane {
 }
 
 impl Pane {
+    pub(crate) fn question(&self) -> Option<&kuku_client::QuestionRequest> {
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                snapshot.cursor >= self.question_state_floor
+                    && matches!(
+                        snapshot.agent.status,
+                        AgentStatus::Running | AgentStatus::Waiting
+                    )
+            })?
+            .agent
+            .question
+            .as_ref()
+    }
+
+    pub(crate) fn permission(&self) -> Option<&kuku_client::PermissionRequest> {
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                snapshot.cursor >= self.permission_state_floor
+                    && snapshot.agent.status == AgentStatus::Waiting
+            })?
+            .agent
+            .permission
+            .as_ref()
+    }
+
+    pub(crate) fn pending_request_id(&self) -> Option<&str> {
+        self.question()
+            .map(|request| request.id.as_str())
+            .or_else(|| self.permission().map(|request| request.id.as_str()))
+    }
+
+    // A request can already have changed in the durable observation stream
+    // while the corresponding snapshot refresh is still in flight.
+    fn note_request_state_change(
+        &mut self,
+        id: u64,
+        operation: Option<&str>,
+        settled_status: Option<AgentStatus>,
+    ) {
+        if matches!(
+            operation,
+            Some("question_requested" | "question_replied" | "agent_stopped")
+        ) || operation == Some("turn_settled")
+            && settled_status.is_some_and(|status| {
+                !matches!(status, AgentStatus::Running | AgentStatus::Waiting)
+            })
+        {
+            self.question_state_floor = self.question_state_floor.max(id);
+        }
+        if matches!(
+            operation,
+            Some("permission_waiting" | "permission_replied" | "agent_stopped" | "turn_settled")
+        ) {
+            self.permission_state_floor = self.permission_state_floor.max(id);
+        }
+    }
+
     pub(crate) fn execution(&self) -> Option<u64> {
         self.execution
     }
@@ -557,13 +618,26 @@ impl App {
     }
 
     pub(crate) fn interrupt(&mut self) {
+        self.stop_execution(false);
+    }
+
+    pub(crate) fn interrupt_current_turn(&mut self) {
+        self.stop_execution(true);
+    }
+
+    fn stop_execution(&mut self, continue_queued: bool) {
         if self.pane().interruption_pending() {
             return;
         }
         if let Some(execution_id) = self.pane().execution() {
             if self.require_service() {
                 self.pane_mut().stopping = Some(execution_id);
-                self.issue(self.active.clone(), Action::Cancel { execution_id });
+                let action = if continue_queued {
+                    Action::Interrupt { execution_id }
+                } else {
+                    Action::Cancel { execution_id }
+                };
+                self.issue(self.active.clone(), action);
             }
         }
     }

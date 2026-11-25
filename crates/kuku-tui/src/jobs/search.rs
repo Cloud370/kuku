@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use kuku::config::ModelRef;
 use kuku_client::local::SESSION_PROTOCOL_VERSION;
-use kuku_client::{Connection, ConnectionOptions, Error, ModelCatalog, SessionStatus};
+use kuku_client::{Connection, ConnectionOptions, Error, JobStatus, ModelCatalog, SessionStatus};
 
 use crate::menu::{Choice, ChoiceKind};
 
-use super::{Search, busy, job_detail, value_choice};
+use super::{Search, busy, job_choice, value_choice};
 
 const SEARCH_DELAY: Duration = Duration::from_millis(70);
 
@@ -104,18 +104,11 @@ pub(super) async fn find(
             return Ok((choices, header));
         }
         Search::Jobs(target) => {
-            let choices: Vec<_> = client
-                .jobs(&target)
-                .await?
-                .into_iter()
-                .map(|job| {
-                    Choice::new(
-                        job.id.clone(),
-                        job_detail(&job),
-                        ChoiceKind::BackgroundJob(Box::new(job)),
-                    )
-                })
-                .collect();
+            let mut jobs = client.jobs(&target).await?;
+            // Keep active work near the top even when numerous newer Jobs
+            // have already settled. Retain the service order within a group.
+            jobs.sort_by_key(|job| job.status != JobStatus::Running);
+            let choices: Vec<_> = jobs.into_iter().map(job_choice).collect();
             let header = if choices.is_empty() {
                 "No background jobs for this Agent"
             } else {

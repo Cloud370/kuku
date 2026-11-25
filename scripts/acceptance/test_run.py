@@ -31,6 +31,36 @@ class AcceptanceTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_command_fixture_forwards_observation_before_stream_finishes(self):
+        from interactive_fixture import Response, StreamPause, http_fixture, local_connection
+
+        first, last = b'{"type":"first"}\n', b'{"type":"last"}\n'
+        pause = StreamPause()
+        observed = []
+
+        def observation(method, path, headers, body):
+            observed.append((method, path, headers.get("Authorization"), body))
+            return Response(200, first + last, "application/x-ndjson", ((len(first), pause),))
+
+        with http_fixture(observation) as upstream:
+            with http_fixture(lambda *_: self.fail("Observation was buffered"), observe_from=upstream) as proxy:
+                connection = local_connection(proxy)
+                try:
+                    connection.request("GET", "/sessions/fixture/observe?after=2",
+                                       headers={"Authorization": "Bearer fixture"})
+                    response = connection.getresponse()
+                    self.assertEqual(200, response.status)
+                    self.assertEqual("application/x-ndjson", response.getheader("Content-Type"))
+                    self.assertEqual(first, response.readline())
+                    self.assertTrue(pause.arrived.is_set())
+                    self.assertFalse(pause.release.is_set())
+                    pause.release.set()
+                    self.assertEqual(last, response.read())
+                finally:
+                    pause.release.set()
+                    connection.close()
+        self.assertEqual([("GET", "/sessions/fixture/observe?after=2", "Bearer fixture", b"")], observed)
+
     def test_release_build_matches_both_commit_and_version(self):
         revision = "9bb98c10f4a62302a123c0a31a4f5b93f95a4a16"
         version = "0.1.0-alpha.4"

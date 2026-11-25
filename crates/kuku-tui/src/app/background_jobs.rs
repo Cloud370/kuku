@@ -23,7 +23,7 @@ impl App {
     }
 
     pub(crate) fn open_background_job(&mut self, job: JobSnapshot) {
-        let header = format!("{} · {}", job.id, job_detail(&job));
+        let header = job_detail(&job);
         let mut choices = Vec::new();
         if job.status == JobStatus::Running {
             choices.push(Choice::new(
@@ -49,6 +49,18 @@ impl App {
             ));
         }
         self.picker(PickerKind::JobActions, choices).header = header;
+    }
+
+    pub(super) fn refresh_jobs(&mut self) {
+        let Some(super::Modal::Picker(picker)) = &mut self.modal else {
+            return;
+        };
+        if picker.kind != PickerKind::Jobs {
+            return;
+        }
+        let ticket = picker.begin_search();
+        self.effects
+            .push(Job::Find(ticket, Search::Jobs(self.selection().target)));
     }
 
     pub(crate) fn cancel_background_job(&mut self, id: String) {

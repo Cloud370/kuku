@@ -214,6 +214,7 @@ impl Transcript {
             Open => {
                 let tool = self.tool_outputs(key, target)?.pop()?;
                 let offset = tool.output_range.as_ref().map_or(0, |range| range.start);
+                self.open_containing_group(&key.record, true);
                 self.keep_output_in_view(key, target, width, height, Some(rows.start));
                 let output = InlineOutput {
                     record: key.record.clone(),
@@ -319,7 +320,7 @@ impl Transcript {
                 })
                 .unwrap_or(trigger);
             self.reading = Some(Reading {
-                window: self.recent.clone(),
+                window: self.recent.reading_copy(),
                 anchor,
                 newer: None,
                 rebase_after_page: false,

@@ -159,12 +159,16 @@ impl Tool {
         if count > 1 {
             status.extend(Row::metric(" ×", count.to_string(), "", TranscriptTone::Value).spans);
         }
-        vec![Row::activity_columns(
+        let mut rows = vec![Row::activity_columns(
             operation,
             tool_operation_color(self.name()),
             &single_line(&subject),
             status,
             width,
-        )]
+        )];
+        if self.name() == "run_command" {
+            rows.extend(self.background_handoff_rows(width));
+        }
+        rows
     }
 }

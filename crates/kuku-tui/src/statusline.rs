@@ -176,7 +176,7 @@ impl StatusLine {
             .as_ref()
             .is_some_and(|fields| fields.contains(&Field::Input));
         let input = (!input_in_footer)
-            .then(|| input(app, notice.is_none()))
+            .then(|| input_with_submission(app, notice.is_none(), true))
             .flatten();
         if let Some(input) = input
             .as_ref()
@@ -777,10 +777,34 @@ fn execution(app: &App, activity: Activity) -> Option<Segment> {
 }
 
 fn input(app: &App, show_settled: bool) -> Option<Segment> {
+    input_with_submission(app, show_settled, false)
+}
+
+fn input_with_submission(app: &App, show_settled: bool, heading: bool) -> Option<Segment> {
     let input = app.input_status();
+    let in_flight = matches!(
+        input.submission,
+        Some(
+            SubmissionStatus::Saving
+                | SubmissionStatus::AwaitingReceipt
+                | SubmissionStatus::AwaitingAdmission
+        )
+    );
+    let heading_reports_send = heading
+        && in_flight
+        && matches!(
+            app.pane().composer_activity(),
+            Activity::Ready
+                | Activity::Finished
+                | Activity::Stopped
+                | Activity::Interrupted
+                | Activity::Failed
+        );
+
     let submission = input
         .submission
-        .filter(|status| *status != SubmissionStatus::Queued || input.queued == 0);
+        .filter(|status| *status != SubmissionStatus::Queued || input.queued == 0)
+        .filter(|_| !heading_reports_send);
     let (color, priority) = match submission {
         Some(
             SubmissionStatus::ReceiptMissing
@@ -790,6 +814,7 @@ fn input(app: &App, show_settled: bool) -> Option<Segment> {
         Some(
             SubmissionStatus::Saving
             | SubmissionStatus::AwaitingReceipt
+            | SubmissionStatus::AwaitingAdmission
             | SubmissionStatus::CheckingReceipt
             | SubmissionStatus::Discarding,
         ) => (Color::Reset, Priority::Submission),
@@ -803,7 +828,14 @@ fn input(app: &App, show_settled: bool) -> Option<Segment> {
     };
     let mut facts = Vec::new();
     if let Some(submission) = submission.filter(|_| priority != Priority::Input) {
-        facts.push(submission.label().to_owned());
+        facts.push(
+            if heading && in_flight {
+                "Sending"
+            } else {
+                submission.label()
+            }
+            .to_owned(),
+        );
     }
     if input.queued > 0 {
         facts.push(format!("{} queued", input.queued));

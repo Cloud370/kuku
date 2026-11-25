@@ -1,5 +1,6 @@
 use kuku_client::{HistoryEntry, HistoryKind};
 use ratatui::style::Style;
+use unicode_width::UnicodeWidthStr;
 
 use crate::markup::render_literal;
 use crate::theme::{CardFrame, ERROR, WARNING};
@@ -71,7 +72,18 @@ pub(super) fn render(
         } => {
             let mut notice = String::new();
             let title = if *reply_interrupted {
-                format!("{title} · Reply interrupted")
+                let combined = format!("{title} · Reply interrupted");
+                let frame = CardFrame::timeline(width);
+                let available = frame.title_width().min(frame.content_width());
+                if combined.width() <= available {
+                    combined
+                } else {
+                    // The correlated standalone marker is hidden, so the
+                    // interruption must remain visible even at narrow widths.
+                    notice.push_str(title);
+                    notice.push('\n');
+                    message::interruption_title(available, true).to_owned()
+                }
             } else {
                 (*title).to_owned()
             };

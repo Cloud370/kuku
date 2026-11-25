@@ -320,7 +320,6 @@ pub(crate) struct Picker {
     pub(crate) problem: Option<String>,
     pub(crate) selected: usize,
     pub(crate) header_top: usize,
-    pub(crate) search_focused: bool,
     pub(crate) ticket: Ticket,
     pub(crate) rewind_history: Option<RewindHistory>,
     pub(crate) thinking: Option<Box<crate::app::ThinkingPicker>>,
@@ -344,7 +343,6 @@ impl Picker {
             problem: None,
             selected: 0,
             header_top: 0,
-            search_focused: false,
             ticket: Ticket { id, revision: 0 },
             rewind_history: None,
             thinking: None,
@@ -362,17 +360,34 @@ impl Picker {
         self.invalidate_rows();
         self.loading = true;
         self.problem = None;
-        self.remote.clear();
-        self.selected = 0;
+        if self.kind != PickerKind::Jobs {
+            self.remote.clear();
+            self.selected = 0;
+        }
         self.ticket.revision = self.ticket.revision.wrapping_add(1);
         self.ticket
     }
 
     pub(crate) fn set_results(&mut self, items: Vec<Choice>, header: String) {
+        let selected_job = if self.kind == PickerKind::Jobs {
+            match self.selected_choice() {
+                Some(ChoiceKind::BackgroundJob(job)) => Some(job.id),
+                _ => None,
+            }
+        } else {
+            None
+        };
         self.remote = items;
         self.loading = false;
         self.problem = None;
         self.clamp_selection();
+        if let Some(id) = selected_job {
+            if let Some(index) = self.visible_choices().iter().position(
+                |choice| matches!(&choice.kind, ChoiceKind::BackgroundJob(job) if job.id == id),
+            ) {
+                self.selected = index;
+            }
+        }
         if self.kind == PickerKind::Models && self.query.text().is_empty() {
             if let Some(index) = self.visible_choices().iter().position(|choice| {
                 matches!(choice.kind, ChoiceKind::ModelRoute { current: true, .. })

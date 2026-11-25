@@ -56,30 +56,15 @@ impl App {
             .snapshot
             .as_ref()
             .map(|snapshot| snapshot.agent.status);
+        if status == Some(kuku_client::AgentStatus::Waiting) || !self.composer_focused() {
+            self.rewind_armed = false;
+            self.deactivate_context_focus();
+            self.focus_composer();
+            return;
+        }
         if self.escape_interrupts_running() {
             self.rewind_armed = false;
-            self.interrupt();
-            self.deactivate_context_focus();
-            self.focus_composer();
-            return;
-        }
-        if status == Some(kuku_client::AgentStatus::Waiting)
-            || self.pane().contextual_focus.active
-            || matches!(
-                self.pane().keyboard_focus,
-                crate::app::KeyboardFocus::Request | crate::app::KeyboardFocus::Queue
-            )
-        {
-            self.rewind_armed = false;
-            self.deactivate_context_focus();
-            self.focus_composer();
-            return;
-        }
-        if self.pane().keyboard_focus == crate::app::KeyboardFocus::Transcript
-            && self.pane().transcript.is_reading()
-            && !self.pane().draft.text().is_empty()
-        {
-            self.rewind_armed = false;
+            self.interrupt_current_turn();
             self.deactivate_context_focus();
             self.focus_composer();
             return;

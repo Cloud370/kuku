@@ -3,6 +3,7 @@ mod common;
 mod message_rewind_tests;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -91,6 +92,9 @@ impl ModelAdapter for Model {
 struct HoldTool {
     started: Notify,
     finished: Notify,
+    hold_cleanup: AtomicBool,
+    cleanup_started: Notify,
+    cleanup_finished: Notify,
 }
 
 #[derive(Debug)]
@@ -122,7 +126,13 @@ impl ToolAdapter for HoldTool {
             self.started.notify_one();
             tokio::select! {
                 _ = self.finished.notified() => Ok(ToolOutput::success("held tool finished")),
-                _ = cancellation.cancelled() => Ok(ToolOutput::success("held tool cleaned up")),
+                _ = cancellation.cancelled() => {
+                    if self.hold_cleanup.load(Ordering::SeqCst) {
+                        self.cleanup_started.notify_one();
+                        self.cleanup_finished.notified().await;
+                    }
+                    Ok(ToolOutput::success("held tool cleaned up"))
+                },
             }
         })
     }
@@ -796,6 +806,370 @@ async fn stopped_execution_retains_pending_inputs_and_deduplicates_cancel_and_ad
     next.response.send(Reply::Text("continued")).unwrap();
     ready(&session, AgentStatus::Idle).await;
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_execution_advances_existing_queue_only_after_cleanup_once() {
+    let (_root, session, mut calls, tool) = open_model().await;
+    tool.hold_cleanup.store(true, Ordering::SeqCst);
+    session
+        .send(Input::new("start", "main", "first reply"))
+        .unwrap();
+    let first = next_call(&mut calls).await;
+    let first_turn = first.request.turn;
+    first
+        .response
+        .send(Reply::Tools(vec!["held".into()]))
+        .unwrap();
+    tokio::time::timeout(WAIT, tool.started.notified())
+        .await
+        .unwrap();
+    let execution = session.agent("main").unwrap().execution_id.unwrap();
+    let first = next_turn("queued-a", "first queued input");
+    let second = next_turn("queued-b", "second queued input");
+    let receipts = [
+        session.send(first.clone()).unwrap(),
+        session.send(second.clone()).unwrap(),
+    ];
+    let interruption = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            session
+                .interrupt_execution("escape", "main", execution)
+                .await
+        })
+    };
+    tokio::time::timeout(WAIT, tool.cleanup_started.notified())
+        .await
+        .unwrap();
+    assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
+    assert_eq!(
+        receipts.to_vec(),
+        session
+            .agent_view("main")
+            .unwrap()
+            .pending_inputs
+            .into_iter()
+            .map(|entry| entry.receipt)
+            .collect::<Vec<_>>()
+    );
+    assert!(calls.try_recv().is_err());
+    assert!(!interruption.is_finished());
+    let replay = session
+        .interrupt_execution("escape", "main", execution)
+        .await
+        .unwrap();
+    tool.cleanup_finished.notify_one();
+    assert_eq!(replay, interruption.await.unwrap().unwrap());
+
+    let replacement = next_call(&mut calls).await;
+    assert!(replacement.request.turn > first_turn);
+    let body = replacement.request.body.to_string();
+    assert!(body.find("first queued input").unwrap() < body.find("second queued input").unwrap());
+    let replacement_id = session.agent("main").unwrap().execution_id.unwrap();
+    assert!(replacement_id > execution);
+    assert!(matches!(
+        session.interrupt_execution("stale", "main", execution).await,
+        Err(Error::ExecutionNotActive(id)) if id == execution
+    ));
+    assert_eq!(
+        replay,
+        session
+            .interrupt_execution("escape", "main", execution)
+            .await
+            .unwrap()
+    );
+    assert_eq!(receipts[0], session.send(first).unwrap());
+    assert_eq!(receipts[1], session.send(second).unwrap());
+    assert_eq!(
+        Some(replacement_id),
+        session.agent("main").unwrap().execution_id
+    );
+    replacement
+        .response
+        .send(Reply::Text("queued turn finished"))
+        .unwrap();
+    ready(&session, AgentStatus::Idle).await;
+    assert!(calls.try_recv().is_err());
+    for command in ["queued-a", "queued-b"] {
+        assert_eq!(
+            InputStatus::Accepted,
+            session.input_status("main", command).unwrap()
+        );
+    }
+    let journal = session.events(0, 256).unwrap();
+    assert!(journal.iter().any(|event| matches!(&event.payload,
+        EventPayload::TurnCancelled { turn, .. } if *turn == first_turn)));
+    assert_eq!(
+        1,
+        journal
+            .iter()
+            .filter(|event| matches!(&event.payload,
+        EventPayload::MessageUser { text, .. } if text.contains("first queued input")))
+            .count()
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn explicit_stop_during_interrupt_cleanup_retains_queue_for_original_receipt_recovery() {
+    let (_root, session, mut calls, tool) = open_model().await;
+    tool.hold_cleanup.store(true, Ordering::SeqCst);
+    session
+        .send(Input::new("start", "main", "first reply"))
+        .unwrap();
+    let first = next_call(&mut calls).await;
+    let first_turn = first.request.turn;
+    first
+        .response
+        .send(Reply::Tools(vec!["held".into()]))
+        .unwrap();
+    tokio::time::timeout(WAIT, tool.started.notified())
+        .await
+        .unwrap();
+    let execution = session.agent("main").unwrap().execution_id.unwrap();
+    let queued = next_turn("queued", "recover the original input");
+    let receipt = session.send(queued.clone()).unwrap();
+    let interruption = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            session
+                .interrupt_execution("escape", "main", execution)
+                .await
+        })
+    };
+    tokio::time::timeout(WAIT, tool.cleanup_started.notified())
+        .await
+        .unwrap();
+    let stop = {
+        let session = session.clone();
+        tokio::spawn(async move { session.cancel("main").await })
+    };
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let events = session.events(0, 256).unwrap();
+            if events
+                .iter()
+                .filter(|event| {
+                    matches!(&event.payload,
+                EventPayload::Unknown(value) if value["record"]["operation"] == "agent_stopped")
+                })
+                .count()
+                == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tool.cleanup_finished.notify_one();
+    let interrupted = interruption.await.unwrap().unwrap();
+    stop.await.unwrap().unwrap();
+    assert_eq!(AgentStatus::Stopped, session.agent("main").unwrap().status);
+    assert_eq!(
+        InputStatus::Queued,
+        session.input_status("main", "queued").unwrap()
+    );
+    assert_eq!(receipt, session.send(queued).unwrap());
+    assert!(calls.try_recv().is_err());
+    assert_eq!(
+        interrupted,
+        session
+            .interrupt_execution("escape", "main", execution)
+            .await
+            .unwrap()
+    );
+    assert!(calls.try_recv().is_err());
+    session.advance_command("continue-queue", "main").unwrap();
+    let next = next_call(&mut calls).await;
+    assert!(next.request.turn > first_turn);
+    assert!(
+        next.request
+            .body
+            .to_string()
+            .contains("recover the original input")
+    );
+    next.response.send(Reply::Text("recovered")).unwrap();
+    ready(&session, AgentStatus::Idle).await;
+    assert_eq!(
+        InputStatus::Accepted,
+        session.input_status("main", "queued").unwrap()
+    );
+    assert!(calls.try_recv().is_err());
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_cleanup_recovery_closes_old_permission_or_blocks_unknown_dispatched_work() {
+    for dispatched in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (model, mut calls) = mpsc::unbounded_channel();
+        let mut options =
+            SessionOptions::new(root.path(), root.path().join("data"), common::test_config());
+        options.session_id = Some("recovered-interrupt".into());
+        options.model_adapter = Some(Arc::new(Model(model)));
+        let session = Session::open(options.clone()).await.unwrap();
+        session
+            .create_agent("create", "main", AgentConfig::default())
+            .unwrap();
+        session
+            .send(Input {
+                activation: Activation::Enqueue,
+                ..Input::new("first", "main", "old interrupted input")
+            })
+            .unwrap();
+        let follow_up = Input {
+            activation: Activation::Enqueue,
+            ..next_turn("queued", "queued work after recovery")
+        };
+        let original = session.send(follow_up.clone()).unwrap();
+        let path = session.events_path().to_owned();
+        session.close().await.unwrap();
+        drop(session);
+
+        // Reproduce a durable journal prefix from a crash after stop but before
+        // the cancellation worker closes the old query's permission lifecycle.
+        let ts = "2026-11-25T00:00:00Z";
+        let mut writer = EventStore::open(&path).unwrap();
+        let operation = |writer: &mut EventStore, record| {
+            writer
+                .append(EventPayload::Unknown(serde_json::json!({
+                    "kind":"runtime.operation","ts":ts,"record":record,
+                })))
+                .unwrap()
+                .id
+        };
+        let execution = operation(
+            &mut writer,
+            serde_json::json!({
+                "operation":"execution_started","address":"main",
+            }),
+        );
+        let turn = operation(
+            &mut writer,
+            serde_json::json!({
+                "operation":"inputs_accepted","address":"main","input_ids":["first"],
+                "message_input_ids":["first"],"turn":null,
+            }),
+        );
+        writer
+            .append(EventPayload::TurnStarted {
+                ts: ts.into(),
+                conversation: "main".into(),
+                turn,
+            })
+            .unwrap();
+        writer
+            .append(EventPayload::MessageUser {
+                ts: ts.into(),
+                conversation: "main".into(),
+                turn,
+                text: "old interrupted input".into(),
+                from: None,
+                job_delivery: false,
+                images: vec![],
+            })
+            .unwrap();
+        writer
+            .append(EventPayload::ToolCall {
+                turn,
+                ts: ts.into(),
+                conversation: Some("main".into()),
+                tool_call_id: "old-tool".into(),
+                request_id: "old-request".into(),
+                index: 0,
+                tool: "run_command".into(),
+                args: serde_json::json!({}),
+            })
+            .unwrap();
+        writer
+            .append(EventPayload::PermissionRequested {
+                turn,
+                ts: ts.into(),
+                tool_call_id: "old-tool".into(),
+                tool: "run_command".into(),
+                risk: "modifies_files".into(),
+                summary: "obsolete approval".into(),
+                candidate: "{}".into(),
+                source: "tool_policy".into(),
+                workspace: None,
+            })
+            .unwrap();
+        if dispatched {
+            writer
+                .append(EventPayload::Unknown(serde_json::json!({
+                    "kind":"runtime.tool_dispatched","ts":ts,"agent":"main",
+                    "turn":turn,"tool_call_id":"old-tool","tool":"run_command",
+                })))
+                .unwrap();
+        }
+        let stopped = operation(
+            &mut writer,
+            serde_json::json!({
+                "operation":"agent_stopped","address":"main","cleanup_pending":true,
+                "continue_queued":true,"command":{"command_id":"escape","fingerprint":"fixture"},
+                "interruption":{"execution_id":execution,"turn":turn,"usage":kuku::UsageTotals::default()},
+            }),
+        );
+        drop(writer);
+
+        let reopened = Session::open(options).await.unwrap();
+        assert_eq!(
+            AgentStatus::Interrupted,
+            reopened.agent("main").unwrap().status
+        );
+        assert_eq!(
+            original,
+            reopened.pending_inputs("main").unwrap()[0].receipt
+        );
+        assert!(calls.try_recv().is_err());
+        let advance = reopened.advance_command("recover", "main");
+        if dispatched {
+            assert!(matches!(advance, Err(Error::InterruptedOpenTool(_))));
+            assert_eq!(None, reopened.receipt("recover").unwrap());
+            assert_eq!(
+                InputStatus::Queued,
+                reopened.input_status("main", "queued").unwrap()
+            );
+            assert_eq!(
+                original,
+                reopened.pending_inputs("main").unwrap()[0].receipt
+            );
+            assert!(calls.try_recv().is_err());
+        } else {
+            advance.unwrap();
+            let next = next_call(&mut calls).await;
+            assert!(next.request.turn > turn);
+            assert!(
+                next.request
+                    .body
+                    .to_string()
+                    .contains("queued work after recovery")
+            );
+            assert!(reopened.agent("main").unwrap().permission.is_none());
+            next.response.send(Reply::Text("recovered")).unwrap();
+            ready(&reopened, AgentStatus::Idle).await;
+            assert_eq!(original, reopened.send(follow_up).unwrap());
+            let journal = reopened.events(0, 256).unwrap();
+            assert!(journal.iter().any(|event| matches!(&event.payload,
+                EventPayload::TurnCancelled { turn: cancelled, stop_event_id: Some(stop), .. }
+                    if *cancelled == turn && *stop == stopped)));
+            assert!(journal.iter().any(|event| matches!(&event.payload,
+                EventPayload::ToolResult { tool_call_id, status, .. }
+                    if tool_call_id == "old-tool" && status == "cancelled")));
+            assert_eq!(
+                1,
+                journal
+                    .iter()
+                    .filter(|event| matches!(&event.payload,
+                EventPayload::MessageUser { text, .. } if text == "queued work after recovery"))
+                    .count()
+            );
+        }
+        reopened.close().await.unwrap();
+    }
 }
 
 #[tokio::test]

@@ -71,7 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `reply_permission(command_id, address, request_id, allow)` | 精确待决动作回复 |
 | `reply_question(command_id, address, request_id, text)` | 以关联输入投递精确问题回复 |
 | `cancel(address).await` / `close().await` | 等待所属清理与持久结算 |
-| `cancel_execution(command_id, address, execution_id).await` | 取消所观察到的执行并等待清理 |
+| `cancel_execution(command_id, address, execution_id).await` | 停止所观察到的执行，等待所属清理并暂停队列 |
+| `interrupt_execution(command_id, address, execution_id).await` | 打断所观察到的执行，成功清理后继续已有符合条件的排队输入，不重试被打断的 Turn |
 | `Session::read_agents(events_path)` | 不创建运行资源的离线恢复快照 |
 | `Session::read_view(events_path, address)` / `Session::read_receipt(events_path, command_id)` | 从关闭的 Session 读取 Agent 视图或命令回执 |
 

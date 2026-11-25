@@ -801,6 +801,8 @@ impl ModelRequestRoute {
 pub struct AgentSnapshot {
     /// Stable session-local address.
     pub address: String,
+    /// Durable journal event identity of the Agent's creation.
+    pub creation_event_id: u64,
     /// The agent's current local configuration.
     pub config: AgentConfig,
     /// Configuration bound to the current execution, until the next safe boundary applies changes.

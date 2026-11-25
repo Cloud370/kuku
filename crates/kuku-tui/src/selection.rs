@@ -163,6 +163,12 @@ impl TextSelection {
         self.drag = None;
     }
 
+    pub(crate) fn is_selecting(&self) -> bool {
+        self.drag
+            .as_ref()
+            .is_some_and(|drag| drag.anchor != drag.end)
+    }
+
     pub(crate) fn set_messages_area(&mut self, area: Option<Rect>) {
         self.messages_area = area;
     }

@@ -14,9 +14,9 @@ use crate::menu::{ChoiceKind, Picker, PickerKind, Prompt, PromptKind};
 use crate::output::OutputViewer;
 use crate::text::{shorten, single_line};
 use crate::theme::{
-    ACCENT, ERROR, MAX_DRAFT_ROWS, MODEL, MUTED, PICKER_HEIGHT, PICKER_WIDTH, SHORT_PROMPT_HEIGHT,
-    STATUS_EDITOR_HEIGHT, WARNING, composer_padding, composer_surface, emphasis, focused_row,
-    panel, panel_padding, session_area,
+    ACCENT, ERROR, MAIN_AGENT, MAX_DRAFT_ROWS, MODEL, MUTED, PICKER_HEIGHT, PICKER_WIDTH,
+    SHORT_PROMPT_HEIGHT, STATUS_EDITOR_HEIGHT, WARNING, composer_padding, composer_surface,
+    emphasis, focused_row, panel, panel_padding, session_area,
 };
 
 mod activity;
@@ -122,13 +122,9 @@ pub(crate) fn render_at(
     let reading = contextual::reading_line(app, hint_limit);
     let hint_width = reading.as_ref().map_or(0, Line::width);
     let stats_width = content_width.saturating_sub(hint_width + usize::from(hint_width > 0));
-    let dock = reading
-        .as_ref()
-        .and_then(|_| app.pane().transcript.turn_dock(stats_width));
     let expanded_request = app.pane().keyboard_focus == crate::app::KeyboardFocus::Request
-        && app.pane().snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.agent.question.is_none() && snapshot.agent.permission.is_some()
-        });
+        && app.pane().question().is_none()
+        && app.pane().permission().is_some();
     let request = delivery::request_lines(
         app,
         width,
@@ -183,15 +179,6 @@ pub(crate) fn render_at(
         Constraint::Length(status_height),
     ])
     .areas(area);
-    let (transcript_body, row_insets) = render_transcript(
-        frame,
-        transcript,
-        composer_content,
-        app,
-        banner_area.height == 0,
-        &activity_frame,
-    );
-    frame.render_widget(Paragraph::new(banner), banner_area);
     let dock_area = if gap.height > 0 {
         gap
     } else {
@@ -202,6 +189,27 @@ pub(crate) fn render_at(
             u16::from(transcript.height > 1),
         )
     };
+    // On short screens the history control occupies a row of the transcript.
+    // Reserve that row before projecting so occluded statistics never count as
+    // visible. Showing or hiding dock metrics only changes its contents.
+    let transcript_view = if gap.height == 0 && reading.is_some() {
+        Rect {
+            height: transcript.height.saturating_sub(dock_area.height),
+            ..transcript
+        }
+    } else {
+        transcript
+    };
+    let (transcript_body, row_insets, dock) = render_transcript(
+        frame,
+        transcript_view,
+        composer_content,
+        app,
+        banner_area.height == 0,
+        &activity_frame,
+        reading.as_ref().map(|_| stats_width),
+    );
+    frame.render_widget(Paragraph::new(banner), banner_area);
     let dock_inner = Rect::new(
         composer_content.x,
         dock_area.y,
@@ -256,20 +264,7 @@ pub(crate) fn render_at(
         });
     }
     app.request_area = request_area;
-    let request_id = app.pane().snapshot.as_ref().and_then(|snapshot| {
-        snapshot
-            .agent
-            .question
-            .as_ref()
-            .map(|request| request.id.clone())
-            .or_else(|| {
-                snapshot
-                    .agent
-                    .permission
-                    .as_ref()
-                    .map(|request| request.id.clone())
-            })
-    });
+    let request_id = app.pane().pending_request_id().map(str::to_owned);
     app.request_hit = if request_area.is_empty() {
         None
     } else {
@@ -305,11 +300,12 @@ pub(crate) fn render_at(
             activity_frame.still()
         };
         let run_control = app.contextual_controls().into_iter().find(|control| {
-            matches!(
-                control,
-                crate::contextual::ContextControl::Continue { .. }
-                    | crate::contextual::ContextControl::Interrupt { .. }
-            )
+            app.service_status() == crate::app::ServiceStatus::Connected
+                && matches!(
+                    control,
+                    crate::contextual::ContextControl::Continue { .. }
+                        | crate::contextual::ContextControl::Interrupt { .. }
+                )
         });
         let (area, control) = if let Some(control) = run_control.filter(|_| heading.width >= 48) {
             let chip_width = u16::try_from(contextual::label(&control).width())
@@ -330,7 +326,8 @@ pub(crate) fn render_at(
         } else {
             (heading, None)
         };
-        let (line, recipient) = activity::render_heading(app, usize::from(area.width), state);
+        let (line, recipient) =
+            activity::render_heading(app, usize::from(area.width), state, control.is_some());
         frame.render_widget(Paragraph::new(line), area);
         if let Some(range) = recipient.filter(|_| unobstructed) {
             app.recipient_area =
@@ -423,11 +420,16 @@ fn render_transcript(
     app: &mut App,
     show_service_problem: bool,
     activity: &ActivityFrame,
-) -> (Rect, Vec<crate::selection::TextInsets>) {
+    dock_width: Option<usize>,
+) -> (
+    Rect,
+    Vec<crate::selection::TextInsets>,
+    Option<Line<'static>>,
+) {
     if area.is_empty() {
         app.text_selection.set_messages_area(None);
         app.transcript_area = (usize::from(area.width).max(1), 1);
-        return (area, Vec::new());
+        return (area, Vec::new(), None);
     }
     let [header, body] = Layout::vertical([
         Constraint::Length(header::session_rows(app, area.height)),
@@ -449,6 +451,8 @@ fn render_transcript(
             .map(|agent| (agent.address, agent.status, agent.preview)),
     );
     let mut view = transcript.project(width, height);
+    let dock = dock_width
+        .and_then(|width| transcript.turn_dock_unless_visible(width, &view.visible_turn_summaries));
     if let Some(row) = view.thinking_row {
         view.lines[row] = if app.pane().activity() == crate::app::Activity::Thinking {
             let card = crate::theme::CardFrame::timeline(width);
@@ -466,7 +470,7 @@ fn render_transcript(
             area.height,
         );
         header::render_welcome(frame, welcome, app, show_service_problem);
-        return (area, Vec::new());
+        return (area, Vec::new(), dock);
     }
     if view.lines.is_empty() && height > 0 {
         view.lines = header::empty_notice(app, width, show_service_problem);
@@ -480,7 +484,7 @@ fn render_transcript(
     );
     app.text_selection.set_messages_area(messages_area);
     transcript_body::render(frame, body, view.lines, view.turn_surface);
-    (body, view.row_insets)
+    (body, view.row_insets, dock)
 }
 
 fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
@@ -531,7 +535,11 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
         } else {
             lines.push(Line::styled(
                 crate::text::shorten_middle(
-                    &crate::retry_notice::banner(retry, time::OffsetDateTime::now_utc()),
+                    &crate::retry_notice::banner(
+                        retry,
+                        time::OffsetDateTime::now_utc(),
+                        app.composer_focused(),
+                    ),
                     width,
                 ),
                 emphasis(color),
@@ -623,12 +631,12 @@ fn waiting(app: &App, width: usize) -> Vec<Line<'static>> {
             emphasis(WARNING),
         )];
     }
-    let Some(snapshot) = &app.pane().snapshot else {
+    // Questions have a dedicated request dock with the authoritative Agent,
+    // action and (when needed) text preview.
+    if app.pane().question().is_some() {
         return Vec::new();
-    };
-    let (action, request) = if let Some(question) = &snapshot.agent.question {
-        ("Reply", &question.text)
-    } else if let Some(permission) = &snapshot.agent.permission {
+    }
+    let (action, request) = if let Some(permission) = app.pane().permission() {
         ("Review authorization", &permission.summary)
     } else {
         return Vec::new();
@@ -688,6 +696,14 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Rect
             inner
         }
         Modal::Prompt(prompt) => {
+            if matches!(prompt.kind, PromptKind::Question { .. }) {
+                let area = contextual::question_popup(area, prompt);
+                let inner = render_popup(frame, area, &prompt.title);
+                let (width, header) = contextual::render_question_prompt(frame, inner, prompt);
+                app.modal_editor_width = width;
+                app.modal_info_rows = header;
+                return Some(inner);
+            }
             if matches!(prompt.kind, PromptKind::HistoryJump(_)) {
                 let (inner, page) = rewind_picker::render_history_jump(frame, area, prompt);
                 app.modal_info_rows = page;
@@ -801,7 +817,9 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
         render_editor(frame, field, &mut picker.query, true, "Search…");
     }
-    let cell_height = if list.height >= 6 && !matches!(picker.kind, PickerKind::AgentSetup(_)) {
+    let cell_height = if list.height >= 6
+        && !matches!(picker.kind, PickerKind::AgentSetup(_) | PickerKind::Jobs)
+    {
         2
     } else {
         1
@@ -825,6 +843,32 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             panel()
         };
         let prefix = if active { "› " } else { "  " };
+        if let ChoiceKind::BackgroundJob(job) = &choice.kind {
+            let label = crate::jobs::job_list_label(job, width.saturating_sub(prefix.width()));
+            let color = match job.status {
+                kuku_client::JobStatus::Running => ACCENT,
+                kuku_client::JobStatus::Failed => ERROR,
+                kuku_client::JobStatus::Cancelled | kuku_client::JobStatus::Interrupted => WARNING,
+                kuku_client::JobStatus::Completed => MUTED,
+            };
+            let status = crate::jobs::job_status_label(job.status);
+            let mut line = Vec::new();
+            line.push(Span::styled(prefix, style));
+            if let Some(rest) = label.strip_prefix(status) {
+                line.push(Span::styled(status, style.fg(color)));
+                line.push(Span::styled(rest.to_owned(), style));
+            } else {
+                line.push(Span::styled(label.clone(), style));
+            }
+            if active {
+                line.push(Span::styled(
+                    " ".repeat(width.saturating_sub(prefix.width() + label.width())),
+                    style,
+                ));
+            }
+            lines.push(Line::from(line));
+            continue;
+        }
         let label = single_line(&choice.label);
         let detail = single_line(&choice.detail);
         let label = if cell_height == 1 && !detail.is_empty() {
@@ -832,11 +876,9 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
         } else {
             label
         };
-        lines.push(picker_line(
-            &format!("{prefix}{label}"),
-            width,
-            active,
-            style,
+        let main = matches!(&choice.kind, ChoiceKind::Agent { target } if target.agent == "main");
+        lines.push(picker_label_line(
+            prefix, &label, main, width, active, style,
         ));
         if cell_height == 2 {
             lines.push(picker_line(
@@ -908,6 +950,32 @@ fn picker_line(text: &str, width: usize, selected: bool, style: Style) -> Line<'
         text.push_str(&" ".repeat(width - text.width()));
     }
     Line::styled(text, style)
+}
+
+fn picker_label_line(
+    prefix: &str,
+    label: &str,
+    main: bool,
+    width: usize,
+    selected: bool,
+    style: Style,
+) -> Line<'static> {
+    let line = picker_line(&format!("{prefix}{label}"), width, selected, style);
+    if main
+        && let Some(suffix) = line
+            .spans
+            .first()
+            .and_then(|span| span.content.strip_prefix(prefix))
+            .and_then(|label| label.strip_prefix("main"))
+    {
+        // The row keeps its focus background; only the durable identity gets its own color.
+        return Line::from(vec![
+            Span::styled(prefix.to_owned(), style),
+            Span::styled("main", style.patch(emphasis(MAIN_AGENT))),
+            Span::styled(suffix.to_owned(), style),
+        ]);
+    }
+    line
 }
 
 fn render_prompt(frame: &mut Frame<'_>, inner: Rect, prompt: &mut Prompt) -> (usize, usize) {

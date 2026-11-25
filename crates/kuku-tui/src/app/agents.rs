@@ -22,17 +22,38 @@ pub(crate) struct AgentActivity<'a> {
 #[derive(Debug, Default)]
 pub(crate) struct AgentActivities {
     agents: BTreeMap<String, TrackedAgent>,
+    // The durable creation event, never a live activity cursor, orders the roster.
+    roster: BTreeMap<u64, AgentSummary>,
+    roster_cursor: Option<u64>,
     revision: u64,
     minimum_cursor: u64,
 }
 
 impl AgentActivities {
     pub(crate) fn iter(&self) -> impl Iterator<Item = AgentActivity<'_>> {
-        self.agents.iter().map(|(address, agent)| AgentActivity {
-            address,
-            status: agent.activity(),
-            preview: (!agent.preview.is_empty()).then_some(agent.preview.as_str()),
+        self.roster.values().filter_map(|summary| {
+            self.agents
+                .get(&summary.address)
+                .map(|agent| AgentActivity {
+                    address: &summary.address,
+                    status: agent.activity(),
+                    preview: (!agent.preview.is_empty()).then_some(agent.preview.as_str()),
+                })
         })
+    }
+
+    pub(super) fn roster(&self) -> impl ExactSizeIterator<Item = &AgentSummary> {
+        self.roster.values()
+    }
+
+    pub(super) fn has_roster(&self) -> bool {
+        self.roster_cursor.is_some()
+    }
+
+    pub(super) fn reset_roster(&mut self) {
+        self.roster.clear();
+        self.roster_cursor = None;
+        self.changed();
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -54,11 +75,26 @@ impl AgentActivities {
         if cursor < self.minimum_cursor {
             return;
         }
+        let mut changed = false;
+        if self.roster_cursor.is_none_or(|previous| cursor >= previous) {
+            // Addresses are never reassigned or removed within a Session. A
+            // snapshot may predate an already observed creation; keep that row.
+            for summary in &snapshot.agents {
+                let previous = self.roster.get(&summary.creation_event_id);
+                if previous != Some(summary) {
+                    self.roster
+                        .insert(summary.creation_event_id, summary.clone());
+                    changed = true;
+                }
+            }
+            changed |= self.roster_cursor.is_none();
+            self.roster_cursor = Some(cursor);
+        }
         let retained: HashSet<_> = snapshot.agents.iter().map(|agent| &agent.address).collect();
         let before = self.agents.len();
         self.agents
             .retain(|address, agent| agent.state_cursor > cursor || retained.contains(address));
-        let mut changed = self.agents.len() != before;
+        changed |= self.agents.len() != before;
         for summary in &snapshot.agents {
             if summary.address == selected {
                 continue;
@@ -79,6 +115,37 @@ impl AgentActivities {
     }
 
     pub(super) fn observe(&mut self, event: &Observation, selected: &str) {
+        let mut roster_changed = false;
+        if let Observation::Committed {
+            id,
+            agent: Some(address),
+            operation: Some(operation),
+            ..
+        } = event
+            && operation == "agent_created"
+            && *id > self.minimum_cursor
+            && !self.roster.contains_key(id)
+        {
+            self.roster.insert(
+                *id,
+                AgentSummary {
+                    address: address.clone(),
+                    creation_event_id: *id,
+                    status: AgentStatus::Idle,
+                    turn: None,
+                    execution_id: None,
+                    pending_inputs: 0,
+                    admitted_task: None,
+                    queued_task: None,
+                    question: None,
+                    permission: None,
+                    last_output_preview: None,
+                    last_error_preview: None,
+                    progress: None,
+                },
+            );
+            roster_changed = true;
+        }
         let changed = match event {
             Observation::Committed {
                 id,
@@ -109,7 +176,7 @@ impl AgentActivities {
             | Observation::WorkspacePermission { .. }
             | Observation::Heartbeat => false,
         };
-        if changed {
+        if changed || roster_changed {
             self.changed();
         }
     }
@@ -392,9 +459,9 @@ mod tests {
     ) -> Box<Snapshot> {
         Box::new(serde_json::from_value(json!({
             "session_id":app.active.session,"workspace":app.workspace,"cursor":cursor,"pending":[],
-            "agent":{"address":app.active.agent,"status":"idle","config":{},"pending_inputs":0,
+            "agent":{"address":app.active.agent,"creation_event_id":1,"status":"idle","config":{},"pending_inputs":0,
                 "usage":{"model_requests":0,"unreported_requests":0}},
-            "agents":[{"address":"reviewer","status":status,"execution_id":execution,"pending_inputs":0,
+            "agents":[{"address":"reviewer","creation_event_id":2,"status":status,"execution_id":execution,"pending_inputs":0,
                 "turn":preview.map(|_| 7),"last_output_preview":preview}],
         })).unwrap())
     }

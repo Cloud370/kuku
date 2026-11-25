@@ -77,6 +77,7 @@ impl ThinkingRead {
                         output: None,
                         command_arguments: None,
                         inline_output: None,
+                        turn_summary: false,
                     }),
             )
             .collect();

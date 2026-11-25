@@ -9,7 +9,6 @@ use super::{Activity, Address, App, ExecutionProgress, Modal, ServiceStatus};
 #[derive(Debug, Default)]
 pub(super) struct AgentNavigation {
     previous: Option<Address>,
-    roster: Vec<String>,
     picker: Option<PickerState>,
 }
 
@@ -27,6 +26,7 @@ impl App {
         self.rewind_armed = false;
         if address.session != self.active.session {
             self.navigation = AgentNavigation::default();
+            self.related_agents.reset_roster();
         } else if address != self.active && exists && self.pane().exists {
             self.navigation.previous = Some(self.active.clone());
         }
@@ -50,13 +50,13 @@ impl App {
     pub(crate) fn visible_recipient(&self) -> Option<&str> {
         (self.is_subagent()
             || self.previous_agent().is_some()
-            || self.related_agents.iter().next().is_some()
-            || self
-                .pane()
-                .snapshot
-                .as_ref()
-                .is_some_and(|state| state.agents.len() > 1))
+            || self.related_agents.roster().len() > 1
+            || self.related_agents.iter().next().is_some())
         .then_some(self.active.agent.as_str())
+    }
+
+    pub(crate) fn agent_count(&self) -> usize {
+        self.related_agents.roster().len()
     }
 
     pub(crate) fn previous_agent(&self) -> Option<&Address> {
@@ -71,32 +71,27 @@ impl App {
         let Some(pane) = self.panes.get(&self.active).filter(|pane| pane.exists) else {
             return;
         };
-        let roster = &mut self.navigation.roster;
-        roster.push(self.active.agent.clone());
-        if let Some(snapshot) = &pane.snapshot {
-            roster.extend(snapshot.agents.iter().map(|agent| agent.address.clone()));
-        }
-        roster.extend(
-            self.related_agents
-                .iter()
-                .map(|agent| agent.address.to_owned()),
-        );
-        roster.sort_unstable_by(|a, b| {
-            (a != super::DEFAULT_AGENT, a).cmp(&(b != super::DEFAULT_AGENT, b))
-        });
-        roster.dedup();
-        if roster.len() == 1 {
+        let size = self.related_agents.roster().len();
+        if size < 2 {
             return;
         }
-        let current = roster
-            .iter()
-            .position(|address| address == &self.active.agent)
-            .expect("the roster includes the active Agent");
-        let next = match direction {
-            AgentDirection::Next => (current + 1) % roster.len(),
-            AgentDirection::Previous => (current + roster.len() - 1) % roster.len(),
+        let Some(current) = self
+            .related_agents
+            .roster()
+            .position(|summary| summary.address == self.active.agent)
+        else {
+            return;
         };
-        let address = Address::new(self.active.session.clone(), roster[next].clone());
+        let next = match direction {
+            AgentDirection::Next => (current + 1) % size,
+            AgentDirection::Previous => (current + size - 1) % size,
+        };
+        let summary = self
+            .related_agents
+            .roster()
+            .nth(next)
+            .expect("roster index");
+        let address = Address::new(self.active.session.clone(), summary.address.clone());
         self.select(address, true, pane.title.clone());
     }
 
@@ -154,13 +149,14 @@ impl App {
             });
         let service = state.service;
         let mut choices = Vec::new();
-        if let Some(snapshot) = snapshot {
-            choices.reserve(snapshot.agents.len() + 1);
-            for summary in &snapshot.agents {
+        let has_snapshot = self.related_agents.has_roster();
+        if has_snapshot {
+            choices.reserve(self.related_agents.roster().len() + 1);
+            for summary in self.related_agents.roster() {
                 let current = summary.address == self.active.agent;
                 let activity = if service != ServiceStatus::Connected {
                     summary_activity(summary)
-                } else if current {
+                } else if current && snapshot.is_some() {
                     state.activity
                 } else {
                     self.related_agents
@@ -180,7 +176,6 @@ impl App {
                 ChoiceKind::CreateAgent,
             ));
         }
-        let has_snapshot = snapshot.is_some();
         self.navigation.picker = Some(state);
         let Some(Modal::Picker(picker)) = &mut self.modal else {
             return;
@@ -267,6 +262,8 @@ mod tests {
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use kuku_client::{HistoryEntry, HistoryPage, Snapshot};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use serde_json::{Value, json};
@@ -300,6 +297,13 @@ mod tests {
     }
 
     fn snapshot(app: &App, cursor: u64, agents: Value) -> Box<Snapshot> {
+        let creation = agents
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|summary| summary["address"] == app.active.agent)
+            .and_then(|summary| summary["creation_event_id"].as_u64())
+            .unwrap_or(1);
         Box::new(
             serde_json::from_value(json!({
                 "session_id": app.active.session,
@@ -309,6 +313,7 @@ mod tests {
                 "pending": [],
                 "agent": {
                     "address": app.active.agent,
+                    "creation_event_id": creation,
                     "status": "idle",
                     "pending_inputs": 0,
                     "config": {},
@@ -334,12 +339,168 @@ mod tests {
     }
 
     #[test]
+    fn roster_follows_creation_ids_not_live_arrival_or_snapshot_order() {
+        fn addresses(app: &App) -> Vec<String> {
+            let Some(Modal::Picker(picker)) = &app.modal else {
+                panic!("expected Agent picker");
+            };
+            picker
+                .visible_choices()
+                .into_iter()
+                .filter_map(|choice| match &choice.kind {
+                    ChoiceKind::Agent { target } => Some(target.agent.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+        fn selected(app: &App) -> String {
+            let Some(Modal::Picker(picker)) = &app.modal else {
+                panic!("expected Agent picker");
+            };
+            let Some(ChoiceKind::Agent { target }) = picker.selected_choice() else {
+                panic!("expected Agent selection");
+            };
+            target.agent
+        }
+
+        let mut app = connected();
+        let initial = json!([
+            {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0}
+        ]);
+        let state = snapshot(&app, 2, initial.clone());
+        load(&mut app, state, Vec::new());
+        app.open_agents();
+        assert_eq!(["main"], addresses(&app).as_slice());
+        // Later Agent's live traffic may reach the client before creation is observed.
+        app.update(Update::Observation(
+            app.selection(),
+            serde_json::from_value(json!({
+                "type":"live", "agent":"a-tests", "cursor":9, "execution_id":8,
+                "event":{"type":"text","content":"Starting tests"}
+            }))
+            .unwrap(),
+        ));
+        assert_eq!(["main"], addresses(&app).as_slice());
+        // Even a delayed creation event has its actual journal position, not arrival order.
+        for (address, id) in [("a-tests", 6), ("z-review", 4)] {
+            app.update(Update::Observation(
+                app.selection(),
+                serde_json::from_value(json!({
+                    "type":"committed", "agent":address, "id":id, "kind":"runtime.operation",
+                    "operation":"agent_created", "state_changed":true
+                }))
+                .unwrap(),
+            ));
+            if address == "a-tests" {
+                key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+                assert_eq!("a-tests", selected(&app));
+            }
+        }
+        assert_eq!(["main", "z-review", "a-tests"], addresses(&app).as_slice());
+        assert_eq!("a-tests", selected(&app));
+
+        let stale = snapshot(&app, 3, initial);
+        app.update(Update::Refreshed(app.selection(), Ok(stale)));
+        assert_eq!(["main", "z-review", "a-tests"], addresses(&app).as_slice());
+        assert_eq!("a-tests", selected(&app));
+        let roster = json!([
+            {"address":"a-tests","creation_event_id":6,"status":"running","pending_inputs":0,"execution_id":8},
+            {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0},
+            {"address":"z-review","creation_event_id":4,"status":"waiting","pending_inputs":0}
+        ]);
+        app.update(Update::WatchReconnecting(
+            app.selection(),
+            "connection closed".into(),
+        ));
+        let state = snapshot(&app, 10, roster.clone());
+        load(&mut app, state, Vec::new());
+        assert_eq!(["main", "z-review", "a-tests"], addresses(&app).as_slice());
+        assert_eq!("a-tests", selected(&app));
+
+        let mut reopened = connected();
+        let state = snapshot(&reopened, 10, roster);
+        load(&mut reopened, state, Vec::new());
+        reopened.open_agents();
+        assert_eq!(
+            ["main", "z-review", "a-tests"],
+            addresses(&reopened).as_slice()
+        );
+        key(&mut reopened, KeyCode::Esc, KeyModifiers::NONE);
+        for address in ["z-review", "a-tests", "main"] {
+            key(&mut reopened, KeyCode::Right, KeyModifiers::ALT);
+            assert_eq!(address, reopened.active.agent);
+        }
+        key(&mut reopened, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!("a-tests", reopened.active.agent);
+    }
+
+    #[test]
+    fn main_identity_color_does_not_depend_on_the_active_or_highlighted_agent() {
+        let mut app = connected();
+        let state = snapshot(
+            &app,
+            4,
+            json!([
+                {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0},
+                {"address":"z-review","creation_event_id":3,"status":"idle","pending_inputs":0}
+            ]),
+        );
+        load(&mut app, state, Vec::new());
+        app.select(
+            Address::new(app.active.session.clone(), "z-review".into()),
+            true,
+            String::new(),
+        );
+        app.open_agents();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        for highlight_main in [false, true] {
+            if highlight_main {
+                key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+            }
+            let buffer = terminal
+                .draw(|frame| crate::ui::render(frame, &mut app))
+                .unwrap()
+                .buffer;
+            let colors = |label: &str| {
+                let cell = buffer
+                    .content
+                    .chunks(usize::from(buffer.area.width))
+                    .find_map(|row| {
+                        row.windows(label.chars().count())
+                            .find(|window| {
+                                window
+                                    .iter()
+                                    .zip(label.chars())
+                                    .all(|(cell, ch)| cell.symbol() == ch.to_string())
+                            })
+                            .map(|window| &window[0])
+                    })
+                    .expect("picker label visible");
+                (cell.fg, cell.bg)
+            };
+            let (main_fg, main_bg) = colors("main · Ready");
+            let (peer_fg, peer_bg) = colors("z-review · Ready");
+            assert_eq!(crate::theme::MAIN_AGENT, main_fg);
+            assert_ne!(main_fg, peer_fg);
+            assert_ne!(main_bg, peer_bg);
+            assert_eq!(
+                if highlight_main {
+                    crate::theme::focused_row().bg
+                } else {
+                    crate::theme::panel().bg
+                },
+                Some(main_bg)
+            );
+        }
+    }
+
+    #[test]
     fn alt_arrows_preserve_each_agents_draft_and_reading_position() {
         let mut app = connected();
         let agents = json!([
-            {"address":"main","status":"idle","pending_inputs":0,"admitted_task":"Ask the reviewer about this task"},
-            {"address":"review","status":"idle","pending_inputs":0},
-            {"address":"reviewer","status":"idle","pending_inputs":0}
+            {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0,"admitted_task":"Ask the reviewer about this task"},
+            {"address":"review","creation_event_id":2,"status":"idle","pending_inputs":0},
+            {"address":"reviewer","creation_event_id":3,"status":"idle","pending_inputs":0}
         ]);
         let main_history = (1..=36)
             .map(|id| {
@@ -417,11 +578,11 @@ mod tests {
     fn picker_ranks_the_address_before_matches_in_task_text() {
         let mut app = connected();
         let agents = json!([
-            {"address":"main","status":"idle","pending_inputs":0,"admitted_task":"Ask the reviewer"},
-            {"address":"reviewer","status":"idle","pending_inputs":0},
-            {"address":"review","status":"idle","pending_inputs":0}
+            {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0,"admitted_task":"Ask the reviewer"},
+            {"address":"reviewer","creation_event_id":2,"status":"idle","pending_inputs":0},
+            {"address":"review","creation_event_id":3,"status":"idle","pending_inputs":0}
         ]);
-        let initial = snapshot(&app, 1, agents);
+        let initial = snapshot(&app, 3, agents);
         load(&mut app, initial, Vec::new());
         app.open_agents();
         type_in_picker(&mut app, "review");
@@ -443,7 +604,7 @@ mod tests {
     fn picker_searches_durable_tasks_and_pending_requests_and_drops_live_state_on_disconnect() {
         let mut app = connected();
         let peer = json!({
-            "address":"reviewer","status":"running","pending_inputs":1,"execution_id":5,
+            "address":"reviewer","creation_event_id":2,"status":"running","pending_inputs":1,"execution_id":5,
             "progress":{"phase":"waiting_for_model"},
             "admitted_task":"Inspect receipts",
             "queued_task":"Check retry behavior"
@@ -452,7 +613,7 @@ mod tests {
             &app,
             6,
             json!([
-                {"address":"main","status":"idle","pending_inputs":0}, peer
+                {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0}, peer
             ]),
         );
         load(&mut app, initial, Vec::new());
@@ -500,9 +661,9 @@ mod tests {
             &app,
             10,
             json!([
-                {"address":"main","status":"idle","pending_inputs":0},
+                {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0},
                 {
-                    "address":"reviewer","status":"waiting","pending_inputs":1,
+                    "address":"reviewer","creation_event_id":2,"status":"waiting","pending_inputs":1,
                     "admitted_task":"Inspect receipts",
                     "queued_task":"Check retry behavior",
                     "question":{"id":"question","agent":"reviewer","turn":5,"tool_call_id":"ask","text":"Which branch?"}

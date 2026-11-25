@@ -53,6 +53,9 @@ impl Shortcut {
     pub(crate) const RECONNECT: Self = Self::control('r', "Ctrl+R");
     pub(crate) const REWIND: Self = Self::control('g', "Ctrl+G");
     pub(crate) const MODEL: Self = Self::control('l', "Ctrl+L");
+    pub(crate) const MODEL_DEFAULT: Self =
+        Self::new(KeyCode::Char('d'), KeyModifiers::ALT, "Alt+D");
+    pub(crate) const MODEL_EDIT: Self = Self::new(KeyCode::Char('e'), KeyModifiers::ALT, "Alt+E");
     pub(crate) const CYCLE_THINKING: Self = Self::control('t', "Ctrl+T");
     pub(crate) const DETAILS: Self = Self::control('o', "Ctrl+O");
     pub(crate) const LATEST: Self = Self::new(KeyCode::End, KeyModifiers::CONTROL, "Ctrl+End");

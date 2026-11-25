@@ -146,22 +146,39 @@ fn background_job_start_and_terminal_event_are_separate_transcript_entries() {
         "type": "tool_result", "tool_call_id": "call-1",
         "status": "ok", "summary": "job-1 running: Run tests",
         "structured": {"kind": "job", "job_id": "job-1", "status": "running",
-                       "tool": "run_command", "output_id": "out-1"},
+                       "tool": "run_command", "output_id": "out-1", "title":"Run tests",
+                       "elapsed_ms":1234},
     }))
     .unwrap();
     let finish: HistoryEntry = serde_json::from_value(json!({
         "id": 9, "agent": "main", "turn": 1, "turn_number": 1,
-        "type": "job_finished", "job_id": "job-1", "status": "cancelled",
-        "summary": "Process exited after cancellation", "output_id": "out-1",
+        "type": "job_finished", "job_id": "job-1", "status": "completed",
+        "summary": "command exited 0 in 161877ms, stdout 4 lines, stderr 0 lines",
+        "elapsed_ms":161900,
+        "command":{"termination":"exited","exit_code":0,"duration_ms":161877},
+        "output_id": "out-1",
     }))
     .unwrap();
     let mut transcript = Transcript::default();
     transcript.apply(start, None);
     transcript.apply(finish, None);
-    let rendered = rows(&mut transcript).join("\n");
-    assert!(rendered.contains("job-1 running: Run tests"));
+    let rendered = transcript
+        .project(100, 24)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Run tests"));
     assert!(rendered.contains("started in background"));
-    assert!(rendered.contains("job-1 · Cancelled"));
+    assert!(rendered.contains("job-1 · Detached after 1.2s"));
+    assert!(rendered.contains("job-1 · Completed · exit 0 · 2m 42s total"));
+    assert!(!rendered.contains("161877ms"));
+    let info = transcript
+        .message_info(&super::MessageId::Event(9), "main")
+        .unwrap();
+    assert_eq!(info.outputs[0].output_id.as_deref(), Some("out-1"));
+    assert!(info.outputs[0].evidence.contains("161877ms"));
 }
 
 #[test]
@@ -393,6 +410,20 @@ fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
     );
     assert_eq!(1, rendered.matches("Interrupted body.").count());
     assert!(
+        transcript
+            .message_info(&MessageId::Event(9), "main")
+            .unwrap()
+            .copy_text
+            .starts_with("Interrupted **body**.")
+    );
+    assert_eq!(
+        transcript
+            .message_info(&MessageId::Event(2), "main")
+            .unwrap()
+            .copy_text,
+        "Last complete reply"
+    );
+    assert!(
         compact(&rendered).contains(&compact("Display limit reached")),
         "{rendered}"
     );
@@ -402,6 +433,15 @@ fn interrupted_reply_replaces_preview_and_preserves_previous_copy_target() {
         next_before: None,
     });
     assert_eq!(rendered, rows(&mut transcript).join("\n"));
+    let narrow = transcript
+        .project(24, 50)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(narrow.contains("Interrupted") && narrow.contains("╭─"));
+    assert!(compact(&narrow).contains(&compact("Interrupted body.")));
 }
 
 #[test]
@@ -412,15 +452,203 @@ fn cancellation_without_visible_reply_still_renders_a_turn_marker() {
         "type":"status","status":"interrupted"
     }))
     .unwrap();
-    transcript.apply(entry, None);
-    let rendered = rows(&mut transcript).join("\n");
-    assert!(
-        rendered
-            .lines()
+    transcript.apply(entry.clone(), None);
+    for width in [18, 80] {
+        let rendered = transcript
+            .project(width, 20)
+            .lines
+            .iter()
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
-            .windows(2)
-            .any(|pair| pair[0].starts_with("Turn 1  ─") && pair[1] == "Interrupted")
-    );
+            .join("\n");
+        assert!(
+            rendered.contains("Turn 1") && rendered.contains("Reply interrupted"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains('╭') && !rendered.contains('╰'),
+            "{rendered}"
+        );
+        assert_eq!(1, rendered.matches("Reply interrupted").count());
+        assert!(
+            transcript
+                .message_info(&MessageId::Event(9), "main")
+                .is_none()
+        );
+        let mut reopened = Transcript::default();
+        reopened.replace_recent(HistoryPage {
+            entries: vec![entry.clone()],
+            rewind_groups: vec![],
+            next_before: None,
+        });
+        let reopened_render = reopened
+            .project(width, 20)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(rendered, reopened_render);
+    }
+}
+
+#[test]
+fn interrupted_reply_does_not_claim_a_background_job_was_cancelled() {
+    let events = [
+        json!({"id":8,"agent":"main","turn":1,"type":"tool_result","tool":"run_command","tool_call_id":"start","status":"ok","structured":{"kind":"job","job_id":"job-1","status":"running","tool":"run_command"}}),
+        json!({"id":9,"agent":"main","turn":1,"type":"status","status":"interrupted","execution_id":7}),
+        json!({"id":10,"agent":"main","turn":1,"type":"job_finished","job_id":"job-1","status":"completed","summary":"Work finished independently"}),
+    ].into_iter().map(|event| serde_json::from_value::<HistoryEntry>(event).unwrap()).collect::<Vec<_>>();
+    let mut transcript = Transcript::default();
+    for event in &events {
+        transcript.apply(event.clone(), None);
+    }
+    for width in [24, 80] {
+        let render = |transcript: &mut Transcript| {
+            transcript
+                .project(width, 50)
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let rendered = render(&mut transcript);
+        assert!(
+            rendered.contains("Reply interrupted") && rendered.contains("Completed"),
+            "{rendered}"
+        );
+        assert!(!rendered.to_lowercase().contains("cancelled"), "{rendered}");
+        assert!(
+            compact(&rendered).contains(&compact("Work finished independently")),
+            "{rendered}"
+        );
+        let mut reopened = Transcript::default();
+        reopened.replace_recent(HistoryPage {
+            entries: events.clone(),
+            rewind_groups: vec![],
+            next_before: None,
+        });
+        assert_eq!(rendered, render(&mut reopened));
+    }
+}
+
+#[test]
+fn question_request_and_tool_result_render_readably_without_repeating_text() {
+    let text = "Which target?\nPlease confirm the integration route.";
+    let request = json!({"id":"q-1","agent":"reviewer","turn":1,"tool_call_id":"ask","text":text});
+    let entries = [
+        json!({"id":1,"agent":"reviewer","turn":1,"type":"tool_call","tool":"ask_user","tool_call_id":"ask","args":{"question":text}}),
+        json!({"id":2,"agent":"reviewer","turn":1,"type":"question","request":request,"text":text}),
+        json!({"id":3,"agent":"reviewer","turn":1,"type":"tool_result","tool":"ask_user","tool_call_id":"ask","status":"ok","summary":"session operation committed","structured":request,"model_content":request.to_string()}),
+    ].into_iter().map(|event| serde_json::from_value::<HistoryEntry>(event).unwrap()).collect::<Vec<_>>();
+    let answer = serde_json::from_value::<HistoryEntry>(json!({
+        "id":4,"agent":"reviewer","type":"question_reply","request_id":"q-1","text":"Use Rust tests."
+    })).unwrap();
+    for width in [24, 80] {
+        let render = |transcript: &mut Transcript| {
+            transcript
+                .project(width, 60)
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut transcript = Transcript::default();
+        for entry in &entries {
+            transcript.apply(entry.clone(), None);
+        }
+        let pending = render(&mut transcript);
+        assert!(
+            pending.contains("Question") && pending.contains("reviewer"),
+            "{pending}"
+        );
+        assert_eq!(1, pending.matches("Which target?").count(), "{pending}");
+        assert!(
+            compact(&pending).contains(&compact("Please confirm the integration route.")),
+            "{pending}"
+        );
+        assert!(
+            !pending.contains("tool_call_id") && !pending.contains("Answered"),
+            "{pending}"
+        );
+        assert!(transcript.contains_question("q-1"));
+        transcript.apply(answer.clone(), None);
+        let answered = render(&mut transcript);
+        assert!(
+            answered.contains("Answered question") && answered.contains("Use Rust tests."),
+            "{answered}"
+        );
+        assert_eq!(1, answered.matches("Which target?").count(), "{answered}");
+        let mut reopened = Transcript::default();
+        reopened.replace_recent(HistoryPage {
+            entries: entries
+                .iter()
+                .cloned()
+                .chain(std::iter::once(answer.clone()))
+                .collect(),
+            rewind_groups: vec![],
+            next_before: None,
+        });
+        assert_eq!(answered, render(&mut reopened));
+
+        // Paging can begin at the tool result, without its request event.
+        reopened.replace_recent(HistoryPage {
+            entries: vec![entries[2].clone()],
+            rewind_groups: vec![],
+            next_before: Some(3),
+        });
+        let result_only = render(&mut reopened);
+        assert!(
+            result_only.contains("Which target?") && !result_only.contains("tool_call_id"),
+            "{result_only}"
+        );
+        assert!(reopened.contains_question("q-1"));
+    }
+}
+
+#[test]
+fn paged_ask_user_result_recovers_long_question_from_structured_facts_without_tool_name() {
+    let mut transcript = Transcript::default();
+    let text = format!("{}\nFinal verification?", "x".repeat(13 * 1024));
+    let request = json!({
+        "id":"question:reviewer:5:ask","agent":"reviewer","turn":5,
+        "tool_call_id":"ask","text":text
+    });
+    // Actual history wire shape when the ToolCall is on an older page.
+    // The rendered text must come from structured facts, before the generic
+    // tool detail cap truncates the JSON string in model_content.
+    let entry: HistoryEntry = serde_json::from_value(json!({
+        "id":8,"agent":"reviewer","turn":5,"type":"tool_result",
+        "tool_call_id":"ask","status":"ok","summary":"session operation committed",
+        "structured":request,"model_content":request.to_string()
+    }))
+    .unwrap();
+    transcript.replace_recent(HistoryPage {
+        entries: vec![entry],
+        rewind_groups: vec![],
+        next_before: Some(8),
+    });
+    assert!(transcript.contains_question("question:reviewer:5:ask"));
+    assert_eq!(transcript.tools()[0].name, "ask_user");
+    for width in [24, 80] {
+        let rendered = transcript
+            .project(width, 768)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("Final verification?"),
+            "last question line lost at width {width}"
+        );
+        assert!(
+            !rendered.contains("tool_call_id"),
+            "raw result leaked into question preview"
+        );
+    }
 }
 
 #[test]
@@ -596,7 +824,7 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
             .iter()
             .any(|row| card_text(row) == "durable diagnostic")
     );
-    assert!(plain.iter().any(|row| card_text(row) == "View output"));
+    assert!(!plain.iter().any(|row| card_text(row) == "View output"));
     assert!(
         !plain
             .iter()
@@ -605,6 +833,20 @@ fn toggling_tool_previews_preserves_the_reading_anchor_through_settlement() {
     let tools = transcript.tools();
     assert_eq!(Some("out"), tools[0].output_id.as_deref());
     assert_eq!("check-workspace", tools[0].invocation);
+    let heading = plain
+        .iter()
+        .position(|row| card_text(row).starts_with("Check workspace"))
+        .unwrap();
+    let detail = transcript.detail_at(heading).unwrap().clone();
+    assert!(transcript.toggle_detail(&detail));
+    let inspected = transcript.project(60, 30);
+    assert!(
+        inspected
+            .lines
+            .iter()
+            .any(|row| card_text(&row.to_string()) == "View output")
+    );
+    assert_eq!(&anchor, &transcript.reading.as_ref().unwrap().anchor);
 }
 
 #[test]
