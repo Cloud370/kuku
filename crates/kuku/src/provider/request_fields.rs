@@ -102,6 +102,7 @@ pub(super) fn prepare(
             prepared.request_id_headers.push(name);
             continue;
         }
+        let credential = value.starts_with('$') || super::trace::is_credential_field(name.as_str());
         let value = if let Some(var) = value.strip_prefix('$') {
             Some(std::env::var(var).map_err(|_| {
                 invalid_request(&format!(
@@ -115,7 +116,7 @@ pub(super) fn prepare(
             let mut header = HeaderValue::from_str(&value).map_err(|_| {
                 invalid_request(&format!("invalid value for request header '{name}'"))
             })?;
-            header.set_sensitive(true);
+            header.set_sensitive(credential);
             prepared.headers.insert(name, header);
         }
     }

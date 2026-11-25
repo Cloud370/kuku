@@ -75,10 +75,11 @@ impl ImageWire {
         }
     }
 
-    fn inline_image_data(self, part: &Value) -> Option<(&'static str, &str)> {
-        let path = self.image_data_path(part)?;
-        let encoded = part.pointer(path)?.as_str()?;
-        (matches!(self, Self::Messages) || encoded.starts_with("data:")).then_some((path, encoded))
+    fn is_inline_image(self, part: &Value) -> bool {
+        self.image_data_path(part)
+            .and_then(|path| part.pointer(path))
+            .and_then(Value::as_str)
+            .is_some_and(|encoded| matches!(self, Self::Messages) || encoded.starts_with("data:"))
     }
 
     fn content_field(self, item: &Value) -> Option<&'static str> {
@@ -280,7 +281,7 @@ pub(super) fn attach_user_images(
 pub(super) fn has_inline_images(wire: ImageWire, body: &Value) -> bool {
     fn has_inline_parts(wire: ImageWire, parts: &[Value]) -> bool {
         parts.iter().any(|part| {
-            wire.inline_image_data(part).is_some()
+            wire.is_inline_image(part)
                 || (wire.has_nested_tool_content(part)
                     && part["content"]
                         .as_array()
@@ -297,34 +298,6 @@ pub(super) fn has_inline_images(wire: ImageWire, body: &Value) -> bool {
     })
 }
 
-pub(super) fn redact_images(wire: ImageWire, body: &mut Value) {
-    let Some(input) = body.get_mut(wire.items()).and_then(Value::as_array_mut) else {
-        return;
-    };
-    for item in input {
-        if let Some(field) = wire.content_field(item)
-            && let Some(parts) = item.get_mut(field).and_then(Value::as_array_mut)
-        {
-            redact_parts(wire, parts);
-        }
-    }
-}
-
-fn redact_parts(wire: ImageWire, parts: &mut [Value]) {
-    for part in parts {
-        if wire.has_nested_tool_content(part)
-            && let Some(content) = part["content"].as_array_mut()
-        {
-            redact_parts(wire, content);
-        }
-        if let Some((path, encoded)) = wire.inline_image_data(part) {
-            let bytes = encoded.len();
-            *part.pointer_mut(path).expect("inline image data field") =
-                json!(format!("<omitted image data, {bytes} bytes>"));
-        }
-    }
-}
-
 fn json_bytes(value: &Value) -> usize {
     serde_json::to_vec(value).expect("serializable JSON").len()
 }
@@ -337,7 +310,7 @@ mod tests {
 
     use super::{
         ImageWire, ToolImageTarget, attach_tool_images, attach_user_images, has_inline_images,
-        json_bytes, redact_images,
+        json_bytes,
     };
     use crate::execution::{ImageMime, InputImage, ModelImage, OutputReference};
 
@@ -386,8 +359,6 @@ mod tests {
         );
         assert_eq!(limited, preview);
         assert!(has_inline_images(ImageWire::Responses, &limited));
-        redact_images(ImageWire::Responses, &mut limited);
-        assert!(!limited.to_string().contains("data:image/png"));
         assert_eq!(limited["input"][1]["output"][1]["type"], "input_image");
 
         let mut recent_only = body.clone();
@@ -403,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_attachment_budget_includes_content_array_and_redacts_media() {
+    fn chat_attachment_budget_includes_content_array_and_detects_inline_media() {
         const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
         let wire = ImageWire::ChatCompletions;
         let png = STANDARD.decode(PNG).unwrap();
@@ -430,8 +401,6 @@ mod tests {
         .unwrap();
         assert_eq!(fitted, expected);
         assert!(has_inline_images(wire, &fitted));
-        redact_images(wire, &mut fitted);
-        assert!(!fitted.to_string().contains("data:image/"));
         assert_eq!(fitted["messages"][1]["content"][1]["type"], "image_url");
         let mut unfitted = body.clone();
         let fail = attach_user_images(
@@ -451,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn messages_tool_image_uses_nested_budget_and_redacts_base64() {
+    fn messages_tool_image_uses_nested_budget_and_detects_base64() {
         let wire = ImageWire::Messages;
         let body = json!({"messages": [{
             "role": "user",
@@ -489,8 +458,6 @@ mod tests {
         );
         assert_eq!(fitted, expected);
         assert!(has_inline_images(wire, &fitted));
-        redact_images(wire, &mut fitted);
-        assert!(!fitted.to_string().contains("AAAAAA=="));
         assert_eq!(
             fitted["messages"][0]["content"][1]["tool_use_id"],
             "image-tool"

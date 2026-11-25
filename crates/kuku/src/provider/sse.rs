@@ -61,7 +61,7 @@ pub(crate) fn stream_sse_events(
         .await;
         if let Some(trace) = &trace {
             if let Err(failure) = &outcome {
-                trace.failure(failure.kind);
+                trace.failure(failure.kind, None);
             } else {
                 trace.flush();
             }
@@ -123,11 +123,13 @@ async fn emit_frame(
     if frame.trim().is_empty() {
         return Ok(true);
     }
-    let mut chunks = on_frame(frame);
-    // An error frame may quote an input image just like an HTTP error body.
-    let redacted = contains_images && redact_stream_errors(&mut chunks);
+    // Keep the wire frame in the independent debug log, not in Session errors.
     if let Some(trace) = trace {
-        trace.frame(frame, !redacted);
+        trace.frame(frame);
+    }
+    let mut chunks = on_frame(frame);
+    if contains_images {
+        redact_stream_errors(&mut chunks);
     }
     for chunk in chunks? {
         if tx.send(Ok(chunk)).await.is_err() {
@@ -137,23 +139,17 @@ async fn emit_frame(
     Ok(true)
 }
 
-fn redact_stream_errors(chunks: &mut Result<Vec<ProviderChunk>, ProviderFailure>) -> bool {
-    let mut redacted = false;
+fn redact_stream_errors(chunks: &mut Result<Vec<ProviderChunk>, ProviderFailure>) {
     match chunks {
         Ok(chunks) => {
             for chunk in chunks {
                 if let ProviderChunk::ServerError { message, .. } = chunk {
                     *message = IMAGE_REQUEST_ERROR_DETAILS_OMITTED.into();
-                    redacted = true;
                 }
             }
         }
-        Err(failure) => {
-            omit_image_request_error_details(failure);
-            redacted = true;
-        }
+        Err(failure) => omit_image_request_error_details(failure),
     }
-    redacted
 }
 
 #[derive(Default)]

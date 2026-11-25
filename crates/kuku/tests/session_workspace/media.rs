@@ -737,14 +737,19 @@ async fn image_only_chat_route_does_not_offer_view_image_but_sends_input_images(
 }
 
 #[tokio::test]
-async fn image_request_error_details_do_not_enter_the_journal_or_full_trace() {
+async fn image_request_error_details_stay_in_full_trace_and_out_of_the_journal() {
     const TEXT: &str = "Inspect a rejected attachment";
     const DETAIL: &str = "fixture-specific diagnostic";
+    const TEXT_DETAIL: &str = "plain text diagnostic";
     for (format, path) in [
         (ProviderFormat::OpenAiChat, CHAT_ENDPOINT),
         (ProviderFormat::Anthropic, "/media-errors/v1/messages"),
     ] {
-        for stream in [false, true] {
+        for (stream, mode) in [
+            (false, kuku::ProviderTraceMode::Off),
+            (false, kuku::ProviderTraceMode::Full),
+            (true, kuku::ProviderTraceMode::Full),
+        ] {
             let server = MockServer::start_async().await;
             let work = tempfile::tempdir().unwrap();
             let data = tempfile::tempdir().unwrap();
@@ -774,7 +779,7 @@ async fn image_request_error_details_do_not_enter_the_journal_or_full_trace() {
                     when.method(POST)
                         .path(path)
                         .body_contains("Show a text diagnostic");
-                    then.status(400).body(DETAIL);
+                    then.status(400).body(TEXT_DETAIL);
                 })
                 .await;
             let mut config = chat_fixture(&server);
@@ -782,11 +787,7 @@ async fn image_request_error_details_do_not_enter_the_journal_or_full_trace() {
             provider.format = format;
             provider.options.endpoint_url = Some(server.url(path));
             let mut options = SessionOptions::new(work.path(), data.path(), config);
-            options.provider_trace = if stream {
-                kuku::ProviderTraceMode::Full
-            } else {
-                kuku::ProviderTraceMode::Off
-            };
+            options.provider_trace = mode;
             let session = Session::open(options).await.unwrap();
             session
                 .create_agent("create", "main", tool_free_agent())
@@ -823,10 +824,10 @@ async fn image_request_error_details_do_not_enter_the_journal_or_full_trace() {
                 .send(Input::new("text-error", "plain", "Show a text diagnostic"))
                 .unwrap();
             let state = session.wait_for_agent("plain").await.unwrap();
-            assert!(state.last_error.unwrap().contains(DETAIL));
+            assert!(state.last_error.unwrap().contains(TEXT_DETAIL));
             session.close().await.unwrap();
 
-            if stream {
+            if mode == kuku::ProviderTraceMode::Full {
                 let trace = data.path().join("logs/provider-trace");
                 let trace = std::fs::read_dir(trace)
                     .unwrap()
@@ -838,8 +839,8 @@ async fn image_request_error_details_do_not_enter_the_journal_or_full_trace() {
                     .collect::<String>();
                 assert!(trace.contains("\"headers\"") && trace.contains("\"content-type\""));
                 assert!(trace.contains("\"body\"") && trace.contains(TEXT));
-                assert!(trace.contains("<omitted image data"));
-                assert!(!trace.contains(PNG) && !trace.contains(DETAIL));
+                assert!(trace.contains(PNG) && trace.contains(DETAIL));
+                assert!(trace.contains(TEXT_DETAIL));
             }
             rejected.assert_hits_async(1).await;
             text_only.assert_hits_async(1).await;

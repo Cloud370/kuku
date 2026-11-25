@@ -33,7 +33,7 @@ Provider 报告缓存读取时，`input_tokens` 会包含这部分计数；字�
 
 ## 抓取完整 Provider 请求
 
-预发布构建默认带协议诊断，先看事件通常就够了。如果确实需要完整请求体和 SSE 帧，等受管本地服务空闲后打开 trace：
+默认已开启完整 Provider Trace。如果服务是用 `KUKU_PROVIDER_TRACE=0` 启动的，等服务空闲后重启并重新复现问题：
 
 ```bash
 KUKU_PROVIDER_TRACE=1 kuku server restart
