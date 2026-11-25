@@ -121,7 +121,14 @@ impl Session {
             let turn = work.turn;
             let reply = work.reply.take();
             let query = self.build_query(address, work)?;
-            let mut run = query.start_nested().await?;
+            let mut run = match query.start_nested(&cancel).await {
+                Err(Error::Io(error))
+                    if error.kind() == std::io::ErrorKind::Interrupted && *cancel.borrow() =>
+                {
+                    return settle_cancelled();
+                }
+                result => result?,
+            };
             if *cancel.borrow() || self.inner.state.lock().unwrap().closing {
                 self.cleanup_failed_run(address, execution, turn, &mut run)
                     .await

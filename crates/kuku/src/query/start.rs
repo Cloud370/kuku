@@ -74,11 +74,14 @@ fn synthetic_builder_config() -> crate::config::Config {
 
 impl Query {
     pub async fn start(self) -> Result<Run> {
-        self.start_session_with_lock(true, false).await
+        self.start_session_with_lock(true, false, None).await
     }
 
-    pub(crate) async fn start_nested(self) -> Result<Run> {
-        self.start_session_with_lock(false, false).await
+    pub(crate) async fn start_nested(
+        self,
+        stop: &tokio::sync::watch::Receiver<bool>,
+    ) -> Result<Run> {
+        self.start_session_with_lock(false, false, Some(stop)).await
     }
 
     pub(crate) async fn compact_context(
@@ -86,7 +89,7 @@ impl Query {
         closed_turn: bool,
         cancel: std::sync::Arc<tokio::sync::Notify>,
     ) -> Result<()> {
-        let mut run = self.start_session_with_lock(false, true).await?;
+        let mut run = self.start_session_with_lock(false, true, None).await?;
         let RunState::Pending(mut pending) =
             std::mem::replace(&mut run.state, RunState::Done(None))
         else {
@@ -102,6 +105,7 @@ impl Query {
         mut self,
         acquire_lock: bool,
         compact_only: bool,
+        stop: Option<&tokio::sync::watch::Receiver<bool>>,
     ) -> Result<Run> {
         self.validate()?;
 
@@ -262,7 +266,8 @@ impl Query {
                 restore_turn_snapshot(&kuku_home, &existing_events, conversation.as_str(), turn)?
             {
                 let mut snapshot = snapshot;
-                if needs_skill_paths && snapshot.registry.materialize_docs(&kuku_home).await? {
+                if needs_skill_paths && snapshot.registry.materialize_docs(&kuku_home, stop).await?
+                {
                     let catalog = if let Some(runtime) = &runtime {
                         runtime.persist_skill_catalog(&snapshot.registry)?
                     } else {
@@ -286,7 +291,7 @@ impl Query {
                 ) {
                     Ok(mut registry) => {
                         if needs_skill_paths {
-                            registry.materialize_docs(&kuku_home).await?;
+                            registry.materialize_docs(&kuku_home, stop).await?;
                         }
                         let bootstrap_loaded = bootstrap_loaded_names(bootstrap_skill.as_ref());
                         if let Some(skill) = bootstrap_skill.as_mut()
@@ -593,7 +598,7 @@ impl Query {
     }
 
     pub async fn run(self) -> Result<RunOutput> {
-        let mut run = self.start_session_with_lock(true, false).await?;
+        let mut run = self.start_session_with_lock(true, false, None).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { .. }) => {
@@ -614,7 +619,7 @@ impl Query {
         self,
         choice: super::types::PermissionChoice,
     ) -> Result<RunOutput> {
-        let mut run = self.start_session_with_lock(true, false).await?;
+        let mut run = self.start_session_with_lock(true, false, None).await?;
         loop {
             match run.next().await? {
                 Some(UiEvent::PermissionRequested { request }) => {

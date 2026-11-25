@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kuku::{Activation, AgentConfig, AgentStatus, Input, InputSource, InputTiming, Session};
+use kuku::{
+    Activation, AgentConfig, AgentStatus, Input, InputSource, InputStatus, InputTiming, Session,
+};
 use serde_json::json;
 use tokio::sync::oneshot;
 
@@ -12,6 +14,19 @@ async fn bundled_skill_uses_real_paths_and_normal_batched_file_tools() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let tool_page = "references/docs/en/reference/tools.md";
+    let index = data
+        .path()
+        .join("skill-resources")
+        .join(NAME)
+        .join(env!("KUKU_DOCS_FINGERPRINT"))
+        .join(INDEX);
+    let script = format!(
+        r#"const path = {};
+const read = await tools.read_file({{path}});
+const write = await tools.write_file({{path, content: "not a document", expected_version: read.result.content_hash}});
+return `${{read.status}}:${{write.status}}`;"#,
+        json!(index),
+    );
     let model = Model::new(
         data.path(),
         [
@@ -29,19 +44,27 @@ async fn bundled_skill_uses_real_paths_and_normal_batched_file_tools() {
                     json!({"path":"references/docs/en/reference"}),
                 ),
                 (
+                    "search",
+                    "search_text",
+                    json!({"path":tool_page,"pattern":"# Tools"}),
+                ),
+                ("denied", "read_file", json!({"path":INDEX})),
+                (
                     "bad-write",
                     "write_file",
                     json!({"path":INDEX,"content":"not a document"}),
                 ),
+                ("script", "run_js", json!({"code":script})),
             ]),
             Reply::Text,
         ],
     );
+    let gate = Arc::new(Gate::default());
     let session = Session::open(options(
         workspace.path(),
         data.path(),
         model.clone(),
-        Arc::new(Gate::default()),
+        gate.clone(),
     ))
     .await
     .unwrap();
@@ -70,6 +93,29 @@ async fn bundled_skill_uses_real_paths_and_normal_batched_file_tools() {
     assert_eq!(status, "ok");
     assert!(page.contains("# Tools"));
     assert_eq!(tool_result(&session, "list").0, "ok");
+    let (status, matches, _) = tool_result(&session, "search");
+    assert_eq!(status, "ok", "{matches}");
+    assert!(matches.contains("# Tools"), "{matches}");
+    assert_eq!(tool_result(&session, "denied").0, "blocked");
+    let (status, script, _) = tool_result(&session, "script");
+    assert_eq!(status, "ok", "{script}");
+    assert!(script.contains("ok:blocked"), "{script}");
+    {
+        let calls = gate.0.lock().unwrap();
+        for (id, path) in [
+            ("overview", INDEX),
+            ("tool-page", tool_page),
+            ("search", tool_page),
+            ("denied", INDEX),
+        ] {
+            let action = calls
+                .iter()
+                .find(|action| action.tool_call_id == id)
+                .unwrap();
+            assert_eq!(action.args["path"], json!(root.join(path)));
+        }
+        assert!(!calls.iter().any(|action| action.tool.name == "write_file"));
+    }
     assert!(
         tool_result(&session, "bad-write")
             .1
@@ -94,6 +140,48 @@ async fn bundled_skill_uses_real_paths_and_normal_batched_file_tools() {
         assert_eq!(final_request.matches(SKILL_BODY).count(), 1);
     }
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn close_cancels_a_turn_waiting_on_bundle_publication() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(data.path(), []);
+    std::fs::create_dir_all(&model.cache_root).unwrap();
+    let version = model.cache_root.join(env!("KUKU_DOCS_FINGERPRINT"));
+    let mut publisher = fslock::LockFile::open(&version.with_extension("lock")).unwrap();
+    publisher.lock().unwrap();
+    let session = Session::open(options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("start", "main", "Use the available Skills."))
+        .unwrap();
+    // On this single-threaded runtime the worker takes the input and reaches
+    // the blocking publication await before yielding again.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while session.input_status("main", "start").unwrap() != InputStatus::Accepted {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the worker should accept the input");
+    assert_eq!(session.agent("main").unwrap().status, AgentStatus::Running);
+    tokio::time::timeout(Duration::from_secs(2), session.close())
+        .await
+        .expect("close must not wait for an unrelated publisher's lock")
+        .unwrap();
+    assert!(!version.exists());
+    assert!(!version.with_extension("bundle").exists());
+    assert!(model.requests.lock().unwrap().is_empty());
 }
 
 #[cfg(unix)]
@@ -149,7 +237,7 @@ async fn local_skill_script_path_is_real_and_workspace_cwd_is_preserved() {
     settled(&session, AgentStatus::Idle).await;
     assert_eq!(
         tool_result(&session, "use-script").2["skill_directory"],
-        json!(skill)
+        json!(skill.canonicalize().unwrap())
     );
     let (status, content, _) = tool_result(&session, "execute-script");
     assert_eq!(status, "ok", "{content}");

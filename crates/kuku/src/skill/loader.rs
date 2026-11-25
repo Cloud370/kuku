@@ -14,7 +14,9 @@ pub(super) fn skill_entries(
     dir: &Path,
     source: SkillSource,
 ) -> io::Result<impl Iterator<Item = io::Result<SkillDefinition>>> {
-    let entries = std::fs::read_dir(dir)?;
+    // Relative extra paths are interpreted by discovery in the host's directory.
+    // Return an absolute location that also works from an Agent's workspace.
+    let entries = std::fs::read_dir(dir.canonicalize()?)?;
     Ok(entries.filter_map(move |entry| {
         entry
             .map(|entry| read_skill(&entry.path(), &source))
@@ -209,6 +211,20 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"tdd"));
         assert!(names.contains(&"review"));
+    }
+
+    #[test]
+    fn a_relative_discovery_root_produces_an_absolute_skill_directory() {
+        let relative = Path::new("skills");
+        let loaded = load_from_dir(relative, SkillSource::Project).unwrap();
+        let docs = loaded
+            .iter()
+            .find(|skill| skill.name == "kuku-docs")
+            .unwrap();
+        assert_eq!(
+            docs.source_path.as_deref().map(Path::new),
+            Some(relative.canonicalize().unwrap().join("kuku-docs").as_path())
+        );
     }
 
     #[test]

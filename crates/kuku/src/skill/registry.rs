@@ -68,7 +68,11 @@ impl SkillRegistry {
         &self.hash
     }
 
-    pub(crate) async fn materialize_docs(&mut self, home: &Path) -> Result<bool> {
+    pub(crate) async fn materialize_docs(
+        &mut self,
+        home: &Path,
+        stop: Option<&tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<bool> {
         let Some(version) = self.docs_bundle.as_deref() else {
             return Ok(false);
         };
@@ -83,7 +87,7 @@ impl SkillRegistry {
             serde_json::json!(&definition.description),
             definition.instructions,
         );
-        let path = super::bundle::materialize(home, version, fallback).await?;
+        let path = super::bundle::materialize(home, version, fallback, stop).await?;
         let path = path.to_str().ok_or_else(|| {
             crate::Error::InvalidArgument("built-in Skill directory must be valid Unicode".into())
         })?;

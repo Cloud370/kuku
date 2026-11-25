@@ -93,8 +93,7 @@ pub(crate) fn prepare_file_target(
 ) -> Result<(), ToolResultEnvelope> {
     if let Some(path) = prepare_workspace_path(name, args, workspace)? {
         if matches!(name, "edit_file" | "write_file" | "remove_file")
-            && let Ok(root) = crate::skill::bundle::managed_root(data_dir).canonicalize()
-            && path.starts_with(root)
+            && crate::skill::bundle::is_managed_path(data_dir, &path)
         {
             return Err(ToolResultEnvelope::blocked(
                 "built-in Skill files are read-only",
@@ -731,5 +730,24 @@ mod tests {
             let result = prepare_workspace_path(tool, &outside, workspace.path()).unwrap_err();
             assert_eq!("blocked", result.status);
         }
+    }
+
+    #[test]
+    fn a_write_cannot_create_the_managed_skill_cache() {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        for target in [
+            "skill-resources",
+            "SKILL-RESOURCES/kuku-docs/any-version/SKILL.md",
+        ] {
+            let mut args = serde_json::json!({"path":data.path().join(target)});
+            let rejected =
+                prepare_file_target("write_file", &mut args, workspace.path(), data.path())
+                    .unwrap_err();
+            assert_eq!(rejected.status, "blocked");
+            assert!(rejected.model_content.contains("managed by kuku"));
+        }
+        let mut sibling = serde_json::json!({"path":data.path().join("skill-resources-copy")});
+        prepare_file_target("write_file", &mut sibling, workspace.path(), data.path()).unwrap();
     }
 }

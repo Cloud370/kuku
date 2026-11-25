@@ -220,8 +220,10 @@ async fn explicit_skill_admission_survives_reopening_a_waiting_turn() {
     let permission = waiting.permission.unwrap();
     assert!(model.cache_root.is_dir());
     assert!(model.extracted());
+    let original_directory = model.skill_dir().canonicalize().unwrap();
     options.session_id = Some(session.id().into());
     session.close().await.unwrap();
+    std::fs::remove_dir_all(&original_directory).unwrap();
 
     let session = Session::open(options).await.unwrap();
     session
@@ -231,6 +233,10 @@ async fn explicit_skill_admission_survives_reopening_a_waiting_turn() {
     let (status, page, _) = tool_result(&session, "defer");
     assert_eq!(status, "ok");
     assert!(page.contains("kuku"), "{page}");
+    assert_eq!(
+        model.skill_dir().canonicalize().unwrap(),
+        original_directory
+    );
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     for (body, _) in &requests {

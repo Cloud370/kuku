@@ -18,6 +18,7 @@ pub(crate) const NAME: &str = "kuku-docs";
 pub(crate) const CURRENT: &str = env!("KUKU_DOCS_FINGERPRINT");
 const CONTENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kuku-docs.bundle"));
 const INSTRUCTIONS: &str = include_str!("../../../skills/kuku-docs/SKILL.md");
+const CACHE_DIRECTORY: &str = "skill-resources";
 const MANIFEST: &str = "manifest.json";
 const RESOURCE_ROOT: &str = "references/docs";
 const MAX_ARCHIVE_BYTES: usize = MAX_CONTENT_BYTES + MAX_MANIFEST_BYTES + (1 << 20);
@@ -35,12 +36,16 @@ pub(crate) async fn materialize(
     home: &Path,
     version: &str,
     fallback: String,
+    stop: Option<&tokio::sync::watch::Receiver<bool>>,
 ) -> io::Result<PathBuf> {
     let home = home.to_path_buf();
     let version = version.to_owned();
+    let stop = stop.cloned();
     let (cancel, waiting) = tokio::sync::oneshot::channel::<()>();
     let result = tokio::task::spawn_blocking(move || {
-        materialize_cancellable(&home, &version, &fallback, &|| cancel.is_closed())
+        materialize_cancellable(&home, &version, &fallback, &|| {
+            cancel.is_closed() || stop.as_ref().is_some_and(|stop| *stop.borrow())
+        })
     })
     .await
     .map_err(io::Error::other)?;
@@ -48,8 +53,17 @@ pub(crate) async fn materialize(
     result
 }
 
-pub(crate) fn managed_root(home: &Path) -> PathBuf {
-    home.join("skill-resources").join(NAME)
+pub(crate) fn is_managed_path(home: &Path, target: &Path) -> bool {
+    let Ok(home) = home.canonicalize() else {
+        return false;
+    };
+    // Only the data directory must exist. Reserve the cache name itself as well
+    // as its descendants, including spelling aliases on case-insensitive disks.
+    target
+        .strip_prefix(home)
+        .ok()
+        .and_then(|relative| relative.components().next())
+        .is_some_and(|part| part.as_os_str().eq_ignore_ascii_case(CACHE_DIRECTORY))
 }
 
 fn materialize_cancellable(
@@ -250,7 +264,7 @@ fn version_path(home: &Path, version: &str) -> io::Result<PathBuf> {
         return Err(invalid("invalid Skill resource version"));
     }
     let mut path = home.to_path_buf();
-    for part in ["skill-resources", NAME] {
+    for part in [CACHE_DIRECTORY, NAME] {
         path.push(part);
         match fs::create_dir(&path) {
             Ok(()) => sync_cache_parent(&path)?,
