@@ -412,8 +412,8 @@ max_output_tokens = 1024
             invocation = managed_cli_invocation(call, "run_js", client)
             args = [*invocation["args"], *flags, "test", "--connection", "candidate", "--model", "candidate-model"]
             command = json.dumps({"program": invocation["program"], "args": args})
-            code = f"""const schema = JSON.stringify(tools.schema("run_command"));
-if (!schema.includes("Kuku config invocation prefix: ")) throw new Error("missing managed CLI guidance");
+            code = f"""const program = tools.methods.find((method) => method.name === "run_command").input_schema.properties.program;
+if (!program.description.includes("Kuku config invocation prefix: ")) throw new Error("missing managed CLI guidance");
 const command = await tools.run_command({command});
 return JSON.parse(await command.stdout.text());"""
             call.tool("run_js", "trial-draft", code=code)

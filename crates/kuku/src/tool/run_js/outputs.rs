@@ -49,7 +49,7 @@ pub(super) fn describe_config_cli(
         || fallback.to_owned(),
         |invocation| managed.replace("{{ invocation }}", &invocation.to_string()),
     );
-    // The nested command adapter keeps this property, including in tools.schema().
+    // The nested command adapter keeps this property, including in tools.methods.
     let property = &mut command.input_schema["properties"]["program"]["description"];
     let original = property.as_str().unwrap_or_default();
     *property = json!(format!("{original}\n{guidance} {common}"));
