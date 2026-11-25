@@ -250,17 +250,20 @@ def native_permission_continuations(client):
 
 def patch_config_through_agent(client, workspace):
     default_config = client.home / "config.toml"
-    active_config = (workspace / "service config.toml").resolve()
+    active_config = workspace / "service config.toml"
     original = default_config.read_bytes()
     active_original = b"# Custom managed fixture configuration\n" + original
     active_config.write_bytes(active_original)
+    active_config = active_config.resolve()
     stdout, _ = client.cli(workspace, "--config", str(active_config), "server", "restart")
-    assert Path(json.loads(stdout)["service"]["config_path"]).resolve() == active_config
+    reported = Path(json.loads(stdout)["service"]["config_path"])
+    assert reported.samefile(active_config), (reported, active_config)
     stdout, _ = client.cli(workspace, "config", "show", "--json")
-    assert Path(json.loads(stdout)["path"]).resolve() == active_config
+    reported = Path(json.loads(stdout)["path"])
+    assert reported.samefile(active_config), (reported, active_config)
     stdout, _ = client.cli(workspace, "--config", str(default_config), "config", "show", "--json")
     explicit = json.loads(stdout)
-    assert Path(explicit["path"]).resolve() == default_config.resolve()
+    assert Path(explicit["path"]).samefile(default_config), explicit["path"]
     assert explicit["service"]["state"] == "different_path"
     prompt = "Change the managed service default through the installed CLI"
     model = "fixture-patched-model"
@@ -287,7 +290,8 @@ max_output_tokens = 2048
     def active_config_loaded():
         stdout, _ = client.cli(workspace, "config", "validate")
         result = json.loads(stdout)
-        assert Path(result["path"]).resolve() == active_config
+        reported = Path(result["path"])
+        assert reported.samefile(active_config), (reported, active_config)
         return result["service"]["state"] == "loaded"
 
     eventually("the service to load its patched configuration", active_config_loaded)
