@@ -2,7 +2,7 @@ use kuku_client::{Action, AgentStatus};
 
 use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKind};
 
-use super::{Activity, App, PendingStage, ServiceStatus};
+use super::{App, ServiceStatus};
 
 impl App {
     pub(crate) fn cache_warning(&self) -> Option<&kuku::session::runtime::CacheWarning> {
@@ -13,25 +13,11 @@ impl App {
 
     pub(crate) fn contextual_controls(&self) -> Vec<ContextControl> {
         let mut controls = Vec::new();
-        if let Some(snapshot) = &self.pane().snapshot {
-            let request = snapshot
-                .agent
-                .question
-                .as_ref()
-                .map(|request| request.id.clone())
-                .or_else(|| {
-                    snapshot
-                        .agent
-                        .permission
-                        .as_ref()
-                        .map(|request| request.id.clone())
-                });
-            if let Some(request_id) = request {
-                controls.push(ContextControl::Request {
-                    target: self.selection().target,
-                    request_id,
-                });
-            }
+        if let Some(request_id) = self.pane().pending_request_id() {
+            controls.push(ContextControl::Request {
+                target: self.selection().target,
+                request_id: request_id.to_owned(),
+            });
         }
         if let Some(request) = self.credential_failure() {
             controls.push(ContextControl::RepairCredentials { request });
@@ -68,19 +54,18 @@ impl App {
     }
 
     fn run_control(&self) -> Option<ContextControl> {
-        let snapshot = self.pane().snapshot.as_ref()?;
+        let pane = self.pane();
         let target = self.selection().target;
-        if snapshot.agent.status == AgentStatus::Running
-            && self.pane().activity() != Activity::Stopping
-        {
-            return self
-                .pane()
-                .execution()
-                .map(|execution_id| ContextControl::Interrupt {
-                    target,
-                    execution_id,
-                });
+        if let Some(execution_id) = pane.running_execution() {
+            return Some(ContextControl::Interrupt {
+                target,
+                execution_id,
+            });
         }
+        if pane.busy_or_waiting() {
+            return None;
+        }
+        let snapshot = pane.snapshot.as_ref()?;
         let can_continue = match snapshot.agent.status {
             AgentStatus::Interrupted => true,
             AgentStatus::Idle | AgentStatus::Stopped => {
@@ -106,7 +91,7 @@ impl App {
         let mut commands = self
             .pending
             .values()
-            .filter(|item| !matches!(item.stage, PendingStage::Discarding))
+            .filter(|item| item.stage.needs_recovery())
             .map(|item| PendingCommandIdentity {
                 target: item.command.target.clone(),
                 command_id: item.command.command_id.clone(),

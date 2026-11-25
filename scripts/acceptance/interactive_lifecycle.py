@@ -24,6 +24,7 @@ def lifecycle_checks(binary, bridge, directory):
                  for name, operation in (
                      ("background-job", background_job_recovery),
                      ("defaults", persistent_model_default),
+                     ("model-search", model_picker_search),
                      ("keyboard-queue", keyboard_queue_withdrawal),
                      ("rewind", readonly_rewind),
                      ("rewind-history", paginated_rewind),
@@ -57,7 +58,7 @@ def verify_restored_tool(terminal, job, history):
     assert "--gated-tool" in screen and TOOL_OUTPUT in screen
     terminal.press("\x0f")
     collapsed = terminal.expect("Ctrl+O show")["screen"]
-    assert "View output" not in collapsed and "--gated-tool" in collapsed, collapsed
+    assert "View output" not in collapsed and "--gated-tool" not in collapsed, collapsed
     terminal.press("\x0f")
     terminal.expect(TOOL_PROGRAM, also=(TOOL_OUTPUT,))
 
@@ -328,7 +329,7 @@ def shared_model_editor(binary, bridge, directory):
             terminal.type(draft)
             terminal.press("\x0c")
             terminal.expect("Add model or connection")
-            terminal.press("/Add model or connection\r")
+            terminal.press("Add model or connection\r")
             terminal.expect("Set up a model")
             terminal.press("\r")
             terminal.expect(f"Existing · {endpoint.removeprefix('http://')}", absent=("Existing · custom",))
@@ -343,11 +344,10 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect("› Model tests", also=("Save models", "API URL", "gamma"))
             terminal.press("\x1b[A\r")
             terminal.expect("gamma", state="Model route")
-            terminal.press("/gamma")
+            terminal.press("gamma")
             terminal.expect("/ gamma", also=("›gamma",))
-            terminal.press("\x1b")
-            terminal.expect("e Edit")
-            terminal.press("e")
+            terminal.expect("Alt+E Edit")
+            terminal.press("\x1be")
             terminal.expect("Set up a model")
             terminal.press("\r")
             terminal.expect("API URL")
@@ -379,7 +379,7 @@ def shared_model_editor(binary, bridge, directory):
 
             terminal.press("\x0c")
             terminal.expect("gamma", state="Model route", also=("delta",))
-            terminal.press("/delta")
+            terminal.press("delta")
             match = terminal.expect("/ delta", also=("›delta",))["screen"]
             terminal.click_text(match, "›delta")
             terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
@@ -638,6 +638,60 @@ def setup_probe_progress(binary, bridge, directory):
         release_requests.set()
 
 
+def model_picker_search(client):
+    workspace = client.workspace("work-model-search")
+    config_path = client.home / "config.toml"
+    original = {"connection": "test-anthropic", "model": "claude-sonnet-4-6"}
+    names = ("fixture-deepseek", "fixture-ember", "fixture-quartz")
+    config = config_path.read_text(encoding="utf-8")
+    for name in names:
+        config += f'''
+[model.test-anthropic."{name}"]
+think = "off"
+context_window = 200000
+max_output_tokens = 4096
+'''
+    config_path.write_text(config, encoding="utf-8")
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        # One write to the PTY: no wait for the async model catalog.
+        terminal.press("/model\rdeepseek")
+        terminal.expect("/ deepseek", state="Model route", also=("›fixture-deepseek",),
+                        absent=("fixture-ember", "fixture-quartz", "Model settings"))
+        terminal.press("\x1b")
+        terminal.expect("Ready", absent=("Model route",))
+
+        terminal.press("/model\r")
+        terminal.expect("Search models…", state="Model route", also=names)
+        terminal.press("ember")
+        terminal.expect("/ ember", state="Model route", also=("›fixture-ember",),
+                        absent=("fixture-deepseek", "fixture-quartz", "Model settings"))
+        terminal.press("\x1b")
+        terminal.expect("Ready", absent=("Model route",))
+
+        terminal.press("/model\r\x1b[200~quartz\x1b[201~")
+        terminal.expect("/ quartz", state="Model route", also=("›fixture-quartz",),
+                        absent=("fixture-deepseek", "fixture-ember", "Model settings"))
+        terminal.press("\x1b")
+        terminal.expect("Ready", absent=("Model route",))
+        assert config_path.read_text(encoding="utf-8") == config
+        assert client.request("GET", "/models").as_json()["default_model"] == original
+
+        terminal.press("/model\r")
+        terminal.expect("Search models…", also=(f"›{original['model']}", *names))
+        terminal.press("\x1b[B")
+        terminal.expect("›fixture-deepseek", state="Model route")
+        terminal.press("\x1b[A")
+        terminal.expect(f"›{original['model']}", state="Model route")
+        terminal.press("\x1b[B\r")
+        terminal.expect("fixture-deepseek", state="Ready", absent=("Model route",))
+        assert config_path.read_text(encoding="utf-8") == config
+        assert client.request("GET", "/models").as_json()["default_model"] == original
+        client.provider.assert_idle()
+        terminal.exit_cleanly()
+    print("Model search accepted immediate typing, delayed typing and paste; arrow selection and Esc worked without changing defaults.")
+
+
 def persistent_model_default(client):
     workspace = client.workspace("work-model-default")
     model = "claude-sonnet-4-6"
@@ -654,7 +708,7 @@ def persistent_model_default(client):
         terminal.press("/model\r")
         screen = terminal.expect(model, state="Model route",
                                  also=(original["connection"], alternate["connection"]))["screen"]
-        terminal.press(f"/{route['connection']}")
+        terminal.press(route['connection'])
         terminal.expect(f"/ {route['connection']}", also=(f"›{model}",))
         return screen
 
@@ -704,9 +758,8 @@ reasoning_efforts = ["none"]
 
             eventually("the current Agent to select the original connection", current_model_is_original)
             model_picker(terminal, alternate)
-            terminal.press("\x1b")
-            terminal.expect("e Edit", also=(model,))
-            terminal.press("d")
+            terminal.expect("Alt+D Default", also=(model,))
+            terminal.press("\x1bd")
             confirmation = terminal.expect("Save as default", also=(model, "› Cancel"))["screen"]
             assert config_path.read_text(encoding="utf-8") == config
             terminal.press("\x1b[A\r")
@@ -943,7 +996,7 @@ def runtime_credential_repair(binary, bridge, directory):
         with client.terminal(workspace) as terminal:
             terminal.expect("New session", state="Ready")
             terminal.submit(prompt)
-            failure = terminal.expect("Authentication error", state="Interrupted", also=("No automatic retry",))["screen"]
+            failure = terminal.expect("Authentication error", state="Model request failed", also=("No automatic retry",))["screen"]
             session = client.session(workspace)
             original = client.connection()
             original_config = config_path.read_text(encoding="utf-8")

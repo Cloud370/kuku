@@ -330,7 +330,7 @@ def dense_transcript(client, reference=False):
     workspace = client.workspace("dense-transcript")
     scenario = DenseTranscript(client, workspace)
     screens = []
-    tool_state = "Running tools"
+    tool_state = "Running tools" if reference else "Running command"
     reply_state = "Streaming reply" if reference else "Reply"
     tool_heading = re.compile(
         r"(?:Read-only activity · \d+ calls|Read (?:file|\d+ files)|Find files|Search text|"
@@ -365,6 +365,13 @@ def dense_transcript(client, reference=False):
         terminal.request("resize", rows=height, cols=140)
         screen = read_while(terminal, lambda value: running_view(value, height) and scenario.draft in value,
                             "the full tool transcript in a tall terminal")
+        # Following now opens the newest activity by default. This scenario
+        # measures and inspects the deliberately compact presentation.
+        if not reference and scenario.read_target in screen:
+            terminal.click_text(screen, scenario.activity_group)
+            screen = read_while(terminal, lambda value: running_view(value, height)
+                                and scenario.activity_group in value and scenario.read_target not in value,
+                                "the running activity to be explicitly collapsed")
         lines = screen.splitlines()
         headings = [index for index, line in enumerate(lines) if tool_heading.search(line)]
         last = next(index for index, line in enumerate(lines) if TOOL_PROGRAM in line)

@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use kuku::config::ModelRef;
 use kuku_client::local::BuildPolicy;
@@ -20,8 +19,9 @@ use crate::setup::{
     CredentialRepairApplied, CredentialRepairPlan, CredentialRepairRequest,
     PreparedCredentialRepair, SavedCredentialRepair,
 };
-use crate::text::{format_elapsed, single_line};
+use crate::text::{format_duration_ms, shorten, single_line, with_suffix};
 use crate::transcript::{HistoryRequest, REWIND_GROUP_PAGE, RewindGroupRequest};
+use unicode_width::UnicodeWidthStr;
 
 mod connect;
 mod history;
@@ -789,22 +789,66 @@ pub(crate) fn job_status_label(status: JobStatus) -> &'static str {
     }
 }
 
-pub(crate) fn job_detail(job: &JobSnapshot) -> String {
-    let title = if job.title.trim().is_empty() {
+fn job_title(job: &JobSnapshot) -> &str {
+    if job.title.trim().is_empty() {
         &job.tool
     } else {
         &job.title
-    };
-    let mut detail = format!("{} · {}", job_status_label(job.status), single_line(title));
-    if job.status == JobStatus::Running || job.tool == "run_js" {
-        if let Some(elapsed_ms) = job.elapsed_ms {
-            detail.push_str(" · ");
-            detail.push_str(&format_elapsed(Duration::from_millis(elapsed_ms)));
-        }
     }
-    if job.status != JobStatus::Running && !job.summary.is_empty() && job.summary != *title {
-        detail.push_str(" · ");
-        detail.push_str(&single_line(&job.summary));
+}
+
+/// Keep status and stable Job identity visible before spending remaining width
+/// on the task name. The full title remains available in search and actions.
+pub(crate) fn job_list_label(job: &JobSnapshot, width: usize) -> String {
+    let status = job_status_label(job.status);
+    let id = single_line(&job.id);
+    let title = single_line(job_title(job));
+    let duration = job.elapsed_ms.map(format_duration_ms);
+    let essential = format!("{status} · {id}");
+    if essential.width() >= width {
+        return with_suffix(status, &id, width);
+    }
+    let suffix = duration.as_ref().map_or_else(
+        || format!(" · {id}"),
+        |duration| format!(" · {duration} · {id}"),
+    );
+    let necessary = status.width() + suffix.width();
+    if width >= necessary + 5 {
+        let title = shorten(&title, width - necessary - 3);
+        format!("{status} · {title}{suffix}")
+    } else if width >= necessary {
+        format!("{status}{suffix}")
+    } else {
+        essential
+    }
+}
+
+pub(crate) fn job_choice(job: JobSnapshot) -> Choice {
+    Choice::new(
+        job_list_label(&job, usize::MAX),
+        single_line(&job.summary),
+        ChoiceKind::BackgroundJob(Box::new(job)),
+    )
+}
+
+pub(crate) fn job_detail(job: &JobSnapshot) -> String {
+    // Put the identity and elapsed value first even when the title or result
+    // wraps beyond the visible part of the details header.
+    let mut detail = format!(
+        "{} · {}",
+        job_status_label(job.status),
+        single_line(&job.id)
+    );
+    if let Some(ms) = job.elapsed_ms {
+        detail.push_str(&format!(" · {}", format_duration_ms(ms)));
+    }
+    let title = single_line(job_title(job));
+    detail.push_str(&format!("\nTask · {title}"));
+    if job.status != JobStatus::Running {
+        let summary = single_line(&job.summary);
+        if !summary.is_empty() && summary != title {
+            detail.push_str(&format!("\n{summary}"));
+        }
     }
     detail
 }

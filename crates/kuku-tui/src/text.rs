@@ -61,6 +61,18 @@ pub(crate) fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
+/// Recorded durations keep millisecond precision for short operations and round
+/// longer durations to the display unit. Live clocks still count whole seconds.
+pub(crate) fn format_duration_ms(ms: u64) -> String {
+    match ms {
+        0..=999 => format!("{ms}ms"),
+        1_000..=59_949 => format!("{:.1}s", ms as f64 / 1_000.0),
+        _ => format_elapsed(Duration::from_secs(
+            ms / 1_000 + u64::from(ms % 1_000 >= 500),
+        )),
+    }
+}
+
 pub(crate) fn compact_token_count(count: u64) -> String {
     let Some((unit, suffix)) = TOKEN_UNITS.into_iter().find(|(unit, _)| *unit <= count) else {
         return count.to_string();
@@ -180,7 +192,20 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use super::{format_elapsed, single_line_path};
+    use super::{format_duration_ms, format_elapsed, single_line_path};
+
+    #[test]
+    fn recorded_durations_round_to_readable_units() {
+        for (ms, expected) in [
+            (180, "180ms"),
+            (5_900, "5.9s"),
+            (59_999, "1m 00s"),
+            (161_877, "2m 42s"),
+            (3_599_900, "1h 00m 00s"),
+        ] {
+            assert_eq!(expected, format_duration_ms(ms));
+        }
+    }
 
     #[test]
     fn elapsed_keeps_whole_seconds_and_pads_groups() {

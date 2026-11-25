@@ -21,6 +21,70 @@ use tokio_stream::wrappers::ReceiverStream;
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(20);
 
+#[tokio::test]
+async fn agent_roster_creation_identity_survives_service_restart() {
+    let mock = mock_provider::start_mock_provider().await;
+    let provider = mock.mock(|when, then| {
+        when.method(Method::POST).path("/v1/messages");
+        then.status(200).body(text_response("Ready."));
+    });
+    let mut server = TestServer::start(mock_provider::make_test_config(mock.port())).await;
+    let id = "creation-order";
+    server
+        .submit(
+            id,
+            json!({"type":"send","command_id":"initial","text":"start","create":{}}),
+        )
+        .await;
+    server
+        .wait_for_snapshot(id, "main", |snapshot| snapshot["agent"]["status"] == "idle")
+        .await;
+    let review = server.submit(id, json!({"type":"create_agent","command_id":"create-review","agent":"z-review","config":{}})).await;
+    let tests = server.submit(id, json!({"type":"create_agent","command_id":"create-tests","agent":"a-tests","config":{}})).await;
+
+    let initial = server.snapshot(id, "main").await;
+    let main_id = initial["agent"]["creation_event_id"].as_u64().unwrap();
+    let review_id = review["receipt"]["event_id"].as_u64().unwrap();
+    let tests_id = tests["receipt"]["event_id"].as_u64().unwrap();
+    assert!(main_id < review_id && review_id < tests_id);
+    let assert_order = |snapshot: &Value| {
+        let mut agents = snapshot["agents"].as_array().unwrap().clone();
+        agents.sort_by_key(|agent| agent["creation_event_id"].as_u64().unwrap());
+        let actual = agents
+            .iter()
+            .map(|agent| {
+                (
+                    agent["address"].as_str().unwrap(),
+                    agent["creation_event_id"].as_u64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            [
+                ("main", main_id),
+                ("z-review", review_id),
+                ("a-tests", tests_id)
+            ],
+            actual.as_slice()
+        );
+    };
+    assert_order(&initial);
+    server.restart().await;
+    let reopened = server.snapshot(id, "a-tests").await;
+    assert_eq!(tests_id, reopened["agent"]["creation_event_id"]);
+    assert_order(&reopened);
+    let agents: Value = server
+        .session_request(id, "agents", &[])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_order(&agents);
+    provider.assert_hits(1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_observer_gets_selected_text_and_bounded_activity_from_a_streaming_peer() {
     let text = "界".repeat(400);

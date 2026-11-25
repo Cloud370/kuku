@@ -65,10 +65,13 @@ pub(super) struct Tool {
     script_source: String,
     script_source_lines: usize,
     request_title: String,
+    command_subject: String,
     start_summary: String,
     progress: String,
     state: State,
     agent_request: Option<AgentRequest>,
+    question_id: Option<String>,
+    question_text: String,
 }
 
 impl Tool {
@@ -87,9 +90,17 @@ impl Tool {
         );
         if entry.kind == HistoryKind::ToolResult {
             let outcome = Outcome::from_fields(&entry.details, entry.text.as_deref());
+            let (question_id, question_text) = recorded_question(entry, &name)
+                .map_or_else(|| (None, String::new()), |(id, text)| (Some(id), text));
             return Self {
-                name,
+                name: if question_id.is_some() {
+                    "ask_user".to_owned()
+                } else {
+                    name
+                },
                 state: State::Recorded(outcome),
+                question_id,
+                question_text,
                 ..Self::default()
             };
         }
@@ -116,7 +127,23 @@ impl Tool {
         };
         let agent_request = AgentRequest::from_call(&name, args);
         let request_title = if matches!(name.as_str(), "run_command" | "run_js") {
-            capped(args["title"].as_str().map(str::trim), MAX_LABEL_BYTES)
+            capped(
+                args["title"]
+                    .as_str()
+                    .or_else(|| args["brief"].as_str())
+                    .map(str::trim),
+                MAX_LABEL_BYTES,
+            )
+        } else {
+            String::new()
+        };
+        let command_subject = if name == "run_command" {
+            capped(Some(command::subject(args)), MAX_LABEL_BYTES)
+        } else {
+            String::new()
+        };
+        let question_text = if name == "ask_user" {
+            capped(args["question"].as_str(), super::MAX_BODY_BYTES)
         } else {
             String::new()
         };
@@ -127,7 +154,9 @@ impl Tool {
             script_source,
             script_source_lines: script_code.map_or(0, |code| code.lines().count()),
             request_title,
+            command_subject,
             agent_request,
+            question_text,
             ..Self::default()
         }
     }
@@ -145,6 +174,9 @@ impl Tool {
         if !incoming.request_title.is_empty() {
             self.request_title = incoming.request_title;
         }
+        if !incoming.command_subject.is_empty() {
+            self.command_subject = incoming.command_subject;
+        }
         if !incoming.arguments.is_empty() {
             self.arguments = incoming.arguments;
         }
@@ -154,6 +186,12 @@ impl Tool {
         }
         if incoming.agent_request.is_some() {
             self.agent_request = incoming.agent_request;
+        }
+        if incoming.question_id.is_some() {
+            self.question_id = incoming.question_id;
+            self.question_text = incoming.question_text;
+        } else if self.question_id.is_none() && !incoming.question_text.is_empty() {
+            self.question_text = incoming.question_text;
         }
         if let State::Recorded(outcome) = incoming.state {
             self.progress.clear();
@@ -240,6 +278,56 @@ impl Tool {
             .outcome()
             .and_then(|outcome| outcome.script.as_ref())
             .map_or_else(Vec::new, |script| script.outputs())
+    }
+
+    pub(super) fn matches_question(&self, request_id: &str) -> bool {
+        self.name() == "ask_user"
+            && self.question_id.as_deref() == Some(request_id)
+            && !self.question_text.trim().is_empty()
+    }
+
+    pub(super) fn render_question(
+        &self,
+        width: usize,
+        details: ToolDetails,
+        agent: Option<&str>,
+        recorded: bool,
+    ) -> Option<Vec<Row>> {
+        if self.name() != "ask_user"
+            || matches!(
+                details,
+                ToolDetails::Inspection | ToolDetails::InspectionWithArguments
+            )
+            || self
+                .state
+                .outcome()
+                .is_some_and(|outcome| outcome.status != "ok")
+        {
+            return None;
+        }
+        if recorded {
+            return Some(super::message::render_compact_status(
+                "Ask user · requested",
+                MUTED,
+                width,
+            ));
+        }
+        // The request event may not be on the loaded history page yet. Keep
+        // the available question readable without rendering the raw JSON.
+        if self.question_text.is_empty() {
+            return None;
+        }
+        let title = match self.state.outcome() {
+            Some(_) => "Ask user · Requested",
+            None => "Ask user",
+        };
+        Some(super::message::render_question(
+            title,
+            agent,
+            &self.question_text,
+            WARNING,
+            width,
+        ))
     }
 
     pub(super) fn agent_card(&self) -> Option<AgentCard<'_>> {
@@ -336,6 +424,44 @@ impl Tool {
         Some(format!("{} · {result}", self.title()))
     }
 
+    // The newest result of a large inspection group needs a readable caption
+    // even for tools which have no specialized compact group row. Use only
+    // summaries, invocation labels and interpreted facts, never raw results.
+    pub(super) fn latest_inspection_result(&self) -> String {
+        let script = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.script.as_deref());
+        let detail = match self.name() {
+            "read_file" => self.file_caption(),
+            "query_session" | "list_agents" => self.session_caption().map(str::to_owned),
+            "run_js" => script.map(|script| {
+                script
+                    .inspection_preview()
+                    .map_or_else(|| script.summary(), |line| line.to_string())
+            }),
+            _ => None,
+        }
+        .unwrap_or_else(|| cap(self.summary(), MAX_LABEL_BYTES).to_owned());
+        let detail = single_line(cap(&detail, MAX_LABEL_BYTES));
+        let target = single_line(cap(self.invocation(), MAX_LABEL_BYTES));
+        let detail = if detail.is_empty() {
+            self.state.label().0.to_owned()
+        } else {
+            detail
+        };
+        let target = if target.is_empty() || detail.contains(target.as_str()) {
+            ""
+        } else {
+            &target
+        };
+        format!(
+            "{} · {}",
+            self.title(),
+            join_details([detail.as_str(), target])
+        )
+    }
+
     fn search_summary(&self) -> Option<&str> {
         let summary = self.summary();
         (matches!(self.name.as_str(), "find_files" | "search_text") && !summary.trim().is_empty())
@@ -411,9 +537,10 @@ impl Tool {
                     inline_output,
                 );
             }
-            if command.concise() && command.body().lines().take(4).count() <= 3 {
-                return self.render_short_command(command, width, details);
-            }
+            return self.render_command_preview(command, width, details);
+        }
+        if self.name() == "run_command" {
+            return self.render_unstructured_command(width, details);
         }
         if self.name() == "read_file"
             && self
@@ -473,12 +600,16 @@ impl Tool {
                 |summary| join_details([self.invocation.as_str(), summary]),
             );
             let action = self.title();
-            let summary = self
-                .search_summary()
-                .filter(|summary| *summary != target)
-                .map_or_else(String::new, |value| {
-                    single_line(cap(value, MAX_LABEL_BYTES))
-                });
+            let summary = (matches!(
+                self.name(),
+                "stat_file" | "read_output" | "search_output" | "list_values"
+            )
+            .then(|| self.summary())
+            .or_else(|| self.search_summary()))
+            .filter(|summary| *summary != target)
+            .map_or_else(String::new, |value| {
+                single_line(cap(value, MAX_LABEL_BYTES))
+            });
             let heading = if target.is_empty() {
                 Row::caption(&action, &summary, ACCENT, width)
             } else {
@@ -508,12 +639,7 @@ impl Tool {
             }
         }
         let outcome = self.state.outcome();
-        let command = outcome.and_then(|outcome| outcome.command_preview.as_ref());
-        let is_command = self.name == "run_command" || command.is_some();
-        let concise = !inspecting && command.is_some_and(|preview| preview.concise());
-        let mut rows = if is_command {
-            self.command_heading(width)
-        } else if let Some(read) = outcome
+        let mut rows = if let Some(read) = outcome
             .and_then(|outcome| outcome.file_read.as_ref())
             .filter(|_| outcome.is_some_and(|outcome| outcome.status == "ok"))
         {
@@ -526,36 +652,17 @@ impl Tool {
             self.render_header(width, inset, caption.as_deref())
         };
         let invocation = self.invocation();
-        let command_summary = command.map(|preview| preview.summary());
-        let summary = command_summary
-            .as_deref()
-            .filter(|summary| !summary.is_empty())
-            .unwrap_or_else(|| self.summary());
-        if expanded
-            && caption.is_none()
-            && (!is_command || inspecting || !self.request_title.is_empty())
-            && (!inspecting || invocation != self.arguments)
-        {
-            if is_command && !inspecting && !invocation.is_empty() {
-                let command = shorten(&single_line(cap(invocation, MAX_PREVIEW_BYTES)), width);
-                rows.push(Row::plain(Line::styled(command, Style::new().fg(MUTED))));
-            } else {
-                rows.extend(render_preview(
-                    invocation,
-                    ACCENT,
-                    width,
-                    MAX_INVOCATION_ROWS,
-                    inset,
-                ));
-            }
+        let summary = self.summary();
+        if expanded && caption.is_none() && (!inspecting || invocation != self.arguments) {
+            rows.extend(render_preview(
+                invocation,
+                ACCENT,
+                width,
+                MAX_INVOCATION_ROWS,
+                inset,
+            ));
         }
-        if !concise
-            && caption.is_none()
-            && (!expanded || summary != invocation)
-            && (!is_command
-                || summary != self.command_title()
-                    && (outcome.is_some() || self.command_title() != invocation))
-        {
+        if caption.is_none() && (!expanded || summary != invocation) {
             let limit = if expanded { MAX_SUMMARY_ROWS } else { 1 };
             rows.extend(render_preview(summary, SURFACE_TEXT, width, limit, inset));
         }
@@ -569,8 +676,8 @@ impl Tool {
             let result = if let Some(diff) = self.diff() {
                 render_excerpt(diff, render_diff)
             } else {
-                let text = command.map_or_else(|| self.result(), |preview| preview.body());
-                if text.is_empty() || text == summary || (!is_command && text == invocation) {
+                let text = self.result();
+                if text.is_empty() || text == summary || text == invocation {
                     Vec::new()
                 } else {
                     render_excerpt(text, |text| render_literal(text, Style::default()))
@@ -584,18 +691,9 @@ impl Tool {
                 MAX_RESULT_ROWS
             };
             rows.extend(render_rows(result, width, limit, inset));
-            if !concise && outcome.is_some_and(|outcome| outcome.output_id.is_some()) {
+            if outcome.is_some_and(|outcome| outcome.output_id.is_some()) {
                 rows.push(Row::open_output(super::details::OutputTarget::Tool, width));
             }
-        }
-        if let Some(preview) = command {
-            rows.extend(render_preview(
-                &preview.notes(),
-                WARNING,
-                width,
-                MAX_WARNING_ROWS,
-                inset,
-            ));
         }
         finish_card(rows)
     }
@@ -796,6 +894,12 @@ impl Tool {
         }
     }
 
+    pub(super) fn activity_target(&self) -> &str {
+        // Never substitute the full argument JSON or script source on the
+        // composer line: the target must come from the requested call.
+        &self.invocation
+    }
+
     fn invocation(&self) -> &str {
         if self.invocation.is_empty()
             || matches!(
@@ -842,6 +946,31 @@ impl Tool {
             .and_then(FileChange::diff)
             .or_else(|| (!outcome.diff.is_empty()).then_some(outcome.diff.as_str()))
     }
+}
+
+// A result-only history page has no reliable tool name. A successful
+// ask_user returns the durable QuestionRequest shape and its identity binds
+// the Agent, turn and original call; don't infer it from text or summary.
+fn recorded_question(entry: &HistoryEntry, name: &str) -> Option<(String, String)> {
+    if !matches!(name, "" | "ask_user") || entry.details.get("status")?.as_str()? != "ok" {
+        return None;
+    }
+    let facts = entry.details.get("structured")?;
+    let id = facts["id"].as_str()?;
+    let agent = facts["agent"].as_str()?;
+    let turn = facts["turn"].as_u64()?;
+    let call = facts["tool_call_id"].as_str()?;
+    let text = facts["text"].as_str()?;
+    if agent != entry.agent
+        || Some(turn) != entry.turn
+        || Some(call) != entry.details.get("tool_call_id").and_then(Value::as_str)
+        || (name.is_empty() && id != format!("question:{agent}:{turn}:{call}"))
+        || id.is_empty()
+        || text.is_empty()
+    {
+        return None;
+    }
+    Some((id.to_owned(), capped(Some(text), super::MAX_BODY_BYTES)))
 }
 
 fn finish_card(mut rows: Vec<Row>) -> Vec<Row> {
@@ -918,6 +1047,7 @@ fn invocation(tool: &str, args: &Value) -> String {
     }
     let key = match tool {
         "list_agents" => Some("wait_for"),
+        "wait_job" | "cancel_job" => Some("job_id"),
         "edit_file" | "read_file" | "write_file" | "remove_file" => Some("path"),
         "fetch_url" | "fetch_web" => Some("url"),
         _ => None,

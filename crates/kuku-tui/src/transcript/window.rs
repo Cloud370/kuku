@@ -4,11 +4,17 @@ use serde_json::Value;
 use crate::theme::CardFrame;
 
 use super::agent::AgentCards;
-use super::details::{DetailRecord, Details, GroupHeading, compact_file_rows, groups};
+use super::details::{
+    DetailRecord, Details, GroupHeading, GroupSummary, compact_file_rows, groups,
+};
 use super::{
     Anchor, AnchorLine, AssistantView, Body, CardTiming, Key, MAX_BODY_BYTES, MAX_LIVE_RECORDS,
     MAX_RECORDS, Record, RewindGroupState, Row, ToolDetails,
 };
+
+// Readable small activity batches open themselves. A long sequence of calls
+// retains its compact preview, with the newest result included.
+pub(super) const MAX_AUTO_GROUP_MEMBERS: usize = 8;
 
 #[derive(Debug, Default)]
 pub(super) struct RenderCache {
@@ -22,6 +28,27 @@ pub(super) struct Window {
     pub(super) records: Vec<Record>,
     pub(super) rewind_groups: Vec<RewindGroupState>,
     pub(super) older: Option<u64>,
+    // A reading window keeps the automatic expansion it had on entry.
+    activity: AutoActivity,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) enum AutoActivity {
+    #[default]
+    Follow,
+    Frozen {
+        key: Option<Key>,
+        expanded: bool,
+    },
+}
+
+impl AutoActivity {
+    fn expands(&self, records: &[Record]) -> bool {
+        match self {
+            Self::Follow => records.len() <= MAX_AUTO_GROUP_MEMBERS,
+            Self::Frozen { expanded, .. } => *expanded,
+        }
+    }
 }
 
 struct ActiveGroup {
@@ -30,11 +57,80 @@ struct ActiveGroup {
     open: bool,
     framed: bool,
     preview: Option<Vec<usize>>,
+    latest_preview: Option<usize>,
     remaining: usize,
     timing: CardTiming,
 }
 
 impl Window {
+    pub(super) fn reading_copy(&self) -> Self {
+        let mut window = self.clone();
+        window.activity =
+            self.latest_activity()
+                .and_then(|key| {
+                    groups(&self.records).into_iter().find_map(|span| {
+                        let members = &self.records[span.range];
+                        members.iter().any(|record| &record.key == key).then(|| {
+                            AutoActivity::Frozen {
+                                key: Some(key.clone()),
+                                expanded: self.activity.expands(members),
+                            }
+                        })
+                    })
+                })
+                .unwrap_or(AutoActivity::Frozen {
+                    key: None,
+                    expanded: false,
+                });
+        window
+    }
+
+    pub(super) fn freeze_activity(&mut self, activity: AutoActivity) {
+        self.activity = activity;
+    }
+
+    pub(super) fn saved_activity(&self) -> AutoActivity {
+        self.activity.clone()
+    }
+
+    pub(super) fn latest_activity(&self) -> Option<&Key> {
+        match &self.activity {
+            AutoActivity::Frozen { key, .. } => key.as_ref(),
+            AutoActivity::Follow => self
+                .records
+                .iter()
+                .rev()
+                .find(|record| {
+                    record.visible()
+                        && !record.reasoning_only()
+                        && !matches!(&record.body, Body::TurnSummary)
+                        && !matches!(&record.body, Body::Assistant(text) if text.trim().is_empty())
+                })
+                .map(|record| &record.key),
+        }
+    }
+
+    pub(super) fn automatic_group(&self, records: &[Record]) -> bool {
+        automatic_group(records, self.latest_activity(), &self.activity)
+    }
+
+    pub(super) fn group_display(
+        &self,
+        summary: &mut GroupSummary,
+        records: &[Record],
+        items: &Details,
+        tools: ToolDetails,
+    ) -> (bool, Option<usize>) {
+        group_display(
+            summary,
+            records,
+            self.latest_activity(),
+            &self.activity,
+            items,
+            tools,
+        )
+    }
+
     pub(super) fn from_page(page: HistoryPage) -> Self {
         let mut window = Self {
             older: page.next_before,
@@ -220,11 +316,44 @@ impl Window {
         }
     }
 
-    pub(super) fn trim_front(&mut self) {
-        self.trim_front_to(MAX_RECORDS);
+    pub(super) fn preserve_group_identities(
+        &mut self,
+        items: &mut Details,
+        retained: impl Fn(&Record) -> bool,
+    ) {
+        let frozen = match &self.activity {
+            AutoActivity::Frozen { key, .. } => key.as_ref(),
+            AutoActivity::Follow => None,
+        };
+        // Most incremental trims discard ordinary records or unmarked
+        // groups. Only compute spans if a tracked group member will be lost.
+        if !self.records.iter().any(|record| {
+            !retained(record)
+                && (frozen == Some(&record.key) || items.has_group_choice(&record.key))
+        }) {
+            return;
+        }
+        for span in groups(&self.records) {
+            let records = &self.records[span.range];
+            let Some(survivor) = records.iter().rev().find(|record| retained(record)) else {
+                continue;
+            };
+            if let AutoActivity::Frozen { key: Some(key), .. } = &mut self.activity
+                && records
+                    .iter()
+                    .any(|record| record.key == *key && !retained(record))
+            {
+                *key = survivor.key.clone();
+            }
+            items.preserve_group_choice(records, &retained, &survivor.key);
+        }
     }
 
-    pub(super) fn trim_front_to(&mut self, limit: usize) {
+    pub(super) fn trim_front(&mut self, items: &mut Details) {
+        self.trim_front_to(MAX_RECORDS, items);
+    }
+
+    pub(super) fn trim_front_to(&mut self, limit: usize, items: &mut Details) {
         let positions = self.positions();
         let live = self
             .records
@@ -234,6 +363,9 @@ impl Window {
         let keep = limit.saturating_sub(live);
         if positions.len() > keep {
             let first = positions[positions.len() - keep].0;
+            self.preserve_group_identities(items, |record| {
+                record.position.is_none_or(|position| position >= first)
+            });
             self.records
                 .retain(|record| record.position.is_none_or(|position| position >= first));
             self.rewind_groups.retain(|group| group.position() >= first);
@@ -281,6 +413,8 @@ impl Window {
             position: None,
             before_event: None,
             body: body(),
+            question_id: None,
+            question_tool_call_id: None,
             suppress_interruption: false,
             turn_summary: None,
             reasoning_preview: String::new(),
@@ -319,16 +453,51 @@ impl Window {
     pub(super) fn blocks<'a>(&'a mut self, layout: Layout<'a>) -> Vec<Block<'a>> {
         let from_start = self.older.is_none();
         let group_frame = CardFrame::timeline(layout.width);
+        let latest = self.latest_activity().cloned();
+        let activity = self.activity.clone();
         let Self {
             records: window_records,
             rewind_groups,
             ..
         } = self;
+        // The durable question holds the readable text; only suppress the call's
+        // duplicate preview when the same Agent, turn and call are loaded.
+        let question_calls = window_records
+            .iter()
+            .filter_map(|record| {
+                if !matches!(&record.body, Body::Notice("Question", text, _) if !text.trim().is_empty()) {
+                    return None;
+                }
+                Some((
+                    record.owner.clone()?,
+                    record.turn?,
+                    record.question_tool_call_id.clone()?,
+                ))
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let answered_questions = window_records
+            .iter()
+            .filter_map(|record| {
+                if matches!(&record.body, Body::Notice("Answer", ..)) {
+                    Some((record.owner.clone()?, record.question_id.clone()?))
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::HashSet<_>>();
         let compact_files = compact_file_rows(window_records);
         let mut spans = groups(window_records)
             .into_iter()
-            .map(|span| {
-                let open = layout.items.group_open(&window_records[span.range.clone()]);
+            .map(|mut span| {
+                let members = &window_records[span.range.clone()];
+                let (open, latest_preview) = group_display(
+                    &mut span.summary,
+                    members,
+                    latest.as_ref(),
+                    &activity,
+                    layout.items,
+                    layout.tools,
+                );
                 let range = span.range.clone();
                 let framed = span.summary.framed();
                 let preview = span.summary.activity_preview().map(<[usize]>::to_vec);
@@ -348,6 +517,7 @@ impl Window {
                     open,
                     framed,
                     preview,
+                    latest_preview,
                     remaining,
                     timing,
                 }
@@ -422,6 +592,9 @@ impl Window {
             let collapsed = member
                 .as_ref()
                 .is_some_and(|group| !group.open && preview == 0);
+            let latest_preview = member
+                .as_ref()
+                .is_some_and(|group| group.latest_preview == Some(index - group.range.start));
             let closes_group = member
                 .as_ref()
                 .is_some_and(|group| index + 1 == group.range.end);
@@ -454,12 +627,31 @@ impl Window {
                     || grouped && record.tool().is_some_and(super::Tool::compact_file_change)
                 {
                     ToolDetails::CompactFile
-                } else if preview > 0 {
+                } else if preview > 0 && !latest_preview {
                     ToolDetails::ActivityPreview(preview)
                 } else if grouped {
                     ToolDetails::GroupMember
                 } else {
                     layout.tools
+                };
+                let question_correlated = match (&record.body, &record.key) {
+                    (
+                        Body::Tool(_),
+                        Key::Tool {
+                            turn: Some(turn),
+                            id,
+                        },
+                    ) => record.owner.as_ref().is_some_and(|owner| {
+                        question_calls.contains(&(owner.clone(), *turn, id.clone()))
+                    }),
+                    (Body::Notice("Question", ..), _) => record
+                        .owner
+                        .as_ref()
+                        .zip(record.question_id.as_ref())
+                        .is_some_and(|(owner, id)| {
+                            answered_questions.contains(&(owner.clone(), id.clone()))
+                        }),
+                    _ => false,
                 };
                 let (key, rows, detail) = record.render(
                     Layout {
@@ -475,6 +667,7 @@ impl Window {
                     retry_end,
                     user_turn,
                     grouped,
+                    question_correlated,
                 );
                 (
                     key,
@@ -759,6 +952,44 @@ impl Window {
             }
         }
     }
+}
+
+fn automatic_group(records: &[Record], latest: Option<&Key>, activity: &AutoActivity) -> bool {
+    // Once reading begins, do not change an existing expansion just because
+    // pagination extends the same group beyond the following-mode limit.
+    activity.expands(records)
+        && latest.is_some_and(|key| records.iter().any(|record| &record.key == key))
+}
+
+fn group_display(
+    summary: &mut GroupSummary,
+    records: &[Record],
+    latest: Option<&Key>,
+    activity: &AutoActivity,
+    items: &Details,
+    tools: ToolDetails,
+) -> (bool, Option<usize>) {
+    let open = items.group_open(records, automatic_group(records, latest, activity), tools);
+    if open || tools == ToolDetails::Collapsed || items.has_explicit_group(records) {
+        return (open, None);
+    }
+    let latest_preview = latest.and_then(|key| {
+        (!activity.expands(records))
+            .then(|| summary.include_latest_activity(records, key))
+            .flatten()
+    });
+    if summary.activity_preview().is_some() {
+        // Inspecting one of the bounded previews must not unfold the entire
+        // group or hide that explicit inspection when newer activity takes over.
+        for (index, record) in records.iter().enumerate() {
+            if items.has_member_inspection(&record.key)
+                && let Some(tool) = record.tool()
+            {
+                summary.include_activity_member(index, tool);
+            }
+        }
+    }
+    (open, latest_preview)
 }
 
 #[derive(Clone, Copy)]

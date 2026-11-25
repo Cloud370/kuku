@@ -83,6 +83,9 @@ pub(crate) enum Command {
     Cancel {
         execution_id: u64,
     },
+    Interrupt {
+        execution_id: u64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -227,6 +230,7 @@ pub(crate) fn event_agent(payload: &EventPayload) -> Option<&str> {
 pub(crate) fn agent_summary(agent: &AgentSnapshot) -> Value {
     json!({
         "address": agent.address,
+        "creation_event_id": agent.creation_event_id,
         "status": agent.status,
         "pending_inputs": agent.pending_inputs,
         "admitted_task": agent.admitted_task,
@@ -354,14 +358,27 @@ pub(crate) fn history_entry_for_agent(
         EventPayload::Unknown(value) if value["kind"] == "runtime.operation" => {
             let record = &value["record"];
             match record["operation"].as_str()? {
-                "job_finished" => json!({
-                    "type":"job_finished",
-                    "turn":record["turn"],
-                    "job_id":record["job_id"],
-                    "status":record["status"],
-                    "summary":record["result"]["summary"],
-                    "output_id":output_id(&record["result"]["structured"]),
-                }),
+                "job_finished" => {
+                    let result = &record["result"]["structured"];
+                    let mut entry = json!({
+                        "type":"job_finished",
+                        "turn":record["turn"],
+                        "job_id":record["job_id"],
+                        "status":record["status"],
+                        "summary":record["result"]["summary"],
+                        "elapsed_ms":record["elapsed_ms"],
+                        "output_id":output_id(result),
+                    });
+                    if result["kind"] == "command_result" {
+                        entry["command"] = json!({
+                            "duration_ms":result["duration_ms"],
+                            "exit_code":result["exit_code"],
+                            "signal":result["signal"],
+                            "termination":result["termination"],
+                        });
+                    }
+                    entry
+                }
                 "turn_settled" => {
                     summary = Some(turns.summary_at(event.id)?);
                     json!({"type":"turn_summary"})
@@ -646,7 +663,7 @@ pub(crate) fn reply_preview_frame(
     reply: &ReplyPreview,
     turn_number: Option<u64>,
 ) -> Value {
-    let event = json!({
+    let mut event = json!({
         "type": "reply_preview",
         "phase": reply.phase,
         "content": reply.text,
@@ -656,6 +673,9 @@ pub(crate) fn reply_preview_frame(
         "output_bytes": reply.output_bytes,
         "output_tokens": reply.output_tokens,
     });
+    if reply.preparing_file_contents {
+        event["preparing_file_contents"] = json!(true);
+    }
     let mut frame = live_payload(event, agent, reply.execution_id, reply.turn, cursor);
     if let Some(number) = turn_number {
         frame["turn_number"] = json!(number);
@@ -713,6 +733,7 @@ fn interaction_entry(record: &Value) -> Option<Value> {
         "script_permission_ended" => Some(json!({
             "type":"status",
             "status":"interrupted",
+            "request_id":record["request_id"],
             "turn":record["turn"],
             "text":record["reason"],
         })),
@@ -796,6 +817,36 @@ mod retry_tests {
         assert_eq!(entry["type"], "user");
         assert_eq!(entry["ts"], "2026-01-01T00:00:00Z");
         assert!(history_entry(&message(true), &turns).is_none());
+    }
+
+    #[test]
+    fn background_command_history_distinguishes_job_elapsed_from_command_duration() {
+        let turns = TurnLookup::Closed(Arc::default());
+        let event = StoredEvent {
+            id: 12,
+            payload: EventPayload::Unknown(json!({
+                "kind":"runtime.operation",
+                "record":{
+                    "operation":"job_finished","agent":"main","turn":7,
+                    "job_id":"job-23","status":"completed","elapsed_ms":162000,
+                    "result":{
+                        "summary":"command exited 0 in 161877ms",
+                        "structured":{
+                            "kind":"command_result","duration_ms":161877,"termination":"exited",
+                            "exit_code":0,"signal":null,"output_ref":{"id":"output-23"},
+                            "output_preview":"raw stdout remains separate",
+                        }
+                    }
+                }
+            })),
+        };
+        let entry = history_entry(&event, &turns).unwrap();
+        assert_eq!(entry["elapsed_ms"], 162000);
+        assert_eq!(entry["command"]["duration_ms"], 161877);
+        assert_eq!(entry["summary"], "command exited 0 in 161877ms");
+        assert_eq!(entry["command"]["exit_code"], 0);
+        assert_eq!(entry["output_id"], "output-23");
+        assert!(entry["command"].get("output_preview").is_none());
     }
 
     #[test]

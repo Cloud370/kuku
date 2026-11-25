@@ -404,6 +404,7 @@ impl RewindGroupState {
                 output: None,
                 command_arguments: None,
                 inline_output: None,
+                turn_summary: false,
             }
         }));
         self.row_entries.extend(
@@ -529,7 +530,7 @@ impl Transcript {
         {
             return;
         }
-        let window = self.recent.clone();
+        let window = self.recent.reading_copy();
         self.reading = Some(Reading {
             window,
             anchor: Anchor {

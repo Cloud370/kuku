@@ -83,15 +83,32 @@ fn turns_share_the_user_surface_and_edit_aligned_card_connectors() {
         assert_eq!("│", buffer[(x, gap)].symbol());
         assert_eq!(crate::theme::TURN_RULE, buffer[(x, gap)].fg);
     }
-    for (heading, metric) in [
-        (edit, "01:00:00Z · T+0s"),
-        (compaction, "01:00:01Z · T+1s · 24ms"),
-        (reply, "01:00:04Z · T+4s · 2.3s"),
+    let clock = |second| {
+        let utc = time::OffsetDateTime::parse(
+            &format!("2026-11-23T01:00:{second:02}Z"),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        let (stamp, suffix) = match time::UtcOffset::local_offset_at(utc) {
+            Ok(offset) => (utc.to_offset(offset), ""),
+            Err(_) => (utc, "Z"),
+        };
+        format!(
+            "{:02}:{:02}:{:02}{suffix}",
+            stamp.hour(),
+            stamp.minute(),
+            stamp.second()
+        )
+    };
+    for (heading, second, metric) in [
+        (edit, 0, "T+0s"),
+        (compaction, 1, "T+1s · 24ms"),
+        (reply, 4, "T+4s · 2.3s"),
     ] {
-        let (column, row) = text_position(buffer, metric);
+        let (column, row) = text_position(buffer, &format!("{} · {metric}", clock(second)));
         assert_eq!((x + 2, heading - 2), (column, row));
     }
-    assert!(super::buffer_rows(buffer).all(|row| !row.contains("01:00:07Z")));
+    assert!(super::buffer_rows(buffer).all(|row| !row.contains(&clock(7))));
     let (_, second_turn) = text_position(buffer, "Turn 2");
     assert_eq!(" ", buffer[(x, second_turn - 1)].symbol());
     assert_eq!(Color::Reset, buffer[(x, second_turn - 1)].bg);

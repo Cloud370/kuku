@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::markup::{render_literal, wrap_numbered};
-use crate::text::{cap, single_line};
+use crate::text::{cap, format_duration_ms, shorten, single_line};
 use crate::theme::{
     ERROR, MUTED, SUCCESS, SURFACE_TEXT, TranscriptTone, WARNING, tool_operation_color,
 };
@@ -16,6 +16,37 @@ use super::{
     Row, Tool, ToolDetails, ToolView, arguments_json, capped, finish_card, render_excerpt,
     render_preview, render_rows,
 };
+
+#[derive(Debug, Clone)]
+pub(super) struct BackgroundStart {
+    id: String,
+    pub(super) title: String,
+    elapsed_ms: Option<u64>,
+}
+
+impl BackgroundStart {
+    pub(super) fn from_result(structured: &Value) -> Option<Self> {
+        (structured["kind"].as_str() == Some("job")).then(|| Self {
+            id: capped(structured["job_id"].as_str(), MAX_DETAIL_BYTES),
+            title: capped(structured["title"].as_str(), MAX_DETAIL_BYTES),
+            elapsed_ms: structured["elapsed_ms"].as_u64(),
+        })
+    }
+
+    pub(super) fn evidence(&self) -> String {
+        self.elapsed_ms.map_or_else(
+            || self.id.clone(),
+            |ms| format!("{} · Detached after {ms} ms", self.id),
+        )
+    }
+
+    fn caption(&self) -> String {
+        self.elapsed_ms.map_or_else(
+            || self.id.clone(),
+            |ms| format!("{} · Detached after {}", self.id, format_duration_ms(ms)),
+        )
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct CommandPreview {
@@ -59,6 +90,13 @@ impl CommandPreview {
         }
     }
 
+    pub(super) fn title(&self) -> &str {
+        match &self.facts.invocation {
+            CommandInvocation::Program { program, .. } => program,
+            CommandInvocation::Shell { shell, .. } => shell_name(*shell),
+        }
+    }
+
     pub(super) fn exit_code(&self) -> Option<i64> {
         self.facts.exit_code.map(i64::from)
     }
@@ -71,17 +109,7 @@ impl CommandPreview {
     }
 
     pub(super) fn elapsed_metric(&self) -> Line<'static> {
-        let ms = self.facts.duration_ms;
-        if ms < 1_000 {
-            Row::metric(" · ", ms.to_string(), "ms", TranscriptTone::Value)
-        } else {
-            Row::metric(
-                " · ",
-                format!("{:.1}", ms as f64 / 1_000.0),
-                "s",
-                TranscriptTone::Value,
-            )
-        }
+        elapsed_metric(self.facts.duration_ms)
     }
 
     pub(super) fn has_stderr(&self) -> bool {
@@ -153,7 +181,7 @@ impl CommandPreview {
     pub(super) fn format_output(&self, mut view: ToolView) -> ToolView {
         view.invocation = self.invocation();
         view.summary = self.summary();
-        view.evidence = self.capture_notes().join("\n");
+        view.evidence = self.evidence();
         if view.output_id.is_none() && !self.body().is_empty() {
             view.details = self.body().to_owned();
         }
@@ -165,15 +193,16 @@ impl CommandPreview {
         title: &str,
         width: usize,
         output: Option<OutputTarget>,
-        arguments: Option<bool>,
+        arguments: Option<(bool, &str)>,
         inline_output: Option<&InlineOutput>,
     ) -> Vec<Row> {
         let columns = Row::detail_width(width);
         let invocation = single_line(&self.invocation());
         let mut rows = Vec::new();
-        if !invocation.is_empty() && invocation != title {
+        if !invocation.is_empty() && invocation != title && !arguments.is_some_and(|(open, _)| open)
+        {
             rows.extend(render_preview(
-                &invocation,
+                &format!("Command · {invocation}"),
                 tool_operation_color("run_command"),
                 columns,
                 MAX_INVOCATION_ROWS,
@@ -189,7 +218,16 @@ impl CommandPreview {
                 0,
             ));
         }
-        if let Some(open) = arguments {
+        if self.facts.duration_ms >= 1_000 {
+            rows.extend(render_preview(
+                &format!("Duration · {} ms", self.facts.duration_ms),
+                MUTED,
+                columns,
+                MAX_WARNING_ROWS,
+                0,
+            ));
+        }
+        if let Some((open, requested)) = arguments {
             rows.push(Row::command_arguments(open, columns));
             if open {
                 rows.extend(render_rows(
@@ -198,6 +236,15 @@ impl CommandPreview {
                     MAX_VISUAL_ROWS,
                     0,
                 ));
+                if !requested.is_empty() {
+                    rows.push(Row::caption("Requested arguments", "", MUTED, columns));
+                    rows.extend(render_rows(
+                        render_literal(requested, TranscriptTone::Text.style()),
+                        columns,
+                        MAX_VISUAL_ROWS,
+                        0,
+                    ));
+                }
             }
         }
         let body = self.body();
@@ -321,6 +368,43 @@ impl CommandPreview {
         lines.join("\n")
     }
 
+    pub(super) fn diagnostic(&self) -> &str {
+        if let Some(error) = self.facts.start_error.as_deref() {
+            return error;
+        }
+        if let Some(failure) = self
+            .facts
+            .reported_tests
+            .iter()
+            .find_map(|report| report.first_failure.as_deref())
+        {
+            return failure;
+        }
+        // The model-visible result starts with a generated execution summary.
+        // The compact status already displays those facts; only actual output
+        // or a specific execution warning belongs in its diagnostic.
+        if let Some(note) = self.capture_notes().first().copied() {
+            return note;
+        }
+        if self.facts.termination == CommandTermination::Exited {
+            return self
+                .body()
+                .lines()
+                .find(|line| {
+                    !line.trim().is_empty()
+                        && !matches!(
+                            *line,
+                            "stdout:"
+                                | "stderr:"
+                                | "End of captured stdout:"
+                                | "End of captured stderr:"
+                        )
+                })
+                .unwrap_or_default();
+        }
+        ""
+    }
+
     fn attention(&self) -> bool {
         !self.facts.capture_complete
             || self.facts.cleanup_incomplete
@@ -333,7 +417,7 @@ impl CommandPreview {
 }
 
 impl Tool {
-    pub(super) fn render_short_command(
+    pub(super) fn render_command_preview(
         &self,
         command: &CommandPreview,
         width: usize,
@@ -341,9 +425,145 @@ impl Tool {
     ) -> Vec<Row> {
         let mut rows = self.command_heading(width);
         if details != ToolDetails::Collapsed {
-            rows.extend(render_preview(command.body(), SURFACE_TEXT, width, 3, 0));
+            let invocation = command.invocation();
+            self.render_command_invocation(&mut rows, width, &invocation);
+            if let Some(error) = &command.facts.start_error {
+                rows.extend(render_preview(error, ERROR, width, MAX_WARNING_ROWS, 0));
+            }
+            let summary = command.summary();
+            rows.extend(render_preview(
+                &summary,
+                SURFACE_TEXT,
+                width,
+                MAX_WARNING_ROWS,
+                0,
+            ));
+            let body = command.body();
+            if !body.is_empty() {
+                rows.push(Row::caption("Output", "", MUTED, width));
+                let limit = if command.concise() && body.lines().take(4).count() <= 3 {
+                    3
+                } else {
+                    MAX_RESULT_ROWS
+                };
+                rows.extend(render_rows(
+                    render_excerpt(body, |text| render_literal(text, Style::default())),
+                    width,
+                    limit,
+                    0,
+                ));
+            }
+            if !command.concise() && self.view().has_full_output() {
+                rows.push(Row::open_output(OutputTarget::Tool, width));
+            }
+            rows.extend(render_preview(
+                &command.notes(),
+                WARNING,
+                width,
+                MAX_WARNING_ROWS,
+                0,
+            ));
         }
         finish_card(rows)
+    }
+
+    fn render_command_invocation(&self, rows: &mut Vec<Row>, width: usize, invocation: &str) {
+        let title = shorten(&single_line(self.command_title()), 40.min(width));
+        if !invocation.is_empty() && invocation != title {
+            rows.extend(render_preview(
+                &format!("Command · {invocation}"),
+                tool_operation_color("run_command"),
+                width,
+                MAX_INVOCATION_ROWS,
+                0,
+            ));
+        }
+    }
+
+    pub(super) fn render_unstructured_command(
+        &self,
+        width: usize,
+        details: ToolDetails,
+    ) -> Vec<Row> {
+        let mut rows = self.command_heading(width);
+        let background = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.background_job.as_ref());
+        rows.extend(self.background_handoff_rows(width));
+        if details != ToolDetails::Collapsed {
+            let inspecting = matches!(
+                details,
+                ToolDetails::Inspection | ToolDetails::InspectionWithArguments
+            );
+            let arguments_open = details == ToolDetails::InspectionWithArguments;
+            if !arguments_open {
+                self.render_command_invocation(&mut rows, width, &self.invocation);
+            }
+            if background.is_none() {
+                let summary = self.summary();
+                if summary != self.invocation() && summary != self.command_title() {
+                    rows.extend(render_preview(
+                        summary,
+                        SURFACE_TEXT,
+                        width,
+                        MAX_WARNING_ROWS,
+                        0,
+                    ));
+                }
+                let result = self.result();
+                if !result.is_empty() && result != summary {
+                    rows.push(Row::caption("Output", "", MUTED, width));
+                    rows.extend(render_rows(
+                        render_excerpt(result, |text| render_literal(text, Style::default())),
+                        width,
+                        MAX_RESULT_ROWS,
+                        0,
+                    ));
+                }
+            } else if self.invocation.is_empty() && self.command_title() == "Run command" {
+                // A page may contain the receipt but not the initiating call.
+                // In that case keep the server-provided task description visible.
+                rows.extend(render_preview(
+                    self.summary(),
+                    SURFACE_TEXT,
+                    width,
+                    MAX_INVOCATION_ROWS,
+                    0,
+                ));
+            }
+            if inspecting && !self.arguments.is_empty() {
+                rows.push(Row::command_arguments(arguments_open, width));
+                if arguments_open {
+                    rows.extend(render_rows(
+                        render_literal(&self.arguments, Style::new().fg(SURFACE_TEXT)),
+                        width,
+                        MAX_VISUAL_ROWS,
+                        0,
+                    ));
+                }
+            }
+            if inspecting && self.view().has_full_output() {
+                if background.is_some() {
+                    let mut receipt = Row::linked_label("View job receipt", width);
+                    receipt.output = Some(OutputTarget::Tool);
+                    rows.push(receipt);
+                } else {
+                    rows.push(Row::open_output(OutputTarget::Tool, width));
+                }
+            }
+        }
+        finish_card(rows)
+    }
+
+    /// Shared between the standalone command and compact grouped activity.
+    pub(super) fn background_handoff_rows(&self, width: usize) -> Vec<Row> {
+        self.state
+            .outcome()
+            .and_then(|outcome| outcome.background_job.as_ref())
+            .map_or_else(Vec::new, |job| {
+                render_preview(&job.caption(), MUTED, width, MAX_INVOCATION_ROWS, 0).collect()
+            })
     }
 
     pub(super) fn render_command_inspection(
@@ -355,17 +575,19 @@ impl Tool {
         inline_output: Option<&InlineOutput>,
     ) -> Vec<Row> {
         let mut rows = if in_group {
-            self.render_activity(width, 1)
+            // The inspection body contains the invocation and diagnostics;
+            // do not repeat the compact summary's command text in the header.
+            self.render_activity_with_title(width, 1, Some(self.command_title()))
         } else {
             self.command_heading(width)
         };
-        let title = single_line(self.command_title());
+        let title = shorten(&single_line(self.command_title()), 40.min(width));
         let output = self.view().has_full_output().then_some(OutputTarget::Tool);
         rows.extend(command.inspection_rows(
             &title,
             width,
             output,
-            Some(arguments_open),
+            Some((arguments_open, &self.arguments)),
             inline_output,
         ));
         finish_card(rows)
@@ -387,25 +609,61 @@ impl Tool {
         if !self.request_title.is_empty() {
             return &self.request_title;
         }
-        let invocation = self.invocation();
-        if !invocation.is_empty() && invocation != self.arguments {
-            invocation
-        } else if !self.start_summary.is_empty() {
-            &self.start_summary
-        } else {
-            "Run command"
+        if let Some(outcome) = self.state.outcome() {
+            if let Some(command) = &outcome.command_preview {
+                return command.title();
+            }
+            if let Some(job) = &outcome.background_job {
+                if !job.title.is_empty() {
+                    return &job.title;
+                }
+            }
         }
+        if !self.command_subject.is_empty() {
+            return &self.command_subject;
+        }
+        "Run command"
+    }
+
+    pub(super) fn command_activity_title(&self) -> &str {
+        if !self.request_title.is_empty() {
+            return &self.request_title;
+        }
+        if let Some(outcome) = self.state.outcome()
+            && outcome.command_preview.is_some()
+            && !outcome.invocation.is_empty()
+        {
+            return &outcome.invocation;
+        }
+        if !self.invocation.is_empty() {
+            return &self.invocation;
+        }
+        self.command_title()
     }
 
     pub(super) fn command_heading(&self, width: usize) -> Vec<Row> {
         let (status, _) = self.status_line();
         Row::styled_status(
-            &single_line(self.command_title()),
+            &shorten(&single_line(self.command_title()), 40.min(width)),
             status,
             tool_operation_color("run_command"),
             width,
         )
     }
+}
+
+pub(super) fn elapsed_metric(ms: u64) -> Line<'static> {
+    let duration = format_duration_ms(ms);
+    let unit = if ms < 1_000 { "ms" } else { "s" };
+    let value = duration.strip_suffix(unit).unwrap_or(&duration).to_owned();
+    Row::metric(" · ", value, unit, TranscriptTone::Value)
+}
+
+pub(super) fn subject(args: &Value) -> &str {
+    args["program"]
+        .as_str()
+        .or_else(|| args["shell"].as_str())
+        .unwrap_or_default()
 }
 
 fn display_argument(argument: &str) -> String {
@@ -427,7 +685,7 @@ pub(super) fn invocation(args: &Value) -> String {
     {
         render_shell(shell, command)
     } else {
-        String::new()
+        capped(args["command"].as_str(), MAX_DETAIL_BYTES)
     }
 }
 

@@ -454,21 +454,28 @@ impl Session {
             },
         )?;
         state.agent_mut(address)?.active_epoch = None;
+        self.resume_after_stop(&mut state, address)?;
+        cancellation_error.map_or(Ok(()), Err)
+    }
+
+    pub(super) fn resume_after_stop(&self, state: &mut State, address: &str) -> Result<()> {
         let agent = state.agent(address)?;
         if !state.closing
             && agent.snapshot.status == AgentStatus::Stopped
-            && agent.stopped_at.is_some_and(|stopped| {
-                agent.inbox.iter().any(|entry| {
-                    entry.queued_at > stopped
-                        && entry.input.activation == Activation::Wake
-                        && matches!(entry.input.source, InputSource::Host(_))
-                })
+            && !state.cleanup_failures.contains_key(address)
+            && agent.inbox.iter().any(|entry| {
+                entry.input.activation == Activation::Wake
+                    && matches!(entry.input.source, InputSource::Host(_))
+                    && (agent.continue_queued
+                        || agent
+                            .stopped_at
+                            .is_some_and(|stopped| entry.queued_at > stopped))
             })
         {
-            self.resume(&mut state, address, None)?;
-            self.schedule_locked(&mut state, address)?;
+            self.resume(state, address, None)?;
+            self.schedule_locked(state, address)?;
         }
-        cancellation_error.map_or(Ok(()), Err)
+        Ok(())
     }
 
     fn settle_failure(&self, address: &str, epoch: u64, failure: &DriveFailure) -> Result<()> {

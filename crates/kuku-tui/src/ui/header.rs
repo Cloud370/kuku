@@ -122,13 +122,7 @@ pub(super) fn render_session(
     let room = content_width.saturating_sub(line.width() + TITLE_RESERVE);
     let primary_hint = following.then_some(tool_hint).flatten();
     let switch_hint = "Alt+←/→ Switch · /agents";
-    let navigation = if switch_hint.width() <= room
-        && app
-            .pane()
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.agents.len() > 1)
-    {
+    let navigation = if switch_hint.width() <= room && app.agent_count() > 1 {
         switch_hint
     } else {
         "/agents"

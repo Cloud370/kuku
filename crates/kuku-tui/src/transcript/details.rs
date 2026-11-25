@@ -13,8 +13,8 @@ use super::{
 mod activity;
 pub(super) use activity::footer as activity_footer;
 mod groups;
-pub(super) use groups::{GroupHeading, compact_file_rows, groups};
-use groups::{GroupKind, GroupSummary};
+use groups::GroupKind;
+pub(super) use groups::{GroupHeading, GroupSummary, compact_file_rows, groups};
 mod inspection;
 mod output;
 pub(super) use inspection::inspection_composition;
@@ -108,11 +108,25 @@ impl ScriptDetail {
 #[derive(Debug, Default)]
 pub(super) struct Details {
     pub(super) visible: Vec<VisibleDetail>,
-    groups: VecDeque<Key>,
+    groups: VecDeque<GroupChoice>,
     inspections: VecDeque<Key>,
     command_arguments: VecDeque<Key>,
     script_detail: Option<DetailKey>,
     inline_output: Option<InlineOutput>,
+}
+
+#[derive(Debug)]
+struct GroupChoice {
+    // A group may outlive its first loaded member. Alias keys keep its explicit
+    // choice shared between the recent and paged reading windows.
+    keys: VecDeque<Key>,
+    open: bool,
+}
+
+impl GroupChoice {
+    fn matches(&self, records: &[Record]) -> bool {
+        records.iter().any(|record| self.keys.contains(&record.key))
+    }
 }
 
 impl Details {
@@ -130,10 +144,97 @@ impl Details {
             .map(|item| &item.key.record)
     }
 
-    pub(super) fn group_open(&self, records: &[Record]) -> bool {
-        records
+    pub(super) fn group_open(
+        &self,
+        records: &[Record],
+        automatic: bool,
+        tools: ToolDetails,
+    ) -> bool {
+        self.group_choice(records).map_or_else(
+            || tools != ToolDetails::Collapsed && automatic,
+            |choice| choice.open,
+        )
+    }
+
+    fn group_choice(&self, records: &[Record]) -> Option<&GroupChoice> {
+        self.groups
             .iter()
-            .any(|record| self.groups.contains(&record.key))
+            .rev()
+            .find(|choice| choice.matches(records))
+    }
+
+    pub(super) fn has_group_choice(&self, key: &Key) -> bool {
+        self.groups.iter().any(|choice| choice.keys.contains(key))
+    }
+
+    pub(super) fn has_explicit_group(&self, records: &[Record]) -> bool {
+        self.group_choice(records).is_some()
+    }
+
+    pub(super) fn has_member_inspection(&self, key: &Key) -> bool {
+        self.inspections.contains(key) || self.script_detail(key).is_some()
+    }
+
+    pub(super) fn preserve_group_choice(
+        &mut self,
+        records: &[Record],
+        retained: impl Fn(&Record) -> bool,
+        survivor: &Key,
+    ) {
+        let Some(choice) = self
+            .groups
+            .iter_mut()
+            .rev()
+            .find(|choice| choice.matches(records))
+        else {
+            return;
+        };
+        if records
+            .iter()
+            .any(|record| retained(record) && choice.keys.contains(&record.key))
+        {
+            return;
+        }
+        choice.keys.push_back(survivor.clone());
+        self.trim_group_choices();
+    }
+
+    fn trim_group_choices(&mut self) {
+        let mut count = self
+            .groups
+            .iter()
+            .map(|choice| choice.keys.len())
+            .sum::<usize>();
+        while count > MAX_RECORDS {
+            let choice = self.groups.front_mut().expect("group choices remain");
+            choice.keys.pop_front();
+            if choice.keys.is_empty() {
+                self.groups.pop_front();
+            }
+            count -= 1;
+        }
+    }
+
+    fn set_group(&mut self, records: &[Record], key: &Key, open: bool) {
+        let mut keys = VecDeque::new();
+        self.groups.retain_mut(|choice| {
+            if choice.matches(records) {
+                keys.append(&mut choice.keys);
+                false
+            } else {
+                true
+            }
+        });
+        keys.retain(|member| member != key);
+        keys.push_back(key.clone());
+        self.groups.push_back(GroupChoice { keys, open });
+        self.trim_group_choices();
+        if let Some(item) = self.visible.iter_mut().find(|item| {
+            item.key.kind == DetailKind::Group
+                && records.iter().any(|record| record.key == item.key.record)
+        }) {
+            item.open = open;
+        }
     }
 
     pub(super) fn tool_mode(&self, key: &Key, fallback: ToolDetails) -> ToolDetails {
@@ -524,7 +625,7 @@ impl Transcript {
             if self.recent.row_count(layout).saturating_sub(height) != top {
                 let anchor = self.recent.anchor_at(top, layout).unwrap_or(anchor);
                 self.reading = Some(super::Reading {
-                    window: self.recent.clone(),
+                    window: self.recent.reading_copy(),
                     anchor,
                     newer: None,
                     rebase_after_page: false,
@@ -538,7 +639,11 @@ impl Transcript {
         if let Some(reading) = &mut self.reading {
             let opening = match key.kind {
                 DetailKind::Agent => self.agent_cards.is_open(&key.record),
-                DetailKind::Group => self.detail_items.groups.contains(&key.record),
+                DetailKind::Group => self
+                    .detail_items
+                    .visible
+                    .iter()
+                    .any(|item| item.key == *key && item.open),
                 DetailKind::Tool | DetailKind::Compaction => {
                     self.detail_items.inspections.contains(&key.record)
                 }
@@ -568,7 +673,7 @@ impl Transcript {
         let top = self.recent.row_count(layout).saturating_sub(height);
         if self.recent.position_of(&anchor, layout) < top {
             self.reading = Some(super::Reading {
-                window: self.recent.clone(),
+                window: self.recent.reading_copy(),
                 anchor,
                 newer: None,
                 rebase_after_page: false,
@@ -588,7 +693,8 @@ impl Transcript {
             .contains(&key.record);
         match key.kind {
             DetailKind::Agent => {
-                let group_was_collapsed = self.open_containing_group(&key.record);
+                let opening = !self.agent_cards.is_open(&key.record);
+                let group_was_collapsed = self.open_containing_group(&key.record, opening);
                 if group_was_collapsed && self.agent_cards.is_open(&key.record) {
                     true
                 } else {
@@ -596,7 +702,8 @@ impl Transcript {
                 }
             }
             DetailKind::Tool | DetailKind::Compaction if in_window => {
-                let group_was_collapsed = self.open_containing_group(&key.record);
+                let opening = !self.detail_items.inspections.contains(&key.record);
+                let group_was_collapsed = self.open_containing_group(&key.record, opening);
                 if group_was_collapsed {
                     if !self.detail_items.inspections.contains(&key.record) {
                         remember(&mut self.detail_items.inspections, &key.record);
@@ -623,9 +730,12 @@ impl Transcript {
                 true
             }
             DetailKind::Script(_) if in_window => {
+                let opening = self.detail_items.script_detail.as_ref() != Some(key);
+                if opening {
+                    self.open_containing_group(&key.record, true);
+                }
                 self.detail_items.close_inline_output(&key.record);
-                self.detail_items.script_detail =
-                    (self.detail_items.script_detail.as_ref() != Some(key)).then(|| key.clone());
+                self.detail_items.script_detail = opening.then(|| key.clone());
                 true
             }
             DetailKind::CommandArguments
@@ -639,6 +749,7 @@ impl Transcript {
                 {
                     self.detail_items.command_arguments.remove(index);
                 } else {
+                    self.open_containing_group(&key.record, true);
                     remember(&mut self.detail_items.command_arguments, &key.record);
                 }
                 true
@@ -666,74 +777,77 @@ impl Transcript {
                     return false;
                 };
                 let records = &window.records[span.range];
-                let open = !self.detail_items.group_open(records);
-                if open {
-                    remember(&mut self.detail_items.groups, &key.record);
-                } else {
-                    self.detail_items
-                        .groups
-                        .retain(|opened| !records.iter().any(|record| &record.key == opened));
-                }
-                if let Some(item) = self.detail_items.visible.iter_mut().find(|item| {
-                    item.key.kind == DetailKind::Group
-                        && records.iter().any(|record| record.key == item.key.record)
-                }) {
-                    item.open = open;
-                }
+                let open = !self.detail_items.group_open(
+                    records,
+                    window.automatic_group(records),
+                    self.details,
+                );
+                self.detail_items.set_group(records, &key.record, open);
                 true
             }
         }
     }
 
-    fn open_containing_group(&mut self, key: &Key) -> bool {
-        let group_to_open = {
-            let window = self
-                .reading
-                .as_ref()
-                .map_or(&self.recent, |reading| &reading.window);
-            groups(&window.records)
-                .into_iter()
-                .find(|span| {
-                    window.records[span.range.clone()]
-                        .iter()
-                        .enumerate()
-                        .any(|(index, record)| {
-                            record.key == *key
-                                && !span
-                                    .summary
-                                    .activity_preview()
-                                    .is_some_and(|preview| preview[index] > 0)
-                        })
-                })
-                .and_then(|span| {
-                    let records = &window.records[span.range];
-                    (!self.detail_items.group_open(records))
-                        .then(|| DetailKey::message_action(DetailKind::Group, &records[0].key))
-                })
+    fn open_containing_group(&mut self, key: &Key, opening: bool) -> bool {
+        let window = self
+            .reading
+            .as_ref()
+            .map_or(&self.recent, |reading| &reading.window);
+        let Some(mut span) = groups(&window.records).into_iter().find(|span| {
+            window.records[span.range.clone()]
+                .iter()
+                .any(|record| &record.key == key)
+        }) else {
+            return false;
         };
-        let group_was_collapsed = group_to_open.is_some();
-        if let Some(group_key) = group_to_open {
-            self.toggle_detail(&group_key);
+        let records = &window.records[span.range];
+        let (open, _) =
+            window.group_display(&mut span.summary, records, &self.detail_items, self.details);
+        if open {
+            // An explicit child inspection in an auto-open group must remain
+            // readable after newer activity takes over the automatic opening.
+            if opening && self.detail_items.group_choice(records).is_none() {
+                self.detail_items.set_group(records, key, true);
+            }
+            return false;
         }
-        group_was_collapsed
+        // A visible collapsed preview is independently inspectable. Opening
+        // that row must not undo the user's deliberate fold of the whole group.
+        let preview_visible = span.summary.activity_preview().is_some_and(|preview| {
+            records
+                .iter()
+                .zip(preview)
+                .any(|(record, count)| &record.key == key && *count > 0)
+        });
+        if preview_visible {
+            return false;
+        }
+        self.detail_items.set_group(records, key, true);
+        true
     }
 
     pub(super) fn toggle_group_details(&mut self, open: bool) {
         if !open {
             self.detail_items.clear_expansions();
         }
-        if open {
-            let records = &self
-                .reading
-                .as_ref()
-                .map_or(&self.recent, |reading| &reading.window)
-                .records;
-            for group in groups(records) {
-                let members = &records[group.range];
-                if self.detail_items.visible.iter().any(|item| {
+        let records = &self
+            .reading
+            .as_ref()
+            .map_or(&self.recent, |reading| &reading.window)
+            .records;
+        for group in groups(records) {
+            let members = &records[group.range];
+            if let Some(key) = self
+                .detail_items
+                .visible
+                .iter()
+                .find(|item| {
                     item.key.kind == DetailKind::Group
                         && members.iter().any(|r| r.key == item.key.record)
-                }) {
+                })
+                .map(|item| item.key.record.clone())
+            {
+                if open {
                     self.agent_cards.set_details(
                         true,
                         members
@@ -742,14 +856,12 @@ impl Transcript {
                             .map(|r| &r.key),
                     );
                 }
+                self.detail_items.set_group(members, &key, open);
             }
         }
         for item in &mut self.detail_items.visible {
             if item.key.kind != DetailKind::Group {
                 continue;
-            }
-            if open && !item.open {
-                remember(&mut self.detail_items.groups, &item.key.record);
             }
             item.open = open;
         }

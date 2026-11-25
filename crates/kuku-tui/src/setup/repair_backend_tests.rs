@@ -36,7 +36,7 @@ max_output_tokens = 2048
 fn snapshot() -> Snapshot {
     let mut snapshot: Snapshot = serde_json::from_value(json!({
         "session_id":"session", "workspace":std::env::current_dir().unwrap(), "cursor":20,
-        "agent":{"address":"main", "status":"interrupted", "turn":7, "config":{},
+        "agent":{"address":"main", "creation_event_id":1, "status":"interrupted", "turn":7, "config":{},
             "pending_inputs":0, "usage":{"model_requests":1,"unreported_requests":0}},
         "agents":[], "pending":[],
     }))

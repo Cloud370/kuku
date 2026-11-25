@@ -71,7 +71,8 @@ Run `cargo run` to print the model's reply. An Agent without an explicit selecti
 | `reply_permission(command_id, address, request_id, allow)` | Exact pending-action reply |
 | `reply_question(command_id, address, request_id, text)` | Exact question reply delivered as correlated input |
 | `cancel(address).await` / `close().await` | Await owned cleanup and durable settlement |
-| `cancel_execution(command_id, address, execution_id).await` | Cancel the particular observed execution and await its owned cleanup |
+| `cancel_execution(command_id, address, execution_id).await` | Stop the particular observed execution, await owned cleanup, and pause its queue |
+| `interrupt_execution(command_id, address, execution_id).await` | Interrupt the observed execution, then continue existing eligible queued inputs after successful cleanup; do not retry the interrupted Turn |
 | `Session::read_agents(events_path)` | Offline recovery snapshots without runtime resources |
 | `Session::read_view(events_path, address)` / `Session::read_receipt(events_path, command_id)` | Read the selected Agent view or command receipt from a closed Session |
 

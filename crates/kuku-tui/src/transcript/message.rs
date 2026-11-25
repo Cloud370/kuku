@@ -84,6 +84,92 @@ pub(super) fn render_activity_record(
     )
 }
 
+pub(super) fn render_compact_status(title: &str, color: Color, width: usize) -> Vec<Row> {
+    let inset = if title.width() + usize::from(super::body_inset(width)) <= width {
+        super::body_inset(width)
+    } else {
+        0
+    };
+    let available = width.saturating_sub(usize::from(inset));
+    let title = match title {
+        "Reply interrupted" => interruption_title(available, true),
+        "Execution interrupted" => interruption_title(available, false),
+        title => title,
+    };
+    vec![Row::plain(Line::styled(shorten(title, available), emphasis(color))).indented(inset)]
+}
+
+pub(super) fn render_execution_interruption(reason: &str, color: Color, width: usize) -> Vec<Row> {
+    let mut rows = render_compact_status("Execution interrupted", color, width);
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return rows;
+    }
+    let reason_rows = render_literal(reason, Style::new().fg(MUTED));
+    let title = &mut rows[0];
+    if let [reason] = reason_rows.as_slice()
+        && title.line.width() + " · ".width() + reason.width() <= width
+    {
+        title
+            .line
+            .push_span(Span::styled(" · ", Style::new().fg(MUTED)));
+        title.line.extend(reason.spans.clone());
+        return rows;
+    }
+    let inset = title.inset;
+    rows.extend(render_rows(reason_rows, width, MAX_VISUAL_ROWS, inset));
+    rows
+}
+
+pub(super) fn interruption_title(width: usize, reply: bool) -> &'static str {
+    let captions = if reply {
+        ["Reply interrupted", "Reply stopped", "Reply cut", "Stopped"]
+    } else {
+        ["Execution interrupted", "Run stopped", "Run cut", "Stopped"]
+    };
+    captions
+        .into_iter()
+        .find(|caption| caption.width() <= width)
+        .unwrap_or("Stopped")
+}
+
+pub(super) fn render_question(
+    title: &str,
+    agent: Option<&str>,
+    text: &str,
+    color: Color,
+    width: usize,
+) -> Vec<Row> {
+    let frame = CardFrame::timeline(width);
+    let agent = agent.map(crate::text::single_line);
+    let label = agent
+        .as_ref()
+        .map_or_else(|| title.to_owned(), |agent| format!("{title} · {agent}"));
+    let title_width = frame.title_width().min(frame.content_width());
+    let title_fits = label.width() <= title_width;
+    let mut rows = vec![Row::plain(Line::styled(
+        shorten(if title_fits { &label } else { title }, title_width),
+        emphasis(color),
+    ))];
+    if !title_fits {
+        if let Some(agent) = agent {
+            rows.extend(render_rows(
+                render_literal(&format!("Agent: {agent}"), Style::new().fg(MUTED)),
+                frame.content_width(),
+                2,
+                0,
+            ));
+        }
+    }
+    rows.extend(render_rows(
+        render_literal(text, Style::default()),
+        frame.content_width(),
+        MAX_VISUAL_ROWS,
+        0,
+    ));
+    Row::card(rows, &frame)
+}
+
 pub(super) fn activity_rows(title: &str, color: Color, text: &str, width: usize) -> Vec<Row> {
     let mut rows = vec![Row::caption(title, "", color, width)];
     if !text.is_empty() {

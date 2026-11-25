@@ -60,7 +60,20 @@ fn line(view: &TranscriptView, part: &str) -> usize {
         .unwrap_or_else(|| panic!("missing {part:?}\n{}", text(view)))
 }
 
-fn delegation_transcript() -> Transcript {
+fn collapse_auto_group(transcript: &mut Transcript) {
+    transcript.project(120, 768);
+    let key = transcript
+        .detail_items
+        .visible
+        .iter()
+        .find(|item| item.key.kind == DetailKind::Group && item.open)
+        .expect("latest activity group is open by default")
+        .key
+        .clone();
+    assert!(transcript.toggle_detail(&key));
+}
+
+fn delegation_journal() -> Journal {
     let mut journal = Journal::default();
     journal.tool(
         "create_agent",
@@ -72,7 +85,13 @@ fn delegation_transcript() -> Transcript {
         json!({"to":"writer","message":"Draft the report"}),
         json!({"status":"ok","structured":{"agent":"writer","command_id":"send","event_id":5}}),
     );
-    journal.load()
+    journal
+}
+
+fn delegation_transcript() -> Transcript {
+    let mut transcript = delegation_journal().load();
+    collapse_auto_group(&mut transcript);
+    transcript
 }
 
 fn delegation_action(transcript: &Transcript, tool_name: &str) -> DetailKey {
@@ -86,6 +105,38 @@ fn delegation_action(transcript: &Transcript, tool_name: &str) -> DetailKey {
         .unwrap()
         .expandable
         .unwrap()
+}
+
+#[test]
+fn agent_inspection_pins_its_automatically_open_delegation_timeline() {
+    let mut journal = delegation_journal();
+    let mut transcript = Journal(journal.0.clone()).load();
+    let initial = text(&transcript.project(82, 60));
+    assert!(
+        initial.contains("▾ Timeline") && !initial.contains("Requested instructions"),
+        "{initial}"
+    );
+    let action = delegation_action(&transcript, "create_agent");
+    assert!(transcript.toggle_detail(&action));
+    let boundary = journal.0.len();
+    journal.push(
+        7,
+        "main",
+        json!({"type":"assistant","text":"Check its inputs."}),
+    );
+    for path in ["first.txt", "second.txt", "third.txt"] {
+        journal.read(7, "main", path);
+    }
+    for entry in journal.0[boundary..].iter().cloned() {
+        transcript.apply(entry, None);
+    }
+    let view = text(&transcript.project(82, 60));
+    assert!(
+        view.contains("▾ Timeline")
+            && view.contains("Requested instructions")
+            && view.contains("Read first.txt"),
+        "{view}"
+    );
 }
 
 #[test]
@@ -462,6 +513,7 @@ fn built_in_actions_use_human_labels_and_extensions_keep_their_names() {
         journal.tool(name, json!({"path":"source.txt"}), json!({"status":"ok"}));
     }
     let mut transcript = journal.load();
+    collapse_auto_group(&mut transcript);
     let collapsed = transcript.project(72, 32);
     assert!(text(&collapsed).contains("1 more call"));
     let activity = transcript
@@ -580,6 +632,7 @@ fn an_open_listing_group_reads_each_agent_check_once() {
         );
     }
     let mut transcript = journal.load();
+    collapse_auto_group(&mut transcript);
     let view = transcript.project(95, 24);
     let key = transcript
         .detail_at(line(&view, "List Agents ×2"))
@@ -610,6 +663,7 @@ fn mixed_inspection_results_keep_the_same_heading_when_opened() {
         json!({"status":"ok","summary":"found 0 entries under ."}),
     );
     let mut transcript = journal.load();
+    collapse_auto_group(&mut transcript);
     for width in [60, 120] {
         let collapsed = transcript.project(width, 30);
         let heading = line(&collapsed, "Read-only activity");
@@ -721,6 +775,7 @@ fn older_page_can_extend_an_open_group_without_moving_the_reader_or_invalidating
         rewind_groups: Vec::new(),
         next_before: Some(7),
     });
+    collapse_auto_group(&mut transcript);
     assert_eq!(
         Some(HistoryRequest::Older(7)),
         transcript.scroll(-20, 72, 3)
@@ -805,11 +860,13 @@ fn live_result_joins_the_group_only_on_commit_and_reconnect_keeps_its_expansion(
     assert!(provisional.contains("second.txt") && !provisional.contains("Read 2 files"));
 
     transcript.apply(result, Some(4));
-    let compact = transcript.project(80, 20);
+    let expanded = transcript.project(80, 20);
     let key = transcript
-        .detail_at(line(&compact, "Read 2 files"))
+        .detail_at(line(&expanded, "Read 2 files"))
         .unwrap()
         .clone();
+    assert!(text(&expanded).contains("Read second.txt"));
+    assert!(transcript.toggle_detail(&key));
     assert!(transcript.toggle_detail(&key));
     assert!(text(&transcript.project(80, 20)).contains("Read second.txt"));
 
@@ -976,6 +1033,7 @@ fn successful_script_reads_fold_with_direct_reads_and_partial_scripts_stay_visib
         script("error", 1),
     );
     let mut transcript = journal.load();
+    collapse_auto_group(&mut transcript);
     let compact = transcript.project(96, 40);
     assert!(text(&compact).contains("Read with a failure"));
     let group = transcript

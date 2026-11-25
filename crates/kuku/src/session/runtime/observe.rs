@@ -27,6 +27,9 @@ pub struct ReplyPreview {
     pub turn: u64,
     /// Most recent provider activity at the observation boundary.
     pub phase: ModelPhase,
+    /// Tool argument activity is known to be preparing file contents.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub preparing_file_contents: bool,
     /// UTF-8 prefix from the start of this request's reply.
     pub text: String,
     /// Public reasoning prefix for the selected Agent.
@@ -49,6 +52,7 @@ impl ReplyPreview {
             execution_id,
             turn,
             phase,
+            preparing_file_contents: false,
             text: String::new(),
             reasoning_preview: String::new(),
             reasoning_preview_truncated: false,
@@ -448,7 +452,7 @@ impl Session {
             let phase = match &event {
                 UiEvent::TextDelta { text } if !text.is_empty() => Some(ModelPhase::Streaming),
                 UiEvent::ThinkingDelta { text } if !text.is_empty() => Some(ModelPhase::Thinking),
-                UiEvent::ModelProgress { phase } => Some(*phase),
+                UiEvent::ModelProgress { phase, .. } => Some(*phase),
                 UiEvent::ModelOutputUsage { output_tokens } => {
                     if let Some(preview) = &mut agent.reply_preview {
                         preview.output_tokens = Some(*output_tokens);
@@ -466,6 +470,13 @@ impl Session {
                     .reply_preview
                     .get_or_insert_with(|| ReplyPreview::new(execution_id, turn, phase));
                 preview.phase = phase;
+                preview.preparing_file_contents = matches!(
+                    &event,
+                    UiEvent::ModelProgress {
+                        preparing_file_contents: true,
+                        ..
+                    }
+                );
                 if let UiEvent::TextDelta { text } = &event {
                     preview.append(text);
                 } else if let UiEvent::ThinkingDelta { text } = &event {

@@ -12,7 +12,16 @@ use super::{Body, Record, Transcript};
 use crate::text::shorten;
 
 impl Transcript {
+    #[cfg(test)]
     pub(crate) fn turn_dock(&self, width: usize) -> Option<Line<'static>> {
+        self.turn_dock_unless_visible(width, &[])
+    }
+
+    pub(crate) fn turn_dock_unless_visible(
+        &self,
+        width: usize,
+        visible_turn_summaries: &[u64],
+    ) -> Option<Line<'static>> {
         let (window, record) = if let Some(reading) = &self.reading {
             (
                 &reading.window,
@@ -33,6 +42,9 @@ impl Transcript {
             )
         };
         let turn = record.turn?;
+        if visible_turn_summaries.contains(&turn) {
+            return None;
+        }
         let records = window
             .records
             .iter()
@@ -98,7 +110,9 @@ pub(super) fn inline(summary: &TurnSummary, number: Option<u64>, width: usize) -
         line.push_span("   ");
         line.extend(metrics.spans);
     }
-    super::Row::plain(line)
+    let mut row = super::Row::plain(line);
+    row.turn_summary = width > 0;
+    row
 }
 
 pub(super) fn footer(
@@ -229,8 +243,7 @@ mod tests {
             assert!(row("Release confirmed.") < row("1 tool"));
             assert!(row("1 tool") < row("Prepare the release."));
             assert!(row("Ready for review.") < row("Context compacted"));
-            assert!(row("Context compacted") < row("01:02:00Z"));
-            assert!(row("01:02:00Z") < row("3 tools"));
+            assert!(row("Context compacted") < row("3 tools"));
             assert!(row("3 tools") < row("Next task."));
             assert_eq!(
                 1,

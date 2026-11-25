@@ -21,15 +21,15 @@ ChatGPT 设置读取所选账号的模型目录。可以在 **Settings** 里手�
 
 选择自定义连接、已有连接或预设。使用 API Key 时，填写供应商 URL、网络路径和密钥。自定义连接以 URL 的域名和非默认端口命名。同一域名和端口下的连接会用编号区分。已有连接和预设沿用其协议，标准请求 URL 可直接识别。选择模型后，新自定义 Base URL 会并发验证候选协议。优先使用 Responses，确认上游不支持时依次尝试采用 Chat Completions、Messages 的结果。无法确定时会显示 API 类型选项。网络可选择跟随代理环境变量、直连，或使用 HTTP、SOCKS5、SOCKS5H。裸域名有多个标准候选路径时，设置会并发查询，逐条显示进度和结果，找到可用目录就自动打开模型列表。目录无法读取时，可以直接填写已知的模型 ID。
 
-稍后可以打开 `/model`，选择 **Add model or connection** 添加模型。选中已有模型再按 `e` 可修改设置。
+稍后可以打开 `/model`，选择 **Add model or connection** 添加模型。选中已有模型再按 `Alt+E` 可修改设置。
 
 ## 选择模型
 
-在 `/model` 里选中连接和模型，按 Enter 可切换当前 Agent。要改新 Session 的默认值，选中模型后按 `d`，再确认配置变更。这两项可独立设置。[终端操作](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
+在 `/model` 里直接输入或粘贴即可筛选，选中连接和模型后按 Enter 可切换当前 Agent。要改新 Session 的默认值，选中模型后按 `Alt+D`，再确认配置变更。这两项可独立设置。[终端操作](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
 保存没有配置思考档位的模型时，若支持 `medium`，设置优先选它。其余情况取已知顺序中间偏低的一档、唯一可用的档位，或在档位顺序未知时采用有效的上游声明默认值。能力信息不足时跟随供应商默认。手动设置优先。
 
-要管理添加过的服务档位，选中路由后按 `e`，再打开 **Settings → Model capabilities → Custom service tiers**。[模型和服务档位快捷键](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
+要管理添加过的服务档位，选中路由后按 `Alt+E`，再打开 **Settings → Model capabilities → Custom service tiers**。[模型和服务档位快捷键](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
 ## Provider 与凭据
 

@@ -22,6 +22,7 @@ pub(super) struct Row {
     pub(super) output: Option<OutputTarget>,
     pub(super) command_arguments: Option<bool>,
     pub(super) inline_output: Option<(OutputTarget, InlineOutputAction)>,
+    pub(super) turn_summary: bool,
 }
 
 impl Row {
@@ -243,6 +244,7 @@ impl Row {
             output: None,
             command_arguments: None,
             inline_output: None,
+            turn_summary: false,
         }
     }
 
@@ -360,6 +362,7 @@ impl Row {
             output: None,
             command_arguments: None,
             inline_output: None,
+            turn_summary: false,
         }
     }
 }

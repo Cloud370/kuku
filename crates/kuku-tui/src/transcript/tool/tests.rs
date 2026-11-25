@@ -43,6 +43,277 @@ fn command_invocations_display_literal_arguments_and_an_explicit_interpreter() {
 }
 
 #[test]
+fn detached_command_keeps_receipt_and_parameters_out_of_ordinary_reading() {
+    let marker = "distinct-long-argument";
+    let command = format!("poll {marker} {}", "long-parameter ".repeat(30));
+    let args = json!({"shell":"bash","command":command,"title":"Poll status","cwd":"/workspace"});
+    let call = serde_json::from_value(json!({
+        "id":1,"agent":"main","turn":1,"type":"tool_call","tool":"run_command",
+        "tool_call_id":"poll","args":args,
+    }))
+    .unwrap();
+    let mut tool = Tool::from_entry(&call);
+    let receipt = json!({
+        "kind":"job","job_id":"job-23","status":"running","tool":"run_command",
+        "title":"Poll status","elapsed_ms":1234,"output_id":"poll-output"
+    });
+    let raw = receipt.to_string();
+    tool.merge(Tool::from_entry(
+        &serde_json::from_value(json!({
+            "id":2,"agent":"main","turn":1,"type":"tool_result","tool":"run_command",
+            "tool_call_id":"poll","status":"ok","summary":"job-23 running: Poll status",
+            "model_content":raw,"structured":receipt
+        }))
+        .unwrap(),
+    ));
+    let render = |width, mode| {
+        tool.render_body(width, mode, false, None, None)
+            .iter()
+            .map(|row| row.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let ordinary = render(90, super::ToolDetails::Expanded);
+    assert!(
+        ordinary.contains("Poll status · started in background"),
+        "{ordinary}"
+    );
+    assert!(
+        ordinary.contains("job-23 · Detached after 1.2s"),
+        "{ordinary}"
+    );
+    assert_eq!(ordinary.matches(marker).count(), 1, "{ordinary}");
+    assert!(!ordinary.contains("Requested arguments") && !ordinary.contains("poll-output"));
+    let inspect = render(90, super::ToolDetails::Inspection);
+    assert_eq!(inspect.matches(marker).count(), 1);
+    assert!(inspect.contains("View arguments") && inspect.contains("View job receipt"));
+    assert!(!inspect.contains("poll-output"));
+    let narrow = render(32, super::ToolDetails::InspectionWithArguments);
+    assert!(
+        narrow.contains("Hide arguments") && narrow.contains("View job receipt"),
+        "{narrow}"
+    );
+    assert!(
+        narrow.contains("long-parameter") && !narrow.contains("Command ·"),
+        "{narrow}"
+    );
+    let view = tool.view();
+    assert_eq!(view.details, raw);
+    assert!(view.evidence.contains("1234 ms"));
+    // The receipt isn't the command's retained output; it remains inline.
+    assert!(view.output_id.is_none() && view.has_full_output());
+}
+
+#[test]
+fn mixed_workspace_activity_preserves_detached_job_identity_and_elapsed() {
+    let mut transcript = Transcript::default();
+    for (index, mut event) in [
+        json!({"type":"tool_call","tool":"read_file","tool_call_id":"read",
+            "args":{"path":"notes.txt"}}),
+        json!({"type":"tool_result","tool":"read_file","tool_call_id":"read","status":"ok",
+            "structured":{"kind":"file_content","path":"notes.txt","start_line":1,
+                          "line_count":1,"total_lines":1}}),
+        json!({"type":"tool_call","tool":"run_command","tool_call_id":"poll",
+            "args":{"shell":"bash","command":"poll status","title":"Poll status"}}),
+        json!({"type":"tool_result","tool":"run_command","tool_call_id":"poll","status":"ok",
+            "summary":"job-23 running: Poll status","model_content":"raw job receipt",
+            "structured":{"kind":"job","job_id":"job-23","status":"running","tool":"run_command",
+                          "title":"Poll status","elapsed_ms":1234,"output_id":"poll-output"}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        event["id"] = json!(index as u64 + 1);
+        event["agent"] = json!("main");
+        event["turn"] = json!(1);
+        transcript.apply(serde_json::from_value(event).unwrap(), None);
+    }
+    let view = transcript.project(90, 24);
+    let group = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("1 file read · 1 command"))
+        .expect("mixed workspace activity");
+    let render = |view: &crate::transcript::TranscriptView| {
+        view.lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let open = render(&view);
+    assert!(
+        open.contains("notes.txt") && open.contains("started in background"),
+        "{open}"
+    );
+    assert_eq!(
+        open.matches("job-23 · Detached after 1.2s").count(),
+        1,
+        "{open}"
+    );
+    assert!(
+        !open.contains("raw job receipt") && !open.contains("poll-output"),
+        "{open}"
+    );
+    let key = transcript.detail_at(group).unwrap().clone();
+    assert!(transcript.toggle_detail(&key));
+    let collapsed = render(&transcript.project(90, 24));
+    assert_eq!(
+        collapsed.matches("job-23 · Detached after 1.2s").count(),
+        1,
+        "{collapsed}"
+    );
+    assert!(
+        !collapsed.contains("raw job receipt") && !collapsed.contains("poll-output"),
+        "{collapsed}"
+    );
+}
+
+#[test]
+fn foreground_command_discloses_original_request_only_when_arguments_open() {
+    let requested = json!({
+        "program":"verify","args":["file with spaces"],"cwd":".",
+        "title":"Check fixture","background":false,"timeout":37
+    });
+    let call = serde_json::from_value(json!({
+        "id":1,"agent":"main","turn":1,"type":"tool_call","tool":"run_command",
+        "tool_call_id":"verify","args":requested,
+    }))
+    .unwrap();
+    let mut tool = Tool::from_entry(&call);
+    let mut facts = command_facts("verify", "saved-output", 2, "OK");
+    facts["invocation"]["args"] = json!(["file with spaces"]);
+    facts["duration_ms"] = json!(161877);
+    let raw = "stdout:\nOK\n";
+    tool.merge(Tool::from_entry(
+        &serde_json::from_value(json!({
+            "id":2,"agent":"main","turn":1,"type":"tool_result","tool":"run_command",
+            "tool_call_id":"verify","status":"ok","summary":"command exited 0",
+            "model_content":raw,"structured":facts
+        }))
+        .unwrap(),
+    ));
+    let render = |mode| {
+        tool.render_body(180, mode, false, None, None)
+            .iter()
+            .map(|row| row.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for details in [super::ToolDetails::Expanded, super::ToolDetails::Inspection] {
+        let body = render(details);
+        assert_eq!(
+            body.matches(r#"verify ["file with spaces"]"#).count(),
+            1,
+            "{body}"
+        );
+        assert!(
+            !body.contains("Requested arguments") && !body.contains("\"timeout\""),
+            "{body}"
+        );
+    }
+    let ordinary = render(super::ToolDetails::Expanded);
+    assert!(ordinary.contains("2m 42s") && !ordinary.contains("161877 ms"));
+    let inspection = render(super::ToolDetails::Inspection);
+    assert!(inspection.contains("Duration · 161877 ms"), "{inspection}");
+    let mut viewer = crate::output::OutputViewer::new(1, tool.format_output(tool.view()));
+    let output = viewer
+        .render_lines(80, 24)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(output.contains("161877 ms"), "{output}");
+    let detail = render(super::ToolDetails::InspectionWithArguments);
+    for fact in [
+        "Program    verify",
+        "Directory  /workspace",
+        "Requested arguments",
+        "\"cwd\":\".\"",
+        "\"title\":\"Check fixture\"",
+        "\"background\":false",
+        "\"timeout\":37",
+    ] {
+        assert!(detail.contains(fact), "{fact} missing\n{detail}");
+    }
+    assert_eq!(tool.view().details, raw);
+}
+
+#[test]
+fn grouped_unlabelled_commands_keep_distinct_invocations_and_readable_diagnostics() {
+    let mut transcript = Transcript::default();
+    for (index, (id, command, exit, preview)) in [
+        ("first", "echo first", 0, "first"),
+        ("second", "echo second", 7, "missing input"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut facts = command_facts("bash", id, preview.len() as u64, preview);
+        facts["invocation"] = json!({"mode":"shell","shell":"bash","command":command});
+        facts["exit_code"] = json!(exit);
+        facts["duration_ms"] = json!(161877);
+        let summary = format!("shell exited {exit} in 161877ms, stdout 1 lines, stderr 0 lines");
+        let model_content = format!("{summary}\n\nstdout:\n{preview}");
+        for (offset, mut event) in [
+            json!({"type":"tool_call","tool":"run_command","tool_call_id":id,
+                "args":{"shell":"bash","command":command}}),
+            json!({"type":"tool_result","tool_call_id":id,"status":"ok",
+                "summary":summary,"model_content":model_content,"structured":facts}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            event["id"] = json!(index * 2 + offset + 1);
+            event["agent"] = json!("main");
+            event["turn"] = json!(1);
+            transcript.apply(serde_json::from_value(event).unwrap(), None);
+        }
+    }
+    let view = transcript.project(140, 24);
+    let rendered = view
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for expected in [
+        "bash · echo first",
+        "bash · echo second",
+        "missing input",
+        "2m 42s",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "{expected} missing\n{rendered}"
+        );
+    }
+    for raw in ["161877ms", "stdout 1 lines", "shell exited 7"] {
+        assert!(!rendered.contains(raw), "{rendered}");
+    }
+    let second = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("bash · echo second"))
+        .unwrap();
+    let detail = transcript.detail_at(second).unwrap().clone();
+    assert!(transcript.toggle_detail(&detail));
+    let inspected = transcript
+        .project(140, 24)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        inspected.matches("bash · echo second").count(),
+        1,
+        "{inspected}"
+    );
+    assert!(inspected.contains("Duration · 161877 ms"), "{inspected}");
+}
+
+#[test]
 fn script_card_reports_completed_effects_and_unknown_actions_from_host_facts() {
     let mut transcript = Transcript::default();
     transcript.apply(
@@ -457,7 +728,8 @@ fn command_preview_keeps_stdout_and_warnings_without_the_model_output_reference(
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("check · timed out"));
-    assert!(rendered.contains("command timed out; output truncated"));
+    assert!(!rendered.contains("command timed out; output truncated"));
+    assert!(rendered.contains("Output"));
     assert!(rendered.contains("stdout:\nOutput: from the process"));
     assert!(
         rendered.contains(&format!(
@@ -699,7 +971,7 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
     let lines: Vec<_> = screen.lines().collect();
     let heading = lines
         .iter()
-        .position(|line| card_text(line).starts_with(r#"check-file ["file with spaces"]"#))
+        .position(|line| card_text(line).starts_with("check-file ·"))
         .unwrap();
     assert!(card_text(lines[heading]).ends_with("ok · exit 0 · 180ms"));
     for (text, tone) in [
@@ -716,7 +988,12 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
             "{text}"
         );
     }
-    assert_eq!(card_text(lines[heading + 1]), "GONE");
+    assert_eq!(
+        card_text(lines[heading + 1]),
+        r#"Command · check-file ["file with spaces"]"#
+    );
+    assert_eq!(card_text(lines[heading + 2]), "Output");
+    assert_eq!(card_text(lines[heading + 3]), "GONE");
     let key = transcript.detail_at(heading).unwrap().clone();
     assert!(transcript.toggle_detail(&key));
     let inspected = transcript.project(80, 24);
@@ -740,7 +1017,7 @@ fn short_command_results_show_stdout_without_capture_metadata_or_a_trailing_carr
         1,
         inspected
             .iter()
-            .filter(|line| line.contains("check-file"))
+            .filter(|line| line.contains(r#"check-file ["file with spaces"]"#))
             .count()
     );
     assert!(inspected.iter().any(|line| line.contains("View output")));

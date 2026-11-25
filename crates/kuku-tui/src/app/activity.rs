@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use kuku_client::local::LocalError;
 use kuku_client::{
@@ -7,7 +7,7 @@ use kuku_client::{
 };
 use serde_json::Value;
 
-use super::{App, Pane, PendingStage, SnapshotRefresh};
+use super::{Address, App, Pane, PendingStage, SnapshotRefresh};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ServiceStatus {
@@ -94,6 +94,26 @@ impl Activity {
             Self::Failed => "Failed",
         }
     }
+
+    pub(crate) fn shows_sending(self) -> bool {
+        matches!(
+            self,
+            Self::Ready | Self::Finished | Self::Stopped | Self::Interrupted | Self::Failed
+        )
+    }
+
+    pub(super) fn executing(self) -> bool {
+        matches!(
+            self,
+            Self::Running
+                | Self::WaitingForModel
+                | Self::RetryingModel
+                | Self::Thinking
+                | Self::Streaming
+                | Self::ToolArguments
+                | Self::RunningTools
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -102,7 +122,25 @@ pub(super) struct ExecutionProgress {
     output: Option<ModelPhase>,
     tools: HashSet<String>,
     terminal_error: bool,
+    model_failed: bool,
+    preparing_file_contents: bool,
+    permission_wait: Option<DirectWait>,
+    question_wait: Option<DirectWait>,
+    script_waits: HashMap<String, (u64, String)>,
+    settled_script_waits: HashSet<String>,
     output_meter: OutputMeter,
+}
+
+#[derive(Debug)]
+struct DirectWait {
+    id: String,
+    cursor: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaitKind {
+    Permission,
+    Question,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -189,6 +227,42 @@ impl ExecutionProgress {
 
     pub(super) fn clear_stream(&mut self) {
         self.output = None;
+        self.preparing_file_contents = false;
+    }
+
+    pub(super) fn disconnected(&mut self) {
+        // The subscription resumes committed events from its last cursor, so
+        // already-observed dispatches may never be delivered a second time.
+        // Only the transient preview is invalidated by a disconnection.
+        self.clear_stream();
+        self.output_meter = OutputMeter::default();
+    }
+
+    pub(super) fn reconcile_snapshot(
+        &mut self,
+        projection: &AgentProgress,
+        same_live_cursor: bool,
+    ) {
+        let mut projected = Self::from_snapshot(Some(projection));
+        if matches!(projection, AgentProgress::RunningTools { .. }) {
+            // This is the durable set of unfinished calls. A reply preview at
+            // the same cursor can be newer than the HTTP response, however.
+            self.tools = std::mem::take(&mut projected.tools);
+            self.script_waits
+                .retain(|_, (_, call)| self.tools.contains(call));
+            if self.tools.is_empty() {
+                self.settled_script_waits.clear();
+            }
+        }
+        if same_live_cursor && self.output.is_some() {
+            return;
+        }
+        self.request = projected.request;
+        if self.output != projected.output {
+            self.output_meter = OutputMeter::default();
+            self.preparing_file_contents = false;
+        }
+        self.output = projected.output;
     }
 
     pub(super) fn committed(
@@ -202,6 +276,8 @@ impl ExecutionProgress {
                 *self = Self {
                     request: ModelRequest::Waiting,
                     tools: std::mem::take(&mut self.tools),
+                    script_waits: std::mem::take(&mut self.script_waits),
+                    settled_script_waits: std::mem::take(&mut self.settled_script_waits),
                     ..Self::default()
                 };
             }
@@ -221,17 +297,21 @@ impl ExecutionProgress {
                     *self = Self {
                         request,
                         tools: std::mem::take(&mut self.tools),
+                        script_waits: std::mem::take(&mut self.script_waits),
+                        settled_script_waits: std::mem::take(&mut self.settled_script_waits),
                         terminal_error: stopped,
                         ..Self::default()
                     };
                 }
             }
             "model.response" => {
+                self.model_failed = false;
                 self.request = ModelRequest::None;
                 self.terminal_error = false;
                 self.clear_stream();
             }
             "model.error" => {
+                self.model_failed = true;
                 self.terminal_error = matches!(&self.request, ModelRequest::RetryStopped(_));
                 if !self.terminal_error {
                     self.request = ModelRequest::None;
@@ -251,6 +331,10 @@ impl ExecutionProgress {
                     .or(tool_call_id.as_deref())
                 {
                     self.tools.remove(id);
+                    self.script_waits.retain(|_, (_, call)| call != id);
+                    if self.tools.is_empty() {
+                        self.settled_script_waits.clear();
+                    }
                 }
             }
             _ => {}
@@ -260,6 +344,9 @@ impl ExecutionProgress {
     pub(super) fn live(&mut self, event: &Value) {
         match event["type"].as_str() {
             Some("model_request") => {
+                self.model_failed = false;
+                self.permission_wait = None;
+                self.question_wait = None;
                 if !matches!(&self.request, ModelRequest::Retrying(_)) {
                     self.request = ModelRequest::Waiting;
                 }
@@ -286,12 +373,16 @@ impl ExecutionProgress {
                     self.request = ModelRequest::None;
                 }
                 self.output = Some(ModelPhase::Thinking);
+                self.preparing_file_contents = false;
             }
             Some("tool_arguments") => {
                 if !self.is_stopped_retry() {
                     self.request = ModelRequest::None;
                 }
                 self.output = Some(ModelPhase::ToolArguments);
+                self.preparing_file_contents = event["preparing_file_contents"]
+                    .as_bool()
+                    .unwrap_or_default();
             }
             Some("reply_preview") => {
                 if let Ok(phase) = serde_json::from_value(event["phase"].clone()) {
@@ -299,6 +390,9 @@ impl ExecutionProgress {
                         self.request = ModelRequest::None;
                     }
                     self.output = Some(phase);
+                    self.preparing_file_contents = event["preparing_file_contents"]
+                        .as_bool()
+                        .unwrap_or_default();
                     self.output_meter = OutputMeter::preview(
                         event["output_bytes"].as_u64(),
                         event["output_tokens"].as_u64(),
@@ -316,6 +410,7 @@ impl ExecutionProgress {
                     self.request = ModelRequest::None;
                 }
                 self.output = Some(ModelPhase::Streaming);
+                self.preparing_file_contents = false;
                 let bytes = event["content"]
                     .as_str()
                     .map_or(0, |text| text.len() as u64);
@@ -371,11 +466,16 @@ impl ExecutionProgress {
         if !self.terminal_error {
             *self = Self {
                 output_meter: self.output_meter,
+                model_failed: self.model_failed,
+                permission_wait: self.permission_wait.take(),
+                question_wait: self.question_wait.take(),
                 ..Self::default()
             };
         } else {
             self.output = None;
             self.tools.clear();
+            self.script_waits.clear();
+            self.settled_script_waits.clear();
         }
     }
 }
@@ -384,6 +484,7 @@ impl ExecutionProgress {
 pub(crate) enum SubmissionStatus {
     Saving,
     AwaitingReceipt,
+    AwaitingAdmission,
     CheckingReceipt,
     ReceiptUnconfirmed,
     ReceiptMissing,
@@ -400,6 +501,7 @@ impl SubmissionStatus {
         match self {
             Self::Saving => "Saving input",
             Self::AwaitingReceipt => "Awaiting receipt",
+            Self::AwaitingAdmission => "Sending",
             Self::CheckingReceipt => "Checking receipt",
             Self::ReceiptUnconfirmed => "Receipt unconfirmed",
             Self::ReceiptMissing => "Receipt missing",
@@ -410,6 +512,13 @@ impl SubmissionStatus {
             Self::Withdrawn => "Removed from queue",
             Self::Confirmed => "Receipt confirmed",
         }
+    }
+
+    pub(crate) fn is_sending(self) -> bool {
+        matches!(
+            self,
+            Self::Saving | Self::AwaitingReceipt | Self::AwaitingAdmission
+        )
     }
 
     pub(super) fn from_receipt(status: Option<InputStatus>) -> Self {
@@ -450,9 +559,21 @@ impl App {
             agent: Some(agent),
             operation: Some(operation),
             rewind_command_id,
+            settlement,
             ..
         } = &event
         {
+            // The selected Agent's observer also sees peer commits in this
+            // Session. Invalidate requests on cached panes before navigation
+            // can expose those older snapshots again.
+            let address = Address::new(active_address.session.clone(), agent.clone());
+            if let Some(pane) = self.panes.get_mut(&address) {
+                pane.note_request_state_change(
+                    *id,
+                    Some(operation.as_str()),
+                    settlement.as_ref().map(|settlement| settlement.status),
+                );
+            }
             if agent == &active_agent
                 && matches!(operation.as_str(), "message_rewind" | "history_jump")
                 && *id > self.pane().last_event
@@ -519,7 +640,14 @@ impl App {
                         pane.record_submission(id, SubmissionStatus::Accepted);
                     }
                 }
+                let mut jobs_changed = false;
                 if let Some(entry) = entry.filter(|entry| entry.agent == active_agent) {
+                    jobs_changed = entry.kind == HistoryKind::JobFinished
+                        || (entry.kind == HistoryKind::ToolResult
+                            && entry
+                                .details
+                                .get("structured")
+                                .is_some_and(|facts| facts["kind"] == "job"));
                     if entry.kind == HistoryKind::User {
                         pane.remember_history_entry(&entry);
                     }
@@ -530,6 +658,9 @@ impl App {
                 }
                 if execution_started {
                     self.clear_execution_notice_on_start(&active_address, id);
+                }
+                if jobs_changed {
+                    self.refresh_jobs();
                 }
             }
             Observation::Live {
@@ -643,10 +774,12 @@ impl App {
 
     pub(crate) fn input_status(&self) -> InputActivity {
         let pane = self.pane();
-        let queued = pane
-            .snapshot
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.agent.pending_inputs);
+        let queued = pane.snapshot.as_ref().map_or(0, |snapshot| {
+            snapshot
+                .agent
+                .pending_inputs
+                .saturating_sub(pane.deliveries.hidden_queue_count(snapshot))
+        });
         let mut rejected = false;
         let pending = self.pending.values().find_map(|item| {
             if item.command.target.workspace != self.workspace
@@ -666,6 +799,11 @@ impl App {
             draft: !pane.draft.text().is_empty(),
             submission: pending
                 .or_else(|| rejected.then_some(SubmissionStatus::Rejected))
+                .or_else(|| {
+                    pane.deliveries
+                        .awaiting_admission()
+                        .then_some(SubmissionStatus::AwaitingAdmission)
+                })
                 .or_else(|| pane.submission(queued)),
             queued,
         }
@@ -717,11 +855,80 @@ impl Pane {
                 self.live_floor = id;
                 self.progress = ExecutionProgress::default();
                 self.transcript.clear_reply_preview();
+                if operation == Some("agent_stopped") {
+                    self.retired_execution_floor = self.retired_execution_floor.max(id);
+                }
             }
             Some("permission_waiting") => {
-                self.live_floor = id;
+                if let Some(request_id) = entry.and_then(|entry| {
+                    entry
+                        .details
+                        .get("request")
+                        .and_then(|request| request["id"].as_str())
+                }) {
+                    self.progress.permission_wait = Some(DirectWait {
+                        id: request_id.to_owned(),
+                        cursor: id,
+                    });
+                }
                 self.progress.clear_stream();
                 self.transcript.clear_reply_preview();
+            }
+            Some("question_requested") => {
+                if let Some(request_id) = entry.and_then(|entry| {
+                    entry
+                        .details
+                        .get("request")
+                        .and_then(|request| request["id"].as_str())
+                }) {
+                    self.progress.question_wait = Some(DirectWait {
+                        id: request_id.to_owned(),
+                        cursor: id,
+                    });
+                }
+            }
+            Some("script_permission_waiting") => {
+                if let Some(entry) = entry
+                    && let Some(turn) = entry.turn
+                    && let Some(call) = entry
+                        .details
+                        .get("request")
+                        .and_then(|request| request["tool_call_id"].as_str())
+                    && let Some(request_id) = entry
+                        .details
+                        .get("request")
+                        .and_then(|request| request["id"].as_str())
+                    && self.foreground_script_call(turn, call)
+                {
+                    self.progress
+                        .script_waits
+                        .insert(request_id.to_owned(), (turn, call.to_owned()));
+                }
+            }
+            Some("permission_replied" | "question_replied") => {
+                let wait = if operation == Some("permission_replied") {
+                    &mut self.progress.permission_wait
+                } else {
+                    &mut self.progress.question_wait
+                };
+                if let Some(request_id) =
+                    entry.and_then(|entry| entry.details.get("request_id").and_then(Value::as_str))
+                    && wait.as_ref().is_some_and(|wait| wait.id == request_id)
+                {
+                    *wait = None;
+                }
+            }
+            Some("script_permission_replied" | "script_permission_ended") => {
+                if let Some(request_id) =
+                    entry.and_then(|entry| entry.details.get("request_id").and_then(Value::as_str))
+                {
+                    self.progress.script_waits.remove(request_id);
+                    if !self.progress.tools.is_empty() {
+                        self.progress
+                            .settled_script_waits
+                            .insert(request_id.to_owned());
+                    }
+                }
             }
             _ => {}
         }
@@ -771,6 +978,7 @@ impl Pane {
     pub(super) fn apply_reply_preview(&mut self, reply: ReplyPreview) {
         self.latest_reply_cursor = self.live_floor;
         self.progress.output = Some(reply.phase);
+        self.progress.preparing_file_contents = reply.preparing_file_contents;
         self.progress.output_meter = OutputMeter::preview(
             reply.output_bytes,
             reply.output_tokens,
@@ -846,15 +1054,111 @@ impl Pane {
         activity
     }
 
-    pub(crate) fn running_tool_name(&self) -> Option<&str> {
+    // Execution identity is projected from observation, not only from an
+    // asynchronously refreshed snapshot. A new execution can already be
+    // running while that snapshot still describes the previous idle turn.
+    pub(crate) fn running_execution(&self) -> Option<u64> {
+        let execution = self.execution?;
+        (execution > self.retired_execution_floor
+            && self.activity().executing()
+            && !self.observed_direct_wait(self.progress.permission_wait.as_ref()))
+        .then_some(execution)
+    }
+
+    pub(crate) fn busy_or_waiting(&self) -> bool {
+        let activity = self.activity();
+        activity.executing()
+            || matches!(
+                activity,
+                Activity::Opening | Activity::Waiting | Activity::Stopping
+            )
+    }
+
+    pub(crate) fn running_tool(&self) -> Option<(&str, &str, &str)> {
         if self.progress.tools.len() != 1 {
             return None;
         }
-        self.progress
-            .tools
-            .iter()
-            .next()
-            .and_then(|id| self.transcript.tool_name(id))
+        let id = self.progress.tools.iter().next()?;
+        let (name, target) = self.transcript.tool_activity(id)?;
+        Some((id, name, target))
+    }
+
+    pub(crate) fn preparing_file_contents(&self) -> bool {
+        self.progress.preparing_file_contents
+    }
+
+    fn foreground_script_call(&self, turn: u64, id: &str) -> bool {
+        self.progress.tools.contains(id) && self.transcript.foreground_script_call(turn, id)
+    }
+
+    fn observed_direct_wait(&self, wait: Option<&DirectWait>) -> bool {
+        wait.is_some_and(|wait| {
+            self.snapshot
+                .as_ref()
+                .is_none_or(|snapshot| snapshot.cursor < wait.cursor)
+        })
+    }
+
+    pub(crate) fn waiting_kind(
+        &self,
+        approvals: &[kuku_client::PendingApproval],
+    ) -> Option<WaitKind> {
+        if self.request_state_unconfirmed() {
+            return None;
+        }
+        if self.observed_direct_wait(self.progress.permission_wait.as_ref())
+            || self.permission().is_some()
+        {
+            return Some(WaitKind::Permission);
+        }
+        if self
+            .progress
+            .script_waits
+            .values()
+            .any(|(turn, call)| self.foreground_script_call(*turn, call))
+            || approvals.iter().any(|approval| {
+                approval.job_id.is_none()
+                    && approval.request.id.starts_with("script:")
+                    && self.snapshot.as_ref().is_some_and(|snapshot| {
+                        approval.request.conversation.as_str() == snapshot.agent.address.as_str()
+                    })
+                    && !self
+                        .progress
+                        .settled_script_waits
+                        .contains(&approval.request.id)
+                    && self.foreground_script_call(
+                        approval.request.turn,
+                        &approval.request.tool_call_id,
+                    )
+            })
+        {
+            return Some(WaitKind::Permission);
+        }
+        // ask_user records a pending request inside the current tool batch;
+        // actual suspension is at the batch boundary. While a sibling is
+        // still executing, keep its tool activity visible. The request card
+        // remains available for answering early.
+        if self.progress.tools.is_empty()
+            && (self.observed_direct_wait(self.progress.question_wait.as_ref())
+                || self.question().is_some())
+        {
+            return Some(WaitKind::Question);
+        }
+        None
+    }
+
+    pub(crate) fn model_failed(&self) -> bool {
+        self.progress.model_failed
+            || self.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.agent.last_error.is_some()
+                    && self.execution.is_none_or(|id| id <= snapshot.cursor)
+                    && matches!(
+                        snapshot.agent.status,
+                        AgentStatus::Interrupted | AgentStatus::Idle
+                    )
+                    && (self.progress.is_stopped_retry()
+                        || self.transcript.turn_model_failed(snapshot.agent.turn))
+            })
     }
 
     pub(crate) fn parallel_tools(&self) -> usize {

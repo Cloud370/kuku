@@ -2,15 +2,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::app::{Address, App, TurnTiming};
 
-use super::{ActivityFrame, ObservedActivity};
+use super::{ActivityFrame, ObservedActivity, ToolActivity};
 
 pub(super) const FRAME_INTERVAL: Duration = Duration::from_millis(140);
 const PHASE_CONFIRMATION: Duration = Duration::from_millis(96);
+const TOOL_DETAIL_CONFIRMATION: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 pub(crate) struct ActivityClock {
     target: Option<Address>,
     phase: PhaseClock,
+    tool: ToolClock,
     animation_started: Option<Instant>,
     elapsed: ElapsedClock,
     thinking: super::motion::ThinkingFlow,
@@ -18,7 +20,7 @@ pub(crate) struct ActivityClock {
 
 impl ActivityClock {
     pub(crate) fn confirming_phase(&self) -> bool {
-        self.phase.next.is_some()
+        self.phase.next.is_some() || self.tool.confirming()
     }
 
     pub(crate) fn observe(&mut self, app: &App, now: Instant) {
@@ -27,7 +29,7 @@ impl ActivityClock {
 
     pub(crate) fn sample(&mut self, app: &App, now: Instant, wall: SystemTime) -> ActivityFrame {
         let (observed, shown) = self.update_phase(app, now);
-        let motion = observed.motion().is_some();
+        let motion = observed.motion().is_some() || observed == ObservedActivity::Sending;
         if motion {
             self.animation_started.get_or_insert(now);
         } else {
@@ -40,6 +42,7 @@ impl ActivityClock {
             self.elapsed
                 .sample(app.pane().turn_timing(), observed.clock_runs(), now, wall);
         let mut frame = ActivityFrame::new(shown, step, elapsed);
+        frame.tool = self.tool.shown.clone();
         frame.phase_elapsed = self
             .phase
             .shown_since
@@ -63,6 +66,12 @@ impl ActivityClock {
         }
         let observed = ObservedActivity::of(app);
         let shown = self.phase.sample(observed, now);
+        self.tool.sample(
+            (observed == ObservedActivity::Agent(crate::app::Activity::RunningTools))
+                .then(|| ToolActivity::current(app))
+                .flatten(),
+            now,
+        );
         (observed, shown)
     }
 }
@@ -78,7 +87,7 @@ impl PhaseClock {
     fn sample(&mut self, observed: ObservedActivity, now: Instant) -> ObservedActivity {
         if let Some(shown) = self
             .shown
-            .filter(|shown| *shown != observed && shown.can_coalesce() && observed.can_coalesce())
+            .filter(|shown| *shown != observed && shown.can_coalesce_into(observed))
         {
             let (candidate, began) = self.next.get_or_insert((observed, now));
             if *candidate != observed {
@@ -98,6 +107,45 @@ impl PhaseClock {
         self.shown = Some(observed);
         self.next = None;
         observed
+    }
+}
+
+// The first dispatch immediately says "Using tools". A short, isolated
+// invocation never flashes its name and target. A sustained single call earns
+// a more specific label; explicit Job waits are shown immediately. Clearing a
+// call's target is never delayed, even if a generic transition is coalesced.
+#[derive(Default)]
+struct ToolClock {
+    candidate: Option<(String, Instant)>,
+    shown: Option<ToolActivity>,
+}
+
+impl ToolClock {
+    fn confirming(&self) -> bool {
+        self.candidate.is_some() && self.shown.is_none()
+    }
+
+    fn sample(&mut self, current: Option<(&str, ToolActivity)>, now: Instant) {
+        let Some((id, tool)) = current else {
+            *self = Self::default();
+            return;
+        };
+        if self
+            .candidate
+            .as_ref()
+            .is_none_or(|(candidate, _)| candidate != id)
+        {
+            self.candidate = Some((id.to_owned(), now));
+            self.shown = None;
+        }
+        if tool.waiting_job
+            || self
+                .candidate
+                .as_ref()
+                .is_some_and(|(_, since)| now.duration_since(*since) >= TOOL_DETAIL_CONFIRMATION)
+        {
+            self.shown = Some(tool);
+        }
     }
 }
 
@@ -247,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_phase_changes_coalesce_but_attention_and_stop_are_immediate() {
+    fn real_changes_are_immediate_only_generic_transitions_are_coalesced() {
         let mut clock = PhaseClock::default();
         let start = Instant::now();
         let waiting = ObservedActivity::Agent(Activity::WaitingForModel);
@@ -256,10 +304,12 @@ mod tests {
         let tools = ObservedActivity::Agent(Activity::RunningTools);
         assert_eq!(waiting, clock.sample(waiting, start));
         let half = PHASE_CONFIRMATION / 2;
-        assert_eq!(waiting, clock.sample(thinking, start + half));
-        assert_eq!(waiting, clock.sample(streaming, start + 2 * half));
-        assert_eq!(waiting, clock.sample(thinking, start + 3 * half));
-        assert_eq!(waiting, clock.sample(tools, start + 4 * half));
+        assert_eq!(thinking, clock.sample(thinking, start + half));
+        assert_eq!(streaming, clock.sample(streaming, start + 2 * half));
+        assert_eq!(thinking, clock.sample(thinking, start + 3 * half));
+        assert_eq!(tools, clock.sample(tools, start + 4 * half));
+        let transitional = ObservedActivity::Agent(Activity::Running);
+        assert_eq!(tools, clock.sample(transitional, start + 5 * half));
         assert_eq!(tools, clock.sample(tools, start + 6 * half));
         for urgent in [
             ObservedActivity::Agent(Activity::Stopping),

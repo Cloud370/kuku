@@ -10,7 +10,7 @@ use crate::text::shorten;
 use crate::theme::{ACCENT, CardFrame, MUTED, SUCCESS, emphasis};
 use crate::transcript::agent::AgentCards;
 use crate::transcript::tool::{Tool, tool_title};
-use crate::transcript::{Record, Row, render_rows};
+use crate::transcript::{Key, Record, Row, render_rows};
 
 use super::inspection::{INSPECTIONS, inspection_composition};
 use super::{GROUP_DETAIL_ROWS, activity};
@@ -75,6 +75,64 @@ impl GroupSummary {
             GroupKind::WorkspaceActivity { preview, .. } => Some(preview),
             _ => None,
         }
+    }
+
+    pub(in crate::transcript) fn include_activity_member(&mut self, index: usize, tool: &Tool) {
+        if let GroupKind::WorkspaceActivity { preview, remaining } = &mut self.kind
+            && preview[index] == 0
+        {
+            preview[index] = 1;
+            if tool.group_name().is_none() {
+                *remaining = remaining.saturating_sub(1);
+            }
+        }
+    }
+
+    pub(in crate::transcript) fn include_latest_activity(
+        &mut self,
+        records: &[Record],
+        latest: &Key,
+    ) -> Option<usize> {
+        let end = records.iter().position(|record| &record.key == latest)?;
+        let index = records[..=end].iter().rposition(|record| {
+            record
+                .tool()
+                .is_some_and(|tool| !tool.activity_running() && !tool.activity_result_missing())
+        })?;
+        let tool = records[index].tool()?;
+        if let GroupKind::WorkspaceActivity { preview, .. } = &self.kind {
+            if preview[index] > 0 {
+                return None;
+            }
+            // A repeated failure is already readable through its first
+            // displayed diagnostic; keep the count instead of duplicating it.
+            if tool.activity_repeat_key().is_some_and(|key| {
+                records[..index].iter().enumerate().any(|(i, record)| {
+                    preview[i] > 0 && record.tool().and_then(Tool::activity_repeat_key) == Some(key)
+                })
+            }) {
+                return None;
+            }
+            self.include_activity_member(index, tool);
+            return Some(index);
+        }
+        if matches!(self.kind, GroupKind::Inspections) {
+            // A reading window can contain newer entries after paging. Keep its
+            // newest-result preview at the frozen activity, including any listing.
+            self.listing = records[..=index]
+                .iter()
+                .rev()
+                .filter_map(Record::tool)
+                .find(|tool| tool.name() == "list_agents")
+                .and_then(Tool::agent_listing)
+                .unwrap_or_default();
+            self.preview = if tool.name() == "list_agents" && !self.listing.is_empty() {
+                None
+            } else {
+                Some(tool.latest_inspection_result())
+            };
+        }
+        None
     }
 }
 

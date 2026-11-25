@@ -82,6 +82,13 @@ impl Tool {
     }
 
     pub(super) fn activity_diagnostic(&self) -> &str {
+        if let Some(command) = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.command_preview.as_deref())
+        {
+            return command.diagnostic();
+        }
         if let Some(reason) = self
             .state
             .outcome()
@@ -99,6 +106,15 @@ impl Tool {
     }
 
     pub(super) fn render_activity(&self, width: usize, count: usize) -> Vec<Row> {
+        self.render_activity_with_title(width, count, None)
+    }
+
+    pub(super) fn render_activity_with_title(
+        &self,
+        width: usize,
+        count: usize,
+        inspected_title: Option<&str>,
+    ) -> Vec<Row> {
         if let Some(change) = self.file_change() {
             return self.render_change(change, width, ToolDetails::Collapsed);
         }
@@ -117,13 +133,15 @@ impl Tool {
             "search_text" => "Search",
             _ => "Tool",
         };
-        let diagnostic = if matches!(color, ERROR | WARNING) {
+        let diagnostic = if inspected_title.is_none() && matches!(color, ERROR | WARNING) {
             self.activity_diagnostic()
         } else {
             ""
         };
-        let title = if self.name() == "run_command" {
-            self.command_title().into()
+        let title = if let Some(title) = inspected_title {
+            title.into()
+        } else if self.name() == "run_command" {
+            self.command_activity_title().into()
         } else {
             self.title()
         };
@@ -159,12 +177,16 @@ impl Tool {
         if count > 1 {
             status.extend(Row::metric(" ×", count.to_string(), "", TranscriptTone::Value).spans);
         }
-        vec![Row::activity_columns(
+        let mut rows = vec![Row::activity_columns(
             operation,
             tool_operation_color(self.name()),
             &single_line(&subject),
             status,
             width,
-        )]
+        )];
+        if self.name() == "run_command" {
+            rows.extend(self.background_handoff_rows(width));
+        }
+        rows
     }
 }

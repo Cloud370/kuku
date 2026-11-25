@@ -127,11 +127,18 @@ impl Transcript {
         let Some(position) = &self.reply_position else {
             return;
         };
-        if !self.recent.records.iter().any(|r| {
+        let Some(reply) = self.recent.records.iter().find(|r| {
             r.key == position.key && matches!(&r.body, Body::Assistant(t) if !t.trim().is_empty())
-        }) {
+        }) else {
             return;
-        }
+        };
+        let first_body_row = assistant_header(
+            !reply.reasoning_preview.is_empty(),
+            true,
+            matches!(reply.key, Key::Preview(_)),
+            width,
+        )
+        .len();
         let position = self
             .reply_position
             .take()
@@ -146,14 +153,28 @@ impl Transcript {
         };
         let answer = super::Anchor {
             key: position.key,
-            line: super::AnchorLine::Body(1),
+            line: super::AnchorLine::Body(first_body_row),
         };
-        if self.recent.row_count(layout).saturating_sub(height)
-            > self.recent.position_of(&answer, layout)
-        {
+        let blocks = self.recent.blocks(layout);
+        let answer_row = super::Block::position_of(&blocks, &answer);
+        if super::Block::row_count(&blocks).saturating_sub(height) > answer_row {
+            let original_row = super::Block::position_of(&blocks, &position.top);
+            // The reply may have replaced an automatically expanded activity
+            // group. Its old member anchor now points to the collapsed group
+            // heading; ensure the first reply line still fits on this screen.
+            let top_row = original_row.clamp(
+                answer_row.saturating_sub(height.saturating_sub(1)),
+                answer_row,
+            );
+            let anchor = if top_row == original_row {
+                position.top
+            } else {
+                super::Block::anchor_at(&blocks, top_row).unwrap_or(answer)
+            };
+            drop(blocks);
             self.reading = Some(super::Reading {
-                window: self.recent.clone(),
-                anchor: position.top,
+                window: self.recent.reading_copy(),
+                anchor,
                 newer: Default::default(),
                 rebase_after_page: false,
                 visible_through: None,

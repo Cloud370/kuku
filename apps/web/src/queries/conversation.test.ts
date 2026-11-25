@@ -15,6 +15,7 @@ function snapshot(selected: Target, cursor: number): Snapshot {
     cursor,
     agent: {
       address: selected.agent,
+      creation_event_id: 1,
       status: "running",
       config: {},
       turn: 1,
@@ -24,7 +25,7 @@ function snapshot(selected: Target, cursor: number): Snapshot {
       usage: { input_tokens: null, output_tokens: null },
     },
     agents: [
-      { address: selected.agent, status: "running", turn: 1, execution_id: 5, pending_inputs: 0 },
+      { address: selected.agent, creation_event_id: 1, status: "running", turn: 1, execution_id: 5, pending_inputs: 0 },
     ],
     pending: [],
     selection: null,

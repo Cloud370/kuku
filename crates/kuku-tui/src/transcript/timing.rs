@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
-use crate::text::format_elapsed;
+use crate::text::{format_duration_ms, format_elapsed};
 use crate::theme::{CardFrame, TranscriptTone};
 
 use super::window::BlockGap;
@@ -116,8 +116,9 @@ impl CardTiming {
     }
 
     fn fits(self, width: usize, inset: usize) -> bool {
-        if self.end.or(self.start).is_some() {
-            width.saturating_sub(inset) >= "00:00:00Z".len()
+        if let Some(timestamp) = self.end.or(self.start) {
+            let available = width.saturating_sub(inset);
+            available >= 9 || (available == 8 && client_stamp(timestamp).1.is_empty())
         } else {
             self.measured_ms.is_some() && self.line(width, inset).is_some()
         }
@@ -126,10 +127,10 @@ impl CardTiming {
     pub(super) fn line(self, width: usize, inset: usize) -> Option<Line<'static>> {
         let timestamp = self.end.or(self.start);
         let mut line = timestamp.map_or_else(Line::default, |timestamp| {
-            let stamp = timestamp.to_offset(UtcOffset::UTC);
+            let (stamp, zone) = client_stamp(timestamp);
             Line::styled(
                 format!(
-                    "{:02}:{:02}:{:02}Z",
+                    "{:02}:{:02}:{:02}{zone}",
                     stamp.hour(),
                     stamp.minute(),
                     stamp.second()
@@ -140,8 +141,8 @@ impl CardTiming {
         let duration = self.elapsed_ms().map(|ms| {
             let (value, unit) = match ms {
                 0..=999 => (ms.to_string(), "ms"),
-                1_000..=59_999 => (format!("{:.1}", ms as f64 / 1_000.0), "s"),
-                _ => (format_elapsed(Duration::from_millis(ms)), ""),
+                1_000..=59_949 => (format!("{:.1}", ms as f64 / 1_000.0), "s"),
+                _ => (format_duration_ms(ms), ""),
             };
             let separator = if timestamp.is_some() { " · " } else { "" };
             Row::metric(separator, value, unit, TranscriptTone::Value)
@@ -176,5 +177,84 @@ impl CardTiming {
         }
         line.spans.insert(0, Span::raw(" ".repeat(inset)));
         Some(line)
+    }
+}
+
+/// Resolve the offset at the event instant (not at the time of rendering), so
+/// historical cards use the client's timezone even across DST transitions.
+/// If the platform cannot determine its offset, identify UTC honestly.
+fn client_stamp(timestamp: OffsetDateTime) -> (OffsetDateTime, &'static str) {
+    match UtcOffset::local_offset_at(timestamp)
+        .ok()
+        .and_then(|offset| timestamp.checked_to_offset(offset))
+    {
+        Some(local) => (local, ""),
+        None => (timestamp.to_offset(UtcOffset::UTC), "Z"),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    // Changing TZ in a running, multithreaded test process is not safe. Run
+    // the same test in isolated processes with a fixed zone and fixture events.
+    #[test]
+    fn card_clock_uses_client_zone_at_event_instant() {
+        const CASE: &str = "KUKU_TEST_CARD_CLOCK_ZONE";
+        if let Ok(case) = std::env::var(CASE) {
+            let expected = match case.as_str() {
+                "china" => ["02:00:00", "02:00:00"],
+                "eastern" => ["13:00:00", "14:00:00"],
+                _ => panic!("unknown timezone fixture"),
+            };
+            for (source, clock) in ["2026-11-25T18:00:00Z", "2026-07-01T18:00:00Z"]
+                .into_iter()
+                .zip(expected)
+            {
+                let timestamp = OffsetDateTime::parse(source, &Rfc3339).unwrap();
+                let timing = CardTiming {
+                    start: Some(timestamp - time::Duration::seconds(2)),
+                    end: Some(timestamp),
+                    turn_started_at_ms: Some(
+                        u64::try_from(timestamp.unix_timestamp()).unwrap() * 1000 - 3000,
+                    ),
+                    ..CardTiming::default()
+                };
+                assert_eq!(
+                    timing.line(60, 0).unwrap().to_string(),
+                    format!("{clock} · T+3s · 2.0s")
+                );
+                assert!(timing.fits(10, 2));
+                assert_eq!(
+                    timing.line(10, 2).unwrap().to_string(),
+                    format!("  {clock}")
+                );
+                assert!(!timing.fits(9, 2));
+                assert!(timing.line(9, 2).is_none());
+            }
+            return;
+        }
+        for (case, zone) in [
+            ("china", "CST-8"),
+            ("eastern", "EST5EDT,M3.2.0/2,M11.1.0/2"),
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "transcript::timing::tests::card_clock_uses_client_zone_at_event_instant",
+                ])
+                .env(CASE, case)
+                .env("TZ", zone)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
     }
 }

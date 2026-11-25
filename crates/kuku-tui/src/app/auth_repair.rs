@@ -163,7 +163,7 @@ mod tests {
         app.complete_test_permissions();
         let snapshot: Snapshot = serde_json::from_value(json!({
             "workspace":app.workspace, "session_id":app.active.session, "cursor":5,
-            "agent":{"address":"main", "status":"running", "turn":7,
+            "agent":{"address":"main", "creation_event_id":1, "status":"running", "turn":7,
                 "execution_id":5, "config":{}, "pending_inputs":0,
                 "usage":{"model_requests":1,"unreported_requests":0}},
             "agents":[], "pending":[], "progress":null

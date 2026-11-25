@@ -45,7 +45,7 @@ mod thinking;
 mod timing;
 mod values;
 
-pub(crate) use activity::{Activity, OutputTokens, ServiceStatus, SubmissionStatus};
+pub(crate) use activity::{Activity, OutputTokens, ServiceStatus, SubmissionStatus, WaitKind};
 use activity::{ExecutionProgress, Watch};
 use agents::AgentActivities;
 use delivery::{Deliveries, PendingQueueAction};
@@ -125,6 +125,11 @@ pub(crate) struct Pane {
     pub(crate) request_scroll: usize,
     pub(crate) request_detail_page_size: usize,
     pub(crate) snapshot: Option<Box<Snapshot>>,
+    question_state_floor: u64,
+    permission_state_floor: u64,
+    // A cache may have missed request changes while a different observer was
+    // attached. Require a fresh selected snapshot before accepting replies.
+    request_state_unconfirmed: bool,
     observed_timing: Option<(u64, TurnTiming)>,
     pub(crate) pending_reply_copy: Option<u64>,
     pub(crate) pending_selected_reply_copy: Option<u64>,
@@ -164,6 +169,71 @@ pub(crate) struct Pane {
 }
 
 impl Pane {
+    pub(crate) fn request_state_unconfirmed(&self) -> bool {
+        self.request_state_unconfirmed
+    }
+
+    pub(crate) fn question(&self) -> Option<&kuku_client::QuestionRequest> {
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                !self.request_state_unconfirmed
+                    && snapshot.cursor >= self.question_state_floor
+                    && matches!(
+                        snapshot.agent.status,
+                        AgentStatus::Running | AgentStatus::Waiting
+                    )
+            })?
+            .agent
+            .question
+            .as_ref()
+    }
+
+    pub(crate) fn permission(&self) -> Option<&kuku_client::PermissionRequest> {
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                !self.request_state_unconfirmed
+                    && snapshot.cursor >= self.permission_state_floor
+                    && snapshot.agent.status == AgentStatus::Waiting
+            })?
+            .agent
+            .permission
+            .as_ref()
+    }
+
+    pub(crate) fn pending_request_id(&self) -> Option<&str> {
+        self.question()
+            .map(|request| request.id.as_str())
+            .or_else(|| self.permission().map(|request| request.id.as_str()))
+    }
+
+    // A request can already have changed in the durable observation stream
+    // while the corresponding snapshot refresh is still in flight.
+    fn note_request_state_change(
+        &mut self,
+        id: u64,
+        operation: Option<&str>,
+        settled_status: Option<AgentStatus>,
+    ) {
+        if matches!(
+            operation,
+            Some("question_requested" | "question_replied" | "agent_stopped")
+        ) || operation == Some("turn_settled")
+            && settled_status.is_some_and(|status| {
+                !matches!(status, AgentStatus::Running | AgentStatus::Waiting)
+            })
+        {
+            self.question_state_floor = self.question_state_floor.max(id);
+        }
+        if matches!(
+            operation,
+            Some("permission_waiting" | "permission_replied" | "agent_stopped" | "turn_settled")
+        ) {
+            self.permission_state_floor = self.permission_state_floor.max(id);
+        }
+    }
+
     pub(crate) fn execution(&self) -> Option<u64> {
         self.execution
     }
@@ -270,14 +340,25 @@ impl Pane {
             return None;
         }
         let mut execution_started = None;
-        if snapshot.cursor >= self.last_event {
+        // A live frame can precede its corresponding committed observation;
+        // don't let an older HTTP response retire that execution or phase.
+        if snapshot.cursor >= self.last_event
+            && snapshot.cursor >= self.live_floor
+            && snapshot.cursor >= self.latest_reply_cursor
+            && self
+                .execution
+                .is_none_or(|execution| snapshot.cursor >= execution)
+        {
             let execution = snapshot.execution_id();
             if execution != self.execution {
-                self.progress = ExecutionProgress::default();
+                self.progress = ExecutionProgress::from_snapshot(snapshot.progress.as_ref());
                 self.retired_execution_floor = self.retired_execution_floor.max(
                     execution.map_or(snapshot.cursor, |execution| execution.saturating_sub(1)),
                 );
                 self.execution = execution;
+            } else if let Some(progress) = &snapshot.progress {
+                self.progress
+                    .reconcile_snapshot(progress, snapshot.cursor == self.latest_reply_cursor);
             }
             if let Some(execution) = execution {
                 self.latest_execution_started = Some(
@@ -557,13 +638,26 @@ impl App {
     }
 
     pub(crate) fn interrupt(&mut self) {
+        self.stop_execution(false);
+    }
+
+    pub(crate) fn interrupt_current_turn(&mut self) {
+        self.stop_execution(true);
+    }
+
+    fn stop_execution(&mut self, continue_queued: bool) {
         if self.pane().interruption_pending() {
             return;
         }
         if let Some(execution_id) = self.pane().execution() {
             if self.require_service() {
                 self.pane_mut().stopping = Some(execution_id);
-                self.issue(self.active.clone(), Action::Cancel { execution_id });
+                let action = if continue_queued {
+                    Action::Interrupt { execution_id }
+                } else {
+                    Action::Cancel { execution_id }
+                };
+                self.issue(self.active.clone(), action);
             }
         }
     }
@@ -718,28 +812,7 @@ impl App {
                 let last_event = self.pane().last_event;
                 self.terminal_bell
                     .observe(&event, last_event, self.notification_settings.active());
-                if let Observation::Committed {
-                    id,
-                    kind,
-                    operation,
-                    ..
-                } = &event
-                {
-                    if *id > last_event
-                        && (matches!(
-                            operation.as_deref(),
-                            Some(
-                                "permission_waiting"
-                                    | "permission_replied"
-                                    | "script_permission_waiting"
-                                    | "script_permission_replied"
-                                    | "script_permission_ended"
-                            )
-                        ) || kind == "tool.result" && !self.approvals().is_empty())
-                    {
-                        self.refresh_approvals();
-                    }
-                }
+                self.observe_approval_transition(&event, last_event);
                 self.observe(event)
             }
             Update::Refreshed(selection, result) if selection == self.selection() => {
@@ -907,8 +980,10 @@ impl App {
     fn begin_observing(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.model_version = self.model_version.wrapping_add(1);
+        self.invalidate_approval_view();
         self.related_agents.invalidate(0);
         let pane = self.pane_mut();
+        pane.request_state_unconfirmed = pane.exists;
         pane.opening = false;
         pane.watch = Watch::Detached;
         pane.refresh_in_flight = false;
@@ -957,10 +1032,13 @@ impl App {
             return;
         }
         self.related_agents.invalidate(snapshot.cursor);
-        self.related_agents.snapshot(&snapshot, &active.agent);
+        self.related_agents.snapshot_roster(&snapshot);
+        self.related_agents
+            .snapshot_activity(&snapshot, &active.agent);
         let pane = self.pane_mut();
         pane.exists = true;
         pane.opening = false;
+        pane.request_state_unconfirmed = false;
         let progress = ExecutionProgress::from_snapshot(snapshot.progress.as_ref());
         let previous_cursor = pane.last_event;
         pane.last_event = snapshot.cursor;
@@ -1007,15 +1085,18 @@ impl App {
     }
 
     fn drop_watch(&mut self, state: Watch) {
+        self.invalidate_approval_view();
         self.related_agents.invalidate(self.pane().last_event);
         let pane = self.pane_mut();
         pane.opening = false;
+        pane.request_state_unconfirmed = true;
+        if pane.refresh_in_flight {
+            // This HTTP request may have captured state before the disconnect.
+            // It cannot be the fresh state which re-enables request actions.
+            pane.refresh_due = Some(SnapshotRefresh::Progress);
+        }
         pane.watch = state;
-        pane.progress = ExecutionProgress::from_snapshot(
-            pane.snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.progress.as_ref()),
-        );
+        pane.progress.disconnected();
         pane.transcript.clear_preview();
     }
 
@@ -1047,16 +1128,32 @@ impl App {
 
     fn refreshed(&mut self, result: Result<Box<Snapshot>, Error>) {
         let active = self.active.clone();
-        if matches!(self.pane().watch, Watch::Connected | Watch::Connecting) {
-            if let Ok(snapshot) = &result {
-                self.related_agents.snapshot(snapshot, &active.agent);
+        if let Ok(snapshot) = &result
+            && snapshot.session_id == active.session
+            && snapshot.agent.address == active.agent
+            && snapshot.workspace == self.workspace
+        {
+            self.related_agents.snapshot_roster(snapshot);
+            if matches!(self.pane().watch, Watch::Connected | Watch::Connecting) {
+                self.related_agents
+                    .snapshot_activity(snapshot, &active.agent);
             }
         }
         let pane = self.pane_mut();
         pane.refresh_in_flight = false;
         let refresh_due = pane.refresh_due.take();
+        let mut requests_reconfirmed = false;
         let execution_started = match result {
             Ok(mut snapshot) => {
+                if pane.request_state_unconfirmed
+                    && !pane.opening
+                    && matches!(pane.watch, Watch::Connected)
+                    && snapshot.cursor >= pane.last_event
+                    && refresh_due.is_none_or(|due| !due.needed(Some(&snapshot)))
+                {
+                    pane.request_state_unconfirmed = false;
+                    requests_reconfirmed = true;
+                }
                 snapshot.reply_preview = None;
                 pane.set_snapshot(snapshot)
             }
@@ -1067,6 +1164,9 @@ impl App {
         };
         if let Some(refresh) = refresh_due {
             self.request_refresh(refresh);
+        }
+        if requests_reconfirmed {
+            self.refresh_approvals();
         }
         if let Some(execution_id) = execution_started {
             self.clear_execution_notice_on_start(&active, execution_id);

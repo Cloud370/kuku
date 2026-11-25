@@ -735,6 +735,82 @@ async fn a_late_stop_cannot_cancel_a_replacement_execution() {
 }
 
 #[tokio::test]
+async fn interrupt_wakes_the_queued_input_under_its_original_receipt_and_replays_safely() {
+    let mut provider = ControlledProvider::start().await;
+    let mut server = TestServer::start(mock_provider::make_test_config(provider.port())).await;
+    let id = "interrupt-exact-execution";
+    server
+        .submit(
+            id,
+            json!({"type":"send","command_id":"first","text":"first work","create":{}}),
+        )
+        .await;
+    let first = provider.next().await;
+    let previous = server.snapshot(id, "main").await["agent"]["execution_id"]
+        .as_u64()
+        .unwrap();
+    let queued =
+        json!({"type":"send","command_id":"queued","text":"queued follow-up","timing":"next_turn"});
+    let original = server.submit(id, queued.clone()).await;
+    assert_eq!("queued", original["status"]);
+    let interrupt = json!({"type":"interrupt","command_id":"escape","execution_id":previous});
+    let interrupted = server.submit(id, interrupt.clone()).await;
+    let next = provider.next().await;
+    drop(first);
+    assert!(
+        next.request["messages"]
+            .to_string()
+            .contains("queued follow-up")
+    );
+    let active = server.snapshot(id, "main").await;
+    assert_ne!(previous, active["agent"]["execution_id"].as_u64().unwrap());
+    assert_eq!(0, active["agent"]["pending_inputs"]);
+    assert_eq!(
+        interrupted["receipt"],
+        server.submit(id, interrupt.clone()).await["receipt"]
+    );
+    let receipt = server.submit(id, queued.clone()).await;
+    assert_eq!(original["receipt"], receipt["receipt"]);
+    assert_eq!("accepted", receipt["status"]);
+    let (status, stale) = server
+        .command(
+            id,
+            json!({"type":"interrupt","command_id":"stale","execution_id":previous}),
+        )
+        .await;
+    assert_eq!(409, status);
+    assert_eq!("execution_not_active", stale["code"]);
+    next.reply(text_response("queued follow-up completed"));
+    server
+        .wait_for_snapshot(id, "main", |snapshot| {
+            snapshot["agent"]["status"] == "idle"
+                && snapshot["agent"]["last_output"] == "queued follow-up completed"
+        })
+        .await;
+    provider.assert_idle();
+    server.restart().await;
+    assert_eq!(
+        interrupted["receipt"],
+        server.submit(id, interrupt).await["receipt"]
+    );
+    assert_eq!(
+        original["receipt"],
+        server.submit(id, queued).await["receipt"]
+    );
+    provider.assert_idle();
+    assert_eq!(1, operations(&server, id, "agent_stopped"));
+    let journal = EventStore::replay(server.events_path(id)).unwrap();
+    assert_eq!(
+        1,
+        journal
+            .iter()
+            .filter(|event| matches!(&event.payload,
+        EventPayload::MessageUser { text, .. } if text == "queued follow-up"))
+            .count()
+    );
+}
+
+#[tokio::test]
 async fn server_rejects_relative_workspaces_and_missing_sessions() {
     let mock = mock_provider::start_mock_provider().await;
     let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;

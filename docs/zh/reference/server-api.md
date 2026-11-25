@@ -6,7 +6,7 @@
 
 客户端访问接口时发送 `Authorization: Bearer TOKEN`，回环连接也需要认证。显式启动的服务使用其配置的访问令牌。服务的默认工具策略信任已认证用户，允许文件和命令工具。
 
-公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。当前 Session HTTP API 报告 `protocol_version: 2`。受管服务的状态和重启接口使用 `management_version`。缺少令牌或令牌无效时返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求提供的来源。
+公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。当前 Session HTTP API 报告 `protocol_version: 3`。受管服务的状态和重启接口使用 `management_version`。缺少令牌或令牌无效时返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求提供的来源。
 
 ## 接口一览
 
@@ -80,7 +80,8 @@
 | `compact` | | 压缩所选空闲或已中断的 Agent 的较早上下文。通过 `compaction` 历史条目观察进度和结果。重试失败的压缩时使用新的命令 ID。 |
 | `restore_context` | | 撤销所选 Agent 最近一次仍生效的压缩，保留可见消息。 |
 | `advance` | | 显式继续 Agent 的工作。 |
-| `cancel` | `execution_id` | 取消观察到的那次执行并等待清理。 |
+| `cancel` | `execution_id` | 停止观察到的那次执行，等待清理并暂停排队输入。 |
+| `interrupt` | `execution_id` | 打断观察到的执行，在成功清理后继续处理符合条件的排队输入，不重试被打断的 Turn。 |
 
 命令成功时返回含 `ok`、`receipt` 和 `replayed` 的 JSON。回执包含 `command_id`、`event_id` 和 `agent`。输入命令可以报告 `status` 为 `queued`、`accepted` 或 `withdrawn`。持久回执表示已经投递。模型接纳和执行结算分别记录。
 
@@ -98,7 +99,7 @@
 
 ## 快照、历史与观察
 
-1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 快照可包含从已记录请求得到的 `last_model_route`。其中的端点以摘要表示。请求的服务档位已知时，`service_tier` 包含档位名称，由供应商使用默认档位时为 null。Agent 状态包含相应的执行标识以及待决问题或授权。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments`、`running_tools`、`retrying_model`、`retry_stopped` 或 `retry_decision_unknown`。重试阶段会带有 `retry` 对象，包含持久化的尝试编号、失败类型或恢复原因、请求标识和可用策略元数据。停止重试时 `will_retry` 为 `false`。
+1. 请求 `/snapshot?workspace=...&agent=...`。JSON 响应包含 `session_id`、`workspace`、已提交 `cursor`、所选 `agent` 快照、`agents` 摘要、`pending` 输入和模型 `selection`。模型设置解析失败时返回 `selection_error`。Agent 快照可包含从已记录请求得到的 `last_model_route`。其中的端点以摘要表示。请求的服务档位已知时，`service_tier` 包含档位名称，由供应商使用默认档位时为 null。Agent 状态包含相应的执行标识以及待决问题或授权。每个 Agent 快照及摘要均包含持久 `creation_event_id`，客户端可以据此按创建顺序展示，不受名称和当前活动影响。每个待接纳条目都含有 `receipt` 和 `input`。Agent 不存在时返回 `404` 和 `agent_not_found`。`/agents?workspace=...` 可直接取得所有 Agent 摘要及游标。加上 `progress=true` 可请求快照游标处已观察到的执行阶段。`progress.phase` 可以是 `waiting_for_model`、`thinking`、`streaming`、`tool_arguments`、`running_tools`、`retrying_model`、`retry_stopped` 或 `retry_decision_unknown`。快照的 `reply_preview` 以及实时 `tool_arguments` 或 `reply_preview` 事件中的可选 `preparing_file_contents: true` 表示 provider 已识别文件写入工具，并不代表写入已开始。重试阶段会带有 `retry` 对象，包含持久化的尝试编号、失败类型或恢复原因、请求标识和可用策略元数据。停止重试时 `will_retry` 为 `false`。
 2. 请求 `/history?workspace=...&agent=...&before=CURSOR_PLUS_ONE&limit=...`，取得截至该快照、按升序排列的最新一页。用返回的 `next_before` 读取上一页。`before` 为排他游标。`entries` 只包含活动对话历史；单独的 `rewind_groups` 默认是空数组，包含 `rewind_event_id`、原始时间线位置 `target_event_id`、`agent`、以及可选的显示轮次 `turn_number`。组标题按目标消息的原始位置与活动条目共同分页，并计入页面条目数与字节上限。重试决定和模型恢复会以 `type:"retry"` 条目及结构化 `retry` 对象呈现；历史记录不代表重试仍在进行。 事件提供记录时间时，`ts` 为 RFC 3339 时间戳。
 3. 展开某组时按需请求 `/history/rewinds/{rewind_event_id}?workspace=...&agent=...&before=...&limit=...`。必须提供与该组匹配的 `agent`。`before` 是可选的排他游标，`limit` 与 `/history` 一样有界。响应包含 `entries` 和 `next_before`，并复用普通历史条目的显示投影。重叠范围中的每个条目只归属于同一 Agent 的第一个适用回退。只读分页不会把隐藏条目放回活动历史或模型上下文；后续回退也不会使早期回退组无法查看。
 
@@ -167,7 +168,7 @@ Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/j
 
 `DELETE /sessions/{id}/jobs/{job_id}` 等待指定执行结束并返回结果快照。对已终结的 Job 重复请求会返回已有结果。两个 GET 路由可以直接读取已关闭的 Session。若本服务尚未打开 Session，取消其中未终结的 Job 会返回 `409` 和 `job_not_active`。
 
-归属 Agent 的历史和观察流包含 `job_finished` 条目，带有 `job_id`、`status`、`summary`、原始 `turn` 以及可用的 `output_id`。此条目可能在对应的 Turn 结束后到达。
+归属 Agent 的历史和观察流包含 `job_finished` 条目，带有 `job_id`、`status`、`summary`、原始 `turn`、可用的 `elapsed_ms`、`output_id`，命令结果还携带结构化 `command` 耗时和终止事实。此条目可能在对应的 Turn 结束后到达。
 
 ## 命名值
 

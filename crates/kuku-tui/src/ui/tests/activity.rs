@@ -132,7 +132,8 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         );
         let footer: String = row(27).iter().map(|cell| cell.symbol()).collect();
         let footer_label = match label {
-            "Model tool arguments" => "Writing tool arguments",
+            "Preparing tool call" | "Preparing file contents" => "Writing tool arguments",
+            "Replying" => "Streaming reply",
             other => other,
         };
         assert!(
@@ -164,7 +165,7 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         clock.observe(app, first + Duration::from_millis(ms));
     };
     live(&mut app, &mut clock, 40, json!({"type":"thinking"}));
-    draw(&mut app, &mut clock, 45, "Waiting for model");
+    draw(&mut app, &mut clock, 45, "Thinking");
     live(
         &mut app,
         &mut clock,
@@ -172,10 +173,10 @@ fn attached_activity_keeps_clock_tokens_and_draft_fixed_across_phases() {
         json!({"type":"text","content":"Early text"}),
     );
     live(&mut app, &mut clock, 95, json!({"type":"thinking"}));
-    let current = draw(&mut app, &mut clock, 145, "Waiting for model");
+    let current = draw(&mut app, &mut clock, 145, "Thinking");
     assert_eq!((original.1, original.2), (current.1, current.2));
     live(&mut app, &mut clock, 160, json!({"type":"tool_arguments"}));
-    let tools = draw(&mut app, &mut clock, 2_100, "Model tool arguments");
+    let tools = draw(&mut app, &mut clock, 2_100, "Preparing tool call");
     assert!(tools.0.contains("~3 tok"));
     assert_eq!(original.0.find("Draft"), tools.0.find("Draft"));
     assert_eq!((original.1, original.2), (tools.1, tools.2));
@@ -281,6 +282,126 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
 }
 
 #[test]
+fn busy_recipient_send_keeps_the_only_sending_indicator_visible_at_narrow_width() {
+    let mut app = app();
+    let recipient = Address::new(app.active.session.clone(), "reviewer".into());
+    app.select(recipient, true, "Shared title".into());
+    let selection = app.selection();
+    let mut state = snapshot(&app, "running", json!(null), json!(null));
+    state.progress = Some(AgentProgress::WaitingForModel);
+    app.update(Update::Loaded(
+        selection.clone(),
+        state,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: vec![],
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+    app.effects.clear();
+    app.pane_mut().draft.insert("delayed busy send");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("save before sending")
+    };
+    for saved in [false, true] {
+        if saved {
+            app.update(Update::Saved(command.clone(), Ok(())));
+        }
+        let rendered = screen(&mut app, 36, 24);
+        assert!(rendered.contains("Sending"), "{rendered}");
+        assert!(
+            rendered.contains("Model wait") && rendered.contains("Agent reviewer"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("delayed busy send")
+                && !rendered.contains("Pending inputs")
+                && !rendered.contains("Unconfirmed send"),
+            "{rendered}"
+        );
+        assert!(!app.recipient_area.is_empty(), "{rendered}");
+    }
+}
+
+#[test]
+fn observed_new_execution_enables_escape_and_stop_before_snapshot_refresh() {
+    use crate::contextual::ContextControl;
+
+    for explicit_stop in [false, true] {
+        let mut app = app();
+        app.select(app.active.clone(), true, "Observe a new execution".into());
+        let selection = app.selection();
+        let mut old = snapshot(&app, "idle", json!(null), json!(null));
+        old.agent.execution_id = None;
+        app.update(Update::Loaded(
+            selection.clone(),
+            old.clone(),
+            HistoryPage {
+                entries: vec![],
+                rewind_groups: vec![],
+                next_before: None,
+            },
+        ));
+        app.update(Update::WatchConnected(selection.clone()));
+        // A live frame can precede its durable commit, and an outstanding
+        // HTTP refresh can still return the old idle boundary.
+        app.update(Update::Observation(
+            selection.clone(),
+            Observation::Live {
+                agent: app.active.agent.clone(),
+                execution_id: 53,
+                cursor: 54,
+                turn: Some(54),
+                turn_number: Some(1),
+                event: json!({"type":"text","content":"New execution"}),
+            },
+        ));
+        app.update(Update::Refreshed(selection.clone(), Ok(old)));
+        assert_eq!(Some(53), app.pane().running_execution());
+        assert!(matches!(
+            app.contextual_controls().first(),
+            Some(ContextControl::Interrupt {
+                execution_id: 53,
+                ..
+            })
+        ));
+        app.update(Update::Observation(
+            selection,
+            serde_json::from_value(json!({
+                "type":"committed", "agent":"main", "id":53, "kind":"runtime.operation",
+                "operation":"execution_started", "state_changed":true
+            }))
+            .unwrap(),
+        ));
+        app.effects.clear();
+        app.pane_mut().draft.insert("unsent draft");
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        assert!(app.pane().contextual_focus.active);
+        if explicit_stop {
+            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        } else {
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            assert!(app.effects.is_empty());
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        }
+        let Some(Job::Save(command)) = app.effects.pop() else {
+            panic!("control addresses observed execution")
+        };
+        assert_eq!(
+            command.action,
+            if explicit_stop {
+                Action::Cancel { execution_id: 53 }
+            } else {
+                Action::Interrupt { execution_id: 53 }
+            }
+        );
+        assert_eq!("unsent draft", app.pane().draft.text());
+    }
+}
+
+#[test]
 fn compact_heading_shows_only_real_parallel_tools_and_prefers_reported_output() {
     let mut app = app();
     app.select(app.active.clone(), true, "Live output".into());
@@ -313,10 +434,7 @@ fn compact_heading_shows_only_real_parallel_tools_and_prefers_reported_output() 
         ));
     };
     let before = screen(&mut app, 60, 28);
-    assert!(
-        before.contains("Running tools") || before.contains("Tools running"),
-        "{before}"
-    );
+    assert!(before.contains("Using tools"), "{before}");
     assert!(!before.contains("↳1"));
     emit(
         &mut app,
@@ -470,4 +588,303 @@ fn stopped_retry_footer_does_not_repeat_transcript_details() {
         footer
     );
     assert!(!footer.contains("Fixture connection closed"));
+}
+
+#[test]
+fn activity_uses_dispatched_call_identity_and_clears_targets_on_attention_and_completion() {
+    use super::super::activity::render_heading;
+
+    let mut app = app();
+    app.select(app.active.clone(), true, "Real tool phases".into());
+    let selection = app.selection();
+    let mut state = snapshot(&app, "running", json!(null), json!(null));
+    state.agent.turn = Some(40);
+    state.agent.running_jobs = 2;
+    state.progress = Some(AgentProgress::WaitingForModel);
+    app.update(Update::Loaded(
+        selection.clone(),
+        state,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: vec![],
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+    let start = Instant::now();
+    let wall = UNIX_EPOCH + Duration::from_secs(100);
+    let mut clock = ActivityClock::default();
+    let heading = |app: &App, clock: &mut ActivityClock, ms, width| {
+        let duration = Duration::from_millis(ms);
+        let frame = clock.sample(app, start + duration, wall + duration);
+        let line = render_heading(app, width, frame, false).0;
+        assert!(line.width() <= width);
+        line.to_string()
+    };
+    let live = |app: &mut App, event, cursor| {
+        app.update(Update::Observation(
+            app.selection(),
+            Observation::Live {
+                agent: "main".into(),
+                execution_id: 49,
+                cursor,
+                turn: Some(40),
+                turn_number: Some(1),
+                event,
+            },
+        ))
+    };
+    let commit = |app: &mut App, id, kind, fields: serde_json::Value| {
+        let mut event = json!({"type":"committed","id":id,"agent":"main","kind":kind});
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        app.update(Update::Observation(
+            app.selection(),
+            serde_json::from_value(event).unwrap(),
+        ));
+    };
+    let call = |app: &mut App, id, name, call_id, args| {
+        commit(
+            app,
+            id,
+            "tool.call",
+            json!({"entry":{"id":id,"agent":"main","turn":40,
+            "type":"tool_call","tool":name,"tool_call_id":call_id,"args":args}}),
+        );
+    };
+    let dispatch = |app: &mut App, id, call_id| {
+        commit(
+            app,
+            id,
+            "runtime.tool_dispatched",
+            json!({"tool_call_id":call_id}),
+        );
+    };
+    let result = |app: &mut App, id, call_id| {
+        commit(
+            app,
+            id,
+            "tool.result",
+            json!({"entry":{"id":id,"agent":"main","turn":40,
+            "type":"tool_result","tool_call_id":call_id,"status":"ok"}}),
+        );
+    };
+
+    let first = heading(&app, &mut clock, 0, 80);
+    assert!(
+        first.contains("Waiting for model") && !first.contains("Waiting for job"),
+        "{first}"
+    );
+    live(&mut app, json!({"type":"thinking"}), 53);
+    assert!(heading(&app, &mut clock, 1, 80).contains("Thinking"));
+    live(
+        &mut app,
+        json!({"type":"text","content":"Starting now."}),
+        53,
+    );
+    assert!(heading(&app, &mut clock, 2, 80).contains("Replying"));
+    live(
+        &mut app,
+        json!({"type":"tool_arguments","preparing_file_contents":true}),
+        53,
+    );
+    let prepared = heading(&app, &mut clock, 3, 80);
+    assert!(
+        prepared.contains("Preparing file contents") && !prepared.contains("Writing file"),
+        "{prepared}"
+    );
+    commit(&mut app, 54, "model.response", json!({}));
+    call(
+        &mut app,
+        55,
+        "write_file",
+        "write-1",
+        json!({"path":"notes.md","content":"private draft"}),
+    );
+    // Merely committing model arguments is not dispatch.
+    assert!(!heading(&app, &mut clock, 4, 80).contains("Writing file"));
+    dispatch(&mut app, 56, "write-1");
+    assert!(heading(&app, &mut clock, 5, 80).contains("Using tools"));
+    let writing = heading(&app, &mut clock, 300, 80);
+    assert!(
+        writing.contains("Writing file")
+            && writing.contains("notes.md")
+            && !writing.contains("private draft"),
+        "{writing}"
+    );
+    result(&mut app, 57, "write-1");
+    let cleared = heading(&app, &mut clock, 301, 80);
+    assert!(!cleared.contains("notes.md"), "{cleared}");
+    call(
+        &mut app,
+        58,
+        "run_command",
+        "command-1",
+        json!({"program":"echo","args":["hello"]}),
+    );
+    dispatch(&mut app, 59, "command-1");
+    assert!(heading(&app, &mut clock, 302, 80).contains("Using tools"));
+    assert!(heading(&app, &mut clock, 600, 80).contains("Running command"));
+    result(&mut app, 60, "command-1");
+
+    // One pending wait is explicitly for job-23, not the most recent
+    // registered job nor the count of independent background jobs.
+    call(
+        &mut app,
+        61,
+        "wait_job",
+        "wait-1",
+        json!({"job_id":"job-23"}),
+    );
+    dispatch(&mut app, 62, "wait-1");
+    for (ms, width) in [(601, 19), (602, 80)] {
+        let waiting = heading(&app, &mut clock, ms, width);
+        assert!(waiting.contains("job-23"), "{waiting}");
+    }
+    result(&mut app, 63, "wait-1");
+    let settled = heading(&app, &mut clock, 603, 80);
+    assert!(
+        !settled.contains("job-23") && !settled.contains("Waiting for job"),
+        "{settled}"
+    );
+    commit(&mut app, 64, "runtime.step_prepared", json!({}));
+    assert!(heading(&app, &mut clock, 604, 80).contains("Waiting for model"));
+    live(&mut app, json!({"type":"tool_arguments"}), 64);
+    assert!(heading(&app, &mut clock, 605, 80).contains("Preparing tool call"));
+
+    commit(
+        &mut app,
+        65,
+        "runtime.operation",
+        json!({"operation":"permission_waiting","state_changed":true,"entry":{"id":65,"agent":"main","turn":40,"type":"permission","request":{"id":"approve-write"}}}),
+    );
+    assert!(heading(&app, &mut clock, 606, 80).contains("Waiting for approval"));
+    commit(
+        &mut app,
+        66,
+        "runtime.operation",
+        json!({"operation":"permission_replied","state_changed":true,"entry":{"id":66,"agent":"main","turn":40,"type":"permission_reply","request_id":"approve-write","allow":true}}),
+    );
+    call(
+        &mut app,
+        67,
+        "wait_job",
+        "wait-2",
+        json!({"job_id":"job-51"}),
+    );
+    dispatch(&mut app, 68, "wait-2");
+    assert!(heading(&app, &mut clock, 607, 80).contains("job-51"));
+    app.select(
+        Address::new(app.active.session.clone(), "reviewer".into()),
+        false,
+        "Review".into(),
+    );
+    let switched = heading(&app, &mut clock, 608, 80);
+    assert!(
+        !switched.contains("job-51") && !switched.contains("Waiting for job"),
+        "{switched}"
+    );
+}
+
+#[test]
+fn terminal_heading_reports_confirmed_failure_and_an_available_next_step() {
+    use super::super::activity::{ActivityFrame, render_heading};
+    use kuku_client::HistoryEntry;
+
+    for (status, error, entry, expected) in [
+        ("stopped", None, None, "Turn stopped"),
+        ("interrupted", None, None, "Interrupted"),
+        (
+            "interrupted",
+            Some("provider said no"),
+            Some(json!({
+                "id": 51, "agent":"main", "turn":40, "type":"error",
+                "code":"http_status", "text":"provider said no"
+            })),
+            "Model request failed",
+        ),
+    ] {
+        let mut app = app();
+        app.select(app.active.clone(), true, "Settled".into());
+        let selection = app.selection();
+        let mut state = snapshot(&app, status, json!(null), json!(null));
+        state.agent.turn = Some(40);
+        state.agent.execution_id = None;
+        state.agent.last_error = error.map(str::to_owned);
+        app.update(Update::Loaded(
+            selection.clone(),
+            state,
+            HistoryPage {
+                entries: entry
+                    .map(|value| serde_json::from_value::<HistoryEntry>(value).unwrap())
+                    .into_iter()
+                    .collect(),
+                rewind_groups: vec![],
+                next_before: None,
+            },
+        ));
+        app.update(Update::WatchConnected(selection));
+        for width in [32, 100] {
+            let frame = ActivityFrame::test_frame(&app, None);
+            let line = render_heading(&app, width, frame, false).0;
+            assert!(line.width() <= width);
+            let line = line.to_string();
+            let action = if status == "stopped" {
+                "Send"
+            } else {
+                "F2 Continue"
+            };
+            assert!(line.contains(action), "{line}");
+            if width == 100 {
+                assert!(line.contains(expected), "{line}");
+            }
+        }
+    }
+}
+
+#[test]
+fn stopped_queue_guidance_uses_the_existing_receipt_and_preserves_continue_on_narrow_width() {
+    use super::super::activity::{ActivityFrame, render_heading};
+    use kuku_client::{Input, QueuedInput};
+
+    let mut app = app();
+    app.select(app.active.clone(), true, "Paused queue".into());
+    let mut state = snapshot(&app, "stopped", json!(null), json!(null));
+    state.agent.execution_id = None;
+    state.agent.pending_inputs = 1;
+    state.pending.push(QueuedInput {
+        input: Input::new("original-receipt", app.active.agent.clone(), "Follow-up"),
+        receipt: Receipt {
+            command_id: "original-receipt".into(),
+            event_id: 50,
+            agent: "main".into(),
+        },
+    });
+    app.update(Update::Loaded(
+        app.selection(),
+        state,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: vec![],
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(app.selection()));
+    let wide = render_heading(&app, 90, ActivityFrame::test_frame(&app, None), false)
+        .0
+        .to_string();
+    assert!(
+        wide.contains("Turn stopped") && wide.contains("1 queued") && wide.contains("F2 Continue"),
+        "{wide}"
+    );
+    let narrow = render_heading(&app, 32, ActivityFrame::test_frame(&app, None), false)
+        .0
+        .to_string();
+    assert!(
+        narrow.contains("Stopped") && narrow.contains("F2 Continue"),
+        "{narrow}"
+    );
+    assert!(!narrow.contains("Send message"));
 }

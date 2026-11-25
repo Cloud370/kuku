@@ -38,7 +38,7 @@ use self::access::{Access, BrowserAccess};
 use self::discovery::{Discovery, Lease};
 
 /// Protocol revision for Session command and observation routes.
-pub const SESSION_PROTOCOL_VERSION: u32 = 2;
+pub const SESSION_PROTOCOL_VERSION: u32 = 3;
 
 /// Independent protocol revision for status, restart and browser handoff.
 pub const MANAGEMENT_VERSION: u32 = 1;

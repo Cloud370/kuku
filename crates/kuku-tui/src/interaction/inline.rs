@@ -41,26 +41,38 @@ impl App {
 
     pub(crate) fn focus_request(&mut self) {
         let Some(id) = self.pending_request_id() else {
-            self.problem("No request is waiting for this Agent");
+            self.problem(if self.pane().request_state_unconfirmed() {
+                "Request state is unconfirmed · Ctrl+R to reconnect"
+            } else {
+                "No request is waiting for this Agent"
+            });
             return;
         };
         self.activate_request_id(self.selection().target, id);
     }
 
     pub(crate) fn activate_request_id(&mut self, target: Target, request_id: String) -> bool {
-        if self.selection().target == target && self.open_approval(&request_id) {
+        if self.selection().target != target
+            || self.pending_request_id().as_deref() != Some(request_id.as_str())
+        {
+            self.problem("This request is no longer waiting for this Agent");
+            return false;
+        }
+        if self.request_reply_pending(&self.active, &request_id) {
+            self.problem("A reply to this request is already pending");
+            return false;
+        }
+        if self.open_approval(&request_id) {
             return true;
         }
         if !self.focus_request_id(target, request_id.clone()) {
             return false;
         }
-        if self.pane().snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .agent
-                .question
-                .as_ref()
-                .is_some_and(|request| request.id == request_id)
-        }) {
+        if self
+            .pane()
+            .question()
+            .is_some_and(|request| request.id == request_id)
+        {
             self.answer_question();
         }
         true
@@ -82,19 +94,7 @@ impl App {
     }
 
     fn pending_request_id(&self) -> Option<String> {
-        let snapshot = self.pane().snapshot.as_ref()?;
-        snapshot
-            .agent
-            .question
-            .as_ref()
-            .map(|request| request.id.clone())
-            .or_else(|| {
-                snapshot
-                    .agent
-                    .permission
-                    .as_ref()
-                    .map(|request| request.id.clone())
-            })
+        self.pane().pending_request_id().map(str::to_owned)
     }
 
     fn queue_key(&mut self, key: KeyEvent) -> bool {
@@ -157,12 +157,7 @@ impl App {
             self.problem("This request is no longer waiting for this Agent");
             return true;
         }
-        if self
-            .pane()
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.agent.question.is_some())
-        {
+        if self.pane().question().is_some() {
             if Shortcut::ENTER.matches(key) {
                 self.answer_question();
             }
@@ -207,12 +202,7 @@ impl App {
     }
 
     fn request_scroll_end(&self, page: usize) -> usize {
-        let Some(request) = self
-            .pane()
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.agent.permission.as_ref())
-        else {
+        let Some(request) = self.pane().permission() else {
             return 0;
         };
         let details = format!(

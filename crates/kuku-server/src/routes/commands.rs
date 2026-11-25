@@ -157,7 +157,8 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
         | Command::Compact
         | Command::RestoreContext
         | Command::Advance
-        | Command::Cancel { .. } => {}
+        | Command::Cancel { .. }
+        | Command::Interrupt { .. } => {}
     }
     Ok(None)
 }

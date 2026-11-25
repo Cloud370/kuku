@@ -42,7 +42,7 @@ fn load_agent(app: &mut App, status: &str, queued: usize, question: Value, usage
         "pending": [],
         "agents": [],
         "agent": {
-            "address": app.active.agent, "config": {}, "status": status,
+            "address": app.active.agent, "creation_event_id": 1, "config": {}, "status": status,
             "pending_inputs": queued, "execution_id": 49, "question": question,
             "usage": usage,
         },
@@ -259,7 +259,7 @@ fn draft_receipt_and_copy_feedback_keep_the_footer_in_place() {
     let id = submit_draft(&mut app);
     let rows = screen(&mut app, &statusline, 140, 24);
     assert_eq!(footer, rows[23]);
-    assert!(rows[19].contains("Awaiting receipt"));
+    assert!(rows[19].contains("Sending"));
     app.update(Update::Sent(
         id.clone(),
         Ok(Acknowledgement {

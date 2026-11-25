@@ -50,6 +50,7 @@ impl Transcript {
             connectors: Vec::new(),
         };
         let mut lines = Vec::with_capacity(limit);
+        let mut visible_turn_summaries = Vec::new();
         let mut row_insets = Vec::with_capacity(height);
         self.visible_links.clear();
         let mut visible = Vec::new();
@@ -138,6 +139,9 @@ impl Transcript {
                 } else {
                     row.clone()
                 };
+                if row.turn_summary {
+                    visible_turn_summaries.extend(block.turn);
+                }
                 if let (Some(detail), Some(DetailRecord::Tool(tool))) =
                     (row.script_detail, block.detail.as_ref())
                 {
@@ -216,6 +220,9 @@ impl Transcript {
                 .skip(footer_skip)
                 .take(limit - lines.len())
             {
+                if row.turn_summary {
+                    visible_turn_summaries.extend(block.turn);
+                }
                 row_insets.push(row.text_insets());
                 lines.push(row.line);
             }
@@ -272,6 +279,7 @@ impl Transcript {
             turn_surface,
             following,
             tool_hint,
+            visible_turn_summaries,
         }
     }
 

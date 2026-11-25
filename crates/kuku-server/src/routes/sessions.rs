@@ -523,6 +523,7 @@ mod retry_progress_tests {
     fn interrupted_agent() -> AgentSnapshot {
         AgentSnapshot {
             address: "main".into(),
+            creation_event_id: 1,
             config: AgentConfig::default(),
             active_config: None,
             status: AgentStatus::Interrupted,

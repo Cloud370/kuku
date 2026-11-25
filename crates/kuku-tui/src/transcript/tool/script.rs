@@ -171,7 +171,11 @@ impl ScriptPreview {
                             .as_str()
                             .is_some_and(|path| !path.is_empty()),
                         WorkspaceScriptOperation::FindFiles
-                        | WorkspaceScriptOperation::SearchText => !action.summary.trim().is_empty(),
+                        | WorkspaceScriptOperation::SearchText
+                        | WorkspaceScriptOperation::StatFile
+                        | WorkspaceScriptOperation::ReadOutput
+                        | WorkspaceScriptOperation::SearchOutput
+                        | WorkspaceScriptOperation::ListValues => !action.summary.trim().is_empty(),
                         _ => false,
                     }
             })

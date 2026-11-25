@@ -69,7 +69,7 @@ impl StreamMetrics {
                     self.model_request_events += 1;
                     self.first_model_request_ms.get_or_insert(elapsed);
                 }
-                UiEvent::ModelProgress { phase } => {
+                UiEvent::ModelProgress { phase, .. } => {
                     let name = match phase {
                         ModelPhase::Thinking => "thinking",
                         ModelPhase::Streaming => "streaming",

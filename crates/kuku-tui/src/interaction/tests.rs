@@ -209,6 +209,191 @@ fn jobs_picker_lists_ids_and_cancels_the_selected_job() {
 }
 
 #[test]
+fn jobs_picker_prioritizes_status_and_identity_and_preserves_search_selection_on_refresh() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.open_jobs();
+    let Some(Job::Find(ticket, Search::Jobs(_))) = app.effects.pop() else {
+        panic!("initial jobs query expected");
+    };
+    let snapshot = |id, status, title: &str, elapsed_ms| -> JobSnapshot {
+        serde_json::from_value(json!({
+            "id":id,"status":status,"title":title,"elapsed_ms":elapsed_ms,
+            "agent":"main","turn":1,"tool_call_id":id,"tool":"run_command",
+            "summary":"command exited 0 in 161877ms, stdout 10 lines, stderr 0 lines",
+            "started_at":1,"output_id":"saved-job",
+        }))
+        .unwrap()
+    };
+    let running = snapshot("job-4", "running", &"Long build name ".repeat(12), 1400);
+    let failed = snapshot("job-2", "failed", "Poll retry", 61000);
+    let completed = snapshot("job-23", "completed", "Poll status", 161877);
+    let cancelled = snapshot("job-1", "cancelled", "Cleanup", 220);
+    let choices =
+        |jobs: &[JobSnapshot]| jobs.iter().cloned().map(crate::jobs::job_choice).collect();
+    app.update(Update::Found(
+        ticket,
+        Ok((
+            choices(&[
+                running.clone(),
+                failed.clone(),
+                completed.clone(),
+                cancelled.clone(),
+            ]),
+            "Select a job to see available actions".into(),
+        )),
+    ));
+    let screen = |app: &mut App, width, height| {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let buffer = draw(app, &mut terminal);
+        buffer
+            .content
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let wide = screen(&mut app, 120, 32);
+    assert!(
+        wide.contains("Completed · Poll status · 2m 42s · job-23"),
+        "{wide}"
+    );
+    assert!(
+        !wide.contains("stdout 10 lines") && !wide.contains("161877ms"),
+        "{wide}"
+    );
+    let narrow = screen(&mut app, 34, 24);
+    for (status, id) in [
+        ("Running", "job-4"),
+        ("Failed", "job-2"),
+        ("Completed", "job-23"),
+        ("Cancelled", "job-1"),
+    ] {
+        assert!(
+            narrow
+                .lines()
+                .any(|line| line.contains(status) && line.contains(id)),
+            "{narrow}"
+        );
+    }
+    app.paste("poll");
+    press(&mut app, KeyCode::Down);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if matches!(picker.selected_choice(), Some(ChoiceKind::BackgroundJob(job)) if job.id == "job-23")));
+    app.update(Update::Observation(
+        app.selection(),
+        serde_json::from_value(json!({
+            "type":"committed","id":2,"agent":"main","kind":"runtime.operation",
+            "operation":"job_finished",
+            "entry":{"type":"job_finished","id":2,"agent":"main","turn":1,"job_id":"job-4",
+                     "status":"completed","summary":"Completed"}
+        }))
+        .unwrap(),
+    ));
+    let ticket = app
+        .effects
+        .iter()
+        .rev()
+        .find_map(|effect| match effect {
+            Job::Find(ticket, Search::Jobs(_)) => Some(*ticket),
+            _ => None,
+        })
+        .expect("job completion refreshes the current picker");
+    let mut finished_running = running;
+    finished_running.status = JobStatus::Completed;
+    app.update(Update::Found(
+        ticket,
+        Ok((
+            choices(&[completed.clone(), failed, cancelled, finished_running]),
+            String::new(),
+        )),
+    ));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.query.text() == "poll"
+            && matches!(picker.selected_choice(), Some(ChoiceKind::BackgroundJob(job)) if job.id == "job-23")));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.kind == PickerKind::JobActions
+            && picker.visible_choices()[0].label == "Read saved output"
+            && picker.header.contains("stdout 10 lines")));
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.modal, Some(Modal::Output(viewer)) if viewer.tool.output_id.as_deref() == Some("saved-job"))
+    );
+}
+
+#[test]
+fn jobs_picker_searches_hidden_summary_and_scrolls_narrow_job_details() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.open_jobs();
+    let Some(Job::Find(ticket, Search::Jobs(_))) = app.effects.pop() else {
+        panic!("initial jobs query expected");
+    };
+    let job: JobSnapshot = serde_json::from_value(json!({
+        "id":"job-23","status":"failed","title":"Long build task ".repeat(24),
+        "elapsed_ms":161877,"agent":"main","turn":1,"tool_call_id":"build",
+        "tool":"run_command","started_at":1,"output_id":"saved-job",
+        "summary":"unique-diagnostic: command exited 7 in 161877ms, stdout 10 lines, stderr 1 lines",
+    }))
+    .unwrap();
+    app.update(Update::Found(
+        ticket,
+        Ok((vec![crate::jobs::job_choice(job)], String::new())),
+    ));
+    app.paste("unique-diagnostic");
+    let mut terminal = Terminal::new(TestBackend::new(34, 16)).unwrap();
+    let text = |buffer: &Buffer| {
+        buffer
+            .content
+            .chunks(34)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let list = text(&draw(&mut app, &mut terminal));
+    assert!(list.contains("Failed") && list.contains("job-23"), "{list}");
+    assert!(!list.contains("command exited") && !list.contains("161877ms"));
+    press(&mut app, KeyCode::Enter);
+    let first_buffer = draw(&mut app, &mut terminal);
+    let first = text(&first_buffer);
+    assert!(
+        first.contains("Failed · job-23") && first.contains("2m 42s"),
+        "{first}"
+    );
+    assert!(first.contains("PgUp/Dn") && !first.contains("unique-diagnostic"));
+    app.event(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &first_buffer,
+    );
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.header_top > 0));
+    let mut details = text(&draw(&mut app, &mut terminal));
+    for _ in 0..32 {
+        if details.contains("unique-diagnostic") {
+            break;
+        }
+        press(&mut app, KeyCode::PageDown);
+        details = text(&draw(&mut app, &mut terminal));
+    }
+    assert!(details.contains("unique-diagnostic"), "{details}");
+    for _ in 0..32 {
+        press(&mut app, KeyCode::PageUp);
+        let _ = draw(&mut app, &mut terminal);
+    }
+    let returned = text(&draw(&mut app, &mut terminal));
+    assert!(returned.contains("Failed · job-23"), "{returned}");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.modal, Some(Modal::Output(viewer)) if viewer.tool.output_id.as_deref() == Some("saved-job"))
+    );
+}
+
+#[test]
 fn slash_jobs_cancel_works_typed_or_pasted_without_submitting_a_turn() {
     let mut app = connected_app();
     app.pane_mut().exists = true;
@@ -310,7 +495,7 @@ fn queued_receipt_before_snapshot(text: &str) -> (App, Box<kuku_client::Snapshot
     input.timing = InputTiming::NextTurn;
     let snapshot = serde_json::from_value(json!({
         "session_id":app.active.session,"workspace":app.workspace,"cursor":7,
-        "agent":{"address":"main","status":"running","config":{},"pending_inputs":1,
+        "agent":{"address":"main","creation_event_id":1,"status":"running","config":{},"pending_inputs":1,
                  "usage":{"model_requests":0,"unreported_requests":0}},
         "agents":[],
         "pending":[{"receipt":receipt,"input":input}]
@@ -552,7 +737,7 @@ fn escape_from_history_focus_returns_to_composer_with_multiline_draft() {
 }
 
 #[test]
-fn escape_from_running_history_focus_interrupts_before_returning_to_composer() {
+fn escape_from_running_history_focus_returns_to_composer_before_interrupting() {
     let mut app = connected_app();
     let snapshot = Box::new(
         serde_json::from_value(json!({
@@ -564,6 +749,7 @@ fn escape_from_running_history_focus_interrupts_before_returning_to_composer() {
             "progress": null,
             "agent": {
                 "address": app.active.agent,
+                "creation_event_id": 1,
                 "status": "running",
                 "turn": 3,
                 "pending_inputs": 0,
@@ -601,13 +787,17 @@ fn escape_from_running_history_focus_interrupts_before_returning_to_composer() {
     assert!(app.pane().transcript.is_reading());
 
     press(&mut app, KeyCode::Esc);
+    assert!(app.effects.is_empty());
+    assert!(app.composer_focused());
+    assert_eq!("first\nsecond", app.pane().draft.text());
 
+    press(&mut app, KeyCode::Esc);
     let Some(Job::Save(command)) = app.effects.pop() else {
         panic!("Escape while running must issue an interrupt")
     };
     assert!(matches!(
         command.action,
-        Action::Cancel { execution_id: 42 }
+        Action::Interrupt { execution_id: 42 }
     ));
     assert!(app.composer_focused());
     assert_eq!("first\nsecond", app.pane().draft.text());
@@ -657,12 +847,27 @@ pub(super) fn transcript_text(app: &mut App) -> String {
 fn control_o_expands_and_collapses_agent_previews_together() {
     let mut app = connected_app();
     agent_cards(&mut app);
-    let collapsed = transcript_text(&mut app);
+    let automatic = transcript_text(&mut app);
+    assert!(automatic.contains("▾ Timeline") && automatic.contains("▸ Created"));
+    assert!(
+        !automatic.contains("Use precise citations") && !automatic.contains("List failing cases")
+    );
     let details = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
     app.key(details);
     let expanded = transcript_text(&mut app);
     assert!(expanded.contains("Use precise citations"), "{expanded}");
     assert!(expanded.contains("List failing cases"), "{expanded}");
+    app.key(details);
+    let collapsed = transcript_text(&mut app);
+    assert!(
+        collapsed.contains("▸ Timeline") && !collapsed.contains("▸ Created"),
+        "{collapsed}"
+    );
+    assert!(
+        !collapsed.contains("Use precise citations") && !collapsed.contains("List failing cases")
+    );
+    app.key(details);
+    assert_eq!(expanded, transcript_text(&mut app));
     app.key(details);
     assert_eq!(collapsed, transcript_text(&mut app));
 }
@@ -945,7 +1150,7 @@ fn obsolete_message_commands_are_absent_from_picker() {
         "pending": [],
         "agents": [],
         "agent": {
-            "address": app.active.agent, "config": {}, "status": "idle", "pending_inputs": 0,
+            "address": app.active.agent, "creation_event_id": 1, "config": {}, "status": "idle", "pending_inputs": 0,
             "last_output": null,
             "usage": {"model_requests": 0, "unreported_requests": 0},
         }

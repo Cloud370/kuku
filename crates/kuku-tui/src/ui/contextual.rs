@@ -1,15 +1,113 @@
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::contextual::{ContextControl, ContextHit};
 use crate::keys::Shortcut;
+use crate::markup::{render_literal, wrap, wrap_bounded};
+use crate::menu::Prompt;
 use crate::text::{compact_token_count, shorten};
 use crate::theme::{ACCENT, MUTED, WARNING, emphasis, focused_row};
+
+pub(super) fn question_popup(area: Rect, prompt: &Prompt) -> Rect {
+    let candidate = super::popup(area, crate::theme::PICKER_WIDTH, area.height);
+    let padding = crate::theme::panel_padding(candidate);
+    let width = usize::from(candidate.width.saturating_sub(padding.left + padding.right));
+    let rows = wrap_bounded(
+        render_literal(&prompt.instructions, Style::default()),
+        width,
+        usize::from(candidate.height),
+    )
+    .len();
+    let height = u16::try_from(rows + question_hints(width).len() + 9)
+        .unwrap_or(u16::MAX)
+        .max(crate::theme::SHORT_PROMPT_HEIGHT);
+    super::popup(area, crate::theme::PICKER_WIDTH, height)
+}
+
+fn question_hints(width: usize) -> Vec<Line<'static>> {
+    let actions = format!(
+        "{} reply · {} back",
+        Shortcut::ENTER.label,
+        Shortcut::ESCAPE.label,
+    );
+    let editing = format!(
+        "{}/{} question · {} clear",
+        Shortcut::PAGE_UP.label,
+        Shortcut::PAGE_DOWN.label,
+        Shortcut::CLEAR.label,
+    );
+    let style = Style::default().fg(MUTED);
+    let combined = format!("{actions} · {editing}");
+    if combined.width() <= width {
+        vec![Line::styled(combined, style)]
+    } else {
+        wrap(
+            render_literal(&format!("{actions}\n{editing}"), style),
+            width,
+        )
+    }
+}
+
+pub(super) fn render_question_prompt(
+    frame: &mut Frame<'_>,
+    inner: Rect,
+    prompt: &mut Prompt,
+) -> (usize, usize) {
+    let width = usize::from(inner.width);
+    let question = wrap(
+        render_literal(&prompt.instructions, Style::default()),
+        width,
+    );
+    let hints = question_hints(width);
+    // Keep a visible editor and the submit/return actions even when a long
+    // question needs to be paged. The question gets all other available rows.
+    let hint_rows = hints.len().min(usize::from(inner.height.saturating_sub(3)));
+    let room = usize::from(inner.height).saturating_sub(hint_rows);
+    let label_rows = usize::from(room >= 3);
+    let min_editor_rows = if room >= 10 {
+        3
+    } else if room >= 6 {
+        2
+    } else {
+        1
+    };
+    let question_rows = question
+        .len()
+        .min(room.saturating_sub(label_rows + min_editor_rows));
+    prompt.instructions_top = prompt
+        .instructions_top
+        .min(question.len().saturating_sub(question_rows));
+    let [body, label, editor, footer] = Layout::vertical([
+        Constraint::Length(question_rows as u16),
+        Constraint::Length(label_rows as u16),
+        Constraint::Min(0),
+        Constraint::Length(hint_rows as u16),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(
+            question
+                .into_iter()
+                .skip(prompt.instructions_top)
+                .take(question_rows)
+                .collect::<Vec<_>>(),
+        ),
+        body,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled("Your reply", focused_row().fg(ACCENT))),
+        label,
+    );
+    frame.render_widget(Block::new().style(focused_row()), editor);
+    super::render_editor(frame, editor, &mut prompt.editor, true, "Type your reply…");
+    frame.render_widget(Paragraph::new(hints), footer);
+    (usize::from(editor.width).max(1), question_rows)
+}
 
 pub(super) fn label(control: &ContextControl) -> String {
     match control {
@@ -125,11 +223,7 @@ pub(super) fn focused_hint(app: &App, width: usize) -> Option<Vec<Line<'static>>
         .cursor
         .as_ref()
         .map_or("Context action", action_label);
-    let escape = if app.escape_interrupts_running() {
-        key_hint("Enter act · Esc stop", "Esc stop · Enter", width)
-    } else {
-        key_hint("Enter act · Esc back", "Esc back · Enter", width)
-    };
+    let escape = key_hint("Enter act · Esc back", "Esc back · Enter", width);
     Some(vec![
         Line::styled(shorten(&format!("▶ {action}"), width), focused_row()),
         Line::styled(escape, Style::new().fg(MUTED)),

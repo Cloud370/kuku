@@ -88,7 +88,7 @@ async fn cancelling_preserves_only_visible_text_once_and_keeps_it_out_of_the_nex
     })
     .await;
     send.send(sse("content_block_start", json!({
-        "index":2,"content_block":{"type":"tool_use","id":"unstarted","name":"read_file","input":{}}
+        "index":2,"content_block":{"type":"tool_use","id":"unstarted","name":"write_file","input":{}}
     }))).await.unwrap();
     let arguments = seek_frame(
         &mut observe,
@@ -97,7 +97,31 @@ async fn cancelling_preserves_only_visible_text_once_and_keeps_it_out_of_the_nex
         |frame| frame["event"]["type"] == "tool_arguments",
     )
     .await;
-    assert_eq!(json!({"type":"tool_arguments"}), arguments["event"]);
+    assert_eq!(
+        json!({"type":"tool_arguments","preparing_file_contents":true}),
+        arguments["event"]
+    );
+    let preparing = activity_snapshot(&server, id, "reviewer").await;
+    assert_eq!(true, preparing["reply_preview"]["preparing_file_contents"]);
+    let mut resumed = observe_agent_activity(
+        &server,
+        id,
+        "reviewer",
+        preparing["cursor"].as_u64().unwrap(),
+    )
+    .await
+    .bytes_stream();
+    let mut resumed_buffer = Vec::new();
+    let preparing_seed = seek_frame(
+        &mut resumed,
+        &mut resumed_buffer,
+        "current file preparation on attachment",
+        |frame| frame["event"]["type"] == "reply_preview",
+    )
+    .await;
+    assert_eq!("tool_arguments", preparing_seed["event"]["phase"]);
+    assert_eq!(true, preparing_seed["event"]["preparing_file_contents"]);
+    drop(resumed);
     send.send(thinking(3)).await.unwrap();
     seek_frame(
         &mut observe,
@@ -111,6 +135,7 @@ async fn cancelling_preserves_only_visible_text_once_and_keeps_it_out_of_the_nex
     let preview = &snapshot["reply_preview"];
     let prefix = &text[..text.floor_char_boundary(64 * 1024)];
     assert_eq!("thinking", preview["phase"]);
+    assert!(preview.get("preparing_file_contents").is_none());
     assert_eq!(prefix, preview["text"]);
     assert_eq!(true, preview["truncated"]);
     let parent = activity_snapshot(&server, id, "main").await;

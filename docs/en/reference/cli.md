@@ -62,7 +62,7 @@ Without a network flag, `login` uses the saved account setting or follows the en
 | Send immediately | Press `Enter`. If the Agent is running, it may pick up the message during the current Turn. |
 | Queue for the next Turn | Press `Alt+Enter` to place the message in **Pending inputs**. |
 | Edit a queued message | Click it, or press `↑` from an empty composer. `Enter` edits it; `Delete` removes it. |
-| Interrupt the current Turn | Press `Esc` while the Agent is running. Output already shown stays visible. |
+| Interrupt the current Turn | Press `Esc` while the Agent is running. Output already shown stays visible; after successful cleanup, already queued inputs proceed in order. The unsent draft is not submitted. Use the explicit Stop control to pause the queue. |
 
 Use your terminal’s usual paste shortcut in the composer. When the terminal forwards `Ctrl+V` or `Ctrl+Shift+V` as a key, kuku reads the local clipboard. An empty bracketed paste event also triggers a local image lookup. For terminals that handle the shortcut and forward only nonempty text, `Ctrl+Alt+V` can trigger the clipboard lookup directly. A pasted image appears as a highlighted `[Image #1]` in the draft. The cursor moves across the marker in one step. Press Backspace or Delete next to it to remove the whole attachment. Text paste continues to use the terminal's usual shortcut. A paste containing a single readable PNG or JPEG file path attaches that image too. On WSL, kuku resolves Windows drive paths through the mounted drive. An attachment hint above the composer shows the image count and whether PNG preserves transparency.
 
@@ -84,7 +84,7 @@ Workspace files stay unchanged by default. When rewinding to an earlier Turn on 
 |---|---|
 | `Ctrl+C` | Clear the current draft (or exit TUI when the draft is empty; active server work continues). Inside an edit dialog, clears only that field. |
 | `Shift+Enter` or `Ctrl+J` | Insert a newline in the draft. |
-| `Esc` | Close an overlay, exit focused controls, or interrupt while running/cleaning up. Closing a reply editor preserves the reply draft. When idle with an empty composer, press `Esc` twice to open conversation history. |
+| `Esc` | Close an overlay or leave focused controls without submitting; with the composer focused, interrupt the running Turn. Closing a reply editor preserves the reply draft. When idle with an empty composer, press `Esc` twice to open conversation history. |
 | `Ctrl+P` or `F1` | Show shortcut help and how to ask about kuku. The draft stays open. |
 | `/` (on empty draft) or `Ctrl+P` then `/` | Search slash commands and Skills above the composer. Picking a Skill inserts an editable `/skill:NAME` prefix. |
 | `@` or `Tab` | Complete workspace-relative file paths into the draft. |
@@ -116,7 +116,7 @@ Search matches both primary names and aliases; `Tab` completes the primary name 
 | `/compact` | `/compress`, `/summarize` | Compact older context for the selected Agent once idle (also `/compact retry` and `/compact undo`). |
 | `/agents` | `/agent`, `/subagents` | Search Session Agents, switch recipients, or create an Agent. |
 | `/jobs` | `/job`, `/ps` | List background Jobs for the selected Agent, read live output, or cancel (`/jobs cancel <id>`). |
-| `/model` | `/models` | Enter selects the highlighted connection and model for the current Agent. `d` opens confirmation to save it as the default for new Sessions, `e` edits it, and `/` searches. `Ctrl+L` opens the same list. |
+| `/model` | `/models` | Type or paste immediately to filter; use ↑/↓ and Enter to select the connection and model for the current Agent. On a local service, `Alt+D` opens confirmation to save the highlighted route as the default for new Sessions, and `Alt+E` edits it. Esc closes the list. `Ctrl+L` opens the same list. |
 | `/speed [tier]` | `/fast`, `/ultra`, `/ultrafast` | Choose the selected Agent's service tier above the conversation input. The shortcuts choose `fast` or `ultrafast`. Select **Follow model default** to clear the override. Type to filter the available tiers and press Tab to complete the selection. An unknown tier can be added with an optional short probe. |
 | `/thinking` | `/think`, `/effort` | Pick a thinking level for the current Agent, choose **Use default** to clear the override, or press `D` + `Enter` on a writable local route to save as the model default. |
 | `/statusline` | `/status-line` | Preview, toggle, reorder, and save status-line fields to `tui.toml`. |

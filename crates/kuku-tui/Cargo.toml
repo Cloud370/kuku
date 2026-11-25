@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 tempfile = "3"
-time = { version = "0.3", default-features = false, features = ["std", "parsing"] }
+time = { version = "0.3", default-features = false, features = ["std", "parsing", "local-offset"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 toml = { workspace = true }
 toml_edit = { workspace = true, features = ["serde"] }

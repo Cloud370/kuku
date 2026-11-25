@@ -98,12 +98,26 @@ fn reconnect_discards_live_preview_without_changing_drafts_and_rejects_old_targe
     let active = app.selection();
     app.pane_mut().draft.insert("Keep this draft");
     streaming(&mut app, 7);
+    assert_eq!(Activity::Streaming, app.pane().activity());
+    let has_preview = |app: &mut crate::app::App| {
+        app.pane_mut()
+            .transcript
+            .project(80, 12)
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("First tokens"))
+    };
+    assert!(has_preview(&mut app));
     app.update(Update::WatchReconnecting(
         active.clone(),
         "service observation ended".into(),
     ));
     assert_eq!(ServiceStatus::Reconnecting, app.service_status());
-    assert_eq!(Activity::WaitingForModel, app.pane().activity());
+    // The cached attachment predates the streaming phase. Discard its
+    // transient preview without pretending the provider returned to the
+    // previously observed waiting phase.
+    assert_eq!(Activity::Running, app.pane().activity());
+    assert!(!has_preview(&mut app));
     assert!(app.service_problem().unwrap().contains("observation ended"));
     assert_eq!("Keep this draft", app.pane().draft.text());
     app.update(Update::WatchConnected(active.clone()));
@@ -113,6 +127,20 @@ fn reconnect_discards_live_preview_without_changing_drafts_and_rejects_old_targe
     ));
     assert_eq!(ServiceStatus::Connected, app.service_status());
     assert_eq!(None, app.service_problem());
+    assert_eq!(Activity::Running, app.pane().activity());
+    let recovered = snapshot(
+        &app,
+        8,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"waiting_for_model"}),
+        None,
+    );
+    app.update(Update::Refreshed(active.clone(), Ok(recovered)));
+    assert_eq!(Activity::WaitingForModel, app.pane().activity());
+    assert!(!has_preview(&mut app));
+    assert_eq!("Keep this draft", app.pane().draft.text());
 
     let reviewer = Address::new(app.active.session.clone(), "reviewer".into());
     app.select(reviewer, true, String::new());

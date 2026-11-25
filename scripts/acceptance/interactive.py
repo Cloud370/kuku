@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
+import time
 from urllib.parse import urlencode, urlsplit
 
 from interactive_composer import agent_setup, composer_actions, startup_info
@@ -15,16 +17,17 @@ from interactive_permissions import workspace_permissions
 from interactive_stream import profile_markdown_stream
 from interactive_script import remote_authorization_and_script_json
 from interactive_review import dense_transcript, release_review, replay_release_review, write_renderings
-from interactive_lifecycle import first_run_credential_repair, lifecycle_checks, shared_model_editor, verify_restored_tool
+from interactive_lifecycle import first_run_credential_repair, focus_action, lifecycle_checks, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
     check_agent_reading_position,
     named_output_cards,
     operate_on_assistant,
+    reading_activity_history,
     rendering_cases,
 )
 from interactive_fixture import (
     InstalledClient, MarkdownDocument, TOOL_OUTPUT, TOOL_PROGRAM, eventually, http_fixture, install,
-    delegate_reviewer, json_response, local_request, run_cases,
+    delegate_reviewer, json_response, local_request, run_cases, TIMEOUT,
 )
 
 
@@ -230,7 +233,7 @@ def two_workspaces_and_disconnect(client):
         call = client.provider.next(prompt)
         left.expect("Waiting", absent=("Connected", "F2 Restart"))
         client.gated_tool(workspace, call, tool_id)
-        left.expect("Running tools", absent=("Connected", "F2 Restart"))
+        left.expect("Running command", absent=("Connected", "F2 Restart"))
         session = client.session(workspace)
         assert session != client.session(other)
         assert client.status()["busy"], "Running tool is absent from service status"
@@ -379,10 +382,10 @@ def preserve_draft_after_interrupt(client):
         prefix = "This part reached the screen."
         tail = "Late cancelled text"
         with cancelled.streaming_text(prefix, tail):
-            terminal.expect(prefix, state="↓  Reply")
+            terminal.expect(prefix, state="Replying")
             terminal.type(draft)
             terminal.press("\x1b")
-            stopped_screen = terminal.expect(draft, state="Stopped")["screen"]
+            stopped_screen = terminal.expect(draft, state="Turn stopped")["screen"]
             assert prefix in stopped_screen and tail not in stopped_screen, stopped_screen
             stopped = client.snapshot(workspace, session)
             assert stopped["status"] == "stopped" and stopped["last_output"] is None
@@ -410,6 +413,106 @@ def preserve_draft_after_interrupt(client):
         eventually("post-interrupt result to commit", committed)
         terminal.exit_cleanly()
     print("Esc kept only the visible reply and the unsent draft. Reopening restored the partial reply without adding it to model context.")
+    for explicit_stop in (False, True):
+        interrupt_with_queue(client, explicit_stop=explicit_stop)
+
+
+def queued_receipt(client, workspace, session, text):
+    query = urlencode({"workspace": workspace, "agent": "main"})
+
+    def pending():
+        entries = client.request("GET", f"/sessions/{session}/snapshot?{query}").as_json()["pending"]
+        return entries[0]["receipt"] if len(entries) == 1 and entries[0]["input"]["text"] == text else None
+
+    return eventually("the exact input to become durably queued", pending)
+
+
+def read_receipt(client, workspace, session, receipt_or_id):
+    command_id = receipt_or_id["command_id"] if isinstance(receipt_or_id, dict) else receipt_or_id
+    query = urlencode({"workspace": workspace})
+    return client.request("GET", f"/sessions/{session}/receipts/{command_id}?{query}")
+
+
+def assert_delivery(client, workspace, session, receipt, status):
+    actual = read_receipt(client, workspace, session, receipt).as_json()
+    assert actual["receipt"] == receipt and actual["status"] == status, actual
+
+
+def verify_delivered_once(client, workspace, session, receipt, prompt, answer, *, absent=()):
+    def settled():
+        agent = client.snapshot(workspace, session)
+        return agent if agent["status"] == "idle" and agent["last_output"] == answer else None
+
+    assert eventually("the single reply to commit", settled)["pending_inputs"] == 0
+    assert_delivery(client, workspace, session, receipt, "accepted")
+    query = urlencode({"workspace": workspace, "agent": "main"})
+    entries = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+    assert sum(entry["type"] == "user" and entry["text"] == prompt for entry in entries) == 1, entries
+    assert sum(entry["type"] == "assistant" and entry["text"] == answer for entry in entries) == 1, entries
+    committed = json.dumps(entries, ensure_ascii=False)
+    assert not any(text in committed for text in absent), entries
+    client.provider.assert_idle(duration=0.2)
+
+
+def interrupt_with_queue(client, *, explicit_stop):
+    name = "explicit-stop" if explicit_stop else "esc-queue"
+    workspace = client.workspace(f"work-{name}")
+    initial = f"Hold the initial {name} reply"
+    queued = f"Deliver the queued {name} input once"
+    draft = f"Unsubmitted draft for {name}"
+    prefix = f"Partial initial {name} reply"
+    late = f"Late cancelled {name} reply"
+    answer = f"The queued {name} input ran once."
+    with client.terminal(workspace) as terminal:
+        terminal.expect("New session", state="Ready")
+        terminal.submit(initial)
+        cancelled = client.provider.next(initial)
+        session = client.session(workspace)
+        with cancelled.streaming_text(prefix, late):
+            terminal.expect(prefix, state="Replying")
+            terminal.type(queued)
+            terminal.press("\x1b\r")
+            terminal.expect(queued, state="Queued · next Turn")
+            receipt = queued_receipt(client, workspace, session, queued)
+            assert_delivery(client, workspace, session, receipt, "queued")
+            terminal.type(draft)
+            # Escape from a focused action is not the operation that cancels
+            # the current execution.
+            focus_action(terminal, "Stop")
+            terminal.press("\x1b")
+            terminal.expect(draft, state="Replying", absent=("▶ Stop",))
+            assert client.snapshot(workspace, session)["status"] == "running"
+            assert_delivery(client, workspace, session, receipt, "queued")
+            client.provider.assert_idle(duration=0.2)
+            if explicit_stop:
+                focus_action(terminal, "Stop")
+                terminal.press("\r")
+                terminal.expect(draft, state="Turn stopped",
+                                also=("F2 Continue", "Queued · next Turn", queued), absent=(late,))
+                assert_delivery(client, workspace, session, receipt, "queued")
+                assert client.snapshot(workspace, session)["pending_inputs"] == 1
+                client.provider.assert_idle(duration=0.2)
+            else:
+                terminal.press("\x1b")
+                # Do not press another key: the original queue must start
+                # while the cancelled fixture response is still held open.
+                continued = client.provider.next(queued)
+                terminal.expect(draft, absent=("Queued · next Turn", late))
+        # Release the cancelled response before allowing the next reply to
+        # finish. A late streaming chunk must not be applied to either Turn.
+        if explicit_stop:
+            client.provider.assert_idle(duration=0.2)
+            focus_action(terminal, "Continue")
+            terminal.press("\r")
+            continued = client.provider.next(queued)
+        messages = json.dumps(continued.request["messages"], ensure_ascii=False)
+        assert messages.count(queued) == 1 and draft not in messages and prefix not in messages and late not in messages
+        continued.text(answer)
+        terminal.expect(answer, state="Finished", also=(draft,), absent=(late, "Queued · next Turn"))
+        verify_delivered_once(client, workspace, session, receipt, queued, answer, absent=(draft, late))
+        terminal.press("\x03")
+        terminal.exit_cleanly()
+    print(f"{name}: retained the original receipt {receipt['event_id']}, delivered it once, preserved the draft and ignored the cancelled tail.")
 
 
 def editable_multiline_paste(client):
@@ -535,8 +638,8 @@ def recover_from_provider_failure(client):
         terminal.resume(prompt)
         terminal.expect(
             "Automatic retry stopped; see transcript for details.",
-            state="Interrupted",
-            also=("No automatic retry", "HTTP 400", "F2 Continue"),
+            state="Model request failed",
+            also=("Reply interrupted", "No automatic retry", "HTTP 400", "F2 Continue"),
         )
         terminal.submit(recovery)
         try:
@@ -605,6 +708,153 @@ def lost_first_receipt(client):
         client.verify_tool(workspace)
         client.provider.assert_idle(duration=0.2)
     print("Relaunched client recovered its lost first receipt and ran the tool just once")
+
+
+def send_status_and_recovery(client):
+    workspace = client.workspace("work-send-status", permissions="full")
+    connection = client.connection()
+    immediate = "Immediately accepted input"
+    delayed = "Healthy send with a delayed acknowledgment"
+    queued = "Actually queued input during reply"
+    not_sent = "Recover the input with no server receipt"
+    lost = "Recover the input whose receipt was lost"
+    normal_absent = ("Unconfirmed send", "Pending inputs", "You · Sending")
+    commands = {}
+    acknowledgements = {}
+    faults = {delayed: "hold", not_sent: "drop", lost: "lose_receipt"}
+    arrived, release = threading.Event(), threading.Event()
+
+    def route(method, path, headers, body):
+        authorized = {name: headers[name] for name in ("Authorization", "Content-Type") if name in headers}
+        command = None
+        if method == "POST" and urlsplit(path).path.endswith("/commands"):
+            candidate = json.loads(body)
+            if candidate["type"] == "send":
+                command = candidate
+                prompt = command["text"]
+                commands.setdefault(prompt, []).append(command)
+                fault = faults.get(prompt)
+                if fault == "hold":
+                    arrived.set()
+                    assert release.wait(TIMEOUT), "The acceptance test did not release its held send"
+                elif fault == "drop":
+                    return None
+        response = local_request(connection["address"], method, path,
+                                 body=body or None, headers=authorized)
+        if command is not None:
+            acknowledgements.setdefault(prompt, []).append(response.as_json())
+            if fault == "lose_receipt":
+                return None
+        return response
+
+    def verify_request(call, prompt):
+        messages = json.dumps(call.request["messages"], ensure_ascii=False)
+        assert messages.count(prompt) == 1, messages
+
+    def recover(terminal, prompt, action):
+        terminal.expect("Unconfirmed send")
+        focus_action(terminal, "Unconfirmed send")
+        terminal.press("\r")
+        terminal.expect("Unconfirmed commands", also=(prompt,))
+        terminal.press("\r")
+        terminal.expect("Recover command", also=(action,))
+        terminal.press("\r")
+
+    with http_fixture(route, observe_from=connection["address"]) as proxy:
+        with client.terminal(workspace, "--remote", proxy, "--workspace", str(workspace),
+                             "--token", connection["token"]) as terminal:
+            terminal.expect("New session", state="Ready")
+            terminal.submit(immediate)
+            call = client.provider.next(immediate)
+            verify_request(call, immediate)
+            call.text("Immediate delivery completed.")
+            terminal.expect("Immediate delivery completed.", state="Finished", absent=normal_absent)
+            session = client.session(workspace)
+            receipt = acknowledgements[immediate][0]["receipt"]
+            verify_delivered_once(client, workspace, session, receipt, immediate, "Immediate delivery completed.")
+
+            # Hold an HTTP send before the service has accepted it. Observe
+            # several actual terminal frames for at least 300 ms, rather than
+            # trying to reproduce a race by assuming a network duration.
+            try:
+                terminal.submit(delayed)
+                assert arrived.wait(TIMEOUT), "The delayed send never reached the fixture"
+                terminal.expect("Sending")
+                deadline = time.monotonic() + 0.3
+                while True:
+                    screen = terminal.request("screen")["screen"]
+                    assert "Sending" in screen and not any(label in screen for label in normal_absent), screen
+                    assert delayed not in screen, screen
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.04)
+                assert client.snapshot(workspace, session)["pending_inputs"] == 0
+                client.provider.assert_idle()
+            finally:
+                faults.pop(delayed, None)
+                release.set()
+
+            busy = client.provider.next(delayed)
+            verify_request(busy, delayed)
+            terminal.expect(delayed, state="Waiting for model", absent=normal_absent)
+            # Actual queueing remains distinct from a healthy in-flight send.
+            terminal.type(queued)
+            terminal.press("\x1b\r")
+            terminal.expect(queued, state="Queued · next Turn",
+                            also=("Pending inputs", "Enter edit", "Del remove"),
+                            absent=("Unconfirmed send",))
+            queue_receipt = queued_receipt(client, workspace, session, queued)
+            assert_delivery(client, workspace, session, queue_receipt, "queued")
+            busy.text("Delayed delivery completed.")
+            call = client.provider.next(queued)
+            verify_request(call, queued)
+            call.text("Actual queue completed.")
+            terminal.expect("Actual queue completed.", state="Finished", absent=normal_absent)
+            verify_delivered_once(client, workspace, session, queue_receipt, queued, "Actual queue completed.")
+            delayed_receipt = acknowledgements[delayed][0]["receipt"]
+            assert_delivery(client, workspace, session, delayed_receipt, "accepted")
+            query = urlencode({"workspace": workspace, "agent": "main"})
+            history = client.request("GET", f"/sessions/{session}/history?{query}").as_json()["entries"]
+            assert sum(entry["type"] == "user" and entry["text"] == delayed for entry in history) == 1, history
+
+            # A transport failure before commitment keeps the saved intent
+            # recoverable. Verify the absence of a receipt before retrying it.
+            terminal.submit(not_sent)
+            terminal.expect("Unconfirmed send", also=(not_sent,))
+            missing_id = commands[not_sent][0]["command_id"]
+            assert read_receipt(client, workspace, session, missing_id).status == 404
+            client.provider.assert_idle(duration=0.2)
+            recover(terminal, not_sent, "Check server receipt")
+            terminal.expect("Receipt missing")
+            faults.pop(not_sent)
+            recover(terminal, not_sent, "Retry exact command")
+            call = client.provider.next(not_sent)
+            verify_request(call, not_sent)
+            call.text("Missing receipt recovered.")
+            terminal.expect("Missing receipt recovered.", state="Finished", absent=normal_absent)
+            receipt = acknowledgements[not_sent][0]["receipt"]
+            assert receipt["command_id"] == missing_id
+            assert all(command == commands[not_sent][0] for command in commands[not_sent])
+            verify_delivered_once(client, workspace, session, receipt, not_sent, "Missing receipt recovered.")
+
+            # Lose a response after the service has committed the command.
+            # Recovery must reconcile that receipt instead of executing again.
+            terminal.submit(lost)
+            call = client.provider.next(lost)
+            verify_request(call, lost)
+            terminal.expect("Unconfirmed send")
+            receipt = acknowledgements[lost][0]["receipt"]
+            call.text("Lost receipt recovered.")
+            terminal.expect("Lost receipt recovered.", state="Finished", also=("Unconfirmed send",))
+            assert_delivery(client, workspace, session, receipt, "accepted")
+            faults.pop(lost)
+            recover(terminal, lost, "Check server receipt")
+            terminal.expect("Lost receipt recovered.", state="Finished", absent=normal_absent)
+            assert all(command == commands[lost][0] for command in commands[lost])
+            assert all(ack["receipt"] == receipt for ack in acknowledgements[lost])
+            verify_delivered_once(client, workspace, session, receipt, lost, "Lost receipt recovered.")
+            terminal.exit_cleanly()
+    print("Healthy sends showed Sending without a queue row or recovery hint; real queues and missing/lost receipt recovery kept their exact command identities.")
 
 
 def open_reviewer(terminal):
@@ -915,8 +1165,10 @@ def main():
                  ("skill-real-path", skill_real_path),
                  ("provider-failure", recover_from_provider_failure),
                  ("lost-receipt", lost_first_receipt),
+                 ("send-status", send_status_and_recovery),
                  ("agent-cards", delegated_agent_cards),
                  ("dense-transcript", dense_transcript),
+                 ("reading-activities", reading_activity_history),
                  ("release-review", release_review),
                  ("markdown", markdown_document),
              )]

@@ -579,7 +579,9 @@ fn group_only_history_window_trims_and_can_page_back_to_newer_groups() {
         next_before: Some(1),
     });
 
-    let request = window.trim_back(None).unwrap();
+    let request = window
+        .trim_back(None, &mut super::Details::default())
+        .unwrap();
 
     assert_eq!(super::MAX_RECORDS, window.rewind_groups.len());
     assert_eq!(super::MAX_RECORDS as u64, request);

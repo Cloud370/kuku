@@ -1,7 +1,7 @@
 use std::cell::Cell;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use kuku_client::{Action, Error, PendingApproval, PermissionMode};
+use kuku_client::{Action, Error, Observation, PendingApproval, PermissionMode};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -148,13 +148,19 @@ impl App {
                 if let Some(mode) = mode.filter(|_| saving) {
                     self.confirmation(format!("Permissions · {}", mode_name(mode)));
                     if let Some((address, request_id)) = self.approval_after_mode_save.take() {
-                        self.issue(
-                            address,
-                            Action::ReplyPermission {
-                                request_id,
-                                allow: true,
-                            },
-                        );
+                        if self.approval_available(&address, &request_id) {
+                            self.issue(
+                                address,
+                                Action::ReplyPermission {
+                                    request_id,
+                                    allow: true,
+                                },
+                            );
+                        } else {
+                            self.problem(
+                                "Workspace permissions saved · this approval is no longer waiting",
+                            );
+                        }
                     }
                 } else if mode.is_none() && self.modal.is_none() && !self.pane().exists {
                     self.open_permissions();
@@ -198,6 +204,7 @@ const APPROVAL_CHOICES: [ApprovalChoice; 3] = [
 
 #[derive(Debug)]
 pub(crate) struct ApprovalEditor {
+    address: Address,
     request_id: String,
     selected: usize,
     detail_offset: Cell<usize>,
@@ -215,10 +222,10 @@ impl ApprovalEditor {
         approvals: &[PendingApproval],
         mode: Option<PermissionMode>,
     ) {
-        let Some(index) = approvals
-            .iter()
-            .position(|item| item.request.id == self.request_id)
-        else {
+        let Some(index) = approvals.iter().position(|item| {
+            item.request.id == self.request_id
+                && item.request.conversation.as_str() == self.address.agent
+        }) else {
             frame.render_widget(Paragraph::new("This approval has closed · Esc Close"), area);
             return;
         };
@@ -302,8 +309,123 @@ impl ApprovalEditor {
 }
 
 impl App {
+    pub(super) fn invalidate_approval_view(&mut self) {
+        self.approvals.clear();
+        self.approvals_session = None;
+        // An already issued HTTP request may still return the old list.
+        // Its response is superseded; keep the in-flight identity until it arrives.
+        self.approval_refresh_dirty = self.approval_refresh.is_some();
+        if matches!(&self.modal, Some(Modal::Approvals(editor)) if editor.address.session != self.active.session)
+        {
+            self.modal = None;
+        }
+    }
+
+    fn approval_available(&self, address: &Address, request_id: &str) -> bool {
+        if address.session != self.active.session
+            || !self.approvals().iter().any(|item| {
+                item.request.id == request_id && item.request.conversation.as_str() == address.agent
+            })
+            || self.request_reply_pending(address, request_id)
+        {
+            return false;
+        }
+        if request_id.starts_with("script:") {
+            // Detached scripts do not own an Agent's direct permission slot.
+            return true;
+        }
+        if address == &self.active {
+            return self
+                .pane()
+                .permission()
+                .is_some_and(|request| request.id == request_id);
+        }
+        // A newly refreshed Session snapshot can already know about a closed
+        // peer authorization before its commit or approvals response arrives.
+        self.pane().snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.agents.iter().any(|agent| {
+                agent.address == address.agent
+                    && agent.status == kuku_client::AgentStatus::Waiting
+                    && agent
+                        .permission
+                        .as_ref()
+                        .is_some_and(|request| request.id == request_id)
+            })
+        })
+    }
+
+    pub(super) fn invalidate_replied_approval(&mut self, address: &Address, request_id: &str) {
+        if self.approvals_session.as_deref() == Some(&address.session) {
+            self.approvals.retain(|item| {
+                item.request.id != request_id || item.request.conversation.as_str() != address.agent
+            });
+        }
+        if self.active.session == address.session {
+            self.refresh_approvals();
+        }
+    }
+
+    pub(super) fn observe_approval_transition(&mut self, event: &Observation, last_event: u64) {
+        let Observation::Committed {
+            id,
+            agent,
+            entry,
+            kind,
+            operation,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if *id <= last_event {
+            return;
+        }
+        let operation = operation.as_deref();
+        // Peer commits have no HistoryEntry. For those, temporarily remove the
+        // affected Agent's matching class of approvals until the list refreshes.
+        // A detached script may outlive Turn settlement, so only direct tool
+        // approvals are invalidated by a Turn stop/settlement.
+        let direct_closed = matches!(
+            operation,
+            Some("permission_replied" | "agent_stopped" | "turn_settled")
+        );
+        let script_closed = matches!(
+            operation,
+            Some("script_permission_replied" | "script_permission_ended")
+        );
+        let approvals_tracked = !self.approvals().is_empty() || self.approval_refresh.is_some();
+        if (direct_closed || script_closed)
+            && let Some(agent) = agent
+            && self.approvals_session.as_deref() == Some(&self.active.session)
+        {
+            let request_id = entry
+                .as_ref()
+                .and_then(|entry| entry.details.get("request_id"))
+                .and_then(serde_json::Value::as_str);
+            self.approvals.retain(|item| {
+                let script = item.request.id.starts_with("script:");
+                item.request.conversation.as_str() != agent.as_str()
+                    || request_id.is_some_and(|id| item.request.id != id)
+                    || (script && !script_closed)
+                    || (!script && !direct_closed)
+            });
+        }
+        if script_closed
+            || matches!(
+                operation,
+                Some("permission_replied" | "permission_waiting" | "script_permission_waiting")
+            )
+            || direct_closed && approvals_tracked
+            || kind == "tool.result" && !self.approvals().is_empty()
+        {
+            self.refresh_approvals();
+        }
+    }
+
     pub(crate) fn approvals(&self) -> &[PendingApproval] {
-        if self.approvals_session.as_deref() == Some(&self.active.session) {
+        if !self.pane().request_state_unconfirmed
+            && self.approvals_session.as_deref() == Some(&self.active.session)
+        {
             &self.approvals
         } else {
             &[]
@@ -311,7 +433,7 @@ impl App {
     }
 
     pub(super) fn refresh_approvals(&mut self) {
-        if self.endpoint.is_none() || !self.pane().exists {
+        if self.endpoint.is_none() || !self.pane().exists || self.pane().request_state_unconfirmed {
             return;
         }
         let selection = self.selection();
@@ -336,20 +458,35 @@ impl App {
         if selection != self.selection() {
             return;
         }
-        if let Ok(approvals) = result {
-            self.approvals_session = Some(selection.target.session_id);
-            self.approvals = approvals;
-        }
+        // A transition observed while this HTTP request was in flight may
+        // already have closed one of the returned approvals. Never revive it.
         if std::mem::take(&mut self.approval_refresh_dirty) {
             self.refresh_approvals();
+            return;
+        }
+        if !self.pane().request_state_unconfirmed
+            && let Ok(approvals) = result
+        {
+            self.approvals_session = Some(selection.target.session_id);
+            self.approvals = approvals;
         }
     }
 
     pub(crate) fn open_approvals(&mut self) -> bool {
-        let Some(item) = self.approvals().first() else {
+        let Some(item) = self.approvals().iter().find(|item| {
+            let address = Address::new(
+                self.active.session.clone(),
+                item.request.conversation.as_str().into(),
+            );
+            self.approval_available(&address, &item.request.id)
+        }) else {
             return false;
         };
         self.modal = Some(Modal::Approvals(ApprovalEditor {
+            address: Address::new(
+                self.active.session.clone(),
+                item.request.conversation.as_str().into(),
+            ),
             request_id: item.request.id.clone(),
             selected: 0,
             detail_offset: Cell::default(),
@@ -358,14 +495,11 @@ impl App {
     }
 
     pub(crate) fn open_approval(&mut self, request_id: &str) -> bool {
-        if !self
-            .approvals()
-            .iter()
-            .any(|item| item.request.id == request_id)
-        {
+        if !self.approval_available(&self.active, request_id) {
             return false;
         }
         self.modal = Some(Modal::Approvals(ApprovalEditor {
+            address: self.active.clone(),
             request_id: request_id.into(),
             selected: 0,
             detail_offset: Cell::default(),
@@ -380,15 +514,19 @@ impl App {
         let Some(Modal::Approvals(mut editor)) = self.modal.take() else {
             return;
         };
+        if editor.address.session != self.active.session {
+            self.problem("This approval is no longer waiting in this Session");
+            return;
+        }
         let approvals = self.approvals();
-        let Some(index) = approvals
-            .iter()
-            .position(|item| item.request.id == editor.request_id)
-        else {
-            if key.code == KeyCode::Tab || key.code == KeyCode::Enter {
+        let Some(index) = approvals.iter().position(|item| {
+            item.request.id == editor.request_id
+                && item.request.conversation.as_str() == editor.address.agent
+        }) else {
+            if key.code == KeyCode::Tab {
                 self.open_approvals();
             } else {
-                self.modal = Some(Modal::Approvals(editor));
+                self.problem("This approval is no longer waiting");
             }
             return;
         };
@@ -405,7 +543,9 @@ impl App {
                 None
             }
             KeyCode::Tab => {
-                editor.request_id = approvals[(index + 1) % approvals.len()].request.id.clone();
+                let next = &approvals[(index + 1) % approvals.len()];
+                editor.request_id = next.request.id.clone();
+                editor.address.agent = next.request.conversation.as_str().into();
                 editor.selected = 0;
                 editor.detail_offset.set(0);
                 None
@@ -436,11 +576,12 @@ impl App {
             self.modal = Some(Modal::Approvals(editor));
             return;
         };
-        let address = Address::new(
-            self.active.session.clone(),
-            approval.request.conversation.as_str().into(),
-        );
+        let address = editor.address.clone();
         let request_id = editor.request_id.clone();
+        if !self.approval_available(&address, &request_id) {
+            self.problem("A reply to this approval is already pending or the approval has closed");
+            return;
+        }
         match choice {
             ApprovalChoice::Allow | ApprovalChoice::Deny => {
                 self.issue(

@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use crate::text::cap;
 use crate::theme::{ACCENT, ERROR, MUTED, SUCCESS, TranscriptTone, WARNING};
 
-use super::command::CommandPreview;
+use super::command::{BackgroundStart, CommandPreview};
 use super::file_change::FileChange;
 use super::script::ScriptPreview;
 use super::session::Observation;
@@ -40,7 +40,7 @@ impl State {
 
 impl Outcome {
     fn label(&self) -> (&str, Color) {
-        if self.background_job {
+        if self.background_job.is_some() {
             return ("started in background", ACCENT);
         }
         if let Some(command) = &self.command_preview {
@@ -83,7 +83,7 @@ pub(super) struct Outcome {
     pub(super) observation: Option<Observation>,
     pub(super) change: Option<FileChange>,
     pub(super) attention: bool,
-    background_job: bool,
+    pub(super) background_job: Option<BackgroundStart>,
 }
 
 impl Outcome {
@@ -96,8 +96,8 @@ impl Outcome {
         let content = get("model_content");
         let summary = get("summary").or(fallback_summary);
         let succeeded = get("status") == Some("ok");
-        let background_job = structured["kind"].as_str() == Some("job");
-        let output_id = if background_job {
+        let background_job = BackgroundStart::from_result(structured);
+        let output_id = if background_job.is_some() {
             None
         } else {
             get("output_id")
@@ -173,6 +173,9 @@ impl Outcome {
     }
 
     pub(super) fn evidence(&self) -> String {
+        if let Some(background) = &self.background_job {
+            return background.evidence();
+        }
         if let Some(script) = &self.script {
             return script.evidence(&self.status);
         }

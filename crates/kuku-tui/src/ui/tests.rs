@@ -172,7 +172,7 @@ fn snapshot(
             "agents": [],
             "selection": null,
             "agent": {
-                "address": app.active.agent, "config": {}, "status": status, "pending_inputs": 0,
+                "address": app.active.agent, "creation_event_id": 1, "config": {}, "status": status, "pending_inputs": 0,
                 "execution_id": 49, "question": question, "permission": permission,
                 "usage": {"model_requests":0,"unreported_requests":0},
             }
@@ -206,7 +206,7 @@ fn queued_receipt(command: &Command, event_id: u64) -> Acknowledgement {
 }
 
 #[test]
-fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_receipt() {
+fn identical_inputs_render_only_when_queued_and_admission_wins_over_a_late_receipt() {
     let mut app = app();
     app.pane_mut().exists = true;
     app.pane_mut().title = "Concurrent inputs".into();
@@ -226,8 +226,9 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let first = saved_input(&app);
     let sending = screen(&mut app, 92, 25);
-    assert!(sending.contains("You · Sending"));
-    assert!(sending.find(text).unwrap() < sending.find("Enter steer").unwrap());
+    assert!(!sending.contains(text), "{sending}");
+    assert!(!sending.contains("Unconfirmed send"), "{sending}");
+    assert!(!sending.contains("Pending inputs"), "{sending}");
     app.update(Update::Saved(first.clone(), Ok(())));
     app.update(Update::Sent(
         first.command_id.clone(),
@@ -239,7 +240,7 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let second = saved_input(&app);
     assert_ne!(first.command_id, second.command_id);
-    assert_eq!(2, screen(&mut app, 92, 25).matches(text).count());
+    assert_eq!(1, screen(&mut app, 92, 25).matches(text).count());
     app.update(Update::Saved(second.clone(), Ok(())));
 
     let active = app.selection();
@@ -265,6 +266,122 @@ fn identical_pending_inputs_render_immediately_and_admission_wins_over_a_late_re
     );
     assert!(!accepted.contains("Pending inputs"));
     assert_eq!(2, accepted.matches(text).count());
+}
+
+#[test]
+fn an_idle_send_only_exposes_recovery_after_the_receipt_is_unconfirmed() {
+    let mut app = app();
+    app.pane_mut().exists = true;
+    let mut idle = snapshot(&app, "idle", json!(null), json!(null));
+    idle.agent.execution_id = None;
+    app.update(Update::Loaded(
+        app.selection(),
+        idle,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: vec![],
+            next_before: None,
+        },
+    ));
+    let text = "ordinary send";
+    app.pane_mut().draft.insert(text);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let command = saved_input(&app);
+    for saved in [false, true] {
+        if saved {
+            app.update(Update::Saved(command.clone(), Ok(())));
+        }
+        for width in [36, 92] {
+            let view = screen(&mut app, width, 24);
+            assert!(!view.contains("Pending inputs"), "{view}");
+            assert!(!view.contains("Unconfirmed send"), "{view}");
+            assert!(!view.contains(text), "{view}");
+            assert!(view.contains("Sending"), "{view}");
+        }
+        assert!(app.pending.contains_key(&command.command_id));
+        assert!(app.pane().deliveries.rows().is_empty());
+    }
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Err(Error::Io(std::io::Error::other("fixture receipt lost"))),
+    ));
+    assert_eq!(app.pane().deliveries.rows().len(), 1);
+    let view = screen(&mut app, 92, 24);
+    assert!(view.contains(text), "{view}");
+    assert!(view.contains("Unconfirmed send"), "{view}");
+    app.effects.clear();
+    app.pending_check(&command.command_id);
+    assert!(matches!(app.effects.as_slice(), [Job::Check(next)] if next == &command));
+    app.update(Update::Checked(command.command_id.clone(), Ok(None)));
+    app.effects.clear();
+    app.pending_retry(&command.command_id);
+    assert!(matches!(app.effects.as_slice(), [Job::Send(next)] if next == &command));
+    let mut receipt = queued_receipt(&command, 53);
+    receipt.status = Some(InputStatus::Accepted);
+    app.update(Update::Sent(command.command_id.clone(), Ok(receipt)));
+    assert!(!app.pending.contains_key(&command.command_id));
+    assert!(app.pane().deliveries.rows().is_empty());
+    let view = screen(&mut app, 92, 24);
+    assert!(!view.contains("Unconfirmed send"), "{view}");
+    assert!(!view.contains("Pending inputs"), "{view}");
+}
+
+#[test]
+fn an_idle_send_queued_receipt_only_displays_a_queue_when_bound_to_other_work_or_paused() {
+    for (status, execution, turn, true_queue) in [
+        ("running", Some(54), None, false),
+        ("running", Some(49), Some(50), true),
+        ("running", Some(54), Some(55), true),
+        ("stopped", None, Some(50), true),
+    ] {
+        let mut app = app();
+        app.pane_mut().exists = true;
+        let mut idle = snapshot(&app, "idle", json!(null), json!(null));
+        idle.agent.execution_id = None;
+        app.update(Update::Loaded(
+            app.selection(),
+            idle,
+            HistoryPage {
+                entries: vec![],
+                rewind_groups: vec![],
+                next_before: None,
+            },
+        ));
+        app.pane_mut().draft.insert("first idle input");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let command = saved_input(&app);
+        let receipt = queued_receipt(&command, 53);
+        app.update(Update::Sent(
+            command.command_id.clone(),
+            Ok(receipt.clone()),
+        ));
+        assert!(app.pane().deliveries.rows().is_empty());
+        let sent = screen(&mut app, 92, 24);
+        assert!(!sent.contains("Pending inputs"), "{sent}");
+        assert!(!sent.contains("Unconfirmed send"), "{sent}");
+        assert!(sent.contains("Sending"), "{sent}");
+        let mut current = snapshot(&app, status, json!(null), json!(null));
+        current.cursor = 55;
+        current.agent.execution_id = execution;
+        current.agent.turn = turn;
+        current.agent.pending_inputs = 1;
+        let mut input = Input::new(command.command_id.clone(), "main", "first idle input");
+        input.source = InputSource::Host("http".into());
+        current.pending.push(QueuedInput {
+            input,
+            receipt: receipt.receipt,
+        });
+        app.update(Update::Refreshed(app.selection(), Ok(current)));
+        let shown = screen(&mut app, 92, 24);
+        assert_eq!(true_queue, shown.contains("Pending inputs"), "{shown}");
+        assert_eq!(if true_queue { 1 } else { 0 }, app.input_status().queued);
+        app.update(Update::Observation(app.selection(), serde_json::from_value(json!({
+            "type":"committed","id":56,"agent":"main","kind":"runtime.operation",
+            "operation":"inputs_accepted","delivery":{"status":"accepted","input_ids":[command.command_id]}
+        })).unwrap()));
+        assert!(app.pane().deliveries.rows().is_empty());
+        assert_eq!(0, app.input_status().queued);
+    }
 }
 
 #[test]
@@ -454,8 +571,8 @@ fn switching_agent_keeps_drafts_and_read_position_and_ignores_old_observer() {
     };
     let mut main_state = snapshot(&app, "running", json!(null), json!(null));
     main_state.agents = serde_json::from_value(json!([
-        {"address":"main", "status":"running", "pending_inputs":0},
-        {"address":"reviewer", "status":"idle", "pending_inputs":0},
+        {"address":"main", "creation_event_id":1, "status":"running", "pending_inputs":0},
+        {"address":"reviewer", "creation_event_id":2, "status":"idle", "pending_inputs":0},
     ]))
     .unwrap();
     app.update(Update::Loaded(main_selection.clone(), main_state, page));

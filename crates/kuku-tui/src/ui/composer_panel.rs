@@ -326,12 +326,12 @@ fn render_choices(
     } else if picker.kind == PickerKind::Speed {
         "↑↓ Move · Tab Complete · Enter Apply · Type to add"
     } else if picker.kind == PickerKind::Models {
-        if picker.search_focused {
-            "Enter Switch · Esc Back to list"
-        } else if remote {
-            "Enter Switch · / Search"
+        if remote {
+            "Enter Switch · Esc Close"
+        } else if width >= 53 {
+            "Enter Switch · Alt+D Default · Alt+E Edit · Esc Close"
         } else {
-            "Enter Switch · d Set default · e Edit · / Search"
+            "Alt+D Default · Alt+E Edit · Enter · Esc"
         }
     } else {
         MODEL_HELP
@@ -382,13 +382,12 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, title: &str, picker: &mut Pi
     );
     frame.render_widget(Paragraph::new(Span::styled("/ ", emphasis(ACCENT))), marker);
     if searchable && !field.is_empty() {
-        let focused = picker.kind != PickerKind::Models || picker.search_focused;
         let placeholder = if picker.kind == PickerKind::Speed {
             "Tier name…"
         } else {
             "Search models…"
         };
-        render_editor(frame, field, &mut picker.query, focused, placeholder);
+        render_editor(frame, field, &mut picker.query, true, placeholder);
     }
     usize::from(field.width).max(1)
 }

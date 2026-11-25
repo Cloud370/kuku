@@ -93,11 +93,30 @@ impl App {
         if !self.require_service() {
             return;
         }
+        if let Action::ReplyQuestion { request_id, .. } | Action::ReplyPermission { request_id, .. } =
+            &action
+            && self.request_reply_pending(&address, request_id)
+        {
+            self.problem("A reply to this request is already pending");
+            return;
+        }
         let command = Command {
             target: self.target(&address),
             command_id: new_id(),
             action,
         };
+        if matches!(command.action, Action::Send { .. })
+            && let Some(pane) = self.panes.get_mut(&address)
+            && !pane.deliveries.starting()
+            && (!pane.exists
+                || (pane.execution().is_none()
+                    && pane.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.agent.status == kuku_client::AgentStatus::Idle
+                            && snapshot.agent.pending_inputs == 0
+                    })))
+        {
+            pane.deliveries.begin_idle_send(&command.command_id);
+        }
         self.pending.insert(
             command.command_id.clone(),
             PendingItem {
@@ -108,6 +127,20 @@ impl App {
         );
         self.update_pending_delivery(&command.command_id);
         self.effects.push(Job::Save(command));
+    }
+
+    pub(crate) fn request_reply_pending(&self, address: &Address, request_id: &str) -> bool {
+        let target = self.target(address);
+        self.pending.values().any(|item| {
+            item.command.target == target
+                && !matches!(item.stage, PendingStage::Rejected(_))
+                && matches!(&item.command.action,
+                    Action::ReplyQuestion { request_id: id, .. }
+                    | Action::ReplyPermission { request_id: id, .. } if id == request_id)
+        }) || self
+            .approval_after_mode_save
+            .as_ref()
+            .is_some_and(|(pending, id)| pending == address && id == request_id)
     }
 }
 
@@ -194,6 +227,7 @@ mod tests {
                 "progress":null,
                 "agent":{
                     "address":app.active.agent,
+                    "creation_event_id":1,
                     "status":status,
                     "turn":5,
                     "pending_inputs":0,
@@ -388,7 +422,7 @@ mod tests {
         let state = serde_json::from_value(json!({
             "session_id":command.target.session_id,"workspace":command.target.workspace,
             "cursor":14,"agents":[],"pending":[],
-            "agent":{"address":"main","status":"running","config":{},"pending_inputs":0,"turn":13},
+            "agent":{"address":"main","creation_event_id":1,"status":"running","config":{},"pending_inputs":0,"turn":13},
         }))
         .unwrap();
         let histories = serde_json::from_value(json!([
@@ -507,10 +541,8 @@ mod tests {
                 warnings: vec![],
             }),
         ));
-        let visible = app.pane().deliveries.rows();
-        assert_eq!(1, visible.len());
-        assert_eq!(&second.command_id, &visible[0].id);
-        assert_eq!(super::SubmissionStatus::Saving, visible[0].status);
+        assert!(app.pane().deliveries.rows().is_empty());
+        assert!(app.pending.contains_key(&second.command_id));
 
         app.select(main, true, String::new());
         let original = app.pane().deliveries.rows();
@@ -573,6 +605,13 @@ pub(crate) enum PendingStage {
 }
 
 impl PendingStage {
+    pub(crate) fn needs_recovery(&self) -> bool {
+        matches!(
+            self,
+            Self::Checking | Self::Unknown(_) | Self::Missing | Self::Rejected(_)
+        )
+    }
+
     pub(crate) fn label(&self) -> &str {
         match self {
             Self::Saving => "Saving send",
@@ -688,6 +727,7 @@ impl App {
             let address = Address::from_target(&target);
             self.select(address, create.is_none(), String::new());
             let pane = self.pane_mut();
+            pane.deliveries.remove(id);
             if create.is_some() {
                 pane.creation_rejected = true;
             }
@@ -741,7 +781,9 @@ impl App {
                         if matches!(item.command.action, Action::Send { .. }) {
                             pane.sending = false;
                         }
-                        if let Action::Cancel { execution_id } = item.command.action {
+                        if let Action::Cancel { execution_id }
+                        | Action::Interrupt { execution_id } = item.command.action
+                        {
                             pane.finish_interrupt(execution_id);
                         }
                     }
@@ -839,7 +881,9 @@ impl App {
         }
         let mut restored = false;
         if let Some(pane) = self.panes.get_mut(&address) {
-            if let Action::Cancel { execution_id } = item.command.action {
+            if let Action::Cancel { execution_id } | Action::Interrupt { execution_id } =
+                item.command.action
+            {
                 pane.finish_interrupt(execution_id);
             }
             if let Action::Send {
@@ -864,9 +908,13 @@ impl App {
         } else {
             PendingStage::Unknown(problem.clone())
         };
-        self.update_pending_delivery(id);
         if restored {
             self.pending.remove(id);
+            if let Some(pane) = self.panes.get_mut(&address) {
+                pane.deliveries.remove(id);
+            }
+        } else {
+            self.update_pending_delivery(id);
         }
         let recovery = if restored {
             "Draft restored"
@@ -950,8 +998,28 @@ impl App {
                     self.message("Settings saved for the next safe model boundary");
                 }
             }
-            Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
-                self.confirmation("Reply received")
+            Action::ReplyPermission { request_id, .. } => {
+                if !request_id.starts_with("script:")
+                    && let Some(pane) = self.panes.get_mut(&address)
+                {
+                    pane.note_request_state_change(
+                        ack.receipt.event_id,
+                        Some("permission_replied"),
+                        None,
+                    );
+                }
+                self.invalidate_replied_approval(&address, &request_id);
+                self.confirmation("Reply received");
+            }
+            Action::ReplyQuestion { .. } => {
+                if let Some(pane) = self.panes.get_mut(&address) {
+                    pane.note_request_state_change(
+                        ack.receipt.event_id,
+                        Some("question_replied"),
+                        None,
+                    );
+                }
+                self.confirmation("Reply received");
             }
             Action::Withdraw {
                 input_command_id,
@@ -1060,7 +1128,7 @@ impl App {
                     self.confirmation("Continue request received");
                 }
             }
-            Action::Cancel { execution_id } => {
+            Action::Cancel { execution_id } | Action::Interrupt { execution_id } => {
                 if let Some(pane) = self.panes.get_mut(&address) {
                     pane.finish_interrupt(execution_id);
                     if active

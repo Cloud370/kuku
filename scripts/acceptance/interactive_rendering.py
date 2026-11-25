@@ -6,12 +6,13 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from urllib.parse import urlencode
 
 from interactive_fixture import (
     InstalledClient, Response, StreamPause, eventually, has_standalone_assistant_rail,
-    is_composer_heading, run_cases,
+    is_composer_heading, run_cases, wait_for_resized_transcript,
 )
 from interactive_responses import responses_reasoning
 
@@ -202,6 +203,8 @@ def rendering_cases(binary, bridge, directory):
 
     operations = [("delegation", targeted_delegation), ("file-cards", file_change_cards),
                   ("inline", markdown_inline_elements), ("named-output", named_output_cards)]
+    if os.name != "nt":
+        operations.append(("client-clock", client_clock_history))
     if os.name == "nt":
         operations.append(("windows-diagnostic", windows_diagnostic))
         operations.extend((shell, lambda client, shell=shell: windows_command_encoding(client, shell))
@@ -212,6 +215,213 @@ def rendering_cases(binary, bridge, directory):
     cases.extend((name, lambda name=name, operation=operation: configured(name, operation, True))
                  for name, operation in (("reasoning", published_reasoning), ("mixed-table", scroll_mixed_table)))
     run_cases(cases)
+
+
+def client_clock_history(client):
+    """One service, two client timezones: render durable instants, never server clocks."""
+    workspace = client.workspace("work-client-clock")
+    (workspace / "clock.txt").write_text("clock fixture\n", encoding="utf-8")
+    prompt = "Read the client clock fixture"
+    first = "Reading the fixture now."
+    final = "Clock check complete."
+    with patch.dict(client.env, {"TZ": "UTC0"}), client.terminal(workspace) as terminal:
+        terminal.expect("Ready")
+        terminal.submit(prompt)
+        client.provider.next(prompt).reply([
+            {"type": "text", "text": first},
+            {"type": "tool_use", "id": "clock-read", "name": "read_file", "input": {"path": "clock.txt"}},
+        ])
+        client.provider.next("clock-read").expect_tool_output("clock-read", "clock fixture").text(final)
+        terminal.expect(final, state="Finished")
+        session = client.session(workspace)
+        query = urlencode({"workspace": workspace, "agent": "main"})
+        path = f"/sessions/{session}/history?{query}"
+        entries = client.request("GET", path).as_json()["entries"]
+        def event_instant(ts):
+            # Python 3.10 accepts microseconds but not every nanosecond-length
+            # RFC3339 fraction emitted by Rust. We compare whole display seconds.
+            ts = re.sub(r"\.(\d+)(?=Z|[+-]\d{2}:\d{2}$)",
+                        lambda match: "." + match[1][:6].ljust(6, "0"), ts)
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+        instants = {
+            entry["type"]: event_instant(entry["ts"])
+            for entry in entries
+            if (entry["type"] == "tool_result" and entry.get("tool_call_id") == "clock-read")
+            or (entry["type"] == "assistant" and entry.get("text") == first)
+        }
+        assert set(instants) == {"assistant", "tool_result"}, entries
+
+        def clocks(zone):
+            return {kind: instant.astimezone(zone).strftime("%H:%M:%S") for kind, instant in instants.items()}
+
+        def verify_clock_rows(screen, expected):
+            rows = screen.splitlines()
+            reply_row = next(index for index, row in enumerate(rows) if first in row)
+            tool_row = next(index for index, row in enumerate(rows) if index > reply_row and "clock.txt" in row)
+            last_row = next(index for index, row in enumerate(rows) if index > tool_row and final in row)
+            for kind, start, end in (("assistant", reply_row, tool_row), ("tool_result", tool_row, last_row)):
+                assert any(expected[kind] in row and f"{expected[kind]}Z" not in row
+                           for row in rows[start + 1:end]), (kind, expected, screen)
+
+        utc = clocks(timezone.utc)
+        screen = terminal.expect(final, also=tuple(utc.values()),
+                                 absent=tuple(f"{clock}Z" for clock in utc.values()))["screen"]
+        verify_clock_rows(screen, utc)
+        connection = client.connection()
+        terminal.exit_cleanly()
+
+    with patch.dict(client.env, {"TZ": "CST-8"}), client.terminal(workspace) as terminal:
+        terminal.resume(prompt)
+        local = clocks(timezone(timedelta(hours=8)))
+        screen = terminal.expect(final, also=tuple(local.values()), absent=tuple(utc.values()))["screen"]
+        verify_clock_rows(screen, local)
+        terminal.request("resize", rows=42, cols=48)
+        screen = wait_for_resized_transcript(terminal, 42, (final, *local.values()), absent=tuple(utc.values()))
+        verify_clock_rows(screen, local)
+        terminal.exit_cleanly()
+        client.assert_current_service(connection)
+        assert client.request("GET", path).as_json()["entries"] == entries, "Timezone display changed durable history"
+    client.provider.assert_idle(0.2)
+    print("Same service and committed history rendered in UTC and UTC+08 terminal clients.")
+
+
+def reading_activity_history(client):
+    """Follow the latest activity, then inspect settled statistics in actual PTY rows."""
+    workspace = client.workspace("work-reading-activities")
+    old = [f"old-fold-{index}.txt" for index in range(1, 4)]
+    fresh = [f"new-fold-{index}.txt" for index in range(1, 6)]
+    last = "final-fold.txt"
+    raw = "RAW-FILE-DETAIL"
+    for path in (*old, *fresh, last):
+        (workspace / path).write_text((raw + "\n") * 120, encoding="utf-8")
+    first_prompt = "Inspect two sets of files"
+    second_prompt = "Check one final file"
+    checkpoints = [f"History paragraph {index:02}" for index in range(24)]
+
+    def read_batch(call, paths, separator=None):
+        content = [{"type": "text", "text": separator}] if separator else []
+        content.extend({
+            "type": "tool_use", "id": path.removesuffix(".txt"),
+            "name": "read_file", "input": {"path": path}
+        } for path in paths)
+        call.reply(content)
+        next_call = client.provider.next(paths[-1].removesuffix(".txt"))
+        for path in paths:
+            next_call.expect_tool_output(path.removesuffix(".txt"), raw)
+        return next_call
+
+    def history_row(screen):
+        row = next((row for row in screen.splitlines() if "Reading history" in row), None)
+        assert row is not None, screen
+        return row
+
+    def summary_rows(screen, turn, count):
+        return [row for row in screen.splitlines()
+                if re.search(rf"\bTurn {turn}\b", row) and re.search(rf"\b{count} tools?\b", row)]
+
+    def prompt_row(screen):
+        row = next((index for index, row in enumerate(screen.splitlines())
+                    if row.lstrip().startswith("│") and first_prompt in row), None)
+        assert row is not None, screen
+        return row
+
+    with client.terminal(workspace) as terminal:
+        terminal.request("resize", cols=140, rows=44)
+        terminal.expect("Ready", rows=44)
+        terminal.submit(first_prompt)
+        call = read_batch(client.provider.next(first_prompt), old)
+        terminal.expect("Read 3 files", also=old, absent=(raw, "Requested arguments"))
+
+        call = read_batch(call, fresh[:4], "Now inspect the next set.")
+        second = terminal.expect("Read 4 files", also=fresh[:4], absent=(raw,))["screen"]
+        assert sum(path in second for path in old) == 2, second
+        terminal.click_text(second, "Read 3 files")
+        pinned = terminal.expect("Read 3 files", also=(*old, *fresh[:4]))["screen"]
+        first_fresh = next(path for row in pinned.splitlines() for path in fresh[:4] if path in row)
+        terminal.click_text(pinned, "Read 4 files")
+        collapsed = terminal.expect("Read 4 files", also=old, absent=(first_fresh, raw))["screen"]
+        assert sum(path in collapsed for path in fresh) == 2, collapsed
+
+        # The same card grows on the next tool result. Its explicit fold stays,
+        # as does the explicit expansion of the older card.
+        call = read_batch(call, fresh[4:])
+        updated = terminal.expect("Read 5 files", also=old, absent=(first_fresh, raw))["screen"]
+        assert sum(path in updated for path in fresh) == 2, updated
+        terminal.press("\x1b[5~")
+        reading = terminal.expect("Reading history", also=(first_prompt, "Read 5 files"))["screen"]
+        anchor_row = prompt_row(reading)
+        call.text("\n\n".join(checkpoints))
+        changed = terminal.expect("New content", state="Finished", also=(first_prompt,))["screen"]
+        assert prompt_row(changed) == anchor_row and checkpoints[-1] not in changed, changed
+        terminal.press("\x1b[1;5F")
+        terminal.expect(checkpoints[-1], state="Finished", also=("8 tools",), absent=("Reading history",))
+
+        terminal.submit(second_prompt)
+        read_batch(client.provider.next(second_prompt), [last]).text("Final file verified.")
+        terminal.expect("Final file verified.", state="Finished", also=("1 tool",))
+
+        # With both summaries visible, neither is repeated in the history dock.
+        terminal.request("resize", cols=140, rows=112)
+        # PageUp uses the app's last rendered height. The parser has already
+        # acknowledged its new dimensions, but the app may not have redrawn.
+        wait_for_resized_transcript(
+            terminal, 112, ("Final file verified.", "8 tools", "1 tool"),
+            predicate=lambda screen: any(row.lstrip().startswith("│") and first_prompt in row
+                                         for row in screen.splitlines()),
+        )
+        terminal.press("\x1b[5~")
+        tall = terminal.expect("Reading history", also=("8 tools", "1 tool", first_prompt), rows=112)["screen"]
+        assert len(summary_rows(tall, 1, 8)) == len(summary_rows(tall, 2, 1)) == 1, tall
+        assert not any(word in history_row(tall) for word in ("8 tools", "1 tool")), tall
+        anchor_row = prompt_row(tall)
+
+        terminal.request("resize", cols=140, rows=14)
+        short = wait_for_resized_transcript(terminal, 14, ("Reading history", "8 tools", first_prompt))
+        assert "8 tools" in history_row(short) and len(summary_rows(short, 1, 8)) == 1, short
+        assert not summary_rows(short, 2, 1), short
+        assert prompt_row(short) == anchor_row, short
+        terminal.request("resize", cols=140, rows=112)
+        restored = wait_for_resized_transcript(terminal, 112, ("Reading history", "8 tools", "1 tool", first_prompt))
+        assert len(summary_rows(restored, 1, 8)) == len(summary_rows(restored, 2, 1)) == 1, restored
+        assert prompt_row(restored) == anchor_row, restored
+
+        terminal.request("resize", cols=140, rows=14)
+        short = wait_for_resized_transcript(terminal, 14, ("Reading history", "8 tools", first_prompt))
+
+        def scroll(previous, key):
+            terminal.press(key)
+            return eventually("the history viewport to scroll", lambda: screen if (
+                (screen := terminal.request("screen")["screen"]) != previous
+                and "Reading history" in screen
+            ) else None)
+
+        # Move through the original Turn 1 footer and then back out of view.
+        for _ in range(32):
+            short = scroll(short, "\x1b[6~")
+            assert len(summary_rows(short, 1, 8)) == 1, short
+            if "8 tools" not in history_row(short):
+                break
+        else:
+            raise AssertionError(f"Original Turn 1 summary never entered the viewport:\n{short}")
+        for _ in range(14):
+            short = scroll(short, "\x1b[A")
+            assert len(summary_rows(short, 1, 8)) == 1, short
+            if "8 tools" in history_row(short):
+                break
+        else:
+            raise AssertionError(f"Original Turn 1 summary never left the viewport:\n{short}")
+        visible = scroll(short, "\x1b[B")
+        assert len(summary_rows(visible, 1, 8)) == 1 and "8 tools" not in history_row(visible), visible
+
+        terminal.press("\x1b[1;5F")
+        terminal.request("resize", cols=140, rows=112)
+        latest = wait_for_resized_transcript(terminal, 112, ("Final file verified.", "8 tools", "1 tool"),
+                                            absent=("Reading history",))
+        assert len(summary_rows(latest, 1, 8)) == len(summary_rows(latest, 2, 1)) == 1, latest
+        terminal.exit_cleanly()
+    client.provider.assert_idle()
+    print("Latest activity defaults, explicit fold choices, and exact history summary visibility preserved.")
 
 
 def targeted_delegation(client):
@@ -251,8 +461,12 @@ def targeted_delegation(client):
         reply, = json.loads(content if isinstance(content, str) else content[0]["text"])
         assert reply == {"address": "writer", "status": "idle", "last_output": result,
                          "last_request": {"connection": "test-anthropic", "model": child.request["model"]}}, reply
-        timeline = terminal.expect("Timeline · 3 calls", also=("Finished · Proof of delivery",))["screen"]
+        timeline = terminal.expect("Timeline · 3 calls", also=(
+            "Finished · Proof of delivery", "Agent check · writer (Idle, reply available)",
+        ))["screen"]
         terminal.click_text(timeline, "Timeline")
+        folded = terminal.expect("Timeline · 3 calls", absent=("Agent check · writer (Idle, reply available)",))["screen"]
+        terminal.click_text(folded, "Timeline")
         checked = terminal.expect("Agent check · writer (Idle, reply available)")["screen"]
         def target_column(screen):
             row = next(row for row in screen.splitlines() if "Agent check · writer" in row)
@@ -438,26 +652,39 @@ await tools.read_output({{id: {json.dumps(reference['id'])}, offset: 9, limit: 6
 return {{verified: {{path: "summary.txt", ok: true}}}};""",
         )
         client.provider.next("summarize-log").text("Replay inspected.")
+        raw_argument_labels = ("Requested arguments", '"args":', '"program":', '"title":')
         display = terminal.expect("Replay inspected.", also=(
             "Capture replay output", "exit 7", "Summarize saved replay", "2 file changes",
             "Edited   summary.txt (+4 -1)", "Added    summary.txt (+1 -0)", "1 - " + log,
-        ))["screen"]
+        ), absent=raw_argument_labels)["screen"]
         terminal.click_text(display, "Capture replay output")
         display = terminal.expect("View output", also=("Capture replay output", "View arguments"),
-                                  absent=("Requested arguments",))["screen"]
+                                  absent=raw_argument_labels)["screen"]
         terminal.click_text(display, "View arguments")
-        display = terminal.expect("Hide arguments", also=(f"Program    {invocation['program']}", "Arguments", "Directory"),
-                                  absent=("Requested arguments",))["screen"]
+        display = terminal.expect("Hide arguments", also=(
+            f"Program    {invocation['program']}", f"Arguments  {invocation['args'][0]}", "Directory",
+            "Requested arguments", "Output · 1 line",
+        ))["screen"]
+        rows = display.splitlines()
+        requested = next(i for i, row in enumerate(rows) if "Requested arguments" in row)
+        output = next(i for i, row in enumerate(rows[requested + 1:], requested + 1)
+                      if "Output · 1 line" in row)
+        # Raw JSON is displayed in its own detail section, and may wrap in a
+        # terminal column. Ignore visual wrapping/padding but verify all fields.
+        raw = "".join(row.strip(" │") for row in rows[requested + 1:output])
+        expected = json.dumps({**invocation, "title": "Capture replay output"},
+                              ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        assert re.sub(r"\s+", "", raw) == re.sub(r"\s+", "", expected), display
         terminal.click_text(display, "Hide arguments")
         display = terminal.expect("View output", also=("Capture replay output", "View arguments"),
-                                  absent=("Hide arguments",))["screen"]
+                                  absent=("Hide arguments", *raw_argument_labels))["screen"]
         terminal.click_text(display, "View output")
         inline = terminal.expect("Hide output", also=(log, page_range), absent=("S Name",))["screen"]
         assert any(line.strip(" │") == f"1 {log}" for line in inline.splitlines()), inline
         terminal.click_text(inline, "Hide output")
         display = terminal.expect("View output", also=("Capture replay output",), absent=("Hide output",))["screen"]
         terminal.click_text(display, "Capture replay output")
-        display = terminal.expect("Summarize saved replay", absent=("View output",))["screen"]
+        display = terminal.expect("Summarize saved replay", absent=("View output", *raw_argument_labels))["screen"]
         title = "Script   Summarize saved replay"
         closed_rows = display.splitlines()
         title_row = next(i for i, line in enumerate(closed_rows) if title in line)
@@ -641,8 +868,10 @@ def windows_diagnostic(client):
         assert "␍" not in screen and "�" not in screen and "command exited" not in screen and "View output" not in screen
         rows = screen.splitlines()
         header = next(i for i, line in enumerate(rows) if line.lstrip().startswith("╭─ cmd.exe "))
-        assert command in rows[header] and "exit 1" in rows[header], screen
-        assert diagnostic in rows[header + 1] and rows[header + 2].lstrip().startswith("╰"), screen
+        assert command not in rows[header] and "exit 1" in rows[header], screen
+        assert command in rows[header + 1] and "Command" in rows[header + 1], screen
+        assert "Output" in rows[header + 2] and diagnostic in rows[header + 3], screen
+        assert rows[header + 4].lstrip().startswith("╰"), screen
         terminal.click_text(screen, "cmd.exe ")
         expanded = terminal.expect("View arguments", state=diagnostic)["screen"]
         terminal.click_text(expanded, "View arguments")

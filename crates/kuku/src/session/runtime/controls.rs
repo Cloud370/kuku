@@ -179,7 +179,7 @@ impl Session {
 
     /// Stop the selected agent, clean up its active work, and retain pending inputs.
     pub async fn cancel(&self, address: &str) -> Result<()> {
-        self.stop(address, None).await.map(|_| ())
+        self.stop(address, None, false).await.map(|_| ())
     }
 
     /// Stop only the observed execution and await cleanup of its owned work.
@@ -194,8 +194,32 @@ impl Session {
             address,
             &("cancel_execution", address, execution_id),
         )?;
-        let receipt = self.stop(address, Some((command, execution_id))).await?;
+        let receipt = self
+            .stop(address, Some((command, execution_id)), false)
+            .await?;
         Ok(receipt.expect("execution cancellation commits its caller-selected command"))
+    }
+
+    /// Interrupt only the observed execution; after successful cleanup, advance pending work
+    /// if an already-submitted host input requests a wake.
+    ///
+    /// This does not retry the interrupted Turn. Replaying the command returns the same receipt
+    /// and cannot interrupt a replacement execution or authorize advancement a second time.
+    pub async fn interrupt_execution(
+        &self,
+        command_id: &str,
+        address: &str,
+        execution_id: u64,
+    ) -> Result<Receipt> {
+        let command = command(
+            command_id,
+            address,
+            &("interrupt_execution", address, execution_id),
+        )?;
+        let receipt = self
+            .stop(address, Some((command, execution_id)), true)
+            .await?;
+        Ok(receipt.expect("execution interruption commits its caller-selected command"))
     }
 
     /// Withdraw a still-queued input or return its durable state at the time of the command.
@@ -364,6 +388,17 @@ impl Session {
                 "agent '{address}' cleanup is still in progress"
             )));
         }
+        if paused
+            && agent.discard_on_resume()
+            && !agent.accepted.is_empty()
+            && let Some(turn) = agent.snapshot.turn
+        {
+            // A crash or cleanup failure may leave the cancelled Turn's
+            // permission requests and undispatched calls open in the log.
+            // Close them before admitting another input. An unresolved
+            // dispatched effect must block recovery without consuming the queue.
+            self.settle_cancelled_turn(address, turn)?;
+        }
         if paused || command.is_some() {
             self.commit(
                 state,
@@ -494,6 +529,7 @@ impl Session {
         &self,
         address: &str,
         expected: Option<(Command, u64)>,
+        continue_queued: bool,
     ) -> Result<Option<Receipt>> {
         let (done, jobs, failure, receipt) = {
             let mut state = self.inner.state.lock().unwrap();
@@ -505,11 +541,13 @@ impl Session {
                 let agent = state.agent(address)?;
                 if agent.snapshot.execution_id != Some(*execution)
                     || agent.snapshot.status == AgentStatus::Stopped
+                    || continue_queued && agent.active_epoch.is_none()
                 {
                     return Err(Error::ExecutionNotActive(*execution));
                 }
             }
             let agent = state.agent(address)?;
+            let discard_cancelled_turn = continue_queued || agent.discard_on_resume();
             let epoch = agent.active_epoch;
             let waiting_turn = agent
                 .snapshot
@@ -543,6 +581,8 @@ impl Session {
                         address: address.into(),
                         command,
                         cleanup_pending: epoch.is_some(),
+                        continue_queued,
+                        discard_cancelled_turn,
                         interruption,
                     },
                 )

@@ -47,6 +47,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
     let config = AgentConfig::default();
     let agent = AgentSnapshot {
         address: "main".into(),
+        creation_event_id: 1,
         config: config.clone(),
         active_config: Some(config),
         status: AgentStatus::Running,
@@ -68,6 +69,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
     };
     let summary = AgentSummary {
         address: "main".into(),
+        creation_event_id: 1,
         status: AgentStatus::Running,
         turn: Some(3),
         execution_id: Some(12),

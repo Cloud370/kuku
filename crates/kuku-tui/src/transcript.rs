@@ -40,7 +40,7 @@ pub(crate) use self::rewound::{RewindGroupAction, RewindGroupChoice, RewindGroup
 use self::timing::CardTiming;
 use self::tool::Tool;
 pub(crate) use self::tool::ToolView;
-use self::window::{Block, Layout, RenderCache, Window};
+use self::window::{AutoActivity, Block, Layout, RenderCache, Window};
 
 pub(crate) const HISTORY_PAGE: usize = 48;
 pub(crate) const REWIND_GROUP_PAGE: usize = 12;
@@ -130,7 +130,7 @@ enum AssistantView {
 pub(crate) struct Transcript {
     recent: Window,
     reading: Option<Reading>,
-    restore: Option<(u64, Anchor)>,
+    restore: Option<(u64, Anchor, AutoActivity)>,
     details: ToolDetails,
     assistant_view: AssistantView,
     current_execution: Option<u64>,
@@ -145,6 +145,21 @@ pub(crate) struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) fn contains_question(&self, request_id: &str) -> bool {
+        self.reading
+            .as_ref()
+            .map_or(&self.recent, |reading| &reading.window)
+            .records
+            .iter()
+            .any(|record| {
+                matches!(&record.body, Body::Notice("Question", text, _) if !text.trim().is_empty())
+                    && record.question_id.as_deref() == Some(request_id)
+                    || record
+                        .tool()
+                        .is_some_and(|tool| tool.matches_question(request_id))
+            })
+    }
+
     pub(crate) fn compacting(&self, turn: Option<u64>) -> bool {
         self.recent
             .records
@@ -162,14 +177,43 @@ impl Transcript {
             .unwrap_or(false)
     }
 
-    pub(crate) fn tool_name(&self, id: &str) -> Option<&str> {
+    pub(crate) fn tool_activity(&self, id: &str) -> Option<(&str, &str)> {
         self.recent
             .records
             .iter()
             .rev()
             .find_map(|record| match &record.key {
-                Key::Tool { id: call_id, .. } if id == call_id => record.tool().map(Tool::name),
+                Key::Tool { id: call_id, .. } if id == call_id => record
+                    .tool()
+                    .map(|tool| (tool.name(), tool.activity_target())),
                 _ => None,
+            })
+    }
+
+    pub(crate) fn foreground_script_call(&self, turn: u64, id: &str) -> bool {
+        // Call IDs belong to a Turn. An older detached Job may still emit
+        // authorization events while a later request reuses the same ID.
+        self.recent
+            .records
+            .iter()
+            .rev()
+            .find_map(|record| match &record.key {
+                Key::Tool {
+                    id: call_id,
+                    turn: call_turn,
+                } if id == call_id => Some(
+                    *call_turn == Some(turn)
+                        && record.tool().is_some_and(|tool| tool.name() == "run_js"),
+                ),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn turn_model_failed(&self, turn: Option<u64>) -> bool {
+        turn.is_some()
+            && self.recent.records.iter().rev().any(|record| {
+                record.turn == turn && matches!(&record.body, Body::ModelError { .. })
             })
     }
 
@@ -190,7 +234,10 @@ impl Transcript {
                 .last()
                 .is_some_and(|entry| previous.is_some_and(|previous| entry.id > previous));
         }
-        self.recent = Window::from_page(page);
+        let next = Window::from_page(page);
+        self.recent
+            .preserve_group_identities(&mut self.detail_items, |record| next.contains(&record.key));
+        self.recent = next;
         self.current_execution = None;
         self.detail_items.visible.clear();
         self.visible_rewind_actions.clear();
@@ -202,7 +249,7 @@ impl Transcript {
         self.notes = None;
         self.focused_rewind_group = None;
         if let Some(reading) = self.reading.take() {
-            self.restore = reading.restore_at();
+            self.restore = reading.restore_at(&mut self.detail_items);
         }
         self.recent = Window::default();
         self.current_execution = None;
@@ -213,7 +260,7 @@ impl Transcript {
     pub(crate) fn restore_request(&self) -> Option<HistoryRequest> {
         self.restore
             .as_ref()
-            .map(|(before, _)| HistoryRequest::Restore(*before))
+            .map(|(before, _, _)| HistoryRequest::Restore(*before))
     }
 
     pub(crate) fn apply(&mut self, entry: HistoryEntry, execution: Option<u64>) {
@@ -261,7 +308,7 @@ impl Transcript {
             }
         }
         self.recent.insert(record);
-        self.recent.trim_front();
+        self.recent.trim_front(&mut self.detail_items);
     }
 
     pub(crate) fn clear_preview(&mut self) {
@@ -370,7 +417,7 @@ impl Transcript {
             {
                 return None;
             }
-            let mut window = self.recent.clone();
+            let mut window = self.recent.reading_copy();
             let blocks = window.blocks(layout);
             let anchor =
                 Block::anchor_at(&blocks, Block::row_count(&blocks).saturating_sub(height))?;
@@ -437,6 +484,7 @@ pub(crate) struct TranscriptView {
     pub(crate) turn_surface: TurnSurface,
     pub(crate) following: bool,
     pub(crate) tool_hint: Option<String>,
+    pub(crate) visible_turn_summaries: Vec<u64>,
 }
 
 pub(crate) struct TurnSurface {
@@ -457,7 +505,8 @@ struct Reading {
 }
 
 impl Reading {
-    fn restore_at(self) -> Option<(u64, Anchor)> {
+    fn restore_at(self, items: &mut Details) -> Option<(u64, Anchor, AutoActivity)> {
+        let mut activity = self.window.saved_activity();
         let positions = self.window.positions();
         let index = positions
             .iter()
@@ -469,7 +518,39 @@ impl Reading {
             .map(|(position, _)| *position)
             .next_back();
         if let Some(before) = before {
-            Some((before.saturating_add(1), self.anchor))
+            // Cache eviction drops the full reading window, but restoration
+            // loads only one bounded history page around the anchor. Keep
+            // aliases on members nearest that anchor, not the former group
+            // heading which may lie outside the page.
+            let end = (index + HISTORY_PAGE / 2).min(positions.len());
+            let first = positions[end.saturating_sub(HISTORY_PAGE)].0;
+            let anchor_position = positions[index].0;
+            for span in details::groups(&self.window.records) {
+                let members = &self.window.records[span.range];
+                let Some(survivor) = members
+                    .iter()
+                    .filter_map(|record| Some((record, record.position?)))
+                    .filter(|(_, position)| (first..=before).contains(position))
+                    .min_by_key(|(_, position)| position.abs_diff(anchor_position))
+                    .map(|(record, _)| record)
+                else {
+                    continue;
+                };
+                items.preserve_group_choice(
+                    members,
+                    |record| record.key == survivor.key,
+                    &survivor.key,
+                );
+                if let AutoActivity::Frozen {
+                    key: Some(key),
+                    expanded: true,
+                } = &mut activity
+                    && members.iter().any(|record| record.key == *key)
+                {
+                    *key = survivor.key.clone();
+                }
+            }
+            Some((before.saturating_add(1), self.anchor, activity))
         } else {
             let (position, key) = positions[..index].last()?;
             Some((
@@ -478,6 +559,7 @@ impl Reading {
                     key: key.clone(),
                     line: AnchorLine::Body(0),
                 },
+                activity,
             ))
         }
     }
@@ -520,6 +602,8 @@ struct Record {
     position: Option<u64>,
     before_event: Option<u64>,
     body: Body,
+    question_id: Option<String>,
+    question_tool_call_id: Option<String>,
     suppress_interruption: bool,
     reasoning_preview: String,
     turn_summary: Option<TurnSummary>,
@@ -538,6 +622,8 @@ impl Clone for Record {
             position: self.position,
             before_event: self.before_event,
             body: self.body.clone(),
+            question_id: self.question_id.clone(),
+            question_tool_call_id: self.question_tool_call_id.clone(),
             suppress_interruption: self.suppress_interruption,
             reasoning_preview: self.reasoning_preview.clone(),
             turn_summary: self.turn_summary.clone(),
@@ -558,6 +644,19 @@ impl Record {
             MAX_BODY_BYTES,
         );
         let execution_id = entry.details.get("execution_id").and_then(Value::as_u64);
+        let question_id = match entry.kind {
+            HistoryKind::Question => entry
+                .details
+                .get("request")
+                .and_then(|request| request["id"].as_str()),
+            HistoryKind::QuestionReply => entry.details.get("request_id").and_then(Value::as_str),
+            _ => None,
+        }
+        .map(str::to_owned);
+        let question_tool_call_id = (entry.kind == HistoryKind::Question)
+            .then(|| entry.details.get("request")?["tool_call_id"].as_str())
+            .flatten()
+            .map(str::to_owned);
         let body = match entry.kind {
             HistoryKind::User => Body::User {
                 sender: entry
@@ -644,6 +743,8 @@ impl Record {
             position: Some(entry.id),
             before_event: None,
             body,
+            question_id,
+            question_tool_call_id,
             suppress_interruption: false,
             reasoning_preview,
             turn_summary: entry.turn_summary,
@@ -722,6 +823,7 @@ impl Record {
         retry_end: bool,
         user_turn: Option<window::TurnHeading>,
         grouped: bool,
+        question_correlated: bool,
     ) -> (&Key, &[Row], Option<DetailRecord<'_>>) {
         let Layout {
             width,
@@ -739,7 +841,7 @@ impl Record {
         };
         let source_body = match (source_selected, &self.body) {
             (true, Body::Assistant(text)) => Some((text, false)),
-            (true, Body::Interrupted(text)) => Some((text, true)),
+            (true, Body::Interrupted(text)) if !text.trim().is_empty() => Some((text, true)),
             _ => None,
         };
         if let Some((text, interrupted)) = source_body {
@@ -800,6 +902,7 @@ impl Record {
             retry_heading,
             retry_end,
             user_turn,
+            question_correlated,
             elapsed_seconds: match &self.body {
                 Body::Compaction(entry) => entry.elapsed_seconds(),
                 _ => None,
@@ -840,8 +943,25 @@ impl Record {
                     matches!(self.key, Key::Preview(_)),
                     width,
                 ),
+                Body::Interrupted(text) if text.trim().is_empty() => {
+                    message::render_compact_status("Reply interrupted", WARNING, width)
+                }
                 Body::Interrupted(text) => {
                     message::render_markdown_record("Interrupted", WARNING, text, width)
+                }
+                Body::Notice("Execution interrupted", text, _) => {
+                    message::render_execution_interruption(text, WARNING, width)
+                }
+                Body::Notice("Question", text, _) => {
+                    let (state, color) = if question_correlated {
+                        ("Answered question", ACCENT)
+                    } else {
+                        ("Question", WARNING)
+                    };
+                    message::render_question(state, self.owner.as_deref(), text, color, width)
+                }
+                Body::Notice("Answer", text, _) => {
+                    message::render_question("Answered", self.owner.as_deref(), text, ACCENT, width)
                 }
                 Body::Notice(title, text, color) => {
                     message::render_activity_record(title, *color, text, width)
@@ -861,13 +981,21 @@ impl Record {
                 Body::TurnSummary => Vec::new(),
                 Body::Tool(tool) => card.as_ref().map_or_else(
                     || {
-                        tool.render(
+                        tool.render_question(
                             width,
                             mode,
-                            cache_key.in_timeline,
-                            cache_key.script_detail,
-                            inline_output,
+                            self.owner.as_deref(),
+                            question_correlated,
                         )
+                        .unwrap_or_else(|| {
+                            tool.render(
+                                width,
+                                mode,
+                                cache_key.in_timeline,
+                                cache_key.script_detail,
+                                inline_output,
+                            )
+                        })
                     },
                     |card| card.render(width, mode, facts, cache_key.in_timeline),
                 ),
@@ -877,6 +1005,18 @@ impl Record {
                 if self.has_reply() && frame.bordered() {
                     lines.truncate(lines.len().saturating_sub(2));
                     lines.extend(turn_summary::footer(summary, self.turn_number, &frame));
+                } else if matches!(&self.body, Body::Interrupted(text) if text.trim().is_empty())
+                    || matches!(&self.body, Body::Notice("Execution interrupted", ..))
+                {
+                    let inset = body_inset(width);
+                    lines.push(
+                        turn_summary::inline(
+                            summary,
+                            self.turn_number,
+                            width.saturating_sub(usize::from(inset)),
+                        )
+                        .indented(inset),
+                    );
                 } else {
                     let metrics =
                         turn_summary::inline(summary, self.turn_number, frame.content_width());
@@ -916,6 +1056,7 @@ struct PreviewLayout {
     retry_heading: bool,
     retry_end: bool,
     user_turn: Option<window::TurnHeading>,
+    question_correlated: bool,
     elapsed_seconds: Option<u64>,
 }
 

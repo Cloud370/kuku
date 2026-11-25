@@ -314,7 +314,12 @@ fn retry_detail_restores_when_paging_trims_correlated_error() {
 
     let correlated = rendered_at_height(&mut transcript, 4 * MAX_RECORDS);
     assert_eq!(1, correlated.matches(retry_message).count());
-    assert!(transcript.recent.trim_back(None).is_some());
+    assert!(
+        transcript
+            .recent
+            .trim_back(None, &mut transcript.detail_items)
+            .is_some()
+    );
 
     let paged = rendered_at_height(&mut transcript, 4 * MAX_RECORDS);
     assert_eq!(1, paged.matches(retry_message).count());
@@ -366,6 +371,51 @@ fn paged_retry_with_missing_execution_matches_live_error_and_interruption() {
         !text.lines().any(|line| line.trim() == "transport"),
         "{text}"
     );
+}
+
+#[test]
+fn narrow_correlated_provider_failure_keeps_reply_interrupted_and_diagnostic_visible() {
+    let entries = vec![
+        retry_entry(
+            8,
+            2,
+            "req_1",
+            "Check the provider network.",
+            "attempt_limit",
+        ),
+        error_entry(9, 2, "req_1", "Fixture connection closed"),
+        interruption_entry(10, 2, None, "transport"),
+    ];
+    let mut transcript = Transcript::default();
+    transcript.replace_recent(HistoryPage {
+        entries: entries.clone(),
+        rewind_groups: vec![],
+        next_before: None,
+    });
+    for (width, interruption) in [
+        (24, "Reply interrupted"),
+        (16, "Reply stopped"),
+        (10, "Reply cut"),
+    ] {
+        let text = transcript
+            .project(width, 100)
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact = text
+            .split_whitespace()
+            .filter(|part| *part != "│")
+            .collect::<String>();
+        assert!(text.contains(interruption), "{text}");
+        assert!(
+            compact.contains("Transporterror") && compact.contains("Fixtureconnectionclosed"),
+            "{text}"
+        );
+        assert!(compact.contains("Checktheprovidernetwork."), "{text}");
+        assert!(!text.contains("Execution interrupted"), "{text}");
+    }
 }
 
 #[test]

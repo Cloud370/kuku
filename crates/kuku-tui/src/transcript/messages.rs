@@ -82,6 +82,7 @@ impl Transcript {
                 let id = MessageId::from_key(&record.key)?;
                 let (label, detail) = match &record.body {
                     Body::User { text, .. } => ("User".into(), text.clone()),
+                    Body::Interrupted(text) if text.trim().is_empty() => return None,
                     Body::Assistant(text) | Body::Interrupted(text) => {
                         let detail = if text.is_empty() {
                             "Thinking available".to_owned()
@@ -139,6 +140,7 @@ impl Transcript {
                 Vec::new(),
                 text.ends_with(DISPLAY_LIMIT_NOTICE),
             ),
+            Body::Interrupted(text) if text.trim().is_empty() => return None,
             Body::Interrupted(text) => (MessageKind::Assistant, text.clone(), Vec::new(), false),
             Body::Tool(tool) => {
                 let view = tool.view();
@@ -155,7 +157,7 @@ impl Transcript {
             }
             Body::Job(job) => (
                 MessageKind::Tool,
-                job.text.clone(),
+                format!("{}\n{}", job.label(), job.evidence()),
                 job.output().into_iter().collect(),
                 false,
             ),
@@ -190,7 +192,7 @@ impl Transcript {
             return true;
         }
         self.reading = Some(Reading {
-            window: self.recent.clone(),
+            window: self.recent.reading_copy(),
             anchor: Anchor {
                 key,
                 line: AnchorLine::Body(0),

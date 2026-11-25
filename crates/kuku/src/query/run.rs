@@ -404,7 +404,7 @@ impl Run {
                     if let Some(ref mut detector) = streaming.handoff_detector {
                         if let Some(user_text) = detector.process(&text) {
                             if !user_text.is_empty() {
-                                streaming.model_phase = Some(ModelPhase::Streaming);
+                                streaming.model_phase = Some((ModelPhase::Streaming, false));
                                 streaming.accumulated_text.push_str(&user_text);
                                 return Ok(Some(UiEvent::TextDelta { text: user_text }));
                             }
@@ -412,7 +412,7 @@ impl Run {
                         continue;
                     }
                     if !text.is_empty() {
-                        streaming.model_phase = Some(ModelPhase::Streaming);
+                        streaming.model_phase = Some((ModelPhase::Streaming, false));
                     }
                     streaming.accumulated_text.push_str(&text);
                     return Ok(Some(UiEvent::TextDelta { text }));
@@ -424,7 +424,7 @@ impl Run {
                     streaming
                         .thinking_start
                         .get_or_insert_with(std::time::Instant::now);
-                    if let Some(event) = streaming.model_progress(ModelPhase::Thinking) {
+                    if let Some(event) = streaming.model_progress(ModelPhase::Thinking, false) {
                         return Ok(Some(event));
                     }
                 }
@@ -436,7 +436,7 @@ impl Run {
                         streaming
                             .thinking_start
                             .get_or_insert_with(std::time::Instant::now);
-                        streaming.model_phase = Some(ModelPhase::Thinking);
+                        streaming.model_phase = Some((ModelPhase::Thinking, false));
                     }
                     streaming.accumulated_thinking.push_str(&text);
                     return Ok(Some(UiEvent::ThinkingDelta { text }));
@@ -463,7 +463,7 @@ impl Run {
                     });
                     streaming.tool_arg_buffers.push((index, String::new()));
                     if !streaming.tool_stream_invalid {
-                        if let Some(event) = streaming.model_progress(ModelPhase::ToolArguments) {
+                        if let Some(event) = streaming.tool_argument_progress() {
                             return Ok(Some(event));
                         }
                     }
@@ -495,7 +495,7 @@ impl Run {
                         if let Some(start) = streaming.thinking_start.take() {
                             streaming.thinking_duration_ms += start.elapsed().as_millis() as u64;
                         }
-                        if let Some(event) = streaming.model_progress(ModelPhase::ToolArguments) {
+                        if let Some(event) = streaming.tool_argument_progress() {
                             return Ok(Some(event));
                         }
                     }

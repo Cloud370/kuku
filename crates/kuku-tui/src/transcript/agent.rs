@@ -644,6 +644,20 @@ mod tests {
         view.lines.iter().map(ToString::to_string).collect()
     }
 
+    fn fold_automatic_timeline(transcript: &mut Transcript, width: usize, height: usize) {
+        let automatic = lines(&transcript.project(width, height));
+        let heading = automatic
+            .iter()
+            .position(|row| row.contains("▾ Timeline"))
+            .expect("the latest delegation timeline is automatically open");
+        assert!(toggle_row(transcript, heading));
+        assert!(
+            lines(&transcript.project(width, height))
+                .iter()
+                .any(|row| row.contains("▸ Timeline"))
+        );
+    }
+
     #[test]
     fn collapsed_reply_skips_fences_and_keeps_the_first_content_line() {
         assert_eq!(
@@ -852,6 +866,7 @@ mod tests {
     #[test]
     fn picker_choice_uses_the_same_record_after_viewport_rows_change() {
         let mut transcript = settled_agent_calls();
+        fold_automatic_timeline(&mut transcript, 82, 25);
         transcript.project(82, 25);
         let choices = agent_choices(&transcript);
         let earlier = &choices[0].0;
@@ -880,6 +895,7 @@ mod tests {
             5,
             std::iter::once_with(|| panic!("unchanged source must stay lazy")),
         );
+        fold_automatic_timeline(&mut transcript, 82, 27);
         let view = lines(&transcript.project(82, 27));
         let header = view
             .iter()

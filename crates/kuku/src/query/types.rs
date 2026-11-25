@@ -166,6 +166,7 @@ pub enum UiEvent {
     },
     ModelProgress {
         phase: ModelPhase,
+        preparing_file_contents: bool,
     },
     ModelOutputUsage {
         output_tokens: u64,
@@ -545,7 +546,7 @@ pub(super) struct StreamingChunkState {
     pub(super) accounting: RequestAccounting,
     pub(super) accumulated_text: String,
     pub(super) accumulated_thinking: String,
-    pub(super) model_phase: Option<ModelPhase>,
+    pub(super) model_phase: Option<(ModelPhase, bool)>,
     pub(super) provider_replay: Vec<crate::event::EventPayload>,
     pub(super) stop_reason: Option<crate::event::ModelStopReason>,
     pub(super) tool_calls: Vec<ProviderToolCall>,
@@ -569,8 +570,29 @@ pub(super) struct RequestTiming {
 }
 
 impl StreamingChunkState {
-    pub(super) fn model_progress(&mut self, phase: ModelPhase) -> Option<UiEvent> {
-        (self.model_phase.replace(phase) != Some(phase)).then_some(UiEvent::ModelProgress { phase })
+    pub(super) fn model_progress(
+        &mut self,
+        phase: ModelPhase,
+        preparing_file_contents: bool,
+    ) -> Option<UiEvent> {
+        let observed = (phase, preparing_file_contents);
+        (self.model_phase.replace(observed) != Some(observed)).then_some(UiEvent::ModelProgress {
+            phase,
+            preparing_file_contents,
+        })
+    }
+
+    pub(super) fn tool_argument_progress(&mut self) -> Option<UiEvent> {
+        // Do not claim file content preparation for a mixed set of open calls.
+        let mut open = self
+            .tool_calls
+            .iter()
+            .filter(|call| !self.tool_call_completions.contains(&call.index));
+        let preparing_file = open
+            .next()
+            .is_some_and(|call| matches!(call.name.as_str(), "write_file" | "edit_file"))
+            && open.all(|call| matches!(call.name.as_str(), "write_file" | "edit_file"));
+        self.model_progress(ModelPhase::ToolArguments, preparing_file)
     }
 }
 

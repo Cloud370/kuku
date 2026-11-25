@@ -177,8 +177,13 @@ pub enum Action {
     RestoreContext,
     /// Explicitly let an Agent advance eligible work.
     Advance,
-    /// Interrupt the specific execution the client observed.
+    /// Stop the specific execution the client observed and pause queued inputs.
     Cancel {
+        /// Opaque execution identity from the Agent snapshot or a progress event.
+        execution_id: u64,
+    },
+    /// Interrupt the observed execution, then continue queued work after cleanup.
+    Interrupt {
         /// Opaque execution identity from the Agent snapshot or a progress event.
         execution_id: u64,
     },
@@ -225,6 +230,8 @@ pub struct ApiError {
 pub struct AgentSummary {
     /// Stable Session-local address.
     pub address: String,
+    /// Durable journal event identity of the Agent's creation.
+    pub creation_event_id: u64,
     /// Current execution state.
     pub status: AgentStatus,
     /// Latest accepted Turn, when present.
@@ -475,6 +482,9 @@ pub struct ReplyPreview {
     pub turn_number: Option<u64>,
     /// Most recent provider activity in this request.
     pub phase: ModelPhase,
+    /// Tool arguments are known to be preparing file contents, if reported.
+    #[serde(default)]
+    pub preparing_file_contents: bool,
     /// Observed text from the beginning of the current request.
     pub text: String,
     /// Provider-visible reasoning text or summary, separate from reply text and provider replay.

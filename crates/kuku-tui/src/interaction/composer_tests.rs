@@ -47,6 +47,7 @@ fn load_model(app: &mut App, applied: Option<&str>, next: Option<&str>) {
         "pending_selection": next.map(|effort| selection(Some(effort))),
         "agent": {
             "address": app.active.agent,
+            "creation_event_id": 1,
             "config": config(next.or(applied)),
             "active_config": next.map(|_| config(applied)),
             "status": "running",
@@ -154,7 +155,11 @@ fn command_and_model_lists_wrap_and_stay_above_the_composer() {
         position(&buffer, "Model route").1,
         position(&buffer, "Search models…").1
     );
-    assert!(position(&buffer, "d Set default").1 < position(&buffer, "keep this draft").1);
+    assert!(position(&buffer, "Alt+D Default").1 < position(&buffer, "keep this draft").1);
+    position(&buffer, "Alt+E Edit");
+    let narrow = frame(&mut app, 36);
+    position(&narrow, "Alt+D Default");
+    position(&narrow, "Alt+E Edit");
     press(&mut app, KeyCode::Down);
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 0));
 }
@@ -617,34 +622,141 @@ fn custom_speed_can_be_saved_without_probing_and_then_applied() {
         if matches!(&command.action, Action::Configure { config } if config.service_tier.as_deref() == Some("turbo")))));
 }
 
-#[test]
-fn model_picker_letters_are_actions_until_search_is_focused() {
-    use crate::menu::{Choice, ChoiceKind};
+fn model_route_choice(name: &str, current: bool) -> crate::menu::Choice {
+    let model = serde_json::from_value(json!({"connection":"gateway", "model":name})).unwrap();
+    crate::menu::Choice::new(
+        name,
+        "gateway",
+        ChoiceKind::ModelRoute {
+            model: Box::new(model),
+            current,
+        },
+    )
+}
 
+#[test]
+fn model_picker_search_keeps_every_character_before_and_after_catalog_arrival() {
+    use crate::jobs::Search;
+
+    for (early, pasted, query, expected) in [
+        (true, false, "deepseek", "provider/deepseek"),
+        (false, false, "ember", "ember-model"),
+        (true, true, "quartz", "quartz-model"),
+        (false, true, "provider/deepseek", "provider/deepseek"),
+    ] {
+        let mut app = connected_app();
+        press(&mut app, KeyCode::Char('/'));
+        app.paste("model");
+        press(&mut app, KeyCode::Enter);
+        let ticket = app
+            .effects
+            .iter()
+            .find_map(|job| match job {
+                Job::Find(ticket, Search::Models(_)) => Some(*ticket),
+                _ => None,
+            })
+            .expect("model picker requests the catalog");
+        app.effects.clear();
+
+        let load_catalog = |app: &mut App| {
+            app.update(Update::Found(
+                ticket,
+                Ok((
+                    vec![
+                        model_route_choice("quartz-model", true),
+                        model_route_choice("provider/deepseek", false),
+                        model_route_choice("ember-model", false),
+                    ],
+                    String::new(),
+                )),
+            ));
+        };
+
+        if !early {
+            load_catalog(&mut app);
+            assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+                if matches!(picker.selected_choice(), Some(ChoiceKind::ModelRoute { model, .. }) if model.model == "quartz-model")));
+        }
+        if pasted {
+            app.paste(query);
+        } else {
+            let mut typed = String::new();
+            for character in query.chars() {
+                press(&mut app, KeyCode::Char(character));
+                typed.push(character);
+                assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+                    if picker.kind == PickerKind::Models && picker.query.text() == typed && picker.ticket == ticket));
+            }
+        }
+        if early {
+            assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+                if picker.loading && picker.query.text() == query && picker.ticket == ticket));
+            load_catalog(&mut app);
+        }
+        assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+            if !picker.loading && picker.ticket == ticket && picker.query.text() == query
+                && picker.visible_choices().len() == 1
+                && matches!(picker.selected_choice(), Some(ChoiceKind::ModelRoute { model, .. }) if model.model == expected)));
+        assert!(app.effects.is_empty());
+        assert!(app.pane().config().model.is_none());
+        assert!(app.model_editor.is_none());
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal.is_none());
+        assert!(app.pane().draft.text().is_empty());
+    }
+}
+
+#[test]
+fn model_picker_arrows_and_enter_switch_without_search() {
     let mut app = connected_app();
-    let model =
-        serde_json::from_value(json!({"connection":"gateway", "model":"provider/deep"})).unwrap();
+    app.pane_mut().draft.insert("Keep this draft");
     app.picker(
         PickerKind::Models,
-        vec![Choice::new(
-            "provider/deep",
-            "gateway",
-            ChoiceKind::ModelRoute {
-                model: Box::new(model),
-                current: false,
-            },
-        )],
+        vec![
+            model_route_choice("quartz-model", true),
+            model_route_choice("ember-model", false),
+        ],
     );
+    press(&mut app, KeyCode::Up);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 1));
+    press(&mut app, KeyCode::Down);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.selected == 0));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert_eq!(app.pane().config().model.as_deref(), Some("ember-model"));
+    assert_eq!(app.pane().draft.text(), "Keep this draft");
+}
 
-    press(&mut app, KeyCode::Char('/'));
+#[test]
+fn model_picker_explicit_edit_action_uses_search_selection() {
+    let mut app = connected_app();
+    app.picker(
+        PickerKind::Models,
+        vec![model_route_choice("ember-model", false)],
+    );
+    press(&mut app, KeyCode::Char('e'));
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "e"));
+    assert!(app.effects.is_empty());
+    app.key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT));
+    assert!(matches!(app.effects.last(),
+        Some(Job::OpenModelEditor(_, crate::setup::SetupIntent::Edit(route)))
+        if route == &ModelRef::new("gateway", "ember-model")));
+}
+
+#[test]
+fn model_picker_explicit_default_action_requires_confirmation() {
+    let mut app = connected_app();
+    app.picker(
+        PickerKind::Models,
+        vec![model_route_choice("provider/deep", false)],
+    );
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Char('e'));
     assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.query.text() == "de"));
     assert!(app.effects.is_empty());
-    press(&mut app, KeyCode::Esc);
-    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if !picker.search_focused));
 
-    press(&mut app, KeyCode::Char('d'));
+    app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT));
     let (ticket, selection, route) = std::mem::take(&mut app.effects)
         .into_iter()
         .find_map(|job| match job {

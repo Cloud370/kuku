@@ -6,7 +6,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Activity, App, OutputTokens, ServiceStatus, SubmissionStatus};
+use crate::app::{Activity, App, OutputTokens, ServiceStatus, SubmissionStatus, WaitKind};
 use crate::keys::Shortcut;
 use crate::text::{compact_token_count, format_elapsed, shorten, shorten_middle, single_line};
 use crate::theme::{ACCENT, ERROR, EXECUTION, MODEL, MUTED, SURFACE_TEXT, WARNING, emphasis};
@@ -17,7 +17,7 @@ mod motion;
 pub(crate) use clock::ActivityClock;
 use motion::Ring;
 
-const PHASE_SLOT: usize = 23;
+const PHASE_SLOT: usize = 25;
 const MIN_PHASE_SLOT: usize = 14;
 const RECIPIENT_SLOT: usize = 18;
 const MIN_RECIPIENT_SLOT: usize = 8;
@@ -31,6 +31,9 @@ enum ObservedActivity {
     Agent(Activity),
     Sending,
     Compacting,
+    PreparingFile,
+    WaitingFor(WaitKind),
+    ModelFailed,
 }
 
 impl ObservedActivity {
@@ -44,13 +47,27 @@ impl ObservedActivity {
                 return Self::Agent(Activity::Configuration);
             }
             let activity = app.pane().composer_activity();
-            if matches!(activity, Activity::Ready | Activity::Finished)
-                && matches!(
-                    app.input_status().submission,
-                    Some(SubmissionStatus::Saving | SubmissionStatus::AwaitingReceipt)
-                )
+            if activity.shows_sending()
+                && app
+                    .input_status()
+                    .submission
+                    .is_some_and(SubmissionStatus::is_sending)
             {
                 Self::Sending
+            } else if !matches!(
+                activity,
+                Activity::Stopping | Activity::Stopped | Activity::Interrupted | Activity::Failed
+            ) && let Some(wait) = app.pane().waiting_kind(app.approvals())
+            {
+                Self::WaitingFor(wait)
+            } else if activity == Activity::ToolArguments && app.pane().preparing_file_contents() {
+                Self::PreparingFile
+            } else if matches!(
+                activity,
+                Activity::Interrupted | Activity::Failed | Activity::Running
+            ) && app.pane().model_failed()
+            {
+                Self::ModelFailed
             } else if activity == Activity::Running
                 && app
                     .pane()
@@ -69,11 +86,17 @@ impl ObservedActivity {
     fn label(self) -> &'static str {
         match self {
             Self::Service(service) => service.label(),
-            Self::Sending => "Send",
+            Self::Sending => "Sending",
+            Self::PreparingFile => "Preparing file contents",
+            Self::WaitingFor(WaitKind::Permission) => "Waiting for approval",
+            Self::WaitingFor(WaitKind::Question) => "Waiting for answer",
+            Self::ModelFailed => "Model request failed",
             Self::Compacting => "Compacting context",
             Self::Agent(Activity::WaitingForModel) => "Waiting for model",
-            Self::Agent(Activity::Streaming) => "Reply",
-            Self::Agent(Activity::ToolArguments) => "Model tool arguments",
+            Self::Agent(Activity::Streaming) => "Replying",
+            Self::Agent(Activity::ToolArguments) => "Preparing tool call",
+            Self::Agent(Activity::RunningTools) => "Using tools",
+            Self::Agent(Activity::Stopped) => "Turn stopped",
             Self::Agent(Activity::RetryingModel) => "Retrying",
             Self::Agent(activity) => activity.label(),
         }
@@ -82,8 +105,12 @@ impl ObservedActivity {
     fn short_label(self) -> &'static str {
         match self {
             Self::Agent(Activity::WaitingForModel) => "Model wait",
-            Self::Agent(Activity::ToolArguments) => "Model args",
-            Self::Agent(Activity::RunningTools) => "Tools running",
+            Self::Agent(Activity::ToolArguments) => "Preparing call",
+            Self::PreparingFile => "Preparing file",
+            Self::WaitingFor(WaitKind::Permission) => "Need approval",
+            Self::WaitingFor(WaitKind::Question) => "Need answer",
+            Self::ModelFailed => "Model failed",
+            Self::Agent(Activity::Stopped) => "Stopped",
             Self::Compacting => "Compacting",
             status => status.label(),
         }
@@ -92,8 +119,10 @@ impl ObservedActivity {
     fn color(self) -> Color {
         match self {
             Self::Service(ServiceStatus::Offline | ServiceStatus::UpdatesUnavailable)
+            | Self::ModelFailed
             | Self::Agent(Activity::Interrupted | Activity::Failed) => ERROR,
             Self::Service(ServiceStatus::Reconnecting)
+            | Self::WaitingFor(_)
             | Self::Agent(
                 Activity::Waiting
                 | Activity::Configuration
@@ -109,6 +138,7 @@ impl ObservedActivity {
     fn motion(self) -> Option<Activity> {
         match self {
             Self::Compacting => Some(Activity::Running),
+            Self::PreparingFile => Some(Activity::ToolArguments),
             Self::Agent(
                 activity @ (Activity::Running
                 | Activity::WaitingForModel
@@ -122,13 +152,76 @@ impl ObservedActivity {
         }
     }
 
-    fn can_coalesce(self) -> bool {
-        self.motion().is_some()
+    fn can_coalesce_into(self, observed: Self) -> bool {
+        self.motion().is_some() && observed == Self::Agent(Activity::Running)
     }
 
     fn clock_runs(self) -> bool {
         self.motion().is_some()
-            || matches!(self, Self::Agent(Activity::Waiting | Activity::Stopping))
+            || matches!(
+                self,
+                Self::WaitingFor(_) | Self::Agent(Activity::Waiting | Activity::Stopping)
+            )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolActivity {
+    label: &'static str,
+    target: String,
+    waiting_job: bool,
+}
+
+impl ToolActivity {
+    fn current(app: &App) -> Option<(&str, Self)> {
+        let (id, name, target) = app.pane().running_tool()?;
+        let (label, waiting_job) = match name {
+            "wait_job" => ("Waiting for", true),
+            "write_file" => ("Writing file", false),
+            "edit_file" => ("Editing file", false),
+            "read_file" => ("Reading file", false),
+            "run_command" => ("Running command", false),
+            "run_js" => ("Running script", false),
+            _ => return None,
+        };
+        Some((
+            id,
+            Self {
+                label,
+                target: shorten_middle(&single_line(target), 72),
+                waiting_job,
+            },
+        ))
+    }
+
+    fn label(&self, room: usize) -> String {
+        if self.waiting_job {
+            let target = if self.target.is_empty() {
+                "job"
+            } else {
+                &self.target
+            };
+            let full = format!("{} {target}", self.label);
+            let short = format!("Wait {target}");
+            if full.width() <= room {
+                full
+            } else {
+                shorten(&short, room)
+            }
+        } else if !self.target.is_empty() && room > self.label.width() + 5 {
+            let target = shorten_middle(&self.target, room - self.label.width() - 3);
+            format!("{} · {target}", self.label)
+        } else {
+            shorten(self.label, room)
+        }
+    }
+
+    fn desired_width(&self) -> usize {
+        if self.waiting_job {
+            self.label.width() + 1 + self.target.width().max(3)
+        } else {
+            self.label.width() + 3 + self.target.width()
+        }
     }
 }
 
@@ -140,15 +233,17 @@ pub(crate) struct ActivityFrame {
     thinking: String,
     elapsed: Option<u64>,
     phase_elapsed: Option<u64>,
+    tool: Option<ToolActivity>,
 }
 
 impl ActivityFrame {
     pub(crate) fn phase_changed(&self, previous: &Self) -> bool {
-        self.status != previous.status
+        self.status != previous.status || self.tool != previous.tool
     }
 
     pub(crate) fn changes_with_time(&self) -> bool {
-        self.status.motion().is_some() || (self.elapsed.is_some() && self.status.clock_runs())
+        (self.status.motion().is_some() || self.status == ObservedActivity::Sending)
+            || (self.elapsed.is_some() && self.status.clock_runs())
     }
 
     #[cfg(test)]
@@ -157,7 +252,11 @@ impl ActivityFrame {
             .pane()
             .turn_timing()
             .and_then(|timing| timing.elapsed_ms);
-        Self::new(ObservedActivity::of(app), step, elapsed.map(|ms| ms / 1000))
+        let mut frame = Self::new(ObservedActivity::of(app), step, elapsed.map(|ms| ms / 1000));
+        if frame.status == ObservedActivity::Agent(Activity::RunningTools) {
+            frame.tool = ToolActivity::current(app).map(|(_, tool)| tool);
+        }
+        frame
     }
 
     fn new(status: ObservedActivity, step: Option<u128>, elapsed: Option<u64>) -> Self {
@@ -174,7 +273,8 @@ impl ActivityFrame {
             ObservedActivity::Agent(Activity::Streaming) => {
                 Ring::phase("↓", crate::theme::ACTIVITY_MINT, step)
             }
-            ObservedActivity::Agent(Activity::ToolArguments | Activity::RunningTools) => {
+            ObservedActivity::PreparingFile
+            | ObservedActivity::Agent(Activity::ToolArguments | Activity::RunningTools) => {
                 Ring::phase("↳", crate::theme::USAGE, step)
             }
             _ => step
@@ -188,6 +288,7 @@ impl ActivityFrame {
             thinking: String::new(),
             elapsed,
             phase_elapsed: None,
+            tool: None,
         }
     }
 
@@ -221,6 +322,7 @@ impl ActivityFrame {
     pub(super) fn still(self) -> Self {
         Self {
             phase_elapsed: self.phase_elapsed,
+            tool: self.tool,
             ..Self::new(self.status, None, self.elapsed)
         }
     }
@@ -230,7 +332,10 @@ impl ActivityFrame {
             ObservedActivity::Agent(activity) => activity,
             ObservedActivity::Service(_)
             | ObservedActivity::Sending
-            | ObservedActivity::Compacting => app.pane().activity(),
+            | ObservedActivity::Compacting
+            | ObservedActivity::PreparingFile
+            | ObservedActivity::WaitingFor(_)
+            | ObservedActivity::ModelFailed => app.pane().activity(),
         }
     }
 }
@@ -261,21 +366,91 @@ pub(super) fn render_heading(
     app: &App,
     width: usize,
     frame: ActivityFrame,
+    run_control_visible: bool,
 ) -> (Line<'static>, Option<Range<usize>>) {
     let muted = Style::default().fg(MUTED);
     let gap = FIELD_GAP.len();
-    let recipient_room = (width / 3)
-        .clamp(MIN_RECIPIENT_SLOT, RECIPIENT_SLOT)
-        .min(width.saturating_sub(MIN_PHASE_SLOT + gap));
+    let terminal_status = matches!(
+        frame.status,
+        ObservedActivity::ModelFailed
+            | ObservedActivity::Agent(Activity::Stopped | Activity::Interrupted | Activity::Failed)
+    );
+    let next_action = if terminal_status {
+        let continue_available = app
+            .contextual_controls()
+            .iter()
+            .any(|control| matches!(control, crate::contextual::ContextControl::Continue { .. }));
+        let queued = app.input_status().queued;
+        if continue_available {
+            let queue = (queued > 0).then(|| format!("{queued} queued"));
+            match (queue, run_control_visible) {
+                (Some(queue), true) => Some(queue),
+                (Some(queue), false) => Some(format!("{queue} · F2 Continue")),
+                (None, false) => Some("F2 Continue".to_owned()),
+                (None, true) => None,
+            }
+        } else if app.available()
+            && matches!(
+                app.pane().activity(),
+                Activity::Stopped | Activity::Interrupted | Activity::Failed
+            )
+        {
+            Some("Send a new message".to_owned())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let phase_desired = frame
+        .tool
+        .as_ref()
+        .map_or(PHASE_SLOT, |tool| {
+            (tool.desired_width() + 3).clamp(PHASE_SLOT, PHASE_SLOT + 22)
+        })
+        .max(frame.status.label().width() + 3);
+    let phase_desired = next_action.as_ref().map_or(phase_desired, |action| {
+        phase_desired.max(frame.status.label().width() + 3 + 3 + action.width())
+    });
+    // A healthy send has no delivery row until committed or uncertain. Keep
+    // its only feedback visible even when a busy recipient and a long tool
+    // label would otherwise fill the heading.
+    let send_feedback_width = app.displayed_statusline().composer_send_feedback_width(app);
+    let feedback_reserve = if send_feedback_width > 0 {
+        (send_feedback_width + 1).min(width.saturating_sub(4))
+    } else {
+        0
+    };
+    let core_room = width - feedback_reserve;
+    // While submission feedback consumes its own slot, let the execution
+    // phase shorten a little further to retain a usable recipient badge. A
+    // 36-column terminal has only 31 cells inside the composer border: the
+    // compact "Model wait" phase, recipient, and Sending all fit there.
+    let minimum_phase = if send_feedback_width > 0 {
+        MIN_PHASE_SLOT.min(core_room.saturating_sub(MIN_RECIPIENT_SLOT + gap).max(10))
+    } else {
+        MIN_PHASE_SLOT
+    };
+    let recipient_room =
+        (width / 3)
+            .clamp(MIN_RECIPIENT_SLOT, RECIPIENT_SLOT)
+            .min(core_room.saturating_sub(
+                if next_action.is_some() || frame.tool.as_ref().is_some_and(|tool| tool.waiting_job)
+                {
+                    phase_desired
+                } else {
+                    minimum_phase
+                } + gap,
+            ));
     let recipient = app
         .visible_recipient()
         .filter(|_| recipient_room >= MIN_RECIPIENT_SLOT);
     let recipient_width = recipient.map_or(0, |_| recipient_room + gap);
-    let phase_width = (width - recipient_width).min(PHASE_SLOT);
+    let phase_width = (core_room - recipient_width).min(phase_desired);
     let core_width = phase_width + recipient_width;
     let feedback_limit = width
         .saturating_sub(core_width + 1)
-        .min(width / 3)
+        .min((width / 3).max(send_feedback_width))
         .min(FEEDBACK_LIMIT);
     let feedback = app
         .displayed_statusline()
@@ -303,14 +478,45 @@ pub(super) fn render_heading(
     }
     let label_room = phase_width.saturating_sub(line.width());
     let label = frame.status.label();
-    let status = shorten(
-        if label.width() <= label_room {
-            label
+    let status = if let Some(tool) = &frame.tool {
+        tool.label(label_room)
+    } else if let Some(action) = &next_action {
+        let normal = format!("{label} · {action}");
+        let short_action = if action == "Send a new message" {
+            "Send message"
+        } else if action.ends_with("F2 Continue") {
+            "F2 Continue"
         } else {
-            frame.status.short_label()
-        },
-        label_room,
-    );
+            action
+        };
+        let short = format!("{} · {short_action}", frame.status.short_label());
+        if normal.width() <= label_room {
+            normal
+        } else if short.width() <= label_room {
+            short
+        } else {
+            // Narrow terminals prioritize the available operation, and keep the
+            // complete reason on the transcript's interruption card.
+            let status_room = label_room.saturating_sub(short_action.width() + 3);
+            if status_room >= 5 {
+                format!(
+                    "{} · {short_action}",
+                    shorten(frame.status.short_label(), status_room)
+                )
+            } else {
+                shorten(&normal, label_room)
+            }
+        }
+    } else {
+        shorten(
+            if label.width() <= label_room {
+                label
+            } else {
+                frame.status.short_label()
+            },
+            label_room,
+        )
+    };
     line.push_span(Span::styled(status, Style::new().fg(frame.status.color())));
 
     if recipient.is_some() || render_metrics || show_thinking {
@@ -342,7 +548,7 @@ pub(super) fn render_heading(
 
     if render_metrics {
         let tokens = match frame.status {
-            ObservedActivity::Agent(_) => {
+            ObservedActivity::Agent(_) | ObservedActivity::PreparingFile => {
                 app.pane().composer_output_tokens(frame.agent_activity(app))
             }
             _ => None,
@@ -376,20 +582,6 @@ pub(super) fn render_heading(
         line.push_span(Span::styled(action, muted));
     }
 
-    if frame.status == ObservedActivity::Agent(Activity::RunningTools) {
-        let tool = app.pane().running_tool_name();
-        if let Some(tool) = tool.filter(|_| left_width.saturating_sub(line.width()) > 8) {
-            let tool = shorten(tool, left_width - line.width() - 3);
-            line.push_span(Span::styled(format!(" · {tool}"), muted));
-        } else {
-            let count = app.pane().parallel_tools();
-            let summary = format!(" · {count}");
-            if count > 1 && left_width.saturating_sub(line.width()) >= summary.width() {
-                line.push_span(Span::styled(summary, muted));
-            }
-        }
-    }
-
     if let Some(jobs) = app
         .pane()
         .snapshot
@@ -410,6 +602,7 @@ pub(super) fn render_heading(
     if matches!(
         frame.status,
         ObservedActivity::Agent(Activity::Streaming | Activity::Thinking | Activity::ToolArguments)
+            | ObservedActivity::PreparingFile
     ) {
         let count = app.pane().parallel_tools();
         if count != 0 {

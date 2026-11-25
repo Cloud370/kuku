@@ -17,10 +17,11 @@ impl Transcript {
             if self
                 .restore
                 .as_ref()
-                .is_some_and(|(expected, _)| *expected == before)
+                .is_some_and(|(expected, _, _)| *expected == before)
             {
-                let (_, anchor) = self.restore.take().expect("restoration requested");
-                let window = Window::from_page(page);
+                let (_, anchor, activity) = self.restore.take().expect("restoration requested");
+                let mut window = Window::from_page(page);
+                window.freeze_activity(activity);
                 if window.contains(&anchor.key) {
                     let newer = window.last_position().filter(|after| {
                         self.recent
@@ -48,7 +49,10 @@ impl Transcript {
             reading.rebase_after_page = true;
             reading.window.older = page.next_before;
             reading.window.merge(page);
-            if let Some(after) = reading.window.trim_back(reading.visible_through) {
+            if let Some(after) = reading
+                .window
+                .trim_back(reading.visible_through, &mut self.detail_items)
+            {
                 reading.newer = Some(after);
             }
         }
@@ -65,7 +69,7 @@ impl Transcript {
         reading.newer = page.next_after;
         reading.window.merge(page.page);
         let limit = reading_window_limit(reading);
-        reading.window.trim_front_to(limit);
+        reading.window.trim_front_to(limit, &mut self.detail_items);
     }
 }
 
@@ -131,7 +135,11 @@ pub(super) fn last_visible_card(blocks: &[Block<'_>], start: usize, height: usiz
 }
 
 impl Window {
-    pub(super) fn trim_back(&mut self, visible_through: Option<u64>) -> Option<u64> {
+    pub(super) fn trim_back(
+        &mut self,
+        visible_through: Option<u64>,
+        items: &mut super::Details,
+    ) -> Option<u64> {
         let positions = self.positions();
         let live = self
             .records
@@ -146,6 +154,9 @@ impl Window {
             MAX_READING_RECORDS.saturating_sub(live),
         );
         let first = positions.get(keep)?.0;
+        self.preserve_group_identities(items, |record| {
+            record.position.is_none_or(|position| position < first)
+        });
         self.records
             .retain(|record| record.position.is_none_or(|position| position < first));
         self.rewind_groups.retain(|group| group.position() < first);

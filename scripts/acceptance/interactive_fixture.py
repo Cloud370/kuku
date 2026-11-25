@@ -134,6 +134,27 @@ def rendered_running_transcript(screen, height, markers):
     )
 
 
+def wait_for_resized_transcript(terminal, height, markers, *, absent=(), predicate=None):
+    """Wait for an application frame, not the parser's resized old contents."""
+    last_screen = ""
+
+    def ready():
+        nonlocal last_screen
+        last_screen = terminal.request("screen")["screen"]
+        rows = last_screen.splitlines()
+        if (len(rows) == height
+                and any(is_composer_heading(row) for row in rows[-8:])
+                and all(marker in last_screen for marker in markers)
+                and not any(marker in last_screen for marker in absent)
+                and (predicate is None or predicate(last_screen))):
+            return last_screen
+
+    try:
+        return eventually(f"the rendered {height}-row transcript", ready)
+    except AssertionError as error:
+        raise AssertionError(f"{error}\nLast terminal screen:\n{last_screen}") from error
+
+
 def page_up_after_rendered_resize(terminal, read_while, height, markers):
     screen = read_while(
         terminal,
@@ -158,11 +179,15 @@ def json_response(value, status=200):
     return Response(status, json.dumps(value).encode("utf-8"))
 
 
-def local_request(address, method, path, *, body=None, headers=None):
+def local_connection(address, *, timeout=3):
     url = urlsplit(address if "://" in address else f"http://{address}")
     if url.scheme != "http" or url.hostname != "127.0.0.1" or url.port is None:
         raise ValueError("Acceptance HTTP requests require a loopback fixture or service")
-    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=3)
+    return http.client.HTTPConnection(url.hostname, url.port, timeout=timeout)
+
+
+def local_request(address, method, path, *, body=None, headers=None):
+    connection = local_connection(address)
     try:
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
@@ -172,9 +197,13 @@ def local_request(address, method, path, *, body=None, headers=None):
 
 
 @contextlib.contextmanager
-def http_fixture(dispatch):
+def http_fixture(dispatch, *, observe_from=None):
     class Handler(BaseHTTPRequestHandler):
         def handle_request(self):
+            if (observe_from is not None and self.command == "GET"
+                    and urlsplit(self.path).path.endswith("/observe")):
+                self.forward_observation()
+                return
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             response = dispatch(self.command, self.path, self.headers, body)
             if response is None:
@@ -195,6 +224,30 @@ def http_fixture(dispatch):
                         return
                     start = offset
                 self.wfile.write(response.body[start:])
+
+        def forward_observation(self):
+            # Keep the real service's live NDJSON stream available while the
+            # fixture delays or drops a command exchange. read1 forwards data
+            # as it arrives rather than waiting for the observation to close.
+            connection = local_connection(observe_from, timeout=TIMEOUT)
+            try:
+                headers = {name: self.headers[name] for name in ("Authorization", "Content-Type")
+                           if name in self.headers}
+                connection.request("GET", self.path, headers=headers)
+                upstream = connection.getresponse()
+                self.send_response(upstream.status)
+                self.send_header("Content-Type", upstream.getheader("Content-Type", ""))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                while block := upstream.read1(16 * 1024):
+                    self.wfile.write(block)
+                    self.wfile.flush()
+            except (OSError, http.client.HTTPException):
+                # The terminal or isolated service can close a live stream
+                # during shutdown or normal observation changes.
+                pass
+            finally:
+                connection.close()
 
         do_GET = do_POST = handle_request
 

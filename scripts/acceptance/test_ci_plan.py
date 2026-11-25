@@ -20,9 +20,54 @@ class CiPlanTests(TestCase):
         self.assertEqual("selected", jobs[0]["installed"])
         cases = jobs[0]["cases"].split(",")
         self.assertIn("agent-setup", cases)
+        self.assertIn("model-search", cases)
         self.assertIn("keyboard-queue", cases)
         self.assertIn("statusline", cases)
+        self.assertIn("interrupt", cases)
+        self.assertIn("send-status", cases)
         self.assertFalse(jobs[0]["web"])
+
+    def test_runtime_delivery_pr_selects_interruption_and_send_recovery(self):
+        jobs, _, _ = plan("pull_request", paths=("crates/kuku/src/session/runtime/driver.rs",))
+        core, = jobs
+        cases = core["cases"].split(",")
+        self.assertIn("interrupt", cases)
+        self.assertIn("send-status", cases)
+        self.assertIn("provider-failure", cases)
+        self.assertIn("lost-receipt", cases)
+
+    def test_transcript_changes_select_reading_activity_acceptance(self):
+        jobs, _, _ = plan("pull_request", paths=("crates/kuku-tui/src/transcript/window.rs",))
+        core, = jobs
+        self.assertIn("reading-activities", core["cases"].split(","))
+
+    def test_transcript_clock_and_command_changes_select_rendering_acceptance(self):
+        for path in ("crates/kuku-tui/src/transcript/timing.rs",
+                     "crates/kuku-tui/src/transcript/tool/command.rs"):
+            with self.subTest(path=path):
+                jobs, _, _ = plan("pull_request", paths=(path,))
+                core, = jobs
+                cases = core["cases"].split(",")
+                self.assertIn("rendering", cases)
+                self.assertIn("reading-activities", cases)
+
+    def test_model_catalog_and_lifecycle_changes_select_model_search(self):
+        for path in ("crates/kuku-server/src/routes/models.rs",
+                     "scripts/acceptance/interactive_lifecycle.py"):
+            with self.subTest(path=path):
+                jobs, _, _ = plan("pull_request", paths=(path,))
+                self.assertIn("model-search", jobs[0]["cases"].split(","))
+
+    def test_job_picker_and_runtime_changes_select_background_job_acceptance(self):
+        for path in ("crates/kuku-tui/src/jobs/search.rs",
+                     "crates/kuku-tui/src/app/background_jobs.rs",
+                     "crates/kuku-tui/src/transcript/job.rs",
+                     "crates/kuku/src/session/runtime/jobs.rs",
+                     "crates/kuku-server/src/routes/jobs.rs",
+                     "scripts/acceptance/interactive_lifecycle.py"):
+            with self.subTest(path=path):
+                jobs, _, _ = plan("pull_request", paths=(path,))
+                self.assertIn("background-job", jobs[0]["cases"].split(","))
 
     def test_cli_configuration_pr_exercises_the_installed_headless_contract(self):
         jobs, _, verify_web = plan("pull_request", paths=("crates/kuku-cli/src/commands/config.rs",))

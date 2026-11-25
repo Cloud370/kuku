@@ -141,7 +141,9 @@ impl Session {
                 },
             )?;
             state.agent_mut(address)?.active_epoch = None;
-            if !state.closing
+            if cancelled {
+                self.resume_after_stop(&mut state, address)?;
+            } else if !state.closing
                 && state.agents[address]
                     .inbox
                     .iter()

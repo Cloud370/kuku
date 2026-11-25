@@ -21,15 +21,15 @@ Use the model picker to search and save one exact model in the initial setup. Re
 
 Choose a custom connection, saved connection, or preset. For API-key connections, enter the provider URL, network path, and key. A custom connection takes its name from the URL host and any non-default port. Connections with the same host and port get distinct names. Setup uses the protocol from a saved connection, preset, or standard request URL. After model selection, setup tests the eligible protocols for a new custom base URL in parallel. It prefers Responses, then Chat Completions, then Messages when the preceding protocols are unsupported. An ambiguous result opens the API type picker. The network choices are the proxy environment, a direct connection, or an HTTP, SOCKS5, or SOCKS5H proxy. When a bare address has more than one standard candidate path, the editor checks them concurrently and opens the first usable model list automatically. The screen lists each request and its outcome. An unreadable catalog still allows a known model ID to be entered directly.
 
-To add a model later, open `/model` and choose **Add model or connection**. Select an existing model and press `e` to edit it.
+To add a model later, open `/model` and choose **Add model or connection**. Select an existing model and press `Alt+E` to edit it.
 
 ## Select a model
 
-In `/model`, highlight a connection and model and press Enter to switch the current Agent. To change the default for new Sessions, highlight a model and press `d`, then confirm the config change. These actions let you change the current Agent and the default independently. [Terminal controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
+In `/model`, type or paste to filter the list, highlight a connection and model and press Enter to switch the current Agent. To change the default for new Sessions, highlight a model and press `Alt+D`, then confirm the config change. These actions let you change the current Agent and the default independently. [Terminal controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
 
 When saving a model with no configured thinking level, setup selects `medium` when supported. Otherwise it uses the lower middle of known ordered levels, the only available level, or a valid provider-declared default when the levels have no known order. A route with insufficient capability information follows the provider default. Manual settings take precedence.
 
-To edit service tiers you added, select the route, press `e`, and open **Settings → Model capabilities → Custom service tiers**. [Model and service tier keyboard controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
+To edit service tiers you added, select the route, press `Alt+E`, and open **Settings → Model capabilities → Custom service tiers**. [Model and service tier keyboard controls](../reference/cli.md#slash-commands) · [Config reference](../reference/config.md)
 
 ## Providers and credentials
 

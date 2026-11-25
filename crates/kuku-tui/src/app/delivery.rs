@@ -1,8 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use kuku_client::{
-    Acknowledgement, Action, InputDelivery, InputSource, InputStatus, InputTiming, QueuedInput,
-    Snapshot, Timing,
+    Acknowledgement, Action, AgentStatus, InputDelivery, InputSource, InputStatus, InputTiming,
+    QueuedInput, Snapshot, Timing,
 };
 
 use crate::jobs::Selection;
@@ -43,6 +43,10 @@ pub(crate) struct DeliveryRow {
 #[derive(Debug, Default)]
 pub(crate) struct Deliveries {
     rows: Vec<DeliveryRow>,
+    // Local sends made from an idle pane may receive a durable queued receipt in
+    // the interval before their own execution admits them. Only the receipt and
+    // a snapshot's execution identity can distinguish that from a true queue.
+    starting: HashMap<String, Option<u64>>,
     settled: VecDeque<String>,
     snapshot_cursor: u64,
     observed_cursor: u64,
@@ -51,6 +55,29 @@ pub(crate) struct Deliveries {
 impl Deliveries {
     pub(crate) fn rows(&self) -> &[DeliveryRow] {
         &self.rows
+    }
+
+    pub(super) fn begin_idle_send(&mut self, id: &str) {
+        self.starting.insert(id.to_owned(), None);
+    }
+
+    pub(super) fn starting(&self) -> bool {
+        !self.starting.is_empty()
+    }
+
+    pub(super) fn awaiting_admission(&self) -> bool {
+        self.starting.values().any(Option::is_some)
+    }
+
+    pub(super) fn hidden_queue_count(&self, snapshot: &Snapshot) -> usize {
+        snapshot
+            .pending
+            .iter()
+            .filter(|entry| {
+                self.starting.contains_key(&entry.receipt.command_id)
+                    || self.settled.contains(&entry.receipt.command_id)
+            })
+            .count()
     }
 
     pub(super) fn local(
@@ -88,6 +115,15 @@ impl Deliveries {
                 if self.settled.iter().any(|known| known == id) {
                     return;
                 }
+                if ack.status == Some(InputStatus::Queued)
+                    && let Some(starting) = self.starting.get_mut(id)
+                    && (self.snapshot_cursor < ack.receipt.event_id
+                        || *starting == Some(ack.receipt.event_id))
+                {
+                    *starting = Some(ack.receipt.event_id);
+                    return;
+                }
+                self.starting.remove(id);
                 if ack.receipt.event_id <= self.snapshot_cursor
                     && !self
                         .rows
@@ -119,10 +155,39 @@ impl Deliveries {
             return;
         }
         self.snapshot_cursor = snapshot.cursor;
+        for entry in &snapshot.pending {
+            let id = &entry.receipt.command_id;
+            if let Some(starting) = self.starting.get_mut(id) {
+                if snapshot.agent.status == AgentStatus::Running
+                    && !snapshot.cleaning_up
+                    && snapshot.execution_id().is_some_and(|execution| {
+                        execution > entry.receipt.event_id
+                            && snapshot.agent.turn.is_none_or(|turn| turn < execution)
+                    })
+                {
+                    *starting = Some(entry.receipt.event_id);
+                } else {
+                    // Another execution was already running when this send
+                    // arrived, or scheduling is blocked. Show the real queue.
+                    self.starting.remove(id);
+                }
+            }
+        }
+        self.starting.retain(|id, receipt| {
+            receipt.is_none_or(|receipt| {
+                receipt > snapshot.cursor
+                    || snapshot
+                        .pending
+                        .iter()
+                        .any(|entry| entry.receipt.command_id == *id)
+            })
+        });
         let mut queue: HashMap<_, _> = snapshot
             .pending
             .iter()
-            .filter(|entry| listed_input(entry))
+            .filter(|entry| {
+                listed_input(entry) && !self.starting.contains_key(&entry.receipt.command_id)
+            })
             .map(|entry| (entry.receipt.command_id.as_str(), entry))
             .collect();
         self.rows.retain(|row| {
@@ -155,6 +220,16 @@ impl Deliveries {
                 }
             }
         }
+        // A receipt can precede the snapshot that contains earlier inputs from
+        // other windows. Reestablish the queue's server-owned order when known.
+        let order: HashMap<_, _> = snapshot
+            .pending
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.receipt.command_id.as_str(), index))
+            .collect();
+        self.rows
+            .sort_by_key(|row| order.get(row.id.as_str()).copied().unwrap_or(usize::MAX));
     }
 
     pub(super) fn committed(&mut self, cursor: u64, delivery: InputDelivery) {
@@ -203,6 +278,7 @@ impl Deliveries {
 
     pub(super) fn remove(&mut self, id: &str) {
         self.rows.retain(|row| row.id != id);
+        self.starting.remove(id);
     }
 
     fn settle(&mut self, id: &str) {
@@ -507,6 +583,18 @@ impl App {
         }
         let address = Address::from_target(&item.command.target);
         let pane = self.panes.entry(address).or_default();
+        if matches!(item.command.action, Action::Send { .. }) && item.stage.needs_recovery() {
+            pane.deliveries.starting.remove(id);
+        }
+        // Keep healthy ordinary submissions in private pending storage, not the visible
+        // queue. A durable queue receipt or a real recovery transition creates a row.
+        // Retain a row already exposed during recovery or confirmed by a snapshot.
+        if matches!(item.command.action, Action::Send { .. })
+            && matches!(item.stage, PendingStage::Saving | PendingStage::Sending)
+            && !pane.deliveries.rows().iter().any(|row| row.id == id)
+        {
+            return;
+        }
         let (text, timing, replacement) = match &item.command.action {
             Action::Send { text, timing, .. } => (text, *timing, false),
             Action::ReplaceQueued {

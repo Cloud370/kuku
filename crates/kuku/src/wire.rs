@@ -16,11 +16,20 @@ pub fn to_wire(event: &UiEvent) -> Option<serde_json::Value> {
             "type": "thinking",
             "content": text,
         })),
-        UiEvent::ModelProgress { phase } => Some(json!({"type":match phase {
-            ModelPhase::Thinking => "thinking",
-            ModelPhase::Streaming => "streaming",
-            ModelPhase::ToolArguments => "tool_arguments",
-        }})),
+        UiEvent::ModelProgress {
+            phase,
+            preparing_file_contents,
+        } => {
+            let mut event = json!({"type":match phase {
+                ModelPhase::Thinking => "thinking",
+                ModelPhase::Streaming => "streaming",
+                ModelPhase::ToolArguments => "tool_arguments",
+            }});
+            if *preparing_file_contents {
+                event["preparing_file_contents"] = json!(true);
+            }
+            Some(event)
+        }
         UiEvent::ModelOutputUsage { output_tokens } => Some(json!({
             "type": "model_output_usage",
             "output_tokens": output_tokens,
