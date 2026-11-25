@@ -118,7 +118,13 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
     if app.has_queued_input() {
         title.push_str(&format!(" · {} select", Shortcut::UP.label));
         if selected_id.map_or_else(
-            || app.queue_input_ids().any(|id| app.queue_input_editable(id)),
+            || {
+                rows.iter().any(|row| {
+                    row.agent_sender.is_none()
+                        && row.status == SubmissionStatus::Queued
+                        && app.queue_input_editable(&row.id)
+                })
+            },
             |id| app.queue_input_editable(id),
         ) {
             title.push_str(" · Enter edit");

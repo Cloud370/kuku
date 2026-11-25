@@ -132,6 +132,31 @@ fn interrupted_agent_can_show_and_confirm_withdrawal_of_a_blocking_agent_message
 }
 
 #[test]
+fn full_agent_queue_offers_removal_and_only_user_input_offers_editing() {
+    let mut app = app();
+    let mut state = queued_state(&app, 128);
+    for entry in &mut state.pending {
+        entry.input.source = InputSource::Agent("worker".into());
+    }
+    load(&mut app, state.clone());
+    let title = super::super::delivery::lines(&app, 112, 6).lines[0].to_string();
+    assert!(title.contains("Del remove") && !title.contains("Enter edit"));
+    assert_eq!(app.queue_input_ids().count(), 128);
+
+    let mut user = queued_state(&app, 129).pending.pop().unwrap();
+    user.receipt.event_id = state.cursor + 1;
+    state.cursor += 1;
+    state.agent.pending_inputs += 1;
+    state.pending.push(user);
+    load(&mut app, state);
+    let title = super::super::delivery::lines(&app, 112, 6).lines[0].to_string();
+    assert!(title.contains("Enter edit"));
+    app.focus_queue_input("queue-0".into());
+    let title = super::super::delivery::lines(&app, 112, 6).lines[0].to_string();
+    assert!(!title.contains("Enter edit"), "{title}");
+}
+
+#[test]
 fn confirmation_does_not_withdraw_a_different_queued_agent_message() {
     let mut app = app();
     let mut state = interrupted_with_agent_input(&app);
