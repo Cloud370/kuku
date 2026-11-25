@@ -399,12 +399,17 @@ mod tests {
         }
         assert!(guidance.contains("call `run_command` directly"));
         assert!(guidance.contains("prefer the workspace tool when it can do the job"));
-        assert!(guidance.contains("not just to relay a single tool's result"));
+        assert!(guidance.contains("If a single action has a matching direct tool"));
 
         let read_only = render(&["read_file"]);
         assert!(read_only.contains("Use `read_file` directly"));
         for name in ["find_files", "search_text", "run_command", "run_js"] {
             assert!(!read_only.contains(name));
+        }
+        let script_only = render(&["run_js"]);
+        assert!(script_only.contains("If a single action has a matching direct tool"));
+        for name in ["find_files", "read_file", "search_text", "run_command"] {
+            assert!(!script_only.contains(name));
         }
     }
 }

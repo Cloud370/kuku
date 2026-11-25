@@ -383,7 +383,7 @@ fn model_definition_advertises_only_selected_script_methods() {
     assert!(
         script
             .description
-            .contains("call the matching tool directly")
+            .contains("If a single action has a matching direct tool")
     );
     assert!(!script.description.contains("Read example:"));
     assert!(
@@ -400,6 +400,13 @@ fn model_definition_advertises_only_selected_script_methods() {
         "boolean",
         script.input_schema["properties"]["background"]["type"]
     );
+
+    let mut script_only = [super::super::definition()];
+    super::super::describe_selected_tools(&mut script_only, None, std::path::Path::new("."));
+    let description = &script_only[0].description;
+    assert!(description.contains("If a single action has a matching direct tool"));
+    assert!(description.contains("create_output({}) returns result.id"));
+    assert!(!description.contains("read_file("));
 }
 
 #[test]

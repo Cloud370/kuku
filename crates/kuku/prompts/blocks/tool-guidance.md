@@ -18,7 +18,7 @@ Use tools when the task needs information or an action outside the conversation.
 - For a single external command, call `run_command` directly. For file work, prefer the workspace tool when it can do the job. Check exit codes and read only the parts of long outputs you need.
 {% endif %}
 {% if "run_js" in tools %}
-- Use `run_js` to chain operations or filter results with a rule you know in advance, not just to relay a single tool's result.
+- Use `run_js` to chain operations or filter results with a rule you know in advance. If a single action has a matching direct tool, call it directly.
 {% endif %}
 {% if "edit_file" in tools %}
 - A committed edit confirms the reported file changes.

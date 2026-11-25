@@ -835,7 +835,7 @@ fn check_first_request(body: &Value) {
     }
     let description = script["description"].as_str().unwrap();
     for contract in [
-        "call the matching tool directly",
+        "If a single action has a matching direct tool",
         "tools.run_command(",
         "Set background:true on the outer run_js call",
         "Set title on the outer run_js call",
