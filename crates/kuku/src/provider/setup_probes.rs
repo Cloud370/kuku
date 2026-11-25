@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::config::{ModelThinkingTest, ProviderConfig, ProviderFormat, resolve_request_url};
 use crate::{Error, Result};
 
-use super::capabilities::thinking_scope;
+use super::capabilities::probe_scope;
 use super::setup_api::{DECLARED_ORDER, check_setup_api};
 use super::setup_reasoning::{check_reasoning, reply_accepted};
 use super::trial::{TrialProblem, trial_with_route_evidence};
@@ -479,6 +479,32 @@ impl ProbeBatch {
         self.schedule();
     }
 
+    /// Return scoped evidence only when the image challenge succeeded on this route.
+    pub fn image_test_scope(&self, connection: &ProviderConfig, model: &str) -> Option<String> {
+        let verified = self.selected_rows().any(|row| {
+            matches!((&row.probe, &row.progress), (
+                Probe::Trial { connection: route, model: selected, check: ModelTrial::ImageInput { .. } },
+                ProbeProgress::Finished(_, Ok(ProbeResult::Trial(result)))
+            ) if selected == model && result.image_match == Some(true)
+                && same_connection(connection, route)
+                && connection.options.subscription == route.options.subscription)
+        });
+        if !verified {
+            return None;
+        }
+        let endpoint = resolve_request_url(
+            connection.format,
+            &connection.base_url,
+            connection.options.endpoint_url.as_deref(),
+        )
+        .ok()?;
+        Some(probe_scope(
+            &endpoint,
+            connection.format,
+            &connection.options,
+        ))
+    }
+
     /// Accepted and rejected values for this model on the tested connection.
     pub fn thinking_test(
         &self,
@@ -492,7 +518,7 @@ impl ProbeBatch {
         )
         .ok()?;
         let mut test = ModelThinkingTest {
-            scope: thinking_scope(&endpoint, connection.format, &connection.options),
+            scope: probe_scope(&endpoint, connection.format, &connection.options),
             ..ModelThinkingTest::default()
         };
         for row in self.selected_rows() {

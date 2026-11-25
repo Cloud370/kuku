@@ -686,18 +686,42 @@ fn check_route_snapshot(
 
 fn builtin_media_adapter_upgraded(old: &ProviderCapabilities, resolved: &ResolvedProvider) -> bool {
     let adapter = resolved.capabilities.media_adapter;
-    if old.media_adapter != MediaAdapterSupport::TextOnly
-        || !matches!(
-            (resolved.kind, adapter),
-            (
-                ProviderKind::OpenAiCompatible,
-                MediaAdapterSupport::ChatCompletionsImageParts
-            ) | (
-                ProviderKind::Anthropic,
-                MediaAdapterSupport::AnthropicMessagesImageBlocks
-            )
-        )
+    if old.media_adapter != MediaAdapterSupport::TextOnly {
+        return false;
+    }
+    if resolved.kind == ProviderKind::OpenAiResponses
+        && adapter == MediaAdapterSupport::ResponsesImageInput
     {
+        let other_modalities = |capabilities: &ProviderCapabilities| {
+            capabilities.input_modalities.as_ref().map_or_else(
+                || vec!["text".to_owned()],
+                |input| {
+                    input
+                        .value
+                        .iter()
+                        .filter(|value| *value != "image")
+                        .cloned()
+                        .collect()
+                },
+            )
+        };
+        return other_modalities(old) == other_modalities(&resolved.capabilities)
+            && (ProviderCapabilities {
+                media_adapter: adapter,
+                input_modalities: resolved.capabilities.input_modalities.clone(),
+                ..old.clone()
+            }) == resolved.capabilities;
+    }
+    if !matches!(
+        (resolved.kind, adapter),
+        (
+            ProviderKind::OpenAiCompatible,
+            MediaAdapterSupport::ChatCompletionsImageParts
+        ) | (
+            ProviderKind::Anthropic,
+            MediaAdapterSupport::AnthropicMessagesImageBlocks
+        )
+    ) {
         return false;
     }
     // The new request encoder is not a route change. All declared capabilities

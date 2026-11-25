@@ -589,6 +589,7 @@ pub(crate) fn supported(
 ) -> bool {
     name != "view_image"
         || (config.capabilities.tool_calls != Some(false)
+            && config.capabilities.media_adapter.supports_tool_images()
             && config.capabilities.image_input_support(builtin_adapter)
                 == crate::config::ImageInputSupport::Supported)
 }

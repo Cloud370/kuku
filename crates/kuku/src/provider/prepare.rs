@@ -142,19 +142,21 @@ fn prepare(
             media.limit,
             media.load_user,
         )?;
-        let chat_continuation = (matches!(wire, ImageWire::ChatCompletions)
-            && !images.tools.is_empty())
-        .then(|| request.catalog.render_chat_tool_image_continuation())
-        .transpose()
-        .map_err(|error| invalid_request(&error.to_string()))?;
-        media::attach_tool_images(
-            wire,
-            &mut body,
-            images.tools,
-            media.limit,
-            media.load,
-            chat_continuation.as_deref().map(str::trim),
-        );
+        if config.capabilities.media_adapter.supports_tool_images() {
+            let chat_continuation = (matches!(wire, ImageWire::ChatCompletions)
+                && !images.tools.is_empty())
+            .then(|| request.catalog.render_chat_tool_image_continuation())
+            .transpose()
+            .map_err(|error| invalid_request(&error.to_string()))?;
+            media::attach_tool_images(
+                wire,
+                &mut body,
+                images.tools,
+                media.limit,
+                media.load,
+                chat_continuation.as_deref().map(str::trim),
+            );
+        }
     }
     if config.kind == ProviderKind::Anthropic
         && let Some(messages) = body["messages"].as_array_mut()
