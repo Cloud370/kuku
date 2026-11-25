@@ -27,6 +27,21 @@ impl App {
         if address.session != self.active.session {
             self.navigation = AgentNavigation::default();
             self.related_agents.reset_roster();
+            // The current Session's panes share one durable roster. If we have
+            // cached one of them, keep the most recent known roster available
+            // while the new observation is starting (or unavailable).
+            if let Some(snapshot) = self
+                .cached
+                .iter()
+                .filter(|cached| cached.session == address.session)
+                .filter_map(|cached| self.panes.get(cached)?.snapshot.as_deref())
+                .filter(|snapshot| {
+                    snapshot.session_id == address.session && snapshot.workspace == self.workspace
+                })
+                .max_by_key(|snapshot| snapshot.cursor)
+            {
+                self.related_agents.snapshot_roster(snapshot);
+            }
         } else if address != self.active && exists && self.pane().exists {
             self.navigation.previous = Some(self.active.clone());
         }
@@ -261,7 +276,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use kuku_client::{HistoryEntry, HistoryPage, Snapshot};
+    use kuku_client::{Error, HistoryEntry, HistoryPage, Snapshot};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
@@ -338,31 +353,32 @@ mod tests {
         app.update(Update::WatchConnected(selection));
     }
 
+    fn addresses(app: &App) -> Vec<String> {
+        let Some(Modal::Picker(picker)) = &app.modal else {
+            panic!("expected Agent picker");
+        };
+        picker
+            .visible_choices()
+            .into_iter()
+            .filter_map(|choice| match &choice.kind {
+                ChoiceKind::Agent { target } => Some(target.agent.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn selected(app: &App) -> String {
+        let Some(Modal::Picker(picker)) = &app.modal else {
+            panic!("expected Agent picker");
+        };
+        let Some(ChoiceKind::Agent { target }) = picker.selected_choice() else {
+            panic!("expected Agent selection");
+        };
+        target.agent
+    }
+
     #[test]
     fn roster_follows_creation_ids_not_live_arrival_or_snapshot_order() {
-        fn addresses(app: &App) -> Vec<String> {
-            let Some(Modal::Picker(picker)) = &app.modal else {
-                panic!("expected Agent picker");
-            };
-            picker
-                .visible_choices()
-                .into_iter()
-                .filter_map(|choice| match &choice.kind {
-                    ChoiceKind::Agent { target } => Some(target.agent.clone()),
-                    _ => None,
-                })
-                .collect()
-        }
-        fn selected(app: &App) -> String {
-            let Some(Modal::Picker(picker)) = &app.modal else {
-                panic!("expected Agent picker");
-            };
-            let Some(ChoiceKind::Agent { target }) = picker.selected_choice() else {
-                panic!("expected Agent selection");
-            };
-            target.agent
-        }
-
         let mut app = connected();
         let initial = json!([
             {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0}
@@ -432,6 +448,144 @@ mod tests {
         }
         key(&mut reopened, KeyCode::Left, KeyModifiers::ALT);
         assert_eq!("a-tests", reopened.active.agent);
+    }
+
+    #[test]
+    fn http_refresh_updates_roster_without_reviving_live_activity_when_watch_is_unavailable() {
+        for failed in [false, true] {
+            let mut app = connected();
+            let initial = json!([
+                {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0},
+                {"address":"z-review","creation_event_id":3,"status":"running","pending_inputs":0,"execution_id":4}
+            ]);
+            let state = snapshot(&app, 6, initial.clone());
+            load(&mut app, state, Vec::new());
+            app.update(Update::Observation(
+                app.selection(),
+                serde_json::from_value(json!({
+                    "type":"live", "agent":"z-review", "cursor":6, "execution_id":4,
+                    "event":{"type":"text","content":"previous live reply"}
+                }))
+                .unwrap(),
+            ));
+            assert_eq!(
+                Some("previous live reply"),
+                app.related_agents.iter().next().unwrap().preview
+            );
+            app.open_agents();
+            key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+            assert_eq!("z-review", selected(&app));
+            let selection = app.selection();
+            if failed {
+                app.update(Update::WatchFailed(
+                    selection.clone(),
+                    Error::HttpStatus(403),
+                ));
+            } else {
+                app.update(Update::WatchReconnecting(
+                    selection.clone(),
+                    "connection closed".into(),
+                ));
+            }
+            assert!(app.related_agents.iter().next().is_none());
+
+            let refreshed = snapshot(
+                &app,
+                9,
+                json!([
+                    {"address":"a-tests","creation_event_id":7,"status":"idle","pending_inputs":0},
+                    {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0},
+                    {"address":"z-review","creation_event_id":3,"status":"waiting","pending_inputs":2,"queued_task":"Review changes"}
+                ]),
+            );
+            app.update(Update::Refreshed(selection.clone(), Ok(refreshed)));
+            assert_eq!(["main", "z-review", "a-tests"], addresses(&app).as_slice());
+            assert_eq!("z-review", selected(&app));
+            let Some(Modal::Picker(picker)) = &app.modal else {
+                panic!("expected Agent picker");
+            };
+            let choices = picker.visible_choices();
+            assert_eq!("z-review · Waiting · 2 queued", choices[1].label);
+            assert_eq!("Queued: Review changes", choices[1].detail);
+            assert!(app.related_agents.iter().next().is_none());
+
+            // Even while disconnected, a later-arriving older response cannot
+            // replace the newly observed summaries or discard their rows.
+            let stale = snapshot(&app, 6, initial);
+            app.update(Update::Refreshed(selection, Ok(stale)));
+            assert_eq!(["main", "z-review", "a-tests"], addresses(&app).as_slice());
+            assert_eq!("z-review", selected(&app));
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            for address in ["z-review", "a-tests", "main"] {
+                key(&mut app, KeyCode::Right, KeyModifiers::ALT);
+                assert_eq!(address, app.active.agent);
+            }
+        }
+    }
+
+    #[test]
+    fn returning_to_a_cached_session_uses_its_newest_known_roster_not_its_old_live_activity() {
+        let mut app = connected();
+        let main = app.active.clone();
+        let state = snapshot(
+            &app,
+            4,
+            json!([
+                {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0},
+                {"address":"z-review","creation_event_id":3,"status":"idle","pending_inputs":0}
+            ]),
+        );
+        load(&mut app, state, Vec::new());
+        app.select(
+            Address::new(main.session.clone(), "z-review".into()),
+            true,
+            String::new(),
+        );
+        let state = snapshot(
+            &app,
+            9,
+            json!([
+                {"address":"a-tests","creation_event_id":7,"status":"running","pending_inputs":0,"execution_id":8},
+                {"address":"z-review","creation_event_id":3,"status":"idle","pending_inputs":0},
+                {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0}
+            ]),
+        );
+        load(&mut app, state, Vec::new());
+        app.update(Update::Observation(
+            app.selection(),
+            serde_json::from_value(json!({
+                "type":"live", "agent":"a-tests", "cursor":9, "execution_id":8,
+                "event":{"type":"text","content":"old peer live reply"}
+            }))
+            .unwrap(),
+        ));
+        assert!(
+            app.related_agents
+                .iter()
+                .any(|agent| agent.preview.is_some())
+        );
+
+        app.select(Address::main("another-session".into()), true, String::new());
+        let state = snapshot(
+            &app,
+            3,
+            json!([
+                {"address":"main","creation_event_id":1,"status":"idle","pending_inputs":0},
+                {"address":"other","creation_event_id":2,"status":"idle","pending_inputs":0}
+            ]),
+        );
+        load(&mut app, state, Vec::new());
+
+        app.select(main, true, String::new());
+        // No new observation yet. The previously selected peer's snapshot is
+        // newer than main's cached snapshot and contains one additional Agent.
+        assert!(app.related_agents.iter().next().is_none());
+        app.open_agents();
+        assert_eq!(["main", "z-review", "a-tests"], addresses(&app).as_slice());
+        assert_eq!("main", selected(&app));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!("z-review", app.active.agent);
     }
 
     #[test]

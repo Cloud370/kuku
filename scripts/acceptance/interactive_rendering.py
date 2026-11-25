@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 
 from interactive_fixture import (
     InstalledClient, Response, StreamPause, eventually, has_standalone_assistant_rail,
-    is_composer_heading, run_cases,
+    is_composer_heading, run_cases, wait_for_resized_transcript,
 )
 from interactive_responses import responses_reasoning
 
@@ -277,7 +277,7 @@ def client_clock_history(client):
         screen = terminal.expect(final, also=tuple(local.values()), absent=tuple(utc.values()))["screen"]
         verify_clock_rows(screen, local)
         terminal.request("resize", rows=42, cols=48)
-        screen = terminal.expect(final, also=tuple(local.values()), absent=tuple(utc.values()), rows=42)["screen"]
+        screen = wait_for_resized_transcript(terminal, 42, (final, *local.values()), absent=tuple(utc.values()))
         verify_clock_rows(screen, local)
         terminal.exit_cleanly()
         client.assert_current_service(connection)
@@ -326,29 +326,6 @@ def reading_activity_history(client):
         assert row is not None, screen
         return row
 
-    def resized_frame(terminal, rows, markers, *, prompt_body=False):
-        # The PTY acknowledges the new parser dimensions before the app has
-        # drawn its new layout. PageUp uses the app's last rendered height.
-        # Wait for the composer at the *new* bottom, not merely a padded old
-        # frame containing the same final reply and statistics.
-        last_screen = ""
-
-        def ready():
-            nonlocal last_screen
-            last_screen = terminal.request("screen")["screen"]
-            lines = last_screen.splitlines()
-            if (len(lines) == rows
-                    and any(is_composer_heading(row) for row in lines[-8:])
-                    and all(marker in last_screen for marker in markers)
-                    and (not prompt_body or any(row.lstrip().startswith("│") and first_prompt in row
-                                                for row in lines))):
-                return last_screen
-
-        try:
-            return eventually(f"the rendered {rows}-row reading activity frame", ready)
-        except AssertionError as error:
-            raise AssertionError(f"{error}\nLast terminal screen:\n{last_screen}") from error
-
     with client.terminal(workspace) as terminal:
         terminal.request("resize", cols=140, rows=44)
         terminal.expect("Ready", rows=44)
@@ -386,7 +363,13 @@ def reading_activity_history(client):
 
         # With both summaries visible, neither is repeated in the history dock.
         terminal.request("resize", cols=140, rows=112)
-        resized_frame(terminal, 112, ("Final file verified.", "8 tools", "1 tool"), prompt_body=True)
+        # PageUp uses the app's last rendered height. The parser has already
+        # acknowledged its new dimensions, but the app may not have redrawn.
+        wait_for_resized_transcript(
+            terminal, 112, ("Final file verified.", "8 tools", "1 tool"),
+            predicate=lambda screen: any(row.lstrip().startswith("│") and first_prompt in row
+                                         for row in screen.splitlines()),
+        )
         terminal.press("\x1b[5~")
         tall = terminal.expect("Reading history", also=("8 tools", "1 tool", first_prompt), rows=112)["screen"]
         assert len(summary_rows(tall, 1, 8)) == len(summary_rows(tall, 2, 1)) == 1, tall
@@ -394,17 +377,17 @@ def reading_activity_history(client):
         anchor_row = prompt_row(tall)
 
         terminal.request("resize", cols=140, rows=14)
-        short = terminal.expect("Reading history", also=("8 tools", first_prompt), rows=14)["screen"]
+        short = wait_for_resized_transcript(terminal, 14, ("Reading history", "8 tools", first_prompt))
         assert "8 tools" in history_row(short) and len(summary_rows(short, 1, 8)) == 1, short
         assert not summary_rows(short, 2, 1), short
         assert prompt_row(short) == anchor_row, short
         terminal.request("resize", cols=140, rows=112)
-        restored = terminal.expect("Reading history", also=("8 tools", "1 tool", first_prompt), rows=112)["screen"]
+        restored = wait_for_resized_transcript(terminal, 112, ("Reading history", "8 tools", "1 tool", first_prompt))
         assert len(summary_rows(restored, 1, 8)) == len(summary_rows(restored, 2, 1)) == 1, restored
         assert prompt_row(restored) == anchor_row, restored
 
         terminal.request("resize", cols=140, rows=14)
-        short = terminal.expect("Reading history", also=("8 tools", first_prompt), rows=14)["screen"]
+        short = wait_for_resized_transcript(terminal, 14, ("Reading history", "8 tools", first_prompt))
 
         def scroll(previous, key):
             terminal.press(key)
@@ -433,8 +416,8 @@ def reading_activity_history(client):
 
         terminal.press("\x1b[1;5F")
         terminal.request("resize", cols=140, rows=112)
-        latest = terminal.expect("Final file verified.", also=("8 tools", "1 tool"),
-                                 absent=("Reading history",), rows=112)["screen"]
+        latest = wait_for_resized_transcript(terminal, 112, ("Final file verified.", "8 tools", "1 tool"),
+                                            absent=("Reading history",))
         assert len(summary_rows(latest, 1, 8)) == len(summary_rows(latest, 2, 1)) == 1, latest
         terminal.exit_cleanly()
     client.provider.assert_idle()

@@ -15,6 +15,7 @@ function snapshot(selected: Target, cursor: number): Snapshot {
     cursor,
     agent: {
       address: selected.agent,
+      creation_event_id: 1,
       status: "running",
       config: {},
       turn: 1,

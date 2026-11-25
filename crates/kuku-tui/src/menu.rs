@@ -276,6 +276,10 @@ impl PickerKind {
         matches!(self, Self::Commands | Self::Paths(_) | Self::Speed)
     }
 
+    pub(crate) fn scrollable_header(&self) -> bool {
+        matches!(self, Self::Server | Self::ModelDefault | Self::JobActions)
+    }
+
     pub(crate) fn composer_anchored(&self) -> bool {
         matches!(
             self,

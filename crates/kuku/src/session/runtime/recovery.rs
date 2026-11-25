@@ -255,6 +255,81 @@ mod tests {
     }
 
     #[test]
+    fn legacy_checkpoint_replays_interruption_disposition_after_a_second_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let outputs = dir.path().join("outputs");
+        let mut writer = EventStore::open(dir.path().join("events.jsonl")).unwrap();
+        let records = [
+            Record::AgentCreated {
+                command_id: "create-main".into(),
+                fingerprint: "fingerprint".into(),
+                address: "main".into(),
+                config: AgentConfig::default(),
+            },
+            Record::ExecutionStarted {
+                address: "main".into(),
+            },
+        ];
+        let mut events = records
+            .into_iter()
+            .map(|record| writer.append(record.payload().unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        for continue_queued in [true, false] {
+            events.push(
+                writer
+                    .append(crate::event::EventPayload::Unknown(serde_json::json!({
+                        "kind":"runtime.operation","ts":"2026-11-25T00:00:00Z","record":{
+                            "operation":"agent_stopped","address":"main","cleanup_pending":true,
+                            "continue_queued":continue_queued,
+                        },
+                    })))
+                    .unwrap(),
+            );
+        }
+        // Neither a checkpoint saved after the first interrupt nor one saved
+        // after a subsequent Stop can reconstruct the new durable disposition.
+        for prefix in [3, 4] {
+            let mut saved = Projection::new(&outputs, "session", 4096).unwrap();
+            for event in &events[..prefix] {
+                saved.observe(Replay::Event(event.clone()), None).unwrap();
+            }
+            let mut old = serde_json::to_value(&saved).unwrap();
+            old["state"]["agents"]["main"]
+                .as_object_mut()
+                .unwrap()
+                .remove("discard_cancelled_turn");
+            let checkpoint = serde_json::value::to_raw_value(&old).unwrap();
+            let mut recovered = Projection::new(&outputs, "session", 4096).unwrap();
+            assert!(
+                !recovered
+                    .observe(Replay::Checkpoint(&checkpoint), None)
+                    .unwrap()
+            );
+            assert!(super::decode_listing(Default::default(), &checkpoint).is_none());
+            for event in &events {
+                recovered
+                    .observe(Replay::Event(event.clone()), None)
+                    .unwrap();
+            }
+            let agent = recovered.state.agent("main").unwrap();
+            assert!(!agent.continue_queued);
+            assert!(agent.discard_on_resume());
+            recovered
+                .state
+                .reduce(
+                    5,
+                    Record::AgentResumed {
+                        address: "main".into(),
+                        command: None,
+                        restore: true,
+                    },
+                )
+                .unwrap();
+            assert!(!recovered.state.agent("main").unwrap().discard_on_resume());
+        }
+    }
+
+    #[test]
     fn changing_request_limit_keeps_committed_state_and_rebuilds_startup_facts() {
         let dir = tempfile::tempdir().unwrap();
         let events = dir.path().join("events.jsonl");

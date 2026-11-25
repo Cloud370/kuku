@@ -826,19 +826,31 @@ pub(crate) fn job_list_label(job: &JobSnapshot, width: usize) -> String {
 pub(crate) fn job_choice(job: JobSnapshot) -> Choice {
     Choice::new(
         job_list_label(&job, usize::MAX),
-        String::new(),
+        single_line(&job.summary),
         ChoiceKind::BackgroundJob(Box::new(job)),
     )
 }
 
 pub(crate) fn job_detail(job: &JobSnapshot) -> String {
-    let title = job_list_label(job, 120);
-    let summary = if job.status == JobStatus::Running || job.summary.is_empty() {
-        String::new()
-    } else {
-        format!("\n{}", single_line(&job.summary))
-    };
-    format!("{title}{summary}")
+    // Put the identity and elapsed value first even when the title or result
+    // wraps beyond the visible part of the details header.
+    let mut detail = format!(
+        "{} · {}",
+        job_status_label(job.status),
+        single_line(&job.id)
+    );
+    if let Some(ms) = job.elapsed_ms {
+        detail.push_str(&format!(" · {}", format_duration_ms(ms)));
+    }
+    let title = single_line(job_title(job));
+    detail.push_str(&format!("\nTask · {title}"));
+    if job.status != JobStatus::Running {
+        let summary = single_line(&job.summary);
+        if !summary.is_empty() && summary != title {
+            detail.push_str(&format!("\n{summary}"));
+        }
+    }
+    detail
 }
 
 async fn prepare_restart(

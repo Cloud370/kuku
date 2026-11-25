@@ -129,6 +129,7 @@ export interface Snapshot {
   agents: AgentSummary[];
   agent: {
     address: string;
+    creation_event_id: number;
     status: AgentStatus;
     config: AgentConfig;
     turn: number | null;

@@ -493,6 +493,47 @@ fn cancellation_without_visible_reply_still_renders_a_turn_marker() {
 }
 
 #[test]
+fn no_reply_interruption_with_a_known_reason_stays_compact_in_durable_history() {
+    let entry: HistoryEntry = serde_json::from_value(json!({
+        "id":9,"agent":"main","turn":7,"turn_number":1,
+        "type":"status","status":"interrupted","text":"length",
+        "turn_summary":{"tool_calls":3}
+    }))
+    .unwrap();
+    for width in [18, 80] {
+        let mut transcript = Transcript::default();
+        transcript.apply(entry.clone(), None);
+        let projected = transcript.project(width, 20);
+        let text = projected
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("length"), "{text}");
+        assert!(
+            text.contains("Execution interrupted") || text.contains("Run stopped"),
+            "{text}"
+        );
+        assert!(!text.contains('╭') && !text.contains('╰'), "{text}");
+        assert!(projected.lines.len() <= 4, "{text}");
+        assert!(
+            transcript
+                .message_info(&MessageId::Event(9), "main")
+                .is_none()
+        );
+
+        let mut reopened = Transcript::default();
+        reopened.replace_recent(HistoryPage {
+            entries: vec![entry.clone()],
+            rewind_groups: vec![],
+            next_before: None,
+        });
+        assert_eq!(projected.lines, reopened.project(width, 20).lines);
+    }
+}
+
+#[test]
 fn interrupted_reply_does_not_claim_a_background_job_was_cancelled() {
     let events = [
         json!({"id":8,"agent":"main","turn":1,"type":"tool_result","tool":"run_command","tool_call_id":"start","status":"ok","structured":{"kind":"job","job_id":"job-1","status":"running","tool":"run_command"}}),

@@ -181,7 +181,7 @@ impl CommandPreview {
     pub(super) fn format_output(&self, mut view: ToolView) -> ToolView {
         view.invocation = self.invocation();
         view.summary = self.summary();
-        view.evidence = self.capture_notes().join("\n");
+        view.evidence = self.evidence();
         if view.output_id.is_none() && !self.body().is_empty() {
             view.details = self.body().to_owned();
         }
@@ -213,6 +213,15 @@ impl CommandPreview {
             rows.extend(render_preview(
                 &single_line(error),
                 ERROR,
+                columns,
+                MAX_WARNING_ROWS,
+                0,
+            ));
+        }
+        if self.facts.duration_ms >= 1_000 {
+            rows.extend(render_preview(
+                &format!("Duration · {} ms", self.facts.duration_ms),
+                MUTED,
                 columns,
                 MAX_WARNING_ROWS,
                 0,
@@ -357,6 +366,43 @@ impl CommandPreview {
             }
         }
         lines.join("\n")
+    }
+
+    pub(super) fn diagnostic(&self) -> &str {
+        if let Some(error) = self.facts.start_error.as_deref() {
+            return error;
+        }
+        if let Some(failure) = self
+            .facts
+            .reported_tests
+            .iter()
+            .find_map(|report| report.first_failure.as_deref())
+        {
+            return failure;
+        }
+        // The model-visible result starts with a generated execution summary.
+        // The compact status already displays those facts; only actual output
+        // or a specific execution warning belongs in its diagnostic.
+        if let Some(note) = self.capture_notes().first().copied() {
+            return note;
+        }
+        if self.facts.termination == CommandTermination::Exited {
+            return self
+                .body()
+                .lines()
+                .find(|line| {
+                    !line.trim().is_empty()
+                        && !matches!(
+                            *line,
+                            "stdout:"
+                                | "stderr:"
+                                | "End of captured stdout:"
+                                | "End of captured stderr:"
+                        )
+                })
+                .unwrap_or_default();
+        }
+        ""
     }
 
     fn attention(&self) -> bool {
@@ -529,7 +575,9 @@ impl Tool {
         inline_output: Option<&InlineOutput>,
     ) -> Vec<Row> {
         let mut rows = if in_group {
-            self.render_activity(width, 1)
+            // The inspection body contains the invocation and diagnostics;
+            // do not repeat the compact summary's command text in the header.
+            self.render_activity_with_title(width, 1, Some(self.command_title()))
         } else {
             self.command_heading(width)
         };
@@ -575,6 +623,22 @@ impl Tool {
             return &self.command_subject;
         }
         "Run command"
+    }
+
+    pub(super) fn command_activity_title(&self) -> &str {
+        if !self.request_title.is_empty() {
+            return &self.request_title;
+        }
+        if let Some(outcome) = self.state.outcome()
+            && outcome.command_preview.is_some()
+            && !outcome.invocation.is_empty()
+        {
+            return &outcome.invocation;
+        }
+        if !self.invocation.is_empty() {
+            return &self.invocation;
+        }
+        self.command_title()
     }
 
     pub(super) fn command_heading(&self, width: usize) -> Vec<Row> {

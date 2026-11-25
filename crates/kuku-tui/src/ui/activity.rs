@@ -47,21 +47,12 @@ impl ObservedActivity {
                 return Self::Agent(Activity::Configuration);
             }
             let activity = app.pane().composer_activity();
-            if matches!(
-                activity,
-                Activity::Ready
-                    | Activity::Finished
-                    | Activity::Stopped
-                    | Activity::Interrupted
-                    | Activity::Failed
-            ) && matches!(
-                app.input_status().submission,
-                Some(
-                    SubmissionStatus::Saving
-                        | SubmissionStatus::AwaitingReceipt
-                        | SubmissionStatus::AwaitingAdmission
-                )
-            ) {
+            if activity.shows_sending()
+                && app
+                    .input_status()
+                    .submission
+                    .is_some_and(SubmissionStatus::is_sending)
+            {
                 Self::Sending
             } else if !matches!(
                 activity,
@@ -421,26 +412,45 @@ pub(super) fn render_heading(
     let phase_desired = next_action.as_ref().map_or(phase_desired, |action| {
         phase_desired.max(frame.status.label().width() + 3 + 3 + action.width())
     });
+    // A healthy send has no delivery row until committed or uncertain. Keep
+    // its only feedback visible even when a busy recipient and a long tool
+    // label would otherwise fill the heading.
+    let send_feedback_width = app.displayed_statusline().composer_send_feedback_width(app);
+    let feedback_reserve = if send_feedback_width > 0 {
+        (send_feedback_width + 1).min(width.saturating_sub(4))
+    } else {
+        0
+    };
+    let core_room = width - feedback_reserve;
+    // While submission feedback consumes its own slot, let the execution
+    // phase shorten a little further to retain a usable recipient badge. A
+    // 36-column terminal has only 31 cells inside the composer border: the
+    // compact "Model wait" phase, recipient, and Sending all fit there.
+    let minimum_phase = if send_feedback_width > 0 {
+        MIN_PHASE_SLOT.min(core_room.saturating_sub(MIN_RECIPIENT_SLOT + gap).max(10))
+    } else {
+        MIN_PHASE_SLOT
+    };
     let recipient_room =
         (width / 3)
             .clamp(MIN_RECIPIENT_SLOT, RECIPIENT_SLOT)
-            .min(width.saturating_sub(
+            .min(core_room.saturating_sub(
                 if next_action.is_some() || frame.tool.as_ref().is_some_and(|tool| tool.waiting_job)
                 {
                     phase_desired
                 } else {
-                    MIN_PHASE_SLOT
+                    minimum_phase
                 } + gap,
             ));
     let recipient = app
         .visible_recipient()
         .filter(|_| recipient_room >= MIN_RECIPIENT_SLOT);
     let recipient_width = recipient.map_or(0, |_| recipient_room + gap);
-    let phase_width = (width - recipient_width).min(phase_desired);
+    let phase_width = (core_room - recipient_width).min(phase_desired);
     let core_width = phase_width + recipient_width;
     let feedback_limit = width
         .saturating_sub(core_width + 1)
-        .min(width / 3)
+        .min((width / 3).max(send_feedback_width))
         .min(FEEDBACK_LIMIT);
     let feedback = app
         .displayed_statusline()

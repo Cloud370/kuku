@@ -249,7 +249,7 @@ impl Transcript {
         self.notes = None;
         self.focused_rewind_group = None;
         if let Some(reading) = self.reading.take() {
-            self.restore = reading.restore_at();
+            self.restore = reading.restore_at(&mut self.detail_items);
         }
         self.recent = Window::default();
         self.current_execution = None;
@@ -505,8 +505,8 @@ struct Reading {
 }
 
 impl Reading {
-    fn restore_at(self) -> Option<(u64, Anchor, AutoActivity)> {
-        let activity = self.window.saved_activity();
+    fn restore_at(self, items: &mut Details) -> Option<(u64, Anchor, AutoActivity)> {
+        let mut activity = self.window.saved_activity();
         let positions = self.window.positions();
         let index = positions
             .iter()
@@ -518,6 +518,38 @@ impl Reading {
             .map(|(position, _)| *position)
             .next_back();
         if let Some(before) = before {
+            // Cache eviction drops the full reading window, but restoration
+            // loads only one bounded history page around the anchor. Keep
+            // aliases on members nearest that anchor, not the former group
+            // heading which may lie outside the page.
+            let end = (index + HISTORY_PAGE / 2).min(positions.len());
+            let first = positions[end.saturating_sub(HISTORY_PAGE)].0;
+            let anchor_position = positions[index].0;
+            for span in details::groups(&self.window.records) {
+                let members = &self.window.records[span.range];
+                let Some(survivor) = members
+                    .iter()
+                    .filter_map(|record| Some((record, record.position?)))
+                    .filter(|(_, position)| (first..=before).contains(position))
+                    .min_by_key(|(_, position)| position.abs_diff(anchor_position))
+                    .map(|(record, _)| record)
+                else {
+                    continue;
+                };
+                items.preserve_group_choice(
+                    members,
+                    |record| record.key == survivor.key,
+                    &survivor.key,
+                );
+                if let AutoActivity::Frozen {
+                    key: Some(key),
+                    expanded: true,
+                } = &mut activity
+                    && members.iter().any(|record| record.key == *key)
+                {
+                    *key = survivor.key.clone();
+                }
+            }
             Some((before.saturating_add(1), self.anchor, activity))
         } else {
             let (position, key) = positions[..index].last()?;
@@ -917,8 +949,8 @@ impl Record {
                 Body::Interrupted(text) => {
                     message::render_markdown_record("Interrupted", WARNING, text, width)
                 }
-                Body::Notice("Execution interrupted", text, _) if text.trim().is_empty() => {
-                    message::render_compact_status("Execution interrupted", WARNING, width)
+                Body::Notice("Execution interrupted", text, _) => {
+                    message::render_execution_interruption(text, WARNING, width)
                 }
                 Body::Notice("Question", text, _) => {
                     let (state, color) = if question_correlated {
@@ -973,7 +1005,8 @@ impl Record {
                 if self.has_reply() && frame.bordered() {
                     lines.truncate(lines.len().saturating_sub(2));
                     lines.extend(turn_summary::footer(summary, self.turn_number, &frame));
-                } else if matches!(&self.body, Body::Interrupted(text) | Body::Notice("Execution interrupted", text, _) if text.trim().is_empty())
+                } else if matches!(&self.body, Body::Interrupted(text) if text.trim().is_empty())
+                    || matches!(&self.body, Body::Notice("Execution interrupted", ..))
                 {
                     let inset = body_inset(width);
                     lines.push(

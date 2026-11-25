@@ -183,6 +183,7 @@ fn foreground_command_discloses_original_request_only_when_arguments_open() {
     let mut tool = Tool::from_entry(&call);
     let mut facts = command_facts("verify", "saved-output", 2, "OK");
     facts["invocation"]["args"] = json!(["file with spaces"]);
+    facts["duration_ms"] = json!(161877);
     let raw = "stdout:\nOK\n";
     tool.merge(Tool::from_entry(
         &serde_json::from_value(json!({
@@ -211,6 +212,18 @@ fn foreground_command_discloses_original_request_only_when_arguments_open() {
             "{body}"
         );
     }
+    let ordinary = render(super::ToolDetails::Expanded);
+    assert!(ordinary.contains("2m 42s") && !ordinary.contains("161877 ms"));
+    let inspection = render(super::ToolDetails::Inspection);
+    assert!(inspection.contains("Duration · 161877 ms"), "{inspection}");
+    let mut viewer = crate::output::OutputViewer::new(1, tool.format_output(tool.view()));
+    let output = viewer
+        .render_lines(80, 24)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(output.contains("161877 ms"), "{output}");
     let detail = render(super::ToolDetails::InspectionWithArguments);
     for fact in [
         "Program    verify",
@@ -224,6 +237,80 @@ fn foreground_command_discloses_original_request_only_when_arguments_open() {
         assert!(detail.contains(fact), "{fact} missing\n{detail}");
     }
     assert_eq!(tool.view().details, raw);
+}
+
+#[test]
+fn grouped_unlabelled_commands_keep_distinct_invocations_and_readable_diagnostics() {
+    let mut transcript = Transcript::default();
+    for (index, (id, command, exit, preview)) in [
+        ("first", "echo first", 0, "first"),
+        ("second", "echo second", 7, "missing input"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut facts = command_facts("bash", id, preview.len() as u64, preview);
+        facts["invocation"] = json!({"mode":"shell","shell":"bash","command":command});
+        facts["exit_code"] = json!(exit);
+        facts["duration_ms"] = json!(161877);
+        let summary = format!("shell exited {exit} in 161877ms, stdout 1 lines, stderr 0 lines");
+        let model_content = format!("{summary}\n\nstdout:\n{preview}");
+        for (offset, mut event) in [
+            json!({"type":"tool_call","tool":"run_command","tool_call_id":id,
+                "args":{"shell":"bash","command":command}}),
+            json!({"type":"tool_result","tool_call_id":id,"status":"ok",
+                "summary":summary,"model_content":model_content,"structured":facts}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            event["id"] = json!(index * 2 + offset + 1);
+            event["agent"] = json!("main");
+            event["turn"] = json!(1);
+            transcript.apply(serde_json::from_value(event).unwrap(), None);
+        }
+    }
+    let view = transcript.project(140, 24);
+    let rendered = view
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for expected in [
+        "bash · echo first",
+        "bash · echo second",
+        "missing input",
+        "2m 42s",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "{expected} missing\n{rendered}"
+        );
+    }
+    for raw in ["161877ms", "stdout 1 lines", "shell exited 7"] {
+        assert!(!rendered.contains(raw), "{rendered}");
+    }
+    let second = view
+        .lines
+        .iter()
+        .position(|line| line.to_string().contains("bash · echo second"))
+        .unwrap();
+    let detail = transcript.detail_at(second).unwrap().clone();
+    assert!(transcript.toggle_detail(&detail));
+    let inspected = transcript
+        .project(140, 24)
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        inspected.matches("bash · echo second").count(),
+        1,
+        "{inspected}"
+    );
+    assert!(inspected.contains("Duration · 161877 ms"), "{inspected}");
 }
 
 #[test]

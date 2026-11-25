@@ -131,7 +131,7 @@ impl App {
                 }
             }
             Some(Modal::Picker(picker)) => {
-                if matches!(picker.kind, PickerKind::Server | PickerKind::ModelDefault) {
+                if picker.kind.scrollable_header() {
                     picker.header_top = picker.header_top.saturating_add_signed(amount);
                 } else if !picker
                     .thinking
@@ -372,7 +372,11 @@ impl App {
             match prompt.kind {
                 PromptKind::Agent => self.begin_agent_setup(content.trim().to_owned()),
                 PromptKind::Question { request_id, target } => {
-                    if self.selection().target != target
+                    if self.selection().target == target && self.pane().request_state_unconfirmed()
+                    {
+                        self.save_question_draft(&target, &request_id, prompt.editor);
+                        self.problem("Request state is unconfirmed · answer draft kept · Ctrl+R to reconnect");
+                    } else if self.selection().target != target
                         || !self
                             .pane()
                             .question()
@@ -380,6 +384,9 @@ impl App {
                     {
                         self.save_question_draft(&target, &request_id, prompt.editor);
                         self.problem("This question is no longer waiting for this Agent");
+                    } else if self.request_reply_pending(&self.active, &request_id) {
+                        self.save_question_draft(&target, &request_id, prompt.editor);
+                        self.problem("A reply to this question is already pending · draft kept");
                     } else if !self.require_service() {
                         self.save_question_draft(&target, &request_id, prompt.editor);
                     } else {
@@ -642,6 +649,10 @@ impl App {
             return;
         };
         let request_id = request.id.clone();
+        if self.request_reply_pending(&self.active, &request_id) {
+            self.problem("A reply to this question is already pending");
+            return;
+        }
         let target = self.selection().target;
         let title = format!("Question · {}", request.agent);
         let instructions = request.text.clone();

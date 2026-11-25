@@ -13,8 +13,8 @@ use super::{
 mod activity;
 pub(super) use activity::footer as activity_footer;
 mod groups;
-pub(super) use groups::{GroupHeading, compact_file_rows, groups};
-use groups::{GroupKind, GroupSummary};
+use groups::GroupKind;
+pub(super) use groups::{GroupHeading, GroupSummary, compact_file_rows, groups};
 mod inspection;
 mod output;
 pub(super) use inspection::inspection_composition;
@@ -169,6 +169,10 @@ impl Details {
 
     pub(super) fn has_explicit_group(&self, records: &[Record]) -> bool {
         self.group_choice(records).is_some()
+    }
+
+    pub(super) fn has_member_inspection(&self, key: &Key) -> bool {
+        self.inspections.contains(key) || self.script_detail(key).is_some()
     }
 
     pub(super) fn preserve_group_choice(
@@ -789,7 +793,7 @@ impl Transcript {
             .reading
             .as_ref()
             .map_or(&self.recent, |reading| &reading.window);
-        let Some(span) = groups(&window.records).into_iter().find(|span| {
+        let Some(mut span) = groups(&window.records).into_iter().find(|span| {
             window.records[span.range.clone()]
                 .iter()
                 .any(|record| &record.key == key)
@@ -797,9 +801,8 @@ impl Transcript {
             return false;
         };
         let records = &window.records[span.range];
-        let open =
-            self.detail_items
-                .group_open(records, window.automatic_group(records), self.details);
+        let (open, _) =
+            window.group_display(&mut span.summary, records, &self.detail_items, self.details);
         if open {
             // An explicit child inspection in an auto-open group must remain
             // readable after newer activity takes over the automatic opening.

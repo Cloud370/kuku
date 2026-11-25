@@ -70,31 +70,40 @@ impl AgentActivities {
         self.changed();
     }
 
-    pub(super) fn snapshot(&mut self, snapshot: &Snapshot, selected: &str) {
+    /// Durable roster snapshots do not depend on the health of the live watch.
+    pub(super) fn snapshot_roster(&mut self, snapshot: &Snapshot) {
+        let cursor = snapshot.cursor;
+        if self.roster_cursor.is_some_and(|previous| cursor < previous) {
+            return;
+        }
+        let mut changed = self.roster_cursor.is_none();
+        // Addresses are never reassigned or removed within a Session. A
+        // snapshot may predate an already observed creation; keep that row.
+        for summary in &snapshot.agents {
+            let previous = self.roster.get(&summary.creation_event_id);
+            if previous != Some(summary) {
+                self.roster
+                    .insert(summary.creation_event_id, summary.clone());
+                changed = true;
+            }
+        }
+        self.roster_cursor = Some(cursor);
+        if changed {
+            self.changed();
+        }
+    }
+
+    /// Restore the activity projection only while observing this Session.
+    pub(super) fn snapshot_activity(&mut self, snapshot: &Snapshot, selected: &str) {
         let cursor = snapshot.cursor;
         if cursor < self.minimum_cursor {
             return;
-        }
-        let mut changed = false;
-        if self.roster_cursor.is_none_or(|previous| cursor >= previous) {
-            // Addresses are never reassigned or removed within a Session. A
-            // snapshot may predate an already observed creation; keep that row.
-            for summary in &snapshot.agents {
-                let previous = self.roster.get(&summary.creation_event_id);
-                if previous != Some(summary) {
-                    self.roster
-                        .insert(summary.creation_event_id, summary.clone());
-                    changed = true;
-                }
-            }
-            changed |= self.roster_cursor.is_none();
-            self.roster_cursor = Some(cursor);
         }
         let retained: HashSet<_> = snapshot.agents.iter().map(|agent| &agent.address).collect();
         let before = self.agents.len();
         self.agents
             .retain(|address, agent| agent.state_cursor > cursor || retained.contains(address));
-        changed |= self.agents.len() != before;
+        let mut changed = self.agents.len() != before;
         for summary in &snapshot.agents {
             if summary.address == selected {
                 continue;

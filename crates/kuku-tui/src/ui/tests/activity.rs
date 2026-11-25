@@ -282,6 +282,126 @@ fn selected_recipient_stays_visible_at_the_top_and_beside_the_draft() {
 }
 
 #[test]
+fn busy_recipient_send_keeps_the_only_sending_indicator_visible_at_narrow_width() {
+    let mut app = app();
+    let recipient = Address::new(app.active.session.clone(), "reviewer".into());
+    app.select(recipient, true, "Shared title".into());
+    let selection = app.selection();
+    let mut state = snapshot(&app, "running", json!(null), json!(null));
+    state.progress = Some(AgentProgress::WaitingForModel);
+    app.update(Update::Loaded(
+        selection.clone(),
+        state,
+        HistoryPage {
+            entries: vec![],
+            rewind_groups: vec![],
+            next_before: None,
+        },
+    ));
+    app.update(Update::WatchConnected(selection));
+    app.effects.clear();
+    app.pane_mut().draft.insert("delayed busy send");
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("save before sending")
+    };
+    for saved in [false, true] {
+        if saved {
+            app.update(Update::Saved(command.clone(), Ok(())));
+        }
+        let rendered = screen(&mut app, 36, 24);
+        assert!(rendered.contains("Sending"), "{rendered}");
+        assert!(
+            rendered.contains("Model wait") && rendered.contains("Agent reviewer"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("delayed busy send")
+                && !rendered.contains("Pending inputs")
+                && !rendered.contains("Unconfirmed send"),
+            "{rendered}"
+        );
+        assert!(!app.recipient_area.is_empty(), "{rendered}");
+    }
+}
+
+#[test]
+fn observed_new_execution_enables_escape_and_stop_before_snapshot_refresh() {
+    use crate::contextual::ContextControl;
+
+    for explicit_stop in [false, true] {
+        let mut app = app();
+        app.select(app.active.clone(), true, "Observe a new execution".into());
+        let selection = app.selection();
+        let mut old = snapshot(&app, "idle", json!(null), json!(null));
+        old.agent.execution_id = None;
+        app.update(Update::Loaded(
+            selection.clone(),
+            old.clone(),
+            HistoryPage {
+                entries: vec![],
+                rewind_groups: vec![],
+                next_before: None,
+            },
+        ));
+        app.update(Update::WatchConnected(selection.clone()));
+        // A live frame can precede its durable commit, and an outstanding
+        // HTTP refresh can still return the old idle boundary.
+        app.update(Update::Observation(
+            selection.clone(),
+            Observation::Live {
+                agent: app.active.agent.clone(),
+                execution_id: 53,
+                cursor: 54,
+                turn: Some(54),
+                turn_number: Some(1),
+                event: json!({"type":"text","content":"New execution"}),
+            },
+        ));
+        app.update(Update::Refreshed(selection.clone(), Ok(old)));
+        assert_eq!(Some(53), app.pane().running_execution());
+        assert!(matches!(
+            app.contextual_controls().first(),
+            Some(ContextControl::Interrupt {
+                execution_id: 53,
+                ..
+            })
+        ));
+        app.update(Update::Observation(
+            selection,
+            serde_json::from_value(json!({
+                "type":"committed", "agent":"main", "id":53, "kind":"runtime.operation",
+                "operation":"execution_started", "state_changed":true
+            }))
+            .unwrap(),
+        ));
+        app.effects.clear();
+        app.pane_mut().draft.insert("unsent draft");
+        key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+        assert!(app.pane().contextual_focus.active);
+        if explicit_stop {
+            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        } else {
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            assert!(app.effects.is_empty());
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        }
+        let Some(Job::Save(command)) = app.effects.pop() else {
+            panic!("control addresses observed execution")
+        };
+        assert_eq!(
+            command.action,
+            if explicit_stop {
+                Action::Cancel { execution_id: 53 }
+            } else {
+                Action::Interrupt { execution_id: 53 }
+            }
+        );
+        assert_eq!("unsent draft", app.pane().draft.text());
+    }
+}
+
+#[test]
 fn compact_heading_shows_only_real_parallel_tools_and_prefers_reported_output() {
     let mut app = app();
     app.select(app.active.clone(), true, "Live output".into());

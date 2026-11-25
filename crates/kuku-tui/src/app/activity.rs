@@ -94,6 +94,26 @@ impl Activity {
             Self::Failed => "Failed",
         }
     }
+
+    pub(crate) fn shows_sending(self) -> bool {
+        matches!(
+            self,
+            Self::Ready | Self::Finished | Self::Stopped | Self::Interrupted | Self::Failed
+        )
+    }
+
+    pub(super) fn executing(self) -> bool {
+        matches!(
+            self,
+            Self::Running
+                | Self::WaitingForModel
+                | Self::RetryingModel
+                | Self::Thinking
+                | Self::Streaming
+                | Self::ToolArguments
+                | Self::RunningTools
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -208,6 +228,41 @@ impl ExecutionProgress {
     pub(super) fn clear_stream(&mut self) {
         self.output = None;
         self.preparing_file_contents = false;
+    }
+
+    pub(super) fn disconnected(&mut self) {
+        // The subscription resumes committed events from its last cursor, so
+        // already-observed dispatches may never be delivered a second time.
+        // Only the transient preview is invalidated by a disconnection.
+        self.clear_stream();
+        self.output_meter = OutputMeter::default();
+    }
+
+    pub(super) fn reconcile_snapshot(
+        &mut self,
+        projection: &AgentProgress,
+        same_live_cursor: bool,
+    ) {
+        let mut projected = Self::from_snapshot(Some(projection));
+        if matches!(projection, AgentProgress::RunningTools { .. }) {
+            // This is the durable set of unfinished calls. A reply preview at
+            // the same cursor can be newer than the HTTP response, however.
+            self.tools = std::mem::take(&mut projected.tools);
+            self.script_waits
+                .retain(|_, (_, call)| self.tools.contains(call));
+            if self.tools.is_empty() {
+                self.settled_script_waits.clear();
+            }
+        }
+        if same_live_cursor && self.output.is_some() {
+            return;
+        }
+        self.request = projected.request;
+        if self.output != projected.output {
+            self.output_meter = OutputMeter::default();
+            self.preparing_file_contents = false;
+        }
+        self.output = projected.output;
     }
 
     pub(super) fn committed(
@@ -457,6 +512,13 @@ impl SubmissionStatus {
             Self::Withdrawn => "Removed from queue",
             Self::Confirmed => "Receipt confirmed",
         }
+    }
+
+    pub(crate) fn is_sending(self) -> bool {
+        matches!(
+            self,
+            Self::Saving | Self::AwaitingReceipt | Self::AwaitingAdmission
+        )
     }
 
     pub(super) fn from_receipt(status: Option<InputStatus>) -> Self {
@@ -793,6 +855,9 @@ impl Pane {
                 self.live_floor = id;
                 self.progress = ExecutionProgress::default();
                 self.transcript.clear_reply_preview();
+                if operation == Some("agent_stopped") {
+                    self.retired_execution_floor = self.retired_execution_floor.max(id);
+                }
             }
             Some("permission_waiting") => {
                 if let Some(request_id) = entry.and_then(|entry| {
@@ -989,6 +1054,26 @@ impl Pane {
         activity
     }
 
+    // Execution identity is projected from observation, not only from an
+    // asynchronously refreshed snapshot. A new execution can already be
+    // running while that snapshot still describes the previous idle turn.
+    pub(crate) fn running_execution(&self) -> Option<u64> {
+        let execution = self.execution?;
+        (execution > self.retired_execution_floor
+            && self.activity().executing()
+            && !self.observed_direct_wait(self.progress.permission_wait.as_ref()))
+        .then_some(execution)
+    }
+
+    pub(crate) fn busy_or_waiting(&self) -> bool {
+        let activity = self.activity();
+        activity.executing()
+            || matches!(
+                activity,
+                Activity::Opening | Activity::Waiting | Activity::Stopping
+            )
+    }
+
     pub(crate) fn running_tool(&self) -> Option<(&str, &str, &str)> {
         if self.progress.tools.len() != 1 {
             return None;
@@ -1006,18 +1091,24 @@ impl Pane {
         self.progress.tools.contains(id) && self.transcript.foreground_script_call(turn, id)
     }
 
+    fn observed_direct_wait(&self, wait: Option<&DirectWait>) -> bool {
+        wait.is_some_and(|wait| {
+            self.snapshot
+                .as_ref()
+                .is_none_or(|snapshot| snapshot.cursor < wait.cursor)
+        })
+    }
+
     pub(crate) fn waiting_kind(
         &self,
         approvals: &[kuku_client::PendingApproval],
     ) -> Option<WaitKind> {
-        let observed = |wait: Option<&DirectWait>| {
-            wait.is_some_and(|wait| {
-                self.snapshot
-                    .as_ref()
-                    .is_none_or(|snapshot| snapshot.cursor < wait.cursor)
-            })
-        };
-        if observed(self.progress.permission_wait.as_ref()) || self.permission().is_some() {
+        if self.request_state_unconfirmed() {
+            return None;
+        }
+        if self.observed_direct_wait(self.progress.permission_wait.as_ref())
+            || self.permission().is_some()
+        {
             return Some(WaitKind::Permission);
         }
         if self
@@ -1043,7 +1134,14 @@ impl Pane {
         {
             return Some(WaitKind::Permission);
         }
-        if observed(self.progress.question_wait.as_ref()) || self.question().is_some() {
+        // ask_user records a pending request inside the current tool batch;
+        // actual suspension is at the batch boundary. While a sibling is
+        // still executing, keep its tool activity visible. The request card
+        // remains available for answering early.
+        if self.progress.tools.is_empty()
+            && (self.observed_direct_wait(self.progress.question_wait.as_ref())
+                || self.question().is_some())
+        {
             return Some(WaitKind::Question);
         }
         None

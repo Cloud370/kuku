@@ -861,6 +861,145 @@ fn upstream_wait_stream_parallel_tools_and_settlement_keep_service_connected() {
 }
 
 #[test]
+fn reconnect_preserves_dispatches_and_reconciles_active_tools_for_the_same_execution() {
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let attached = snapshot(&app, 6, "running", Some(5), 0, Value::Null, None);
+    loaded(&mut app, attached, vec![]);
+    committed(
+        &mut app,
+        7,
+        "tool.call",
+        json!({
+            "entry":{"id":7,"agent":"main","type":"tool_call","turn":5,
+                "tool_call_id":"wait-1","tool":"wait_job","args":{"job_id":"job-23"}}
+        }),
+    );
+    committed(
+        &mut app,
+        8,
+        "runtime.tool_dispatched",
+        json!({"tool_call_id":"wait-1"}),
+    );
+    assert!(matches!(
+        app.pane().running_tool(),
+        Some(("wait-1", "wait_job", _))
+    ));
+    // Ordinary state refreshes intentionally omit progress, unlike the
+    // attachment and lag-recovery endpoints. A reconnect must not erase
+    // dispatches already observed before that cursor.
+    let plain = snapshot(&app, 8, "running", Some(5), 0, Value::Null, None);
+    app.update(Update::Refreshed(app.selection(), Ok(plain)));
+    app.update(Update::WatchReconnecting(
+        app.selection(),
+        "connection lost".into(),
+    ));
+    app.update(Update::WatchConnected(app.selection()));
+    assert_eq!(Activity::RunningTools, app.pane().activity());
+    assert!(matches!(
+        app.pane().running_tool(),
+        Some(("wait-1", "wait_job", _))
+    ));
+    app.effects.clear();
+    app.update(Update::Observation(
+        app.selection(),
+        Observation::Lagged { skipped: 0 },
+    ));
+    assert!(
+        app.effects
+            .iter()
+            .any(|job| matches!(job, Job::RefreshProgress(_)))
+    );
+    let recovery = snapshot(
+        &app,
+        10,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"running_tools","tool_call_ids":["wait-1","sibling"]}),
+        None,
+    );
+    app.update(Update::Refreshed(app.selection(), Ok(recovery)));
+    assert_eq!(Activity::RunningTools, app.pane().activity());
+    assert_eq!(2, app.pane().parallel_tools());
+    tool_result(&mut app, 11, "sibling");
+    assert!(matches!(
+        app.pane().running_tool(),
+        Some(("wait-1", "wait_job", _))
+    ));
+    let stale = snapshot(
+        &app,
+        10,
+        "running",
+        Some(5),
+        0,
+        json!({"phase":"running_tools","tool_call_ids":["wait-1","sibling"]}),
+        None,
+    );
+    app.update(Update::Refreshed(app.selection(), Ok(stale)));
+    assert!(matches!(
+        app.pane().running_tool(),
+        Some(("wait-1", "wait_job", _))
+    ));
+    tool_result(&mut app, 12, "wait-1");
+    assert_ne!(Activity::RunningTools, app.pane().activity());
+}
+
+#[test]
+fn pending_question_does_not_mask_active_sibling_tools() {
+    use super::WaitKind;
+
+    let mut app = connected();
+    app.select(app.active.clone(), true, String::new());
+    let attached = snapshot(&app, 6, "running", Some(5), 0, Value::Null, None);
+    loaded(&mut app, attached, vec![]);
+    for (id, call_id, tool) in [(7, "ask", "ask_user"), (9, "sibling", "run_command")] {
+        committed(
+            &mut app,
+            id,
+            "tool.call",
+            json!({
+                "entry":{"id":id,"agent":"main","type":"tool_call","turn":5,
+                    "tool_call_id":call_id,"tool":tool,"args":{}}
+            }),
+        );
+        committed(
+            &mut app,
+            id + 1,
+            "runtime.tool_dispatched",
+            json!({"tool_call_id":call_id}),
+        );
+    }
+    let question = json!({"id":"q-1","agent":"main","turn":5,
+        "tool_call_id":"ask","text":"Which branch?"});
+    committed(
+        &mut app,
+        11,
+        "runtime.operation",
+        json!({
+            "operation":"question_requested","state_changed":true,
+            "entry":{"id":11,"agent":"main","turn":5,"type":"question","request":question}
+        }),
+    );
+    tool_result(&mut app, 12, "ask");
+    assert_eq!(None, app.pane().waiting_kind(&[]));
+    assert_eq!(Activity::RunningTools, app.pane().activity());
+    let mut current = snapshot(&app, 12, "running", Some(5), 0, Value::Null, None);
+    current.agent.question = Some(serde_json::from_value(question.clone()).unwrap());
+    app.update(Update::Refreshed(app.selection(), Ok(current)));
+    assert!(app.pane().question().is_some());
+    assert_eq!(None, app.pane().waiting_kind(&[]));
+    assert_eq!(Activity::RunningTools, app.pane().activity());
+    tool_result(&mut app, 13, "sibling");
+    assert_eq!(Some(WaitKind::Question), app.pane().waiting_kind(&[]));
+    let mut waiting = snapshot(&app, 15, "waiting", None, 0, Value::Null, None);
+    waiting.agent.question = Some(serde_json::from_value(question).unwrap());
+    app.update(Update::Refreshed(app.selection(), Ok(waiting)));
+    assert_eq!(Activity::Waiting, app.pane().activity());
+    assert_eq!(Some(WaitKind::Question), app.pane().waiting_kind(&[]));
+}
+
+#[test]
 fn draft_confirmation_durable_queue_and_admission_are_independent() {
     let mut app = connected();
     app.select(app.active.clone(), true, String::new());

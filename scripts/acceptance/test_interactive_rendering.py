@@ -9,6 +9,7 @@ from interactive_composer import choose_agent_entry
 from interactive_fixture import InstalledClient, ProviderCall, Terminal, TOOL_OUTPUT, run_cases
 from interactive_fixture import (
     has_standalone_assistant_rail, page_up_after_rendered_resize, rendered_running_transcript,
+    wait_for_resized_transcript,
 )
 from interactive_rendering import (
     click_queued_input,
@@ -349,6 +350,33 @@ class TranscriptResizeSynchronizationTests(unittest.TestCase):
             if predicate(screen):
                 return screen
         raise AssertionError(description)
+
+    def test_clock_history_waits_for_app_redraw_after_parser_resize(self):
+        markers = ("Clock check complete.", "22:37:18", "22:37:19")
+
+        def frame(heading_row, *, utc=False):
+            rows = [" "] * 42
+            rows[4] = "│ Reading the fixture now."
+            rows[5] = markers[1]
+            rows[7] = "│ clock.txt"
+            rows[8] = markers[2] + (" · 14:37:19" if utc else "")
+            rows[10] = markers[0]
+            rows[heading_row] = "│ ⠿⠿  Finished"
+            rows[heading_row + 4] = "Connected"
+            return "\n".join(rows)
+
+        # The parser has already padded all three screens to 42 rows. The
+        # clipped old wide frame contains the required clock markers too.
+        stale, wrong_zone, resized = frame(26), frame(36, utc=True), frame(36)
+        terminal = Mock()
+        terminal.request.side_effect = [{"screen": screen} for screen in (stale, wrong_zone, resized)]
+        self.assertEqual(42, len(stale.splitlines()))
+        self.assertTrue(all(marker in stale for marker in markers))
+        with patch("interactive_fixture.time.sleep"):
+            self.assertEqual(resized, wait_for_resized_transcript(
+                terminal, 42, markers, absent=("14:37:19",),
+            ))
+        self.assertEqual(3, terminal.request.call_count)
 
     def test_page_up_waits_for_rendered_target_size_after_resize(self):
         stale = self.running_frame(30)

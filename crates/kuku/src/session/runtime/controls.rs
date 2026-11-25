@@ -389,7 +389,7 @@ impl Session {
             )));
         }
         if paused
-            && agent.continue_queued
+            && agent.discard_on_resume()
             && !agent.accepted.is_empty()
             && let Some(turn) = agent.snapshot.turn
         {
@@ -547,6 +547,7 @@ impl Session {
                 }
             }
             let agent = state.agent(address)?;
+            let discard_cancelled_turn = continue_queued || agent.discard_on_resume();
             let epoch = agent.active_epoch;
             let waiting_turn = agent
                 .snapshot
@@ -581,6 +582,7 @@ impl Session {
                         command,
                         cleanup_pending: epoch.is_some(),
                         continue_queued,
+                        discard_cancelled_turn,
                         interruption,
                     },
                 )

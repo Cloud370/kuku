@@ -166,16 +166,32 @@ impl StatusLine {
         self.fields.as_deref().unwrap_or(&DEFAULT_FIELDS)
     }
 
+    fn input_in_footer(&self) -> bool {
+        self.fields
+            .as_ref()
+            .is_some_and(|fields| fields.contains(&Field::Input))
+    }
+
+    pub(crate) fn composer_send_feedback_width(&self, app: &App) -> usize {
+        if !self.input_in_footer()
+            && !app.pane().composer_activity().shows_sending()
+            && app
+                .input_status()
+                .submission
+                .is_some_and(SubmissionStatus::is_sending)
+        {
+            "Sending".len()
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn composer_feedback(&self, app: &App, width: usize) -> Option<Span<'static>> {
         if width == 0 {
             return None;
         }
         let notice = app.notice.as_ref().filter(|notice| notice.transient());
-        let input_in_footer = self
-            .fields
-            .as_ref()
-            .is_some_and(|fields| fields.contains(&Field::Input));
-        let input = (!input_in_footer)
+        let input = (!self.input_in_footer())
             .then(|| input_with_submission(app, notice.is_none(), true))
             .flatten();
         if let Some(input) = input
@@ -782,24 +798,9 @@ fn input(app: &App, show_settled: bool) -> Option<Segment> {
 
 fn input_with_submission(app: &App, show_settled: bool, heading: bool) -> Option<Segment> {
     let input = app.input_status();
-    let in_flight = matches!(
-        input.submission,
-        Some(
-            SubmissionStatus::Saving
-                | SubmissionStatus::AwaitingReceipt
-                | SubmissionStatus::AwaitingAdmission
-        )
-    );
-    let heading_reports_send = heading
-        && in_flight
-        && matches!(
-            app.pane().composer_activity(),
-            Activity::Ready
-                | Activity::Finished
-                | Activity::Stopped
-                | Activity::Interrupted
-                | Activity::Failed
-        );
+    let in_flight = input.submission.is_some_and(SubmissionStatus::is_sending);
+    let heading_reports_send =
+        heading && in_flight && app.pane().composer_activity().shows_sending();
 
     let submission = input
         .submission

@@ -323,6 +323,77 @@ fn jobs_picker_prioritizes_status_and_identity_and_preserves_search_selection_on
 }
 
 #[test]
+fn jobs_picker_searches_hidden_summary_and_scrolls_narrow_job_details() {
+    let mut app = connected_app();
+    app.pane_mut().exists = true;
+    app.open_jobs();
+    let Some(Job::Find(ticket, Search::Jobs(_))) = app.effects.pop() else {
+        panic!("initial jobs query expected");
+    };
+    let job: JobSnapshot = serde_json::from_value(json!({
+        "id":"job-23","status":"failed","title":"Long build task ".repeat(24),
+        "elapsed_ms":161877,"agent":"main","turn":1,"tool_call_id":"build",
+        "tool":"run_command","started_at":1,"output_id":"saved-job",
+        "summary":"unique-diagnostic: command exited 7 in 161877ms, stdout 10 lines, stderr 1 lines",
+    }))
+    .unwrap();
+    app.update(Update::Found(
+        ticket,
+        Ok((vec![crate::jobs::job_choice(job)], String::new())),
+    ));
+    app.paste("unique-diagnostic");
+    let mut terminal = Terminal::new(TestBackend::new(34, 16)).unwrap();
+    let text = |buffer: &Buffer| {
+        buffer
+            .content
+            .chunks(34)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let list = text(&draw(&mut app, &mut terminal));
+    assert!(list.contains("Failed") && list.contains("job-23"), "{list}");
+    assert!(!list.contains("command exited") && !list.contains("161877ms"));
+    press(&mut app, KeyCode::Enter);
+    let first_buffer = draw(&mut app, &mut terminal);
+    let first = text(&first_buffer);
+    assert!(
+        first.contains("Failed · job-23") && first.contains("2m 42s"),
+        "{first}"
+    );
+    assert!(first.contains("PgUp/Dn") && !first.contains("unique-diagnostic"));
+    app.event(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &first_buffer,
+    );
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker)) if picker.header_top > 0));
+    let mut details = text(&draw(&mut app, &mut terminal));
+    for _ in 0..32 {
+        if details.contains("unique-diagnostic") {
+            break;
+        }
+        press(&mut app, KeyCode::PageDown);
+        details = text(&draw(&mut app, &mut terminal));
+    }
+    assert!(details.contains("unique-diagnostic"), "{details}");
+    for _ in 0..32 {
+        press(&mut app, KeyCode::PageUp);
+        let _ = draw(&mut app, &mut terminal);
+    }
+    let returned = text(&draw(&mut app, &mut terminal));
+    assert!(returned.contains("Failed · job-23"), "{returned}");
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.modal, Some(Modal::Output(viewer)) if viewer.tool.output_id.as_deref() == Some("saved-job"))
+    );
+}
+
+#[test]
 fn slash_jobs_cancel_works_typed_or_pasted_without_submitting_a_turn() {
     let mut app = connected_app();
     app.pane_mut().exists = true;

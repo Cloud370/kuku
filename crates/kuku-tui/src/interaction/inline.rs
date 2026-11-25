@@ -41,14 +41,28 @@ impl App {
 
     pub(crate) fn focus_request(&mut self) {
         let Some(id) = self.pending_request_id() else {
-            self.problem("No request is waiting for this Agent");
+            self.problem(if self.pane().request_state_unconfirmed() {
+                "Request state is unconfirmed · Ctrl+R to reconnect"
+            } else {
+                "No request is waiting for this Agent"
+            });
             return;
         };
         self.activate_request_id(self.selection().target, id);
     }
 
     pub(crate) fn activate_request_id(&mut self, target: Target, request_id: String) -> bool {
-        if self.selection().target == target && self.open_approval(&request_id) {
+        if self.selection().target != target
+            || self.pending_request_id().as_deref() != Some(request_id.as_str())
+        {
+            self.problem("This request is no longer waiting for this Agent");
+            return false;
+        }
+        if self.request_reply_pending(&self.active, &request_id) {
+            self.problem("A reply to this request is already pending");
+            return false;
+        }
+        if self.open_approval(&request_id) {
             return true;
         }
         if !self.focus_request_id(target, request_id.clone()) {

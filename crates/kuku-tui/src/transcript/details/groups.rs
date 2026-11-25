@@ -77,6 +77,17 @@ impl GroupSummary {
         }
     }
 
+    pub(in crate::transcript) fn include_activity_member(&mut self, index: usize, tool: &Tool) {
+        if let GroupKind::WorkspaceActivity { preview, remaining } = &mut self.kind
+            && preview[index] == 0
+        {
+            preview[index] = 1;
+            if tool.group_name().is_none() {
+                *remaining = remaining.saturating_sub(1);
+            }
+        }
+    }
+
     pub(in crate::transcript) fn include_latest_activity(
         &mut self,
         records: &[Record],
@@ -89,7 +100,7 @@ impl GroupSummary {
                 .is_some_and(|tool| !tool.activity_running() && !tool.activity_result_missing())
         })?;
         let tool = records[index].tool()?;
-        if let GroupKind::WorkspaceActivity { preview, remaining } = &mut self.kind {
+        if let GroupKind::WorkspaceActivity { preview, .. } = &self.kind {
             if preview[index] > 0 {
                 return None;
             }
@@ -102,19 +113,24 @@ impl GroupSummary {
             }) {
                 return None;
             }
-            preview[index] = 1;
-            if tool.group_name().is_none() {
-                *remaining = remaining.saturating_sub(1);
-            }
+            self.include_activity_member(index, tool);
             return Some(index);
         }
-        // A mixed inspection group with an Agent listing normally shows
-        // only that listing. Also show its newest non-listing result.
-        if matches!(self.kind, GroupKind::Inspections)
-            && !self.listing.is_empty()
-            && tool.name() != "list_agents"
-        {
-            self.preview = tool.inspection_result();
+        if matches!(self.kind, GroupKind::Inspections) {
+            // A reading window can contain newer entries after paging. Keep its
+            // newest-result preview at the frozen activity, including any listing.
+            self.listing = records[..=index]
+                .iter()
+                .rev()
+                .filter_map(Record::tool)
+                .find(|tool| tool.name() == "list_agents")
+                .and_then(Tool::agent_listing)
+                .unwrap_or_default();
+            self.preview = if tool.name() == "list_agents" && !self.listing.is_empty() {
+                None
+            } else {
+                Some(tool.latest_inspection_result())
+            };
         }
         None
     }

@@ -4,7 +4,9 @@ use serde_json::Value;
 use crate::theme::CardFrame;
 
 use super::agent::AgentCards;
-use super::details::{DetailRecord, Details, GroupHeading, compact_file_rows, groups};
+use super::details::{
+    DetailRecord, Details, GroupHeading, GroupSummary, compact_file_rows, groups,
+};
 use super::{
     Anchor, AnchorLine, AssistantView, Body, CardTiming, Key, MAX_BODY_BYTES, MAX_LIVE_RECORDS,
     MAX_RECORDS, Record, RewindGroupState, Row, ToolDetails,
@@ -110,6 +112,23 @@ impl Window {
 
     pub(super) fn automatic_group(&self, records: &[Record]) -> bool {
         automatic_group(records, self.latest_activity(), &self.activity)
+    }
+
+    pub(super) fn group_display(
+        &self,
+        summary: &mut GroupSummary,
+        records: &[Record],
+        items: &Details,
+        tools: ToolDetails,
+    ) -> (bool, Option<usize>) {
+        group_display(
+            summary,
+            records,
+            self.latest_activity(),
+            &self.activity,
+            items,
+            tools,
+        )
     }
 
     pub(super) fn from_page(page: HistoryPage) -> Self {
@@ -471,19 +490,14 @@ impl Window {
             .into_iter()
             .map(|mut span| {
                 let members = &window_records[span.range.clone()];
-                let open = layout.items.group_open(
+                let (open, latest_preview) = group_display(
+                    &mut span.summary,
                     members,
-                    automatic_group(members, latest.as_ref(), &activity),
+                    latest.as_ref(),
+                    &activity,
+                    layout.items,
                     layout.tools,
                 );
-                let latest_preview = latest.as_ref().and_then(|key| {
-                    (!open
-                        && !activity.expands(members)
-                        && layout.tools != ToolDetails::Collapsed
-                        && !layout.items.has_explicit_group(members))
-                    .then(|| span.summary.include_latest_activity(members, key))
-                    .flatten()
-                });
                 let range = span.range.clone();
                 let framed = span.summary.framed();
                 let preview = span.summary.activity_preview().map(<[usize]>::to_vec);
@@ -945,6 +959,37 @@ fn automatic_group(records: &[Record], latest: Option<&Key>, activity: &AutoActi
     // pagination extends the same group beyond the following-mode limit.
     activity.expands(records)
         && latest.is_some_and(|key| records.iter().any(|record| &record.key == key))
+}
+
+fn group_display(
+    summary: &mut GroupSummary,
+    records: &[Record],
+    latest: Option<&Key>,
+    activity: &AutoActivity,
+    items: &Details,
+    tools: ToolDetails,
+) -> (bool, Option<usize>) {
+    let open = items.group_open(records, automatic_group(records, latest, activity), tools);
+    if open || tools == ToolDetails::Collapsed || items.has_explicit_group(records) {
+        return (open, None);
+    }
+    let latest_preview = latest.and_then(|key| {
+        (!activity.expands(records))
+            .then(|| summary.include_latest_activity(records, key))
+            .flatten()
+    });
+    if summary.activity_preview().is_some() {
+        // Inspecting one of the bounded previews must not unfold the entire
+        // group or hide that explicit inspection when newer activity takes over.
+        for (index, record) in records.iter().enumerate() {
+            if items.has_member_inspection(&record.key)
+                && let Some(tool) = record.tool()
+            {
+                summary.include_activity_member(index, tool);
+            }
+        }
+    }
+    (open, latest_preview)
 }
 
 #[derive(Clone, Copy)]

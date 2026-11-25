@@ -28,22 +28,11 @@ impl App {
         })));
     }
 
-    pub(crate) fn escape_interrupts_running(&self) -> bool {
-        self.pane().snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.cleaning_up || snapshot.agent.status == kuku_client::AgentStatus::Running
-        })
-    }
-
     pub(super) fn rewind_from_menu(&mut self) {
         let pane = self.pane();
         if !pane.exists {
             self.problem("Open a Session before rewinding");
-        } else if self.escape_interrupts_running()
-            || pane
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.agent.status == kuku_client::AgentStatus::Waiting)
-        {
+        } else if pane.busy_or_waiting() {
             self.problem("Wait for the Agent to settle before rewinding");
         } else {
             self.open_history_jump();
@@ -51,22 +40,21 @@ impl App {
     }
 
     pub(super) fn rewind_escape(&mut self) {
-        let status = self
-            .pane()
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.agent.status);
-        if status == Some(kuku_client::AgentStatus::Waiting) || !self.composer_focused() {
+        if !self.composer_focused() {
             self.rewind_armed = false;
             self.deactivate_context_focus();
             self.focus_composer();
             return;
         }
-        if self.escape_interrupts_running() {
+        if self.pane().running_execution().is_some() {
             self.rewind_armed = false;
             self.interrupt_current_turn();
             self.deactivate_context_focus();
             self.focus_composer();
+            return;
+        }
+        if self.pane().busy_or_waiting() {
+            self.rewind_armed = false;
             return;
         }
         if !self.pane().draft.text().is_empty() {

@@ -424,6 +424,44 @@ impl Tool {
         Some(format!("{} · {result}", self.title()))
     }
 
+    // The newest result of a large inspection group needs a readable caption
+    // even for tools which have no specialized compact group row. Use only
+    // summaries, invocation labels and interpreted facts, never raw results.
+    pub(super) fn latest_inspection_result(&self) -> String {
+        let script = self
+            .state
+            .outcome()
+            .and_then(|outcome| outcome.script.as_deref());
+        let detail = match self.name() {
+            "read_file" => self.file_caption(),
+            "query_session" | "list_agents" => self.session_caption().map(str::to_owned),
+            "run_js" => script.map(|script| {
+                script
+                    .inspection_preview()
+                    .map_or_else(|| script.summary(), |line| line.to_string())
+            }),
+            _ => None,
+        }
+        .unwrap_or_else(|| cap(self.summary(), MAX_LABEL_BYTES).to_owned());
+        let detail = single_line(cap(&detail, MAX_LABEL_BYTES));
+        let target = single_line(cap(self.invocation(), MAX_LABEL_BYTES));
+        let detail = if detail.is_empty() {
+            self.state.label().0.to_owned()
+        } else {
+            detail
+        };
+        let target = if target.is_empty() || detail.contains(target.as_str()) {
+            ""
+        } else {
+            &target
+        };
+        format!(
+            "{} · {}",
+            self.title(),
+            join_details([detail.as_str(), target])
+        )
+    }
+
     fn search_summary(&self) -> Option<&str> {
         let summary = self.summary();
         (matches!(self.name.as_str(), "find_files" | "search_text") && !summary.trim().is_empty())
@@ -562,12 +600,16 @@ impl Tool {
                 |summary| join_details([self.invocation.as_str(), summary]),
             );
             let action = self.title();
-            let summary = self
-                .search_summary()
-                .filter(|summary| *summary != target)
-                .map_or_else(String::new, |value| {
-                    single_line(cap(value, MAX_LABEL_BYTES))
-                });
+            let summary = (matches!(
+                self.name(),
+                "stat_file" | "read_output" | "search_output" | "list_values"
+            )
+            .then(|| self.summary())
+            .or_else(|| self.search_summary()))
+            .filter(|summary| *summary != target)
+            .map_or_else(String::new, |value| {
+                single_line(cap(value, MAX_LABEL_BYTES))
+            });
             let heading = if target.is_empty() {
                 Row::caption(&action, &summary, ACCENT, width)
             } else {

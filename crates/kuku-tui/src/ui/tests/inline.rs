@@ -528,6 +528,267 @@ fn question_reply_restores_composer_after_request_clears() {
 }
 
 #[test]
+fn question_reply_is_single_pending_action_and_acknowledgement_invalidates_snapshot() {
+    let mut app = app();
+    let question = json!({
+        "id":"q-ack", "agent":"main", "turn":1,
+        "tool_call_id":"ask", "text":"Which target?"
+    });
+    let waiting = snapshot(&app, "waiting", question, json!(null));
+    load(&mut app, waiting.clone());
+    app.pane_mut().draft.insert("independent draft");
+    app.focus_request();
+    let Some(Modal::Prompt(prompt)) = &mut app.modal else {
+        panic!("question prompt expected");
+    };
+    prompt.editor.set_text("workspace tests".into());
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    let command = saved_input(&app);
+    assert!(
+        matches!(&command.action, Action::ReplyQuestion { request_id, text }
+        if request_id == "q-ack" && text == "workspace tests")
+    );
+    app.effects.clear();
+    app.focus_request();
+    assert!(app.modal.is_none());
+    assert!(app.effects.is_empty());
+
+    // HTTP completion is independent of the observation stream. No commit
+    // or snapshot update has arrived, but this receipt is already durable.
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(Acknowledgement {
+            receipt: Receipt {
+                command_id: command.command_id.clone(),
+                event_id: 53,
+                agent: "main".into(),
+            },
+            replayed: false,
+            status: Some(InputStatus::Queued),
+            warnings: vec![],
+        }),
+    ));
+    assert!(
+        app.pane()
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .agent
+            .question
+            .is_some()
+    );
+    assert!(app.pane().question().is_none());
+    app.update(Update::Refreshed(app.selection(), Ok(waiting)));
+    assert!(app.pane().question().is_none());
+    app.effects.clear();
+    app.focus_request();
+    assert!(app.modal.is_none() && app.effects.is_empty());
+    assert_eq!("independent draft", app.pane().draft.text());
+}
+
+#[test]
+fn returning_to_cached_question_requires_a_fresh_snapshot_even_without_peer_commit() {
+    let mut app = app();
+    let question = json!({
+        "id":"q-cache", "agent":"main", "turn":1,
+        "tool_call_id":"ask", "text":"Which target?"
+    });
+    let waiting = snapshot(&app, "waiting", question, json!(null));
+    load(&mut app, waiting.clone());
+    app.pane_mut().draft.insert("independent draft");
+    app.focus_request();
+    let Some(Modal::Prompt(prompt)) = &mut app.modal else {
+        panic!("question prompt expected");
+    };
+    prompt.editor.set_text("unsent answer".into());
+    let main = app.active.clone();
+    app.select(
+        crate::app::Address::main("other-session".into()),
+        true,
+        String::new(),
+    );
+    // An answer could have committed while this pane wasn't observed; the
+    // newly selected observer starts at its fresh snapshot's cursor.
+    app.select(main, true, String::new());
+    assert!(
+        app.pane()
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .agent
+            .question
+            .is_some()
+    );
+    assert!(app.pane().question().is_none());
+    app.effects.clear();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.modal.is_none() && app.effects.is_empty());
+    assert_eq!(
+        "unsent answer",
+        app.pane().question_drafts["q-cache"].text()
+    );
+    assert_eq!("independent draft", app.pane().draft.text());
+
+    let mut fresh = waiting;
+    fresh.cursor = 54;
+    load(&mut app, fresh);
+    app.focus_request();
+    assert!(matches!(&app.modal, Some(Modal::Prompt(prompt))
+        if prompt.editor.text() == "unsent answer"));
+}
+
+#[test]
+fn settled_approval_modal_cannot_change_mode_or_reply_from_a_lagging_list() {
+    let mut app = app();
+    app.permission_mode = Some(kuku_client::PermissionMode::Ask);
+    let permission = json!({
+        "id":"p-closed", "conversation":"main", "turn":1,
+        "tool_call_id":"write", "tool":"write_file", "risk":"high",
+        "summary":"Change file", "candidate":"diff", "source":"permission_mode"
+    });
+    let waiting = snapshot(&app, "waiting", json!(null), permission.clone());
+    load(&mut app, waiting);
+    let list: Vec<kuku_client::PendingApproval> = serde_json::from_value(json!([
+        {"request":permission,"job_id":null}
+    ]))
+    .unwrap();
+    app.update(Update::PendingApprovals(app.selection(), Ok(list.clone())));
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(app.modal, Some(Modal::Approvals(_))));
+    // Trigger a list refresh which can complete with the still-pending view.
+    app.update(Update::Observation(
+        app.selection(),
+        serde_json::from_value(json!({
+            "type":"committed", "id":53, "agent":"peer", "kind":"tool.result"
+        }))
+        .unwrap(),
+    ));
+    app.update(Update::Observation(app.selection(), serde_json::from_value(json!({
+        "type":"committed", "id":54, "agent":"main", "kind":"runtime.operation",
+        "operation":"permission_replied", "state_changed":true,
+        "entry":{"id":54,"agent":"main","type":"permission_reply","request_id":"p-closed","allow":true}
+    })).unwrap()));
+    assert!(app.approvals().is_empty());
+    app.update(Update::PendingApprovals(app.selection(), Ok(list)));
+    assert!(app.approvals().is_empty());
+    app.effects.clear();
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+    assert_eq!(Some(kuku_client::PermissionMode::Ask), app.permission_mode);
+    assert!(app.effects.is_empty());
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn approval_reply_pending_and_acknowledged_are_not_reusable() {
+    let mut app = app();
+    app.permission_mode = Some(kuku_client::PermissionMode::Ask);
+    let permission = json!({
+        "id":"p-ack", "conversation":"main", "turn":1,
+        "tool_call_id":"write", "tool":"write_file", "risk":"high",
+        "summary":"Change file", "candidate":"diff", "source":"permission_mode"
+    });
+    let waiting = snapshot(&app, "waiting", json!(null), permission.clone());
+    load(&mut app, waiting);
+    let list: Vec<kuku_client::PendingApproval> = serde_json::from_value(json!([
+        {"request":permission,"job_id":null}
+    ]))
+    .unwrap();
+    app.update(Update::PendingApprovals(app.selection(), Ok(list)));
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(app.modal, Some(Modal::Approvals(_))));
+    key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    let command = saved_input(&app);
+    assert!(
+        matches!(&command.action, Action::ReplyPermission { request_id, allow: true } if request_id == "p-ack")
+    );
+    app.effects.clear();
+    assert!(!app.open_approvals());
+    assert!(!app.open_approval("p-ack"));
+    assert!(!app.activate_request_id(app.selection().target, "p-ack".into()));
+    assert!(app.effects.is_empty());
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Ok(Acknowledgement {
+            receipt: Receipt {
+                command_id: command.command_id.clone(),
+                event_id: 53,
+                agent: "main".into(),
+            },
+            replayed: false,
+            status: None,
+            warnings: vec![],
+        }),
+    ));
+    assert!(app.approvals().is_empty());
+    assert!(app.pane().permission().is_none());
+    assert!(!app.activate_request_id(app.selection().target, "p-ack".into()));
+}
+
+#[test]
+fn peer_commit_invalidates_approval_and_deferred_full_reply_before_refresh() {
+    let mut app = app();
+    app.permission_mode = Some(kuku_client::PermissionMode::Ask);
+    let permission = json!({
+        "id":"p-peer", "conversation":"worker", "turn":1,
+        "tool_call_id":"write", "tool":"write_file", "risk":"high",
+        "summary":"Change file", "candidate":"diff", "source":"permission_mode"
+    });
+    let mut waiting = snapshot(&app, "idle", json!(null), json!(null));
+    waiting.agents = serde_json::from_value(json!([
+        {"address":"worker","creation_event_id":2,"status":"waiting",
+            "pending_inputs":0,"permission":permission}
+    ]))
+    .unwrap();
+    load(&mut app, waiting);
+    let list: Vec<kuku_client::PendingApproval> = serde_json::from_value(json!([
+        {"request":permission,"job_id":null}
+    ]))
+    .unwrap();
+    app.update(Update::PendingApprovals(app.selection(), Ok(list)));
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    assert!(matches!(app.modal, Some(Modal::Approvals(_))));
+    app.effects.clear();
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+    let ticket = app
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            crate::jobs::Job::WorkspacePermission {
+                ticket,
+                mode: Some(kuku_client::PermissionMode::Full),
+                ..
+            } => Some(*ticket),
+            _ => None,
+        })
+        .expect("workspace permission mode save was requested");
+    assert!(!app.open_approvals());
+
+    // The selected observer receives peer operation metadata, not the
+    // peer's history entry or its complete request ID.
+    app.update(Update::Observation(
+        app.selection(),
+        serde_json::from_value(json!({
+            "type":"committed", "id":53, "agent":"worker", "kind":"runtime.operation",
+            "operation":"permission_replied", "state_changed":true
+        }))
+        .unwrap(),
+    ));
+    assert!(app.approvals().is_empty());
+    app.effects.clear();
+    app.update(Update::WorkspacePermission {
+        ticket,
+        saving: true,
+        result: Ok(Some(kuku_client::PermissionMode::Full)),
+    });
+    assert!(
+        !app.effects
+            .iter()
+            .any(|effect| matches!(effect, crate::jobs::Job::Save(command)
+        if matches!(command.action, Action::ReplyPermission { .. })))
+    );
+}
+
+#[test]
 fn committed_question_settlement_blocks_stale_answer_before_snapshot_refresh() {
     for operation in [
         "question_replied",

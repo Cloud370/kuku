@@ -912,6 +912,8 @@ fn render_picker(frame: &mut Frame<'_>, inner: Rect, picker: &mut Picker) -> (us
             Some("Operate message · ←→/Tab Select · Enter Run · Esc Back")
         }
         PickerKind::AgentSetup(_) => Some("↑↓ Select · Enter Choose · Esc Back"),
+        PickerKind::JobActions if width < 38 => Some("PgUp/Dn · ↑↓ · Enter · Esc"),
+        PickerKind::JobActions => Some("PgUp/Dn Details · ↑↓ · Enter · Esc"),
         _ => None,
     } {
         Line::styled(shorten(help, width), Style::new().fg(MUTED))

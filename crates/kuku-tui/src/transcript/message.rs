@@ -99,6 +99,28 @@ pub(super) fn render_compact_status(title: &str, color: Color, width: usize) -> 
     vec![Row::plain(Line::styled(shorten(title, available), emphasis(color))).indented(inset)]
 }
 
+pub(super) fn render_execution_interruption(reason: &str, color: Color, width: usize) -> Vec<Row> {
+    let mut rows = render_compact_status("Execution interrupted", color, width);
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return rows;
+    }
+    let reason_rows = render_literal(reason, Style::new().fg(MUTED));
+    let title = &mut rows[0];
+    if let [reason] = reason_rows.as_slice()
+        && title.line.width() + " · ".width() + reason.width() <= width
+    {
+        title
+            .line
+            .push_span(Span::styled(" · ", Style::new().fg(MUTED)));
+        title.line.extend(reason.spans.clone());
+        return rows;
+    }
+    let inset = title.inset;
+    rows.extend(render_rows(reason_rows, width, MAX_VISUAL_ROWS, inset));
+    rows
+}
+
 pub(super) fn interruption_title(width: usize, reply: bool) -> &'static str {
     let captions = if reply {
         ["Reply interrupted", "Reply stopped", "Reply cut", "Stopped"]

@@ -948,15 +948,20 @@ async fn explicit_stop_during_interrupt_cleanup_retains_queue_for_original_recei
     tokio::time::timeout(WAIT, async {
         loop {
             let events = session.events(0, 256).unwrap();
-            if events
+            let stops = events
                 .iter()
-                .filter(|event| {
-                    matches!(&event.payload,
-                EventPayload::Unknown(value) if value["record"]["operation"] == "agent_stopped")
+                .filter_map(|event| {
+                    let EventPayload::Unknown(value) = &event.payload else {
+                        return None;
+                    };
+                    (value["record"]["operation"] == "agent_stopped").then_some(&value["record"])
                 })
-                .count()
-                == 2
-            {
+                .collect::<Vec<_>>();
+            if let [interrupt, stop] = stops.as_slice() {
+                assert_eq!(true, interrupt["continue_queued"]);
+                assert_eq!(false, stop["continue_queued"]);
+                assert_eq!(true, interrupt["discard_cancelled_turn"]);
+                assert_eq!(true, stop["discard_cancelled_turn"]);
                 break;
             }
             tokio::task::yield_now().await;
@@ -1003,6 +1008,30 @@ async fn explicit_stop_during_interrupt_cleanup_retains_queue_for_original_recei
 
 #[tokio::test]
 async fn interrupted_cleanup_recovery_closes_old_permission_or_blocks_unknown_dispatched_work() {
+    interrupted_cleanup_recovery(StopRecords::LegacyInterrupt, true).await;
+}
+
+#[tokio::test]
+async fn mixed_stop_cleanup_recovery_keeps_cancelled_turn_out_of_the_queue() {
+    // Test both journal records produced by current commands and earlier
+    // records containing only the queue wake flag.
+    for stops in [
+        StopRecords::InterruptThenStop,
+        StopRecords::LegacyInterruptThenStop,
+    ] {
+        interrupted_cleanup_recovery(stops, true).await;
+        interrupted_cleanup_recovery(stops, false).await;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StopRecords {
+    LegacyInterrupt,
+    LegacyInterruptThenStop,
+    InterruptThenStop,
+}
+
+async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
     for dispatched in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let (model, mut calls) = mpsc::unbounded_channel();
@@ -1024,7 +1053,7 @@ async fn interrupted_cleanup_recovery_closes_old_permission_or_blocks_unknown_di
             activation: Activation::Enqueue,
             ..next_turn("queued", "queued work after recovery")
         };
-        let original = session.send(follow_up.clone()).unwrap();
+        let original = retain_queue.then(|| session.send(follow_up.clone()).unwrap());
         let path = session.events_path().to_owned();
         session.close().await.unwrap();
         drop(session);
@@ -1105,14 +1134,25 @@ async fn interrupted_cleanup_recovery_closes_old_permission_or_blocks_unknown_di
                 })))
                 .unwrap();
         }
-        let stopped = operation(
-            &mut writer,
-            serde_json::json!({
+        let mut interruption = serde_json::json!({
                 "operation":"agent_stopped","address":"main","cleanup_pending":true,
                 "continue_queued":true,"command":{"command_id":"escape","fingerprint":"fixture"},
                 "interruption":{"execution_id":execution,"turn":turn,"usage":kuku::UsageTotals::default()},
-            }),
-        );
+        });
+        if matches!(stops, StopRecords::InterruptThenStop) {
+            interruption["discard_cancelled_turn"] = serde_json::json!(true);
+        }
+        let stopped = operation(&mut writer, interruption);
+        if !matches!(stops, StopRecords::LegacyInterrupt) {
+            let mut stop = serde_json::json!({
+                "operation":"agent_stopped","address":"main","cleanup_pending":true,
+                "continue_queued":false,
+            });
+            if matches!(stops, StopRecords::InterruptThenStop) {
+                stop["discard_cancelled_turn"] = serde_json::json!(true);
+            }
+            operation(&mut writer, stop);
+        }
         drop(writer);
 
         let reopened = Session::open(options).await.unwrap();
@@ -1120,38 +1160,54 @@ async fn interrupted_cleanup_recovery_closes_old_permission_or_blocks_unknown_di
             AgentStatus::Interrupted,
             reopened.agent("main").unwrap().status
         );
+        let pending_receipts = |session: &Session| {
+            session
+                .pending_inputs("main")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.receipt)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            original,
-            reopened.pending_inputs("main").unwrap()[0].receipt
+            original.clone().into_iter().collect::<Vec<_>>(),
+            pending_receipts(&reopened)
         );
         assert!(calls.try_recv().is_err());
         let advance = reopened.advance_command("recover", "main");
         if dispatched {
             assert!(matches!(advance, Err(Error::InterruptedOpenTool(_))));
             assert_eq!(None, reopened.receipt("recover").unwrap());
+            if retain_queue {
+                assert_eq!(
+                    InputStatus::Queued,
+                    reopened.input_status("main", "queued").unwrap()
+                );
+            }
             assert_eq!(
-                InputStatus::Queued,
-                reopened.input_status("main", "queued").unwrap()
-            );
-            assert_eq!(
-                original,
-                reopened.pending_inputs("main").unwrap()[0].receipt
+                original.clone().into_iter().collect::<Vec<_>>(),
+                pending_receipts(&reopened)
             );
             assert!(calls.try_recv().is_err());
         } else {
             advance.unwrap();
-            let next = next_call(&mut calls).await;
-            assert!(next.request.turn > turn);
-            assert!(
-                next.request
-                    .body
-                    .to_string()
-                    .contains("queued work after recovery")
-            );
+            if let Some(original) = original {
+                let next = next_call(&mut calls).await;
+                assert!(next.request.turn > turn);
+                assert!(
+                    next.request
+                        .body
+                        .to_string()
+                        .contains("queued work after recovery")
+                );
+                next.response.send(Reply::Text("recovered")).unwrap();
+                ready(&reopened, AgentStatus::Idle).await;
+                assert_eq!(original, reopened.send(follow_up).unwrap());
+            } else {
+                assert_eq!(AgentStatus::Idle, reopened.agent("main").unwrap().status);
+                assert!(calls.try_recv().is_err());
+            }
             assert!(reopened.agent("main").unwrap().permission.is_none());
-            next.response.send(Reply::Text("recovered")).unwrap();
-            ready(&reopened, AgentStatus::Idle).await;
-            assert_eq!(original, reopened.send(follow_up).unwrap());
+            assert!(reopened.pending_inputs("main").unwrap().is_empty());
             let journal = reopened.events(0, 256).unwrap();
             assert!(journal.iter().any(|event| matches!(&event.payload,
                 EventPayload::TurnCancelled { turn: cancelled, stop_event_id: Some(stop), .. }
@@ -1160,12 +1216,25 @@ async fn interrupted_cleanup_recovery_closes_old_permission_or_blocks_unknown_di
                 EventPayload::ToolResult { tool_call_id, status, .. }
                     if tool_call_id == "old-tool" && status == "cancelled")));
             assert_eq!(
-                1,
+                usize::from(retain_queue),
                 journal
                     .iter()
                     .filter(|event| matches!(&event.payload,
                 EventPayload::MessageUser { text, .. } if text == "queued work after recovery"))
                     .count()
+            );
+            assert_eq!(
+                1,
+                journal
+                    .iter()
+                    .filter(
+                        |event| matches!(&event.payload, EventPayload::Unknown(value)
+                        if value["record"]["operation"] == "inputs_accepted"
+                            && value["record"]["input_ids"].as_array().is_some_and(|inputs|
+                                inputs.iter().any(|input| input == "first")))
+                    )
+                    .count(),
+                "the cancelled original input must never be admitted again"
             );
         }
         reopened.close().await.unwrap();

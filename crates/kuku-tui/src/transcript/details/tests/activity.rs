@@ -157,6 +157,134 @@ fn oversized_latest_activity_uses_the_compact_preview_until_explicitly_opened() 
 }
 
 #[test]
+fn oversized_inspections_show_the_latest_bounded_result_for_every_read_only_tool() {
+    for tool in [
+        "read_file",
+        "find_files",
+        "search_text",
+        "list_agents",
+        "query_session",
+        "stat_file",
+        "read_output",
+        "search_output",
+        "list_values",
+        "run_js",
+    ] {
+        for mixed in [false, true] {
+            let mut journal = Journal::default();
+            if mixed {
+                journal.tool(
+                    "list_agents",
+                    json!({}),
+                    json!({
+                        "status":"ok", "summary":"session operation committed",
+                        "structured":[{"address":"main","status":"idle"}]
+                    }),
+                );
+            }
+            let mut expected = String::new();
+            for index in 1..=9 {
+                expected = format!("result-{index}");
+                match tool {
+                    "read_file" => journal.read(7, "main", &expected),
+                    "list_agents" => journal.tool(tool, json!({}), json!({
+                        "status":"ok", "summary":"session operation committed",
+                        "structured":[{"address":expected,"status":"idle","last_output":"raw-inspection-data"}]
+                    })),
+                    "query_session" => {
+                        expected = format!("{index} events matched");
+                        let events = vec![json!({"kind":"tool.result","text":"raw-inspection-data"}); index];
+                        journal.tool(tool, json!({}), json!({
+                            "status":"ok", "summary":format!("{index} events returned"),
+                            "model_content":serde_json::Value::Array(events).to_string()
+                        }));
+                    }
+                    "run_js" => journal.tool(tool, json!({"title":"Inspect files"}), json!({
+                        "status":"ok", "model_content":"raw-inspection-data",
+                        "structured":{
+                            "kind":"workspace_script_result", "value":"raw-inspection-data", "actions":[{
+                                "id":"stat", "tool":"stat_file", "status":"ok", "summary":expected,
+                                "truncated":false, "result":{"kind":"file_stat","path":expected}
+                            }], "timed_out":false,"cleanup_incomplete":false,"not_dispatched":0
+                        }
+                    })),
+                    _ => journal.tool(tool, json!({}), json!({
+                        "status":"ok", "summary":expected, "model_content":"raw-inspection-data"
+                    })),
+                }
+            }
+            let mut transcript = journal.load();
+            let view = transcript.project(100, 60);
+            let rendered = text(&view);
+            assert!(
+                rendered.contains(&expected),
+                "{tool}, mixed={mixed}: {rendered}"
+            );
+            assert!(
+                !rendered.contains("raw-inspection-data")
+                    && !rendered.contains("contents for result-9"),
+                "{rendered}"
+            );
+            assert!(view.lines.len() <= 9, "{tool}, mixed={mixed}: {rendered}");
+            assert!(
+                transcript
+                    .detail_items
+                    .visible
+                    .iter()
+                    .any(|item| item.key.kind == super::DetailKind::Group && !item.open)
+            );
+        }
+    }
+}
+
+#[test]
+fn inspecting_the_injected_latest_preview_does_not_unfold_the_large_group() {
+    let mut journal = Journal::default();
+    journal.tool(
+        "run_command",
+        json!({"program":"check"}),
+        json!({"status":"ok","summary":"check finished"}),
+    );
+    for index in 0..8 {
+        journal.read(7, "main", &format!("preview-{index}.txt"));
+    }
+    let mut transcript = journal.load();
+    let view = transcript.project(100, 60);
+    let newest = transcript
+        .detail_at(line(&view, "Read preview-7.txt"))
+        .unwrap()
+        .clone();
+    assert_eq!(newest.kind, super::DetailKind::Tool);
+    assert!(transcript.toggle_detail(&newest));
+    let inspected = transcript.project(100, 60);
+    assert!(text(&inspected).contains("contents for preview-7.txt"));
+    assert!(!text(&inspected).contains("Read preview-0.txt"));
+    assert!(
+        transcript
+            .detail_items
+            .visible
+            .iter()
+            .any(|item| item.key.kind == super::DetailKind::Group && !item.open)
+    );
+
+    // The selected inspection remains readable when another card takes over.
+    transcript.apply(
+        serde_json::from_value(
+            json!({"id":50,"agent":"main","turn":7,"type":"assistant","text":"Next activity"}),
+        )
+        .unwrap(),
+        None,
+    );
+    let after = text(&transcript.project(100, 60));
+    assert!(
+        after.contains("contents for preview-7.txt") && !after.contains("Read preview-0.txt"),
+        "{after}"
+    );
+    assert!(transcript.toggle_detail(&newest));
+    assert!(!text(&transcript.project(100, 60)).contains("preview-7.txt"));
+}
+
+#[test]
 fn oversized_mixed_activity_keeps_the_newest_result_and_priority_previews() {
     let mut journal = Journal::default();
     for index in 0..4 {
@@ -415,6 +543,126 @@ fn a_group_fold_remains_explicit_after_its_first_member_is_evicted_and_reloaded(
             .sum::<usize>()
             <= MAX_RECORDS
     );
+}
+
+#[test]
+fn suspended_reading_restores_an_explicit_group_without_its_original_heading() {
+    use crate::transcript::MessageId;
+
+    let mut journal = Journal::default();
+    for index in 0..72 {
+        journal.read(7, "main", &format!("restore-{index}.txt"));
+    }
+    let mut transcript = Journal(journal.0.clone()).load();
+    transcript.project(100, 60);
+    let group = transcript
+        .detail_items
+        .visible
+        .iter()
+        .find(|item| item.key.kind == super::DetailKind::Group)
+        .unwrap()
+        .key
+        .clone();
+    assert!(transcript.toggle_detail(&group));
+    assert!(transcript.reveal_message(
+        &MessageId::Tool {
+            turn: Some(7),
+            call_id: "read-72".into(),
+        },
+        "main"
+    ));
+    let before = text(&transcript.project(100, 8));
+    assert!(
+        before
+            .lines()
+            .next()
+            .unwrap()
+            .contains("Read restore-36.txt"),
+        "{before}"
+    );
+    let anchor = transcript.reading_anchor().cloned().unwrap();
+    transcript.suspend();
+    let request = transcript.restore_request().unwrap();
+    let end = journal
+        .0
+        .partition_point(|entry| entry.id < request.before());
+    let first = end.saturating_sub(HISTORY_PAGE);
+    let recent = journal.0.len() - HISTORY_PAGE;
+    transcript.replace_recent(HistoryPage {
+        entries: journal.0[recent..].to_vec(),
+        next_before: Some(journal.0[recent].id),
+        rewind_groups: Vec::new(),
+    });
+    transcript.apply_page(
+        request,
+        HistoryPage {
+            entries: journal.0[first..end].to_vec(),
+            next_before: Some(journal.0[first].id),
+            rewind_groups: Vec::new(),
+        },
+    );
+    let window = &transcript.reading.as_ref().unwrap().window;
+    assert!(!window.contains(&group.record));
+    assert!(window.contains(&anchor.key));
+    assert_eq!(
+        Some(true),
+        transcript
+            .detail_items
+            .group_choice(&window.records)
+            .map(|choice| choice.open)
+    );
+    assert_eq!(Some(&anchor), transcript.reading_anchor());
+    assert_eq!(before, text(&transcript.project(100, 8)));
+}
+
+#[test]
+fn first_reply_line_remains_visible_when_the_previous_auto_group_folds() {
+    use crate::transcript::{Anchor, AnchorLine, Block, Key, Layout};
+
+    let mut journal = Journal::default();
+    for index in 0..8 {
+        journal.tool(
+            "run_command",
+            json!({"program":format!("check-{index}")}),
+            json!({
+                "status":if index < 3 {"error"} else {"ok"},
+                "summary":format!("check {index} outcome"),
+                "structured":{"exit_code":if index < 3 {1} else {0}}
+            }),
+        );
+    }
+    let mut transcript = journal.load();
+    let (width, height) = (100, 7);
+    transcript.live(49, Some(7), None, &json!({"type":"thinking"}));
+    assert!(transcript.project(width, height).thinking_row.is_some());
+    let old_top = transcript.reply_position.as_ref().unwrap().top.clone();
+    transcript.live(49, Some(7), None, &json!({"type":"text","content":format!("First reply line.\n\n{}", "Later paragraph.\n\n".repeat(20))}));
+    let layout = Layout {
+        width,
+        tools: transcript.details,
+        assistant: transcript.assistant_view,
+        agents: &transcript.agent_cards,
+        items: &transcript.detail_items,
+        notes: transcript.notes.as_ref(),
+    };
+    let blocks = transcript.recent.blocks(layout);
+    let old_row = Block::position_of(&blocks, &old_top);
+    let first_line = Block::position_of(
+        &blocks,
+        &Anchor {
+            key: Key::Preview(49),
+            line: AnchorLine::Body(1),
+        },
+    );
+    // Regression precondition: the old thinking viewport anchor used by the
+    // previous implementation no longer exposes the first reply line.
+    assert!(
+        first_line >= old_row + height,
+        "top={old_row} first_line={first_line}"
+    );
+    drop(blocks);
+    let rendered = text(&transcript.project(width, height));
+    assert!(rendered.contains("First reply line."), "{rendered}");
 }
 
 #[test]

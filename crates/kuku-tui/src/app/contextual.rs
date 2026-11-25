@@ -2,7 +2,7 @@ use kuku_client::{Action, AgentStatus};
 
 use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKind};
 
-use super::{Activity, App, ServiceStatus};
+use super::{App, ServiceStatus};
 
 impl App {
     pub(crate) fn cache_warning(&self) -> Option<&kuku::session::runtime::CacheWarning> {
@@ -54,19 +54,18 @@ impl App {
     }
 
     fn run_control(&self) -> Option<ContextControl> {
-        let snapshot = self.pane().snapshot.as_ref()?;
+        let pane = self.pane();
         let target = self.selection().target;
-        if snapshot.agent.status == AgentStatus::Running
-            && self.pane().activity() != Activity::Stopping
-        {
-            return self
-                .pane()
-                .execution()
-                .map(|execution_id| ContextControl::Interrupt {
-                    target,
-                    execution_id,
-                });
+        if let Some(execution_id) = pane.running_execution() {
+            return Some(ContextControl::Interrupt {
+                target,
+                execution_id,
+            });
         }
+        if pane.busy_or_waiting() {
+            return None;
+        }
+        let snapshot = pane.snapshot.as_ref()?;
         let can_continue = match snapshot.agent.status {
             AgentStatus::Interrupted => true,
             AgentStatus::Idle | AgentStatus::Stopped => {

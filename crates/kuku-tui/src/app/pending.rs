@@ -93,6 +93,13 @@ impl App {
         if !self.require_service() {
             return;
         }
+        if let Action::ReplyQuestion { request_id, .. } | Action::ReplyPermission { request_id, .. } =
+            &action
+            && self.request_reply_pending(&address, request_id)
+        {
+            self.problem("A reply to this request is already pending");
+            return;
+        }
         let command = Command {
             target: self.target(&address),
             command_id: new_id(),
@@ -120,6 +127,20 @@ impl App {
         );
         self.update_pending_delivery(&command.command_id);
         self.effects.push(Job::Save(command));
+    }
+
+    pub(crate) fn request_reply_pending(&self, address: &Address, request_id: &str) -> bool {
+        let target = self.target(address);
+        self.pending.values().any(|item| {
+            item.command.target == target
+                && !matches!(item.stage, PendingStage::Rejected(_))
+                && matches!(&item.command.action,
+                    Action::ReplyQuestion { request_id: id, .. }
+                    | Action::ReplyPermission { request_id: id, .. } if id == request_id)
+        }) || self
+            .approval_after_mode_save
+            .as_ref()
+            .is_some_and(|(pending, id)| pending == address && id == request_id)
     }
 }
 
@@ -977,8 +998,28 @@ impl App {
                     self.message("Settings saved for the next safe model boundary");
                 }
             }
-            Action::ReplyPermission { .. } | Action::ReplyQuestion { .. } => {
-                self.confirmation("Reply received")
+            Action::ReplyPermission { request_id, .. } => {
+                if !request_id.starts_with("script:")
+                    && let Some(pane) = self.panes.get_mut(&address)
+                {
+                    pane.note_request_state_change(
+                        ack.receipt.event_id,
+                        Some("permission_replied"),
+                        None,
+                    );
+                }
+                self.invalidate_replied_approval(&address, &request_id);
+                self.confirmation("Reply received");
+            }
+            Action::ReplyQuestion { .. } => {
+                if let Some(pane) = self.panes.get_mut(&address) {
+                    pane.note_request_state_change(
+                        ack.receipt.event_id,
+                        Some("question_replied"),
+                        None,
+                    );
+                }
+                self.confirmation("Reply received");
             }
             Action::Withdraw {
                 input_command_id,
