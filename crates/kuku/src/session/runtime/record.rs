@@ -565,11 +565,11 @@ impl State {
                 warnings,
                 ..
             } => {
-                let removed = {
+                let (removed, abandoned_turn) = {
                     let agent = self.agent_mut(&address)?;
                     agent.snapshot.last_output = None;
                     let ids: HashSet<_> = removed_input_ids.into_iter().collect();
-                    if ids.is_empty() {
+                    let removed = if ids.is_empty() {
                         Vec::new()
                     } else {
                         let mut removed = Vec::new();
@@ -597,8 +597,10 @@ impl State {
                         }
                         agent.update_inbox();
                         removed
-                    }
+                    };
+                    (removed, agent.finish_history_change())
                 };
+                self.values.release_turn(&address, abandoned_turn);
                 for id in removed {
                     self.deliveries.insert(id, InputStatus::Withdrawn);
                 }
@@ -612,11 +614,12 @@ impl State {
                 target_turn,
                 ..
             } => {
-                let snapshot = &mut self.agent_mut(&address)?.snapshot;
-                snapshot.turn = Some(target_turn);
-                snapshot.last_output = None;
-                snapshot.last_error = None;
-                snapshot.admitted_task = None;
+                let agent = self.agent_mut(&address)?;
+                let abandoned_turn = agent.finish_history_change();
+                agent.snapshot.turn = Some(target_turn);
+                agent.snapshot.last_output = None;
+                agent.snapshot.admitted_task = None;
+                self.values.release_turn(&address, abandoned_turn);
                 self.remember_command(command, event_id, address);
             }
             Record::ExecutionStarted { address } => {

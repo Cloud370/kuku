@@ -633,7 +633,7 @@ impl RewindInputs {
                     && record["operation"] == "inputs_accepted"
                     && record["address"] == address
                 {
-                    self.last_accepted = record["input_ids"]
+                    self.last_accepted = record["message_input_ids"]
                         .as_array()
                         .into_iter()
                         .flatten()
@@ -887,6 +887,40 @@ mod rewind_guard_tests {
                 .iter()
                 .any(|d| d.input.command_id == "new")
         );
+    }
+
+    #[test]
+    fn rewind_does_not_withdraw_an_earlier_input_readmitted_with_new_text() {
+        let batch = Record::InputsAccepted {
+            address: "main".into(),
+            input_ids: vec!["earlier".into(), "new".into()],
+            message_input_ids: vec!["new".into()],
+            turn: Some(2),
+        };
+        let events = [
+            StoredEvent {
+                id: 2,
+                payload: batch.payload().unwrap(),
+            },
+            StoredEvent {
+                id: 3,
+                payload: EventPayload::MessageUser {
+                    ts: "now".into(),
+                    conversation: "main".into(),
+                    turn: 2,
+                    text: "new text, earlier input is already in the journal".into(),
+                    from: None,
+                    via_tool_call_id: None,
+                    job_delivery: false,
+                },
+            },
+        ];
+        let visibility = RewindVisibility::new(&events);
+        let mut inputs = RewindInputs::default();
+        for event in &events {
+            inputs.observe(event, "main", 3, &visibility);
+        }
+        assert_eq!(BTreeSet::from(["new".into()]), inputs.removed);
     }
 
     #[test]

@@ -713,7 +713,7 @@ impl Pane {
                 self.live_floor = id;
                 self.retired_execution_floor = id;
             }
-            Some("agent_stopped") => {
+            Some("agent_stopped" | "message_rewind" | "history_jump") => {
                 self.live_floor = id;
                 self.progress = ExecutionProgress::default();
                 self.transcript.clear_reply_preview();

@@ -4,7 +4,7 @@ import json
 import sys
 from urllib.parse import urlencode
 
-from interactive_fixture import is_composer_heading
+from interactive_fixture import eventually, is_composer_heading
 
 
 def expect_draft(terminal, prompt, reply, replaced_reply):
@@ -83,6 +83,51 @@ def paginated_rewind(client):
         "discarded_content_in_next_request": any(text in context for text in prompts[1:] + replies[1:]),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Rewind loaded beyond 48 committed messages, cancelled safely and confirmed the exact earliest event.")
+
+
+def rewind_failed_input(client):
+    for name, key in (("enter", "\r"), ("alt-enter", "\x1b[13;3u")):
+        workspace = client.workspace(f"work-rewind-failed-{name}")
+        first = "Retain the successful turn before the failure"
+        prior_reply = "This earlier answer stays in the conversation."
+        failed = "Resend this input after rewinding the interrupted turn"
+        with client.terminal(workspace) as terminal:
+            terminal.expect("New session", state="Ready")
+            terminal.submit(first)
+            client.provider.next(first).text(prior_reply)
+            terminal.expect(prior_reply, state="Finished")
+            session = client.session(workspace)
+
+            terminal.submit(failed)
+            client.provider.next(failed).fail()
+            retry_banner = "Automatic retry stopped; see transcript for details."
+            terminal.expect(retry_banner, state="Interrupted", also=("HTTP 400",))
+            terminal.press("\x07")
+            terminal.expect("Conversation history", also=("Preview  ·  Turn 2", failed))
+            terminal.press("\r")
+            terminal.expect("Switch to Turn 2", also=(failed, "Enter Switch"))
+            terminal.press("\r")
+
+            def rewind_is_idle():
+                agent = client.snapshot(workspace, session)
+                return agent["status"] == "idle" and agent["pending_inputs"] == 0
+
+            eventually("rewind to leave the Agent idle with no queued input", rewind_is_idle)
+            screen = terminal.expect(prior_reply, also=("Draft", failed),
+                                     absent=(retry_banner, "Pending inputs"))["screen"]
+            rows = screen.splitlines()
+            heading = next(index for index, row in enumerate(rows) if is_composer_heading(row))
+            assert failed in "\n".join(rows[heading:]), screen
+            client.provider.assert_idle(duration=0.2)
+            terminal.press(key)
+            call = client.provider.next(failed)
+            context = json.dumps(call.request["messages"])
+            assert prior_reply in context and context.count(failed) == 1
+            call.text("The rewound input was sent once.")
+            terminal.expect("The rewound input was sent once.", state="Finished")
+            terminal.exit_cleanly()
+        client.provider.assert_idle()
+    print("After a provider HTTP 400, rewind restored the draft; Enter and Alt+Enter sent it without Continue.")
 
 
 def rewind_files(client):

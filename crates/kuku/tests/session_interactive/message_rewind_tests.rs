@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[tokio::test]
-async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
+async fn rewinding_an_interrupted_turn_allows_sending_without_advance() {
     let root = tempfile::tempdir().unwrap();
     let (model, mut calls) = mpsc::unbounded_channel();
     let mut options = SessionOptions::new(
@@ -48,7 +48,11 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
     ready(&session, AgentStatus::Interrupted).await;
     session.close().await.unwrap();
 
-    let reopened = Session::open(options).await.unwrap();
+    let reopened = Session::open(options.clone()).await.unwrap();
+    assert_eq!(
+        AgentStatus::Interrupted,
+        reopened.agent("main").unwrap().status
+    );
     let events = EventStore::replay(reopened.events_path()).unwrap();
     let target = events
         .iter()
@@ -65,14 +69,19 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
             false,
         )
         .unwrap();
-    reopened.advance("main").unwrap();
-    ready(&reopened, AgentStatus::Idle).await;
+    let rewound = reopened.agent("main").unwrap();
+    assert_eq!(AgentStatus::Idle, rewound.status);
+    assert_eq!(None, rewound.last_error);
+    assert_eq!(0, rewound.pending_inputs);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), calls.recv())
             .await
             .is_err()
     );
+    reopened.close().await.unwrap();
 
+    let reopened = Session::open(options).await.unwrap();
+    assert_eq!(AgentStatus::Idle, reopened.agent("main").unwrap().status);
     reopened
         .send(Input::new("new-input", "main", "new prompt after rewind"))
         .unwrap();

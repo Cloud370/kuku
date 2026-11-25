@@ -9,7 +9,7 @@ import time
 from urllib.parse import urlencode
 
 from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, Terminal, eventually, http_fixture, json_response, run_cases
-from interactive_history import paginated_rewind, rewind_files
+from interactive_history import paginated_rewind, rewind_failed_input, rewind_files
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input, queued_input_click_position
 
@@ -27,6 +27,7 @@ def lifecycle_checks(binary, bridge, directory):
                      ("keyboard-queue", keyboard_queue_withdrawal),
                      ("rewind", readonly_rewind),
                      ("rewind-history", paginated_rewind),
+                     ("rewind-failed-input", rewind_failed_input),
                      ("rewind-files", rewind_files),
                  ))
     cases.append(("model-setup", lambda: shared_model_editor(binary, bridge, directory / "model-setup")))
