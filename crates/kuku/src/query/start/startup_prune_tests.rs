@@ -466,17 +466,11 @@ async fn fresh_turn_excludes_package_skills_when_plugins_are_disabled() {
         crate::session::session_events_path(kuku_home.path(), workspace.path(), &session_id)
             .unwrap();
     let events = EventStore::replay(&events_path).unwrap();
-    let registry: crate::skill::registry::SkillRegistry = events
-        .iter()
-        .find_map(|event| match &event.payload {
-            EventPayload::ContextSkills { registry, .. } => Some(
-                serde_json::from_value::<crate::skill::registry::SkillRegistry>(registry.clone())
-                    .unwrap(),
-            ),
-            _ => None,
-        })
-        .expect("context.skills event");
-
+    let registry =
+        crate::skill::session::restore_turn_snapshot(kuku_home.path(), &events, "main", 1)
+            .unwrap()
+            .expect("context.skills event")
+            .registry;
     assert!(registry.get("packaged-skill").is_none());
 }
 

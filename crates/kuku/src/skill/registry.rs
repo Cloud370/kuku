@@ -1,7 +1,7 @@
 //! Skill registry with multi-source builder and change detection.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
@@ -14,6 +14,8 @@ use super::definition::{SkillDefinition, SkillSource};
 pub struct SkillRegistry {
     definitions: BTreeMap<String, SkillDefinition>,
     names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent_names: Vec<String>,
     hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     docs_bundle: Option<String>,
@@ -33,6 +35,14 @@ impl SkillRegistry {
     /// Return sorted skill names.
     pub fn names(&self) -> &[String] {
         &self.names
+    }
+
+    pub(crate) fn listing_names(&self) -> &[String] {
+        if self.recent_names.is_empty() {
+            &self.names
+        } else {
+            &self.recent_names
+        }
     }
 
     /// Return all skill definitions.
@@ -58,17 +68,64 @@ impl SkillRegistry {
         &self.hash
     }
 
-    pub(crate) fn docs_bundle(&self) -> Option<&str> {
-        self.docs_bundle.as_deref()
+    pub(crate) async fn materialize_docs(
+        &mut self,
+        home: &Path,
+        stop: Option<&tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<bool> {
+        let Some(path) = self
+            .install_docs(home, super::bundle::Verify::Entry, stop)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let path = path.to_str().ok_or_else(|| {
+            crate::Error::InvalidArgument("built-in Skill directory must be valid Unicode".into())
+        })?;
+        let definition = self
+            .definitions
+            .get_mut(super::bundle::NAME)
+            .expect("bundled Skill exists");
+        if definition.source_path.as_deref() == Some(path) {
+            return Ok(false);
+        }
+        definition.source_path = Some(path.into());
+        Ok(true)
     }
 
-    pub(crate) fn with_current_docs(self) -> Self {
-        SkillRegistryBuilder {
-            definitions: self.definitions,
-            docs_bundle: None,
-        }
-        .with_docs()
-        .build()
+    pub(crate) async fn verify_docs_references(&self, home: &Path) -> Result<()> {
+        self.install_docs(home, super::bundle::Verify::References, None)
+            .await?;
+        Ok(())
+    }
+
+    async fn install_docs(
+        &self,
+        home: &Path,
+        verify: super::bundle::Verify,
+        stop: Option<&tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<Option<PathBuf>> {
+        let Some(version) = self.docs_bundle.as_deref() else {
+            return Ok(None);
+        };
+        let Some(definition) = self.get(super::bundle::NAME) else {
+            return Ok(None);
+        };
+        // Older retained archives did not carry the instruction file. Reconstruct it from
+        // the original pinned definition, not from the current build's source.
+        let fallback = format!(
+            "---\nname: {}\ndescription: {}\n---\n\n{}\n",
+            definition.name,
+            serde_json::json!(&definition.description),
+            definition.instructions,
+        );
+        Ok(Some(
+            super::bundle::materialize(home, version, fallback, verify, stop).await?,
+        ))
+    }
+
+    pub(crate) fn docs_bundle(&self) -> Option<&str> {
+        self.docs_bundle.as_deref()
     }
 }
 
@@ -140,10 +197,35 @@ impl SkillRegistryBuilder {
     pub fn build(self) -> SkillRegistry {
         let mut names: Vec<String> = self.definitions.keys().cloned().collect();
         names.sort();
+        let mut ordered = names
+            .iter()
+            .map(|name| {
+                let modified = self
+                    .definitions
+                    .get(name)
+                    .and_then(|definition| definition.source_path.as_deref())
+                    .and_then(|directory| {
+                        std::fs::metadata(Path::new(directory).join("SKILL.md")).ok()
+                    })
+                    .and_then(|metadata| metadata.modified().ok());
+                (modified, name)
+            })
+            .collect::<Vec<_>>();
+        ordered.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+        let recent_names = if ordered
+            .iter()
+            .zip(&names)
+            .all(|(entry, name)| entry.1 == name)
+        {
+            vec![]
+        } else {
+            ordered.into_iter().map(|(_, name)| name.clone()).collect()
+        };
         let hash = compute_registry_hash(&self.definitions, &names, self.docs_bundle.as_deref());
         SkillRegistry {
             definitions: self.definitions,
             names,
+            recent_names,
             hash,
             docs_bundle: self.docs_bundle,
         }
@@ -178,7 +260,7 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
         .intersection(&old_names)
         .filter(|name| {
             (**name == super::bundle::NAME && old.docs_bundle != new.docs_bundle)
-                || new.get(name).map(|d| d.hash.as_str()) != old.get(name).map(|d| d.hash.as_str())
+                || new.get(name) != old.get(name)
         })
         .map(|name| (*name).to_string())
         .collect();

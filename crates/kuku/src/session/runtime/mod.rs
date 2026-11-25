@@ -76,6 +76,7 @@ pub(crate) struct SessionInner {
     writer: Mutex<Option<EventStore>>,
     state: Mutex<State>,
     startup: Mutex<crate::context::runtime::StartupCache>,
+    last_durable_skill_catalog: Mutex<Option<String>>,
     value_writes: tokio::sync::Mutex<()>,
     workers: Mutex<HashMap<u64, Worker>>,
     worker_outcomes: Mutex<HashMap<String, (u64, WorkerOutcome)>>,
@@ -221,6 +222,7 @@ impl Session {
                 writer: Mutex::new(Some(writer)),
                 state: Mutex::new(state),
                 startup: Mutex::new(startup),
+                last_durable_skill_catalog: Mutex::new(None),
                 value_writes: tokio::sync::Mutex::new(()),
                 workers: Mutex::new(HashMap::new()),
                 worker_outcomes: Mutex::new(HashMap::new()),
@@ -245,6 +247,17 @@ impl Session {
             .lock()
             .unwrap()
             .read(self.events_path(), address)
+    }
+
+    pub(crate) fn persist_skill_catalog(
+        &self,
+        registry: &crate::skill::registry::SkillRegistry,
+    ) -> Result<serde_json::Value> {
+        crate::skill::session::persist_catalog(
+            &self.inner.options.data_dir,
+            registry,
+            Some(&self.inner.last_durable_skill_catalog),
+        )
     }
 
     pub(crate) fn workspace_execution_host(&self) -> WorkspaceExecutionHost {
@@ -458,6 +471,7 @@ impl Session {
                 .as_ref()
                 .unwrap_or(&state.agent(&target)?.snapshot.config),
         )?;
+        self.validate_steering_skill(state.agent(&target)?, &input)?;
         let key = input.command_id.clone();
         self.commit(
             &mut state,

@@ -36,6 +36,20 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     apply_runtime_boundary(&mut pending)?;
     ensure_resolved(&mut pending)?;
+    let bundled = crate::skill::bundle::NAME;
+    if pending
+        .query
+        .input_skills
+        .iter()
+        .any(|name| name == bundled)
+        || pending
+            .bootstrap_skill
+            .as_ref()
+            .and_then(|skill| skill.name.as_deref())
+            == Some(bundled)
+    {
+        pending.verify_bundled_skill().await?;
+    }
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
@@ -156,6 +170,19 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     if let Some(frozen) = frozen {
         assembly.prelude_messages = frozen;
     }
+    let bootstrap = pending.bootstrap_skill.as_ref();
+    let generic_bootstrap = bootstrap.filter(|skill| {
+        skill.name.as_deref() != Some(crate::skill::bundle::NAME) && !skill.body.is_empty()
+    });
+    let bootstrap_was_frozen = generic_bootstrap
+        .and_then(|skill| skill.name.as_ref())
+        .is_some_and(|name| {
+            existing_events.iter().any(|event| {
+                matches!(&event.payload, EventPayload::PromptSnapshot { conversation, turn, bootstrap_loaded, .. }
+                    if conversation == pending.conversation.as_str() && *turn == pending.turn
+                        && bootstrap_loaded.contains(name))
+            })
+        });
 
     // Inject the skill catalog into the snapshot prelude (first turn only;
     // subsequent turns reuse the frozen snapshot)
@@ -167,25 +194,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     .push(CanonicalMessage::user_text(skills_text));
             }
         }
-    }
-
-    if let Some(skill) = pending.bootstrap_skill.as_ref() {
-        let docs_bootstrap = skill.name.as_deref() == Some(crate::skill::bundle::NAME)
-            || crate::skill::session::restore_turn_snapshot(
-                &existing_events,
-                pending.conversation.as_str(),
-                pending.turn,
-            )
-            .is_some_and(|snapshot| {
-                snapshot
-                    .bootstrap_loaded
-                    .iter()
-                    .any(|name| name == crate::skill::bundle::NAME)
-            });
-        if !docs_bootstrap {
+        if let Some(skill) = generic_bootstrap {
             assembly
                 .prelude_messages
-                .push(CanonicalMessage::user_text(skill.body.clone()));
+                .push(CanonicalMessage::user_text(&skill.body));
         }
     }
 
@@ -237,9 +249,14 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     };
     let dynamic_turn_prefix = assembly_runtime_prefix(
         assembly.runtime_context.as_deref(),
-        pending
-            .bootstrap_skill
-            .as_ref()
+        bootstrap
+            .filter(|skill| {
+                skill.name.as_deref() == Some(crate::skill::bundle::NAME)
+                    || (!bootstrap_was_frozen
+                        && !assembly.prelude_messages.iter().any(|message| {
+                            matches!(message.blocks.as_slice(), [MessageBlock::Text(text)] if *text == skill.body)
+                        }))
+            })
             .map(|skill| skill.body.as_str()),
         runtime_date.as_deref(),
         &catalog,
@@ -342,12 +359,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     })
                     .collect(),
                 prompt_asset_sources: assembly.prompt_asset_sources.clone(),
-                skills: pending
-                    .skill_registry
-                    .as_ref()
-                    .map(serde_json::to_value)
-                    .transpose()?
-                    .unwrap_or_else(|| serde_json::json!({})),
+                skills: pending.skill_registry.as_ref().map_or_else(
+                    || serde_json::json!({}),
+                    |registry| serde_json::json!({"fingerprint": registry.hash()}),
+                ),
                 bootstrap_loaded: pending
                     .bootstrap_skill
                     .as_ref()
@@ -505,8 +520,13 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
         execution,
         pending.turn,
         pending.request_num == 1,
+        pending.skill_registry.as_ref(),
     )?;
-    pending.query.input_skills.extend(boundary.skills);
+    for name in boundary.skills {
+        if !pending.query.input_skills.contains(&name) {
+            pending.query.input_skills.push(name);
+        }
+    }
     if let Some(source) = boundary.source {
         pending.query.input_source = source;
     }

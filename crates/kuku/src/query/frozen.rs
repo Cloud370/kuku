@@ -25,6 +25,7 @@ use super::types::PendingRun;
 mod admission;
 mod commit;
 mod compaction;
+mod skill_catalog;
 
 use admission::{append_input_skills, model_history, select_turns};
 use commit::commit_context;
@@ -147,6 +148,12 @@ pub(super) async fn prepare(
         });
     if route_changed || workspace_changed || tool_names_changed || missing_modalities {
         segment = initial_segment(pending, &catalog, &tools, &behavior, &resolved)?;
+        // The new prelude either starts its own catalog or does not expose Skill tools.
+        // Notices tied to the previous prelude are no longer applicable in either case.
+        messages.retain(|entry| {
+            entry.origin != MessageOrigin::Runtime
+                || crate::skill::model_catalog::anchor(&entry.message).is_none()
+        });
         if let Some(summary) = previous.as_ref().and_then(|segment| {
             segment
                 .handoff_prelude
@@ -233,7 +240,6 @@ pub(super) async fn prepare(
             }
         }
     }
-    let input_skills = append_input_skills(pending, &mut messages).await?;
     append_dynamic(
         pending,
         &mut messages,
@@ -256,7 +262,7 @@ pub(super) async fn prepare(
             cursor.admitted.len()
         },
     )?;
-    let current_input = if compact_only {
+    let mut current_input = if compact_only {
         messages
             .iter()
             .rposition(|entry| entry.origin == MessageOrigin::Input)
@@ -328,6 +334,22 @@ pub(super) async fn prepare(
             Error::InvalidEventStream("prepared context has no admitted current input".into())
         }
     })?;
+    // A recovered input may only have been restored from the journal above. Its
+    // original event ID is the rewind boundary for both kinds of Skill admission.
+    let notice = skill_catalog::append_notice(
+        pending,
+        &segment,
+        &mut messages,
+        if new_segment {
+            0
+        } else {
+            cursor.admitted.len()
+        },
+    )?;
+    if notice.is_some_and(|index| index <= current_input) {
+        current_input += 1;
+    }
+    let input_skills = append_input_skills(pending, &mut messages, &segment.prelude)?;
     let assembly = ContextAssembly {
         system_prompt: segment.system_prompt.clone(),
         prelude_messages: segment.prelude.clone(),
@@ -498,14 +520,15 @@ fn initial_segment(
                 pending.conversation.as_str()
             )));
     }
-    if let Some(text) = pending
-        .skill_registry
-        .as_ref()
-        .and_then(|registry| crate::skill::catalog::render_static_skill_catalog(registry, tools))
-    {
+    if let Some(text) = crate::skill::catalog::render_skill_discovery_hint(tools) {
         assembly
             .prelude_messages
             .push(CanonicalMessage::user_text(text));
+        if let (Some(registry), Some(id)) = (&pending.skill_registry, &pending.skill_catalog_id) {
+            assembly
+                .prelude_messages
+                .push(crate::skill::model_catalog::full(registry, id));
+        }
     }
     if let Some(skill) = &pending.bootstrap_skill {
         assembly
@@ -727,7 +750,7 @@ fn insert_runtime_notice(
     message: &CanonicalMessage,
     frozen_head: usize,
     admitted_at: u64,
-) {
+) -> usize {
     let current_input = messages
         .iter()
         .position(|admitted| admitted.turn == turn && admitted.origin == MessageOrigin::Input)
@@ -746,6 +769,7 @@ fn insert_runtime_notice(
             admitted_at,
         },
     );
+    insertion_index
 }
 
 fn resumed_current_input(

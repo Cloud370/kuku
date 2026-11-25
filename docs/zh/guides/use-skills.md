@@ -4,7 +4,7 @@ Skill 把可复用的工作流指令按需加载到当前 Session 中。
 
 ## 询问 kuku 用法
 
-配好模型后，可以直接问 Agent「怎么恢复上一次会话？」。内置的 `kuku-docs` Skill 覆盖模型配置、会话恢复、Skills、CLI 和 Rust SDK。Agent 可加载该 Skill，再查找运行中的服务随附的文档。按 `F1` 或输入 `/help` 可再次找到入口。
+配好模型后，可以直接问 Agent「怎么恢复上一次会话？」。内置的 `kuku-docs` Skill 覆盖模型配置、会话恢复、Skills、CLI 和 Rust SDK。Agent 可先加载该 Skill 获取使用指引和真实目录，再用普通文件工具读取随服务打包的资料。按 `F1` 或输入 `/help` 可再次找到入口。
 
 要显式调用，从 `/` 菜单选择 `kuku-docs`，在可编辑的 `/skill:kuku-docs` 前缀后输入问题并发送。从脚本或终端运行时，可在位置参数里使用同一前缀。
 
@@ -34,7 +34,7 @@ kuku skills show <name>
 
 ## 运行时使用 Skill
 
-默认情况下，模型能看到 Skill 的名称和简介，并可用 `list_skills`、`search_skills` 和 `use_skill` 查找和加载指令。Agent 加载或用户明确选用后，Skill 正文才进入模型上下文。
+模型用 `list_skills` 或 `search_skills` 查阅当前的名称与简介，用 `use_skill` 加载指令。Agent 加载或用户明确选用后，Skill 正文才进入模型上下文。
 
 也可以在 `kuku run` 里直接用斜杠前缀指定某个 Skill——kuku 会加载它，并把后面的文本作为你的提示词：
 

@@ -802,6 +802,37 @@ def markdown_document(client, document=None, reference=False):
     return verification
 
 
+def skill_real_path(client):
+    workspace = client.workspace("Skill project with spaces")
+    prompt = "Use the bundled Skill to look up the tools and Skill format titles."
+    with client.command(workspace, "run", "--json", prompt) as process:
+        call = client.provider.next(prompt)
+        names = {tool["name"] for tool in call.request["tools"]}
+        assert {"use_skill", "read_file"} <= names
+        assert "skill_resources" not in names
+        call.tool("use_skill", "enter-docs", skill_name="kuku-docs")
+        loaded = client.provider.next("enter-docs")
+        content = loaded.tool_result("enter-docs")["content"]
+        root = Path(re.search(r"<!-- loaded: (.+?) -->", content).group(1))
+        assert root.is_absolute() and (root / "SKILL.md").is_file()
+        assert root.resolve().is_relative_to((client.home / "skill-resources" / "kuku-docs").resolve())
+        files = [("tools-page", "tools.md"), ("skill-page", "skill-format.md")]
+        loaded.reply([
+            {"type": "tool_use", "id": call_id, "name": "read_file",
+             "input": {"path": str(root / "references/docs/en/reference" / file), "limit": 7}}
+            for call_id, file in files
+        ])
+        pages = client.provider.next("skill-page")
+        pages.expect_tool_output("tools-page", "# Tools")
+        pages.expect_tool_output("skill-page", "# Skill format")
+        pages.text("Tools; Skill format")
+        stdout, _ = client.finish(process)
+    assert json.loads(stdout)["response"] == "Tools; Skill format"
+    assert not (workspace / "references").exists()
+    client.provider.assert_idle()
+    print("The CLI loaded one Skill and read two real reference paths in one tool batch.")
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -880,6 +911,7 @@ def main():
                  ("paste", editable_multiline_paste),
                  ("remote-and-script", lambda client: remote_authorization_and_script_json(
                      client, client.workspace("work-script"))),
+                 ("skill-real-path", skill_real_path),
                  ("provider-failure", recover_from_provider_failure),
                  ("lost-receipt", lost_first_receipt),
                  ("agent-cards", delegated_agent_cards),

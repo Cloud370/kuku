@@ -18,10 +18,7 @@ use super::helpers::{
 };
 use super::job_slots::ForegroundJob;
 use super::run::find_tool_definition;
-use super::tool_exec::{
-    execute_tool_call, prepare_skill_bundle_operation, run_tool_pre_hooks, spawn_skill_bundle_slot,
-    uses_skill_bundle,
-};
+use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, SlotEvent, ToolKind, ToolPreparation, UiEvent, WorkspaceAccess,
@@ -185,6 +182,7 @@ pub(super) async fn dispatch(
         &queued.tool_call.name,
         &queued.tool_call.args,
         &pending.workspace,
+        &pending.kuku_home,
     ) {
         return finish_inline(pending, queued, result);
     }
@@ -194,19 +192,6 @@ pub(super) async fn dispatch(
             queued,
             ToolResultEnvelope::blocked("tool capacity reached", "the action was not dispatched"),
         );
-    }
-    if uses_skill_bundle(&pending, &queued.tool_call) {
-        let operation = prepare_skill_bundle_operation(&pending, &queued.tool_call)?;
-        if pending.query.runtime.is_some() {
-            mark_dispatched(&pending, &queued)?;
-        }
-        let operation = match operation {
-            Ok(operation) => operation,
-            Err(result) => return finish_inline(pending, queued, result),
-        };
-        let slot = spawn_skill_bundle_slot(&pending, &queued, operation, event_tx);
-        pending.skill_bundle_call = Some(queued.tool_call.id.clone());
-        return start_slot(pending, queued, slot);
     }
     if pending.query.runtime.is_none() {
         return dispatch_standalone(pending, queued, event_tx).await;
@@ -939,6 +924,7 @@ async fn prepare(
         &queued.tool_call.name,
         &mut queued.tool_call.args,
         &pending.workspace,
+        &pending.kuku_home,
     )
     .map_err(|result| Error::InvalidArgument(result.model_content))?;
     if queued.tool_call.name == "create_agent" {

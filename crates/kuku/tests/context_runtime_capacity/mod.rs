@@ -44,6 +44,225 @@ async fn cancelling_overflow_compaction_settles_its_card_before_the_agent_stops(
     context_rejection(OverflowCase::Cancelled).await;
 }
 
+#[tokio::test]
+async fn a_selected_skill_survives_compaction_before_dispatch() {
+    selected_skill_survives_compaction(false).await;
+}
+
+#[tokio::test]
+async fn a_selected_skill_survives_compaction_after_a_tool_result() {
+    selected_skill_survives_compaction(true).await;
+}
+
+async fn selected_skill_survives_compaction(after_dispatch: bool) {
+    const OLD: &str = "OLDER-INPUT-WITH-ORIGINAL-SKILL";
+    const INPUT: &str = "Select the same skill again in this turn.";
+    const SKILL: &str = "Unique selected skill instructions from disk.";
+    const CATALOG_CHANGE: &str = "Added: new-after-checkpoint";
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut config, path) = options(&server, workspace.path(), data.path());
+    config.config.handoff.enabled = true;
+    config.config.handoff.threshold = 0.98;
+    config.limits.max_request_bytes = Some(if after_dispatch { 96 } else { 48 } * 1024);
+    config
+        .config
+        .models
+        .get_mut(&config.config.default_model)
+        .unwrap()
+        .context_window = 131_072;
+    config.config.discovery.extra_project_paths = vec![workspace.path().join(".fixture")];
+    let skill = workspace.path().join(".fixture/skills/keep-selected");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        format!(
+            "---\nname: keep-selected\ndescription: Compaction fixture.\n---\n{SKILL}\n{}",
+            if after_dispatch {
+                "Selected instruction details. ".repeat(480)
+            } else {
+                String::new()
+            }
+        ),
+    )
+    .unwrap();
+
+    let tool = if after_dispatch {
+        let first_step = server
+            .mock_async(|when, then| {
+                when.method(POST).path(&path).matches(|request| {
+                    let body = request_body(request);
+                    let wire = body.to_string();
+                    wire.contains(OLD)
+                        && wire.contains(INPUT)
+                        && wire.matches(SKILL).count() == 1
+                        && !contains_tool_reply(&body, "selected-list")
+                        && !last_user(&body)
+                            .is_some_and(|text| text.starts_with("Write a checkpoint"))
+                });
+                then.status(200).body(response(
+                    json!({"tool_calls":[{"id":"selected-list","type":"function",
+                "function":{"name":"list_skills","arguments":"{}"}}]}),
+                    "tool_calls",
+                ));
+            })
+            .await;
+        let overflow = server
+            .mock_async(|when, then| {
+                when.method(POST).path(&path).matches(|request| {
+                    let body = request_body(request);
+                    let wire = body.to_string();
+                    wire.contains(OLD)
+                        && wire.contains(INPUT)
+                        && wire.matches(SKILL).count() == 1
+                        && contains_tool_reply(&body, "selected-list")
+                        && !last_user(&body)
+                            .is_some_and(|text| text.starts_with("Write a checkpoint"))
+                });
+                then.status(400).json_body(
+                    json!({"error":{"code":"context_length_exceeded","message":"test overflow"}}),
+                );
+            })
+            .await;
+        Some((first_step, overflow))
+    } else {
+        None
+    };
+    let session = Session::open(config.clone()).await.unwrap();
+    let mut configured = agent();
+    configured.no_skills = false;
+    configured.tools = Some(vec!["list_skills".into()]);
+    session
+        .create_agent("create", "main", configured.clone())
+        .unwrap();
+
+    let prior = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let body = request_body(request);
+                let wire = body.to_string();
+                wire.contains(OLD)
+                    && wire.contains(SKILL)
+                    && !wire.contains(INPUT)
+                    && !last_user(&body).is_some_and(|text| text.starts_with("Write a checkpoint"))
+            });
+            then.status(200)
+                .body(response(json!({"content":EARLIER_REPLY}), "stop"));
+        })
+        .await;
+    let mut first = Input::new(
+        "first",
+        "main",
+        format!("{OLD}\n{}", "old details ".repeat(2100)),
+    );
+    first.bootstrap_skill = Some("keep-selected".into());
+    session.send(first).unwrap();
+    idle(&session, "main").await;
+    prior.assert_hits_async(1).await;
+
+    let added = workspace
+        .path()
+        .join(".fixture/skills/new-after-checkpoint");
+    std::fs::create_dir_all(&added).unwrap();
+    std::fs::write(
+        added.join("SKILL.md"),
+        "---\nname: new-after-checkpoint\ndescription: Fresh catalog entry.\n---\nSkill body stays on demand.\n",
+    )
+    .unwrap();
+
+    let checkpoint = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                last_user(&request_body(request))
+                    .is_some_and(|text| text.starts_with("Write a checkpoint"))
+            });
+            then.status(200)
+                .body(response(json!({"content":CHECKPOINT}), "stop"));
+        })
+        .await;
+    let replacement = server
+        .mock_async(|when, then| {
+            let when = when.method(POST).path(&path);
+            let when = if after_dispatch {
+                when.matches(|request| contains_tool_reply(&request_body(request), "selected-list"))
+            } else {
+                when
+            };
+            when.matches(|request| {
+                let wire = request_body(request).to_string();
+                !wire.contains(OLD)
+                    && wire.contains(INPUT)
+                    && wire.matches(SKILL).count() == 1
+                    && wire.matches(CATALOG_CHANGE).count() == 1
+            });
+            then.status(200).body(response(
+                json!({"content":"Kept the selected skill."}),
+                "stop",
+            ));
+        })
+        .await;
+
+    let mut next = Input::new(
+        "second",
+        "main",
+        format!("{INPUT}\n{}", "new details ".repeat(2100)),
+    );
+    next.bootstrap_skill = Some("keep-selected".into());
+    session.send(next).unwrap();
+    idle(&session, "main").await;
+    if let Some((first_step, overflow)) = tool {
+        first_step.assert_hits_async(1).await;
+        overflow.assert_hits_async(1).await;
+    }
+    checkpoint.assert_hits_async(1).await;
+    replacement.assert_hits_async(1).await;
+    assert_eq!(
+        Some("Kept the selected skill."),
+        session.agent("main").unwrap().last_output.as_deref()
+    );
+    config.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+
+    let disabled = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let wire = request_body(request).to_string();
+                wire.contains("Without the Skill catalog.")
+                    && wire.contains(INPUT)
+                    && !wire.contains("<kuku_skill_catalog>")
+                    && !wire.contains("<kuku_skill_changes>")
+            });
+            then.status(200)
+                .body(response(json!({"content":"Catalog disabled."}), "stop"));
+        })
+        .await;
+    let reopened = Session::open(config).await.unwrap();
+    configured.no_skills = true;
+    configured.tools = Some(Vec::new());
+    reopened
+        .configure_agent("disable", "main", configured)
+        .unwrap();
+    reopened
+        .send(Input::new(
+            "no-catalog",
+            "main",
+            "Without the Skill catalog.",
+        ))
+        .unwrap();
+    idle(&reopened, "main").await;
+    disabled.assert_hits_async(1).await;
+    reopened.close().await.unwrap();
+}
+
+fn contains_tool_reply(body: &Value, id: &str) -> bool {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["role"] == "tool" && entry["tool_call_id"] == id)
+}
+
 #[derive(Clone, Copy)]
 enum OverflowCase {
     Continue,

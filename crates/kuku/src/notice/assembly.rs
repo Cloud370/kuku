@@ -43,9 +43,7 @@ fn build_loaded_skills_notice(
     events: &[StoredEvent],
     target: &ConversationAddress,
 ) -> Option<Notice> {
-    let mut skills = loaded_skill_names(events, target.as_str());
-    // The built-in documentation resource gate is evaluated for the active Turn.
-    skills.retain(|name| name != crate::skill::bundle::NAME);
+    let skills = loaded_skill_names(events, target.as_str());
     if skills.is_empty() {
         None
     } else {

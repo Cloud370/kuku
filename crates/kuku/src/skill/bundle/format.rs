@@ -12,6 +12,8 @@ pub const MAX_CONTENT_BYTES: usize = 32 << 20;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_md: Option<String>,
     pub source_revision: String,
     pub files: BTreeMap<String, FileEntry>,
 }

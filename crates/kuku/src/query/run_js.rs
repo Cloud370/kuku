@@ -71,6 +71,10 @@ pub(super) fn spawn(
             .clone()
             .expect("Session provides authority"),
         methods: selected_methods(pending),
+        skill_names: pending
+            .skill_registry
+            .as_ref()
+            .map_or_else(Vec::new, |registry| registry.names().to_vec()),
     });
     let code = queued.tool_call.args["code"].as_str().map(str::to_owned);
     let cancel = Arc::new(Notify::new());
@@ -120,6 +124,7 @@ struct WorkspaceHost {
     actions: WorkspaceActions,
     host_result_limit: usize,
     methods: Vec<ToolDefinition>,
+    skill_names: Vec<String>,
     call_id: String,
     turn: u64,
     home: PathBuf,
@@ -160,7 +165,9 @@ impl WorkspaceHost {
         if self.owner.detached.load(Ordering::Acquire) {
             return Ok(false);
         }
-        self.actions.session.has_step_input(&self.actions.agent)
+        self.actions
+            .session
+            .has_admissible_step_input(&self.actions.agent, &self.skill_names)
     }
 
     async fn perform(
@@ -236,7 +243,9 @@ impl WorkspaceHost {
                 Err(result) => return Ok(result),
             }
         } else {
-            if let Err(result) = prepare_file_target(name, &mut args, &self.actions.workspace) {
+            if let Err(result) =
+                prepare_file_target(name, &mut args, &self.actions.workspace, &self.home)
+            {
                 return Ok(result);
             }
             self.actions.workspace.clone()
@@ -422,7 +431,8 @@ impl WorkspaceHost {
                 "stopped before prepared action dispatch",
             ));
         }
-        if let Some(blocked) = changed_file_target(name, &args, &self.actions.workspace) {
+        if let Some(blocked) = changed_file_target(name, &args, &self.actions.workspace, &self.home)
+        {
             return Ok(blocked);
         }
         if operation == ScriptOperation::RunCommand {

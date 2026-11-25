@@ -58,13 +58,19 @@ Skill metadata is descriptive. The Agent's configuration, runtime limits and hos
 
 ## Runtime snapshotting
 
-At the start of each Turn, kuku snapshots discovered Skills into the Session journal (including package Skills when `plugin.enabled = true`):
+At the start of a fresh Turn, kuku discovers Skills (including package Skills when `plugin.enabled = true`). The Session journal records only a fingerprint; unchanged catalogs share one immutable snapshot in the service data directory under `skill-catalogs/`. Keep that directory with the Session journal when moving or backing up the service data.
 
+- A default Session’s initial model context lists every available Skill name. Descriptions share an estimated 8,192-token budget. Kuku keeps descriptions intact when they fit, marks shortened descriptions, and never removes a name to fit that budget. Instructions are still loaded on demand.
+- At the first request of a new Turn, the runtime adds one notice for catalog additions, revisions, and removals since the last model-visible catalog. It leaves the frozen prefix intact. The same Turn keeps its catalog; a sort-only change does not send a notice.
 - `list_skills`, `search_skills`, and `use_skill` all read from the current Turn's snapshot rather than live disk.
 - Resuming a Turn restores its recorded snapshot.
 - Edits on disk take effect on the next fresh Turn.
 
-The built-in `kuku-docs` Skill follows the running service's build. When a Turn loads it, kuku retains the resource version with that Turn's snapshot. Resuming that Turn can still read its recorded version after an upgrade or rollback.
+A steering input is checked against the active Turn’s catalog before delivery. If the selected Skill was installed after that Turn started, the request is rejected without interrupting the active Turn. Send it as a new Turn instead.
+
+A Skill is loaded only when its exact instructions are present in the Agent’s context. If that revision is already present, `use_skill` reports reuse instead of repeating the instructions. If the file changes or those instructions leave context, the Agent can load the applicable revision again.
+
+When an input explicitly selects a Skill, compaction keeps that exact revision available for the rest of the active Turn. It does not automatically reload selections from earlier Turns.
 
 ## Path resolution
 
@@ -78,14 +84,8 @@ Use the location marker to find a user or project Skill's supporting files. Rela
 
 ## Skill resources
 
-`kuku-docs` provides the embedded `docs/` tree under `references/docs/`. After loading the Skill in the current Turn, the Agent can call the read-only `skill_resources` tool. Start with `references/docs/en/index.md` or `references/docs/zh/index.md` for an overview, or read the page directly for a specific question.
+Kuku installs the built-in Skill as a local directory in the service data directory. Its version includes both `SKILL.md` and the embedded docs under `references/docs/`. An active or resumed Turn keeps the same directory; a new Turn can discover the updated version.
 
-| Action | Arguments | Result |
-|---|---|---|
-| `list` | Optional directory `path`, `offset`, `limit` | Recursively lists up to 20 paths per page |
-| `search` | Literal case-insensitive `query`, optional directory `path`, `offset`, `limit` | Matches with file paths and line numbers, up to 20 per page |
-| `read` | File `path`, optional 1-based line `offset` and `limit` | Bounded Markdown lines, up to 200 per call |
+Loading the built-in Skill verifies its reference files on first use in that Turn. Missing or damaged references are restored from the archive of the same version. Regular file tools still use their normal path and authorization rules; browsing the Skill catalog does not scan the bundled references.
 
-Pass `skill_name: "kuku-docs"` for each call. The tool applies normal read authorization and confines paths to this Skill's resource directory. Results identify the resource version and source revision. Links between bundled pages remain relative. Links to other repository files point to the corresponding source commit.
-
-Resources decompress on the first resource read and publish only after integrity verification. The cache is shared across Sessions in the service's data directory under `skill-resources/kuku-docs/`, keyed by content fingerprint. [Using built-in help](../guides/use-skills.md#ask-about-kuku)
+Start with `use_skill` to obtain the instructions and the real directory. Read reference files with `read_file`, or use `find_files` and `search_text` to locate them. You can read a known absolute path directly. Use the Skill directory to resolve relative scripts and resources; commands default to the Agent workspace. Bundled files are read-only for file-editing tools.

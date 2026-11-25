@@ -36,7 +36,7 @@ pub(crate) use write_file::{write_file, write_file_for_executor};
 pub(crate) fn use_skill_definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {
         name: "use_skill".to_string(),
-        description: "Load a skill's full instructions into the current session. Use this when you want to follow a skill's workflow.".to_string(),
+        description: "Load a Skill's instructions when you want to follow its workflow. If this revision is already in your context, returns a short confirmation instead of repeating it.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::context::runtime::{AdmittedMessage, MessageOrigin};
 use crate::context::{CanonicalMessage, MessageBlock};
-use crate::skill::bundle;
+use crate::skill::session::{admission_body, has_admission};
 use crate::{Error, Result};
 
 use super::PendingRun;
@@ -49,16 +49,23 @@ pub(super) fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, ke
     messages.retain(|message| message.turn > through || retained.contains(&message.turn));
 }
 
-pub(super) async fn append_input_skills(
-    pending: &mut PendingRun,
+pub(super) fn input_admissions(
+    messages: &[AdmittedMessage],
+    turn: u64,
+    resume_input_turn: Option<u64>,
+) -> impl DoubleEndedIterator<Item = &AdmittedMessage> {
+    messages.iter().filter(move |entry| {
+        entry.origin == MessageOrigin::Input
+            && (entry.turn == turn || Some(entry.turn) == resume_input_turn)
+    })
+}
+
+pub(super) fn append_input_skills(
+    pending: &PendingRun,
     messages: &mut Vec<AdmittedMessage>,
+    prelude: &[CanonicalMessage],
 ) -> Result<Vec<String>> {
-    let admitted_at = messages
-        .iter()
-        .rev()
-        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
-        .map_or(0, |message| message.admitted_at);
-    let mut names = std::mem::take(&mut pending.query.input_skills);
+    let mut names = pending.query.input_skills.clone();
     if names.is_empty() {
         return Ok(names);
     }
@@ -67,61 +74,33 @@ pub(super) async fn append_input_skills(
             "selected input skill cannot load while skills are disabled".into(),
         ));
     }
+    let admitted_at = input_admissions(messages, pending.turn, pending.query.resume_input_turn)
+        .next_back()
+        .map_or(pending.turn, |message| message.admitted_at);
     let mut seen = BTreeSet::new();
     names.retain(|name| seen.insert(name.clone()));
-    if names.iter().any(|name| name == bundle::NAME) {
-        let version = pending
-            .skill_registry
-            .as_ref()
-            .and_then(|registry| registry.docs_bundle())
-            .ok_or_else(|| {
-                Error::InvalidArgument(
-                    "kuku-docs is unavailable in this Turn's Skill snapshot".into(),
-                )
-            })?;
-        let events = super::super::tool_exec::current_skill_events(pending)?;
-        if crate::skill::session::docs_loaded_in_turn(
-            &events,
-            pending.conversation.as_str(),
-            pending.turn,
-            version,
-        ) {
-            names.retain(|name| name != bundle::NAME);
-        } else {
-            bundle::retain(&pending.kuku_home, version).await?;
-        }
-    }
-    let discovered = names
-        .iter()
-        .any(|name| {
-            pending
-                .skill_registry
-                .as_ref()
-                .is_none_or(|registry| registry.get(name).is_none())
-        })
-        .then(|| {
-            crate::skill::session::build_registry_snapshot_for_host(
-                &pending.kuku_home,
-                &pending.workspace,
-                &pending.config,
-            )
-        })
-        .transpose()?;
-    for name in &names {
-        let definition = pending
-            .skill_registry
-            .as_ref()
-            .and_then(|registry| registry.get(name))
-            .or_else(|| discovered.as_ref().and_then(|registry| registry.get(name)))
+    let mut admitted = Vec::new();
+    for name in names {
+        let registry = pending.skill_registry.as_ref();
+        let body = registry
+            .and_then(|registry| admission_body(registry, &name))
             .ok_or_else(|| {
                 Error::InvalidArgument(format!("selected input skill '{name}' was not found"))
             })?;
+        if prelude
+            .iter()
+            .chain(messages.iter().map(|admitted| &admitted.message))
+            .any(|message| has_admission(message, &body))
+        {
+            continue;
+        }
+        admitted.push(name);
         messages.push(AdmittedMessage {
             turn: pending.turn,
             origin: MessageOrigin::Runtime,
-            message: CanonicalMessage::user_text(definition.instructions.clone()),
+            message: CanonicalMessage::user_text(body),
             admitted_at,
         });
     }
-    Ok(names)
+    Ok(admitted)
 }

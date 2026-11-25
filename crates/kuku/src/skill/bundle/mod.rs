@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -6,12 +7,11 @@ use flate2::bufread::GzDecoder;
 
 use super::definition::{SkillDefinition, SkillSource};
 use format::{
-    FileEntry, HEADER, MAX_CONTENT_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, Manifest,
-    fingerprint, valid_path,
+    HEADER, MAX_CONTENT_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, Manifest, fingerprint,
+    valid_path,
 };
 
 mod format;
-pub(crate) mod resources;
 #[cfg(test)]
 mod tests;
 
@@ -19,9 +19,16 @@ pub(crate) const NAME: &str = "kuku-docs";
 pub(crate) const CURRENT: &str = env!("KUKU_DOCS_FINGERPRINT");
 const CONTENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kuku-docs.bundle"));
 const INSTRUCTIONS: &str = include_str!("../../../skills/kuku-docs/SKILL.md");
+const CACHE_DIRECTORY: &str = "skill-resources";
 const MANIFEST: &str = "manifest.json";
 const RESOURCE_ROOT: &str = "references/docs";
 const MAX_ARCHIVE_BYTES: usize = MAX_CONTENT_BYTES + MAX_MANIFEST_BYTES + (1 << 20);
+
+#[derive(Clone, Copy)]
+pub(super) enum Verify {
+    Entry,
+    References,
+}
 
 pub(super) fn definition() -> SkillDefinition {
     let mut definition =
@@ -31,14 +38,22 @@ pub(super) fn definition() -> SkillDefinition {
     definition
 }
 
-/// Save the compressed source before a loaded Skill becomes part of a Turn.
-pub(crate) async fn retain(home: &Path, version: &str) -> io::Result<()> {
+/// Publish the actual Skill directory before returning a path to the model.
+pub(super) async fn materialize(
+    home: &Path,
+    version: &str,
+    fallback: String,
+    verify: Verify,
+    stop: Option<&tokio::sync::watch::Receiver<bool>>,
+) -> io::Result<PathBuf> {
     let home = home.to_path_buf();
     let version = version.to_owned();
-    // The blocking worker can observe the caller dropping this future.
+    let stop = stop.cloned();
     let (cancel, waiting) = tokio::sync::oneshot::channel::<()>();
     let result = tokio::task::spawn_blocking(move || {
-        retain_cancellable(&home, &version, &|| cancel.is_closed())
+        materialize_cancellable(&home, &version, &fallback, verify, &|| {
+            cancel.is_closed() || stop.as_ref().is_some_and(|stop| *stop.borrow())
+        })
     })
     .await
     .map_err(io::Error::other)?;
@@ -46,110 +61,127 @@ pub(crate) async fn retain(home: &Path, version: &str) -> io::Result<()> {
     result
 }
 
-pub(crate) fn retain_cancellable(
+pub(crate) fn is_managed_path(home: &Path, target: &Path) -> bool {
+    let Ok(home) = home.canonicalize() else {
+        return false;
+    };
+    // Only the data directory must exist. Reserve the cache name itself as well
+    // as its descendants, including spelling aliases on case-insensitive disks.
+    target
+        .strip_prefix(home)
+        .ok()
+        .and_then(|relative| relative.components().next())
+        .is_some_and(|part| part.as_os_str().eq_ignore_ascii_case(CACHE_DIRECTORY))
+}
+
+fn materialize_cancellable(
     home: &Path,
     version: &str,
+    fallback: &str,
+    verify: Verify,
     cancelled: &impl Fn() -> bool,
-) -> io::Result<()> {
+) -> io::Result<PathBuf> {
     ensure_active(cancelled)?;
     let path = version_path(home, version)?;
-    let archive = path.with_extension("bundle");
-    if version != CURRENT {
-        let bytes = read_regular(&archive, MAX_ARCHIVE_BYTES)?;
-        archive_parts(&bytes, version)?;
-        return Ok(());
+    if installed(&path, version, fallback, verify, cancelled)? {
+        return path.canonicalize();
     }
-    if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
-        return Ok(());
-    }
+    // Retain the verified compressed input as a repair source before taking the directory lock.
+    retain_archive(home, version, cancelled)?;
     let _lock = lock(&path, cancelled)?;
-    if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
-        return Ok(());
+    if !installed(&path, version, fallback, verify, cancelled)? {
+        publish(&path, version, fallback, cancelled)?;
     }
-    let mut staged = tempfile::NamedTempFile::new_in(path.parent().expect("cache has a parent"))?;
-    staged.write_all(CONTENT)?;
-    staged.as_file().sync_all()?;
-    ensure_active(cancelled)?;
-    staged.persist(&archive).map_err(|error| error.error)?;
-    sync_cache_parent(&archive)
+    path.canonicalize()
 }
 
-struct Cache {
-    path: PathBuf,
-    manifest: Manifest,
-}
-
-impl Cache {
-    fn open(path: &Path, version: &str) -> io::Result<Self> {
-        require_directory(path)?;
-        require_directory(&path.join("references"))?;
-        require_directory(&path.join(RESOURCE_ROOT))?;
-        let index = read_regular(&path.join(MANIFEST), MAX_MANIFEST_BYTES)?;
-        let manifest = parse_manifest(&index, version)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            manifest,
-        })
-    }
-
-    fn file(&self, relative: &str, entry: &FileEntry) -> io::Result<Vec<u8>> {
-        let mut path = self.path.join(RESOURCE_ROOT);
-        require_directory(&self.path.join("references"))?;
-        require_directory(&path)?;
-        let (directories, file) = relative.rsplit_once('/').unwrap_or(("", relative));
-        if !directories.is_empty() {
-            for part in directories.split('/') {
-                path.push(part);
-                require_directory(&path)?;
-            }
-        }
-        let bytes = read_regular(&path.join(file), entry.bytes)?;
-        if bytes.len() != entry.bytes || fingerprint(&bytes) != entry.sha256 {
-            return Err(invalid("Skill resource file failed integrity check"));
-        }
-        Ok(bytes)
-    }
-}
-
-fn with_cache<T>(
-    home: &Path,
-    version: &str,
-    cancelled: &impl Fn() -> bool,
-    read: impl Fn(&Cache) -> io::Result<T>,
-) -> io::Result<T> {
-    ensure_active(cancelled)?;
-    let path = version_path(home, version)?;
-    if let Some(result) = try_cache(&path, version, &read)? {
-        return Ok(result);
-    }
-    let _lock = lock(&path, cancelled)?;
-    if let Some(result) = try_cache(&path, version, &read)? {
-        return Ok(result);
-    }
-    publish(&path, version, cancelled)?;
-    read(&Cache::open(&path, version)?)
-}
-
-fn try_cache<T>(
+fn installed(
     path: &Path,
     version: &str,
-    read: &impl Fn(&Cache) -> io::Result<T>,
-) -> io::Result<Option<T>> {
-    match Cache::open(path, version).and_then(|cache| read(&cache)) {
-        Ok(result) => Ok(Some(result)),
+    fallback: &str,
+    verify: Verify,
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<bool> {
+    let result: io::Result<bool> = (|| {
+        require_directory(path)?;
+        require_directory(&path.join("references"))?;
+        let docs = path.join(RESOURCE_ROOT);
+        require_directory(&docs)?;
+        let manifest = parse_manifest(
+            &read_regular(&path.join(MANIFEST), MAX_MANIFEST_BYTES)?,
+            version,
+        )?;
+        let contents = manifest.skill_md.as_deref().unwrap_or(fallback);
+        if read_regular(&path.join("SKILL.md"), contents.len())? != contents.as_bytes() {
+            return Ok(false);
+        }
+        if matches!(verify, Verify::References) {
+            let mut directories = HashSet::new();
+            for (relative, entry) in &manifest.files {
+                ensure_active(cancelled)?;
+                let relative = Path::new(relative);
+                for parent in relative.ancestors().skip(1) {
+                    if parent.as_os_str().is_empty() || !directories.insert(parent) {
+                        break;
+                    }
+                    require_directory(&docs.join(parent))?;
+                }
+                let contents = read_regular(&docs.join(relative), entry.bytes)?;
+                if contents.len() != entry.bytes || fingerprint(&contents) != entry.sha256 {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    })();
+    match result {
         Err(error)
             if matches!(
                 error.kind(),
                 io::ErrorKind::NotFound | io::ErrorKind::InvalidData
             ) =>
         {
-            Ok(None)
+            Ok(false)
         }
-        Err(error) => Err(error),
+        other => other,
     }
 }
 
-fn publish(path: &Path, version: &str, cancelled: &impl Fn() -> bool) -> io::Result<()> {
+fn retain_archive(
+    home: &Path,
+    version: &str,
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<PathBuf> {
+    ensure_active(cancelled)?;
+    let path = version_path(home, version)?;
+    let archive = path.with_extension("bundle");
+    if version != CURRENT {
+        let bytes = read_regular(&archive, MAX_ARCHIVE_BYTES)?;
+        archive_parts(&bytes, version)?;
+        return Ok(archive);
+    }
+    if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
+        return Ok(archive);
+    }
+    let _lock = lock(&path, cancelled)?;
+    if read_regular(&archive, MAX_ARCHIVE_BYTES).is_ok_and(|bytes| bytes == CONTENT) {
+        return Ok(archive);
+    }
+    let mut staged = tempfile::NamedTempFile::new_in(path.parent().expect("cache has a parent"))?;
+    staged.write_all(CONTENT)?;
+    staged.as_file().sync_all()?;
+    ensure_active(cancelled)?;
+    staged.persist(&archive).map_err(|error| error.error)?;
+    sync_cache_parent(&archive)?;
+    Ok(archive)
+}
+
+fn publish(
+    path: &Path,
+    version: &str,
+    fallback: &str,
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<()> {
     let retained;
     let bytes = if version == CURRENT {
         CONTENT
@@ -175,6 +207,11 @@ fn publish(path: &Path, version: &str, cancelled: &impl Fn() -> bool) -> io::Res
     let version_dir = staged.path().join("version");
     let docs = version_dir.join(RESOURCE_ROOT);
     fs::create_dir_all(&docs)?;
+    let skill_md = manifest.skill_md.as_deref().unwrap_or(fallback);
+    File::create(version_dir.join("SKILL.md")).and_then(|mut file| {
+        file.write_all(skill_md.as_bytes())?;
+        file.sync_all()
+    })?;
     unpack(&docs, manifest, compressed, cancelled)?;
     File::create(version_dir.join(MANIFEST)).and_then(|mut file| {
         file.write_all(index)?;
@@ -263,7 +300,7 @@ fn version_path(home: &Path, version: &str) -> io::Result<PathBuf> {
         return Err(invalid("invalid Skill resource version"));
     }
     let mut path = home.to_path_buf();
-    for part in ["skill-resources", NAME] {
+    for part in [CACHE_DIRECTORY, NAME] {
         path.push(part);
         match fs::create_dir(&path) {
             Ok(()) => sync_cache_parent(&path)?,

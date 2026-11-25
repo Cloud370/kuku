@@ -89,8 +89,17 @@ pub(crate) fn prepare_file_target(
     name: &str,
     args: &mut Value,
     workspace: &Path,
+    data_dir: &Path,
 ) -> Result<(), ToolResultEnvelope> {
     if let Some(path) = prepare_workspace_path(name, args, workspace)? {
+        if matches!(name, "edit_file" | "write_file" | "remove_file")
+            && crate::skill::bundle::is_managed_path(data_dir, &path)
+        {
+            return Err(ToolResultEnvelope::blocked(
+                "built-in Skill files are read-only",
+                "bundled Skill files are managed by kuku and cannot be changed with file tools",
+            ));
+        }
         let relative = path.strip_prefix(workspace).unwrap_or(&path);
         let target = relative.to_str().ok_or_else(|| {
             ToolResultEnvelope::error("invalid file path", "target must be valid Unicode")
@@ -104,9 +113,10 @@ pub(crate) fn changed_file_target(
     name: &str,
     args: &Value,
     workspace: &Path,
+    data_dir: &Path,
 ) -> Option<ToolResultEnvelope> {
     let mut current = args.clone();
-    if let Err(result) = prepare_file_target(name, &mut current, workspace) {
+    if let Err(result) = prepare_file_target(name, &mut current, workspace, data_dir) {
         return Some(result);
     }
     (current != *args).then(workspace_target_changed)
@@ -720,5 +730,24 @@ mod tests {
             let result = prepare_workspace_path(tool, &outside, workspace.path()).unwrap_err();
             assert_eq!("blocked", result.status);
         }
+    }
+
+    #[test]
+    fn a_write_cannot_create_the_managed_skill_cache() {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        for target in [
+            "skill-resources",
+            "SKILL-RESOURCES/kuku-docs/any-version/SKILL.md",
+        ] {
+            let mut args = serde_json::json!({"path":data.path().join(target)});
+            let rejected =
+                prepare_file_target("write_file", &mut args, workspace.path(), data.path())
+                    .unwrap_err();
+            assert_eq!(rejected.status, "blocked");
+            assert!(rejected.model_content.contains("managed by kuku"));
+        }
+        let mut sibling = serde_json::json!({"path":data.path().join("skill-resources-copy")});
+        prepare_file_target("write_file", &mut sibling, workspace.path(), data.path()).unwrap();
     }
 }

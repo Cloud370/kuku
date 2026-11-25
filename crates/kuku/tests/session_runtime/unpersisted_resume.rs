@@ -1,8 +1,8 @@
 use httpmock::prelude::{HttpMockRequest, POST};
 use serde_json::{Value, json};
 
-use kuku::event::EventPayload;
-use kuku::{Activation, AgentConfig, AgentStatus, Input, Session};
+use kuku::event::{EventPayload, EventStore};
+use kuku::{Activation, AgentConfig, AgentStatus, Input, InputStatus, Session};
 
 use super::{fixture, options, settled};
 
@@ -36,32 +36,48 @@ async fn unpersisted_accepted_input_is_kept_with_new_queued_input() {
     let server = httpmock::prelude::MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
-    let session_options = options(&server, workspace.path(), data.path());
+    let mut session_options = options(&server, workspace.path(), data.path());
     let session = Session::open(session_options.clone()).await.unwrap();
     session
-        .create_agent(
-            "create",
-            "main",
-            AgentConfig {
-                bootstrap_skill: Some("missing-bootstrap".into()),
-                ..AgentConfig::default()
-            },
-        )
+        .create_agent("create", "main", AgentConfig::default())
         .unwrap();
     session
-        .send(Input::new(
-            "original-input",
-            "main",
-            "accepted before startup failure",
-        ))
+        .send(Input {
+            activation: Activation::Enqueue,
+            ..Input::new("original-input", "main", "accepted before startup failure")
+        })
         .unwrap();
+    session_options.session_id = Some(session.id().into());
+    let events_path = session.events_path().to_path_buf();
+    session.close().await.unwrap();
 
-    let failed = settled(&session, "main").await;
+    // A crash after input acceptance can leave the Turn without a user message.
+    {
+        let mut writer = EventStore::open(&events_path).unwrap();
+        for record in [
+            json!({"operation":"execution_started", "address":"main"}),
+            json!({
+                "operation":"inputs_accepted", "address":"main", "turn":null,
+                "input_ids":["original-input"], "message_input_ids":["original-input"]
+            }),
+        ] {
+            writer
+                .append(EventPayload::Unknown(json!({
+                    "kind":"runtime.operation", "ts":"fixture", "record":record
+                })))
+                .unwrap();
+        }
+    }
+
+    let session = Session::open(session_options.clone()).await.unwrap();
+    let failed = session.agent("main").unwrap();
     assert_eq!(AgentStatus::Interrupted, failed.status);
-    assert!(
-        failed.last_error.as_deref().is_some_and(
-            |error| error.contains("bootstrap skill 'missing-bootstrap' was not found")
-        )
+    assert!(failed.last_error.as_deref().is_some_and(|error| {
+        error.contains("execution interrupted before a durable settlement")
+    }));
+    assert_eq!(
+        InputStatus::Accepted,
+        session.input_status("main", "original-input").unwrap()
     );
     assert!(
         !session.events(0, 128).unwrap().iter().any(|event| matches!(
@@ -70,13 +86,6 @@ async fn unpersisted_accepted_input_is_kept_with_new_queued_input() {
         ))
     );
 
-    let skill = workspace.path().join(".fixture/skills/missing-bootstrap");
-    std::fs::create_dir_all(&skill).unwrap();
-    std::fs::write(
-        skill.join("SKILL.md"),
-        "---\nname: missing-bootstrap\ndescription: Recovery fixture.\n---\nRecovery instructions.\n",
-    )
-    .unwrap();
     session
         .send(Input {
             activation: Activation::Enqueue,
@@ -100,10 +109,8 @@ async fn unpersisted_accepted_input_is_kept_with_new_queued_input() {
     provider_failure.assert_hits_async(1).await;
     provider_failure.delete_async().await;
 
-    let mut reopen_options = session_options;
-    reopen_options.session_id = Some(session.id().into());
     session.close().await.unwrap();
-    let session = Session::open(reopen_options).await.unwrap();
+    let session = Session::open(session_options).await.unwrap();
     assert_eq!(
         AgentStatus::Interrupted,
         session.agent("main").unwrap().status

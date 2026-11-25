@@ -12,7 +12,7 @@ use crate::bundle_format::{
     fingerprint, valid_path,
 };
 
-pub(crate) fn build(root: &Path, revision: &str, out: &Path) -> io::Result<String> {
+pub(crate) fn build(root: &Path, revision: &str, out: &Path, skill: &Path) -> io::Result<String> {
     let mut files = BTreeMap::new();
     let root = fs::canonicalize(root)?;
     collect(&root, &root, &mut files)?;
@@ -39,6 +39,7 @@ pub(crate) fn build(root: &Path, revision: &str, out: &Path) -> io::Result<Strin
         ));
     }
     let manifest = Manifest {
+        skill_md: Some(fs::read_to_string(skill)?.replace("\r\n", "\n")),
         source_revision: revision.to_owned(),
         files: files
             .iter()

@@ -58,13 +58,19 @@ Before writing any code:
 
 ## 运行时快照
 
-每个 Turn 开始时，kuku 将当前发现的 Skill 目录快照写入 Session 日志（`plugin.enabled = true` 时包含 Package 里的 Skill）：
+每个新 Turn 开始时，kuku 重新发现 Skill（`plugin.enabled = true` 时包含 Package 里的 Skill）。Session 日志只记指纹；未变更的目录共用一份不可变快照，存于服务数据目录的 `skill-catalogs/`。迁移或备份服务数据时，请将该目录与 Session 日志一并保留。
 
+- 默认 Session 的首次模型上下文列出所有可用 Skill 的完整名称。描述共用约 8,192 tokens 的预算；放得下就保留完整描述，缩短时会标记，不会为了预算省略名称。正文仍按需加载。
+- 新 Turn 的首个请求会追加一条相对上次模型可见目录的新增、版本变更和移除通知，不回写已冻结的前缀。同一 Turn 沿用当前目录；只有排序变化时不发通知。
 - `list_skills`、`search_skills` 与 `use_skill` 均读取当前 Turn 的快照，不中途重读磁盘。
 - 恢复既有 Turn 时沿用其持久化的快照。
 - 磁盘上的修改在下一次新 Turn 生效。
 
-内置的 `kuku-docs` Skill 随运行中的服务构建版本提供。Turn 加载它时会在快照中保留资料版本。升级或回退后恢复该 Turn 时，仍能读取记录中的版本。
+追加到当前 Turn 的输入，在交付前用这个 Turn 的目录校验。如果选择了本轮开始后安装的 Skill，只拒绝这条追加，不中断正在运行的 Turn。可改为在新 Turn 发送。
+
+只有对应版本的正文实际在 Agent 的上下文中时，才算已加载。`use_skill` 遇到已经可见的同一版本，只报告复用，不重复返回正文。如果文件更新或正文已经不在上下文中，Agent 可以重新加载适用的版本。
+
+输入显式选择 Skill 时，压缩会保留该版本的完整正文供本轮后续步骤使用，不会自动重载此前 Turn 选中的 Skill。
 
 ## 路径解析
 
@@ -78,14 +84,8 @@ Before writing any code:
 
 ## Skill 资料
 
-`kuku-docs` 将内置的 `docs/` 树提供在 `references/docs/`。Agent 在当前 Turn 加载 Skill 后，可用只读的 `skill_resources` 工具访问。综合问题可先看 `references/docs/zh/index.md` 或 `references/docs/en/index.md`，具体问题可直接读对应页面。
+kuku 将内置 Skill 安装为服务数据目录中的真实目录。版本包含 `SKILL.md` 和 `references/docs/` 下的内置文档。正在执行或恢复的 Turn 沿用原目录，新 Turn 可发现新版本。
 
-| 操作 | 参数 | 结果 |
-|---|---|---|
-| `list` | 可选的目录 `path`、`offset`、`limit` | 递归列出路径，每页最多 20 项 |
-| `search` | 不区分大小写的字面 `query`，可选的目录 `path`、`offset`、`limit` | 返回匹配的文件路径与行号，每页最多 20 项 |
-| `read` | 文件 `path`，可选的起始行 `offset`（从 1 开始）和 `limit` | 返回有界的 Markdown 源码，每次最多 200 行 |
+每个 Turn 首次加载内置 Skill 时都会校验资料文件，并从同一版本的归档恢复缺失或损坏的文件。普通文件工具仍遵循原有路径和授权规则；浏览 Skill 目录不会扫描内置资料。
 
-每次调用都传 `skill_name: "kuku-docs"`。工具遵循正常的读取授权，路径限于其资料目录。结果会给出资料版本和源码修订号。内置页面之间保留相对链接，指向仓库其他文件的链接对应源码提交。
-
-资料在首次访问时解压，完整性校验后才发布。缓存位于服务数据目录下的 `skill-resources/kuku-docs/`，以内容指纹区分版本，可供多个 Session 共用。[使用内置帮助](../guides/use-skills.md#询问-kuku-用法)
+通过 `use_skill` 取得指引和真实目录；用 `read_file` 读取资料，或用 `find_files` 和 `search_text` 找文件。已知绝对路径时也可以直接读。相对脚本和资源路径以 Skill 目录为基准，命令仍默认在 Agent 工作区执行。内置文件对文件编辑工具只读。

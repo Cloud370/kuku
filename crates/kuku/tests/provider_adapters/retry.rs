@@ -161,7 +161,18 @@ async fn actual_provider_retries_stop_after_six_total_attempts() {
     let mut options = SessionOptions::new(workspace.path(), data.path(), common::test_config());
     options.model_adapter = Some(Arc::new(AlwaysTransientModel(attempts.clone())));
     options.limits.max_requests_per_open = Some(7);
-    let session = open_session(options).await;
+    let session = Session::open(options).await.unwrap();
+    // This paused-clock fixture controls retry sleeps, not on-disk Skill extraction.
+    session
+        .create_agent(
+            "create",
+            "main",
+            AgentConfig {
+                no_skills: true,
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
     session
         .send(Input::new("six-attempts", "main", "keep request unchanged"))
         .unwrap();
