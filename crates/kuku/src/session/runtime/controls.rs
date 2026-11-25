@@ -96,6 +96,15 @@ impl Session {
                 "cannot rewind while this Agent is executing or has pending input".into(),
             ));
         }
+        let abandoned_turn = agent.snapshot.turn.filter(|_| {
+            agent.snapshot.status == AgentStatus::Interrupted
+                && !removed_input_ids.is_empty()
+                && agent.snapshot.permission.is_none()
+                && agent.permission_reply.is_none()
+                && agent.snapshot.question.is_none()
+                && agent.stopped_at.is_none()
+                && !state.cleanup_failures.contains_key(address)
+        });
         if restore_files
             && (state.jobs.has_active()
                 || state.agents.iter().any(|(candidate, agent)| {
@@ -148,6 +157,7 @@ impl Session {
                     target_turn: *turn,
                     restore_files,
                     removed_input_ids: removed_input_ids.into_iter().collect(),
+                    abandoned_turn,
                     warnings: warnings.clone(),
                 },
             )
@@ -633,7 +643,7 @@ impl RewindInputs {
                     && record["operation"] == "inputs_accepted"
                     && record["address"] == address
                 {
-                    self.last_accepted = record["input_ids"]
+                    self.last_accepted = record["message_input_ids"]
                         .as_array()
                         .into_iter()
                         .flatten()
@@ -842,6 +852,7 @@ mod rewind_guard_tests {
             target_turn: 1,
             restore_files: false,
             removed_input_ids: vec!["rewound".into()],
+            abandoned_turn: None,
             warnings: Vec::new(),
         };
         let rewind = Record::from_event(&StoredEvent {
@@ -887,6 +898,40 @@ mod rewind_guard_tests {
                 .iter()
                 .any(|d| d.input.command_id == "new")
         );
+    }
+
+    #[test]
+    fn rewind_does_not_withdraw_an_earlier_input_readmitted_with_new_text() {
+        let batch = Record::InputsAccepted {
+            address: "main".into(),
+            input_ids: vec!["earlier".into(), "new".into()],
+            message_input_ids: vec!["new".into()],
+            turn: Some(2),
+        };
+        let events = [
+            StoredEvent {
+                id: 2,
+                payload: batch.payload().unwrap(),
+            },
+            StoredEvent {
+                id: 3,
+                payload: EventPayload::MessageUser {
+                    ts: "now".into(),
+                    conversation: "main".into(),
+                    turn: 2,
+                    text: "new text, earlier input is already in the journal".into(),
+                    from: None,
+                    images: Vec::new(),
+                    job_delivery: false,
+                },
+            },
+        ];
+        let visibility = RewindVisibility::new(&events);
+        let mut inputs = RewindInputs::default();
+        for event in &events {
+            inputs.observe(event, "main", 3, &visibility);
+        }
+        assert_eq!(BTreeSet::from(["new".into()]), inputs.removed);
     }
 
     #[test]

@@ -118,6 +118,8 @@ pub(super) enum Record {
         restore_files: bool,
         #[serde(default)]
         removed_input_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        abandoned_turn: Option<u64>,
         #[serde(default)]
         warnings: Vec<String>,
     },
@@ -562,12 +564,21 @@ impl State {
                 command,
                 address,
                 removed_input_ids,
+                abandoned_turn,
                 warnings,
                 ..
             } => {
                 let removed = {
                     let agent = self.agent_mut(&address)?;
                     agent.snapshot.last_output = None;
+                    if abandoned_turn.is_some() {
+                        agent.snapshot.status = AgentStatus::Idle;
+                        agent.snapshot.execution_id = None;
+                        agent.snapshot.last_error = None;
+                        agent.reply_preview = None;
+                        agent.set_active_config(None);
+                        agent.model_usage.settle(abandoned_turn);
+                    }
                     let ids: HashSet<_> = removed_input_ids.into_iter().collect();
                     if ids.is_empty() {
                         Vec::new()
@@ -599,6 +610,7 @@ impl State {
                         removed
                     }
                 };
+                self.values.release_turn(&address, abandoned_turn);
                 for id in removed {
                     self.deliveries.insert(id, InputStatus::Withdrawn);
                 }

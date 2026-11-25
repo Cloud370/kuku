@@ -1,11 +1,13 @@
 use super::{Model, Reply, next_call, ready};
 use kuku::event::{EventPayload, EventStore};
-use kuku::{AgentConfig, AgentStatus, Input, ProviderFailureKind, Session, SessionOptions};
+use kuku::{
+    AgentConfig, AgentStatus, Input, InputStatus, ProviderFailureKind, Session, SessionOptions,
+};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[tokio::test]
-async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
+async fn rewinding_an_interrupted_turn_allows_sending_without_advance() {
     let root = tempfile::tempdir().unwrap();
     let (model, mut calls) = mpsc::unbounded_channel();
     let mut options = SessionOptions::new(
@@ -48,7 +50,11 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
     ready(&session, AgentStatus::Interrupted).await;
     session.close().await.unwrap();
 
-    let reopened = Session::open(options).await.unwrap();
+    let reopened = Session::open(options.clone()).await.unwrap();
+    assert_eq!(
+        AgentStatus::Interrupted,
+        reopened.agent("main").unwrap().status
+    );
     let events = EventStore::replay(reopened.events_path()).unwrap();
     let target = events
         .iter()
@@ -65,14 +71,19 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
             false,
         )
         .unwrap();
-    reopened.advance("main").unwrap();
-    ready(&reopened, AgentStatus::Idle).await;
+    let rewound = reopened.agent("main").unwrap();
+    assert_eq!(AgentStatus::Idle, rewound.status);
+    assert_eq!(None, rewound.last_error);
+    assert_eq!(0, rewound.pending_inputs);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), calls.recv())
             .await
             .is_err()
     );
+    reopened.close().await.unwrap();
 
+    let reopened = Session::open(options).await.unwrap();
+    assert_eq!(AgentStatus::Idle, reopened.agent("main").unwrap().status);
     reopened
         .send(Input::new("new-input", "main", "new prompt after rewind"))
         .unwrap();
@@ -85,6 +96,122 @@ async fn interrupted_rewind_survives_resume_and_accepts_new_input() {
         .unwrap();
     ready(&reopened, AgentStatus::Idle).await;
     reopened.close().await.unwrap();
+}
+
+#[test]
+fn rewinding_after_worker_loss_stays_sendable_after_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let (model, mut calls) = mpsc::unbounded_channel();
+    let mut options = SessionOptions::new(
+        root.path(),
+        root.path().join("data"),
+        super::common::test_config(),
+    );
+    options.session_id = Some("crash-message-rewind".into());
+    options.model_adapter = Some(Arc::new(Model(model)));
+    let original = Input::new("crashed-input", "main", "lost provider response");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (call, events_path, receipt) = runtime.block_on(async {
+        let session = Session::open(options.clone()).await.unwrap();
+        session
+            .create_agent("create", "main", AgentConfig::default())
+            .unwrap();
+        session
+            .send(Input::new("earlier-input", "main", "earlier prompt"))
+            .unwrap();
+        next_call(&mut calls)
+            .await
+            .response
+            .send(Reply::Text("retain this earlier answer"))
+            .unwrap();
+        ready(&session, AgentStatus::Idle).await;
+        let receipt = session.send(original.clone()).unwrap();
+        let call = next_call(&mut calls).await;
+        assert_eq!(AgentStatus::Running, session.agent("main").unwrap().status);
+        (call, session.events_path().to_owned(), receipt)
+    });
+    drop(runtime);
+    drop(call);
+
+    let events = EventStore::replay(&events_path).unwrap();
+    let (target, crashed_turn) = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::MessageUser { text, turn, .. } if text == &original.text => {
+                Some((event.id, *turn))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(!events.iter().any(|event| {
+        matches!(&event.payload, EventPayload::Unknown(value)
+            if value["record"]["operation"] == "turn_settled" && value["record"]["turn"] == crashed_turn)
+    }));
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let session = Session::open(options.clone()).await.unwrap();
+            assert_eq!(
+                AgentStatus::Interrupted,
+                session.agent("main").unwrap().status
+            );
+            let older = session
+                .history_points("main", u64::MAX, 2)
+                .into_iter()
+                .find(|point| point.can_continue)
+                .unwrap();
+            assert!(
+                session
+                    .jump_history("older-while-pending", "main", older.event_id)
+                    .is_err()
+            );
+            assert_eq!(
+                InputStatus::Accepted,
+                session.input_status("main", &original.command_id).unwrap()
+            );
+            session
+                .rewind_message("rewind", "main", target, &original.text, false)
+                .unwrap();
+            assert_eq!(AgentStatus::Idle, session.agent("main").unwrap().status);
+            assert_eq!(
+                AgentStatus::Idle,
+                Session::read_agents(&events_path).unwrap()[0].status
+            );
+            session.close().await.unwrap();
+            let session = Session::open(options).await.unwrap();
+            let snapshot = session.agent("main").unwrap();
+            assert_eq!(AgentStatus::Idle, snapshot.status);
+            assert_eq!(None, snapshot.last_error);
+            assert_eq!(0, snapshot.pending_inputs);
+            assert_eq!(
+                InputStatus::Withdrawn,
+                session.input_status("main", &original.command_id).unwrap()
+            );
+            assert_eq!(receipt, session.send(original).unwrap());
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), calls.recv())
+                    .await
+                    .is_err()
+            );
+
+            let replacement = Input::new("new-input", "main", "fresh provider request");
+            let receipt = session.send(replacement.clone()).unwrap();
+            assert_eq!(receipt, session.send(replacement).unwrap());
+            let call = next_call(&mut calls).await;
+            let body = call.request.body.to_string();
+            assert_eq!(1, body.matches("fresh provider request").count(), "{body}");
+            assert!(body.contains("retain this earlier answer"), "{body}");
+            assert!(!body.contains("lost provider response"), "{body}");
+            call.response.send(Reply::Text("fresh answer")).unwrap();
+            ready(&session, AgentStatus::Idle).await;
+            assert!(calls.try_recv().is_err());
+            session.close().await.unwrap();
+        });
 }
 
 #[tokio::test]
