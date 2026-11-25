@@ -89,7 +89,10 @@ def pinyin_registered():
 
 
 def pinyin_configured():
-    result = powershell(f"[bool]((Get-WinUserLanguageList).InputMethodTips -contains '{PINYIN_TIP}')")
+    result = powershell(
+        f"[bool]((Get-WinUserLanguageList).InputMethodTips -contains '{PINYIN_TIP}')",
+        timeout=45,
+    )
     return result == "True"
 
 

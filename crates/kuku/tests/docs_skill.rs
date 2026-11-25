@@ -462,14 +462,16 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
         write_skill(&format!("other-{index:04}"), &filler_body);
     }
     let load = |id| Reply::Call(id, "use_skill", json!({"skill_name":TARGET}));
+    let set_modified = |modified| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join(TARGET).join("SKILL.md"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    };
     write_skill(TARGET, FIRST_REVISION);
-    std::fs::File::open(root.join(TARGET).join("SKILL.md"))
-        .unwrap()
-        .set_times(
-            std::fs::FileTimes::new()
-                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(86_400)),
-        )
-        .unwrap();
+    set_modified(std::time::UNIX_EPOCH + Duration::from_secs(86_400));
     let model = Model::new(
         data.path(),
         [
@@ -548,13 +550,7 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
     assert_eq!(next_hit["skills"][0]["name"], TARGET);
     assert_eq!(next_hit["skills"][0]["loaded"], false);
     assert_eq!(tool_result(&session, "project-next").2["reused"], false);
-    std::fs::File::open(root.join(TARGET).join("SKILL.md"))
-        .unwrap()
-        .set_times(
-            std::fs::FileTimes::new()
-                .set_modified(std::time::SystemTime::now() + Duration::from_secs(86_400)),
-        )
-        .unwrap();
+    set_modified(std::time::SystemTime::now() + Duration::from_secs(86_400));
     session
         .send(Input::new("sort-only", "main", "List the latest Skills."))
         .unwrap();
