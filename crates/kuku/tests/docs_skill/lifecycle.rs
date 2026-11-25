@@ -11,6 +11,71 @@ use super::{
 };
 
 #[tokio::test]
+async fn prompt_guides_skill_reuse_and_batches_known_references_without_loading() {
+    const TOOLS_PAGE: &str = "references/docs/en/reference/tools.md";
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(
+        data.path(),
+        [
+            Reply::Batch(vec![
+                (
+                    "overview",
+                    TOOL,
+                    json!({"skill_name":NAME,"action":"read","path":INDEX,"limit":4}),
+                ),
+                (
+                    "tool-reference",
+                    TOOL,
+                    json!({"skill_name":NAME,"action":"read","path":TOOLS_PAGE,"limit":4}),
+                ),
+            ]),
+            Reply::Text,
+        ],
+    );
+    let session = Session::open(options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new(
+            "ask",
+            "main",
+            "Read the overview and the tool reference.",
+        ))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+
+    let (status, overview, _) = tool_result(&session, "overview");
+    assert_eq!(status, "ok");
+    assert!(overview.contains(INDEX));
+    let (status, reference, _) = tool_result(&session, "tool-reference");
+    assert_eq!(status, "ok");
+    assert!(reference.contains(TOOLS_PAGE));
+    {
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let initial = requests[0].0.to_string();
+        assert!(initial.contains("Reuse Skill instructions already visible in your context"));
+        assert!(initial.contains("a new turn is not a reason to reload them"));
+        assert!(initial.contains("If you already know the Skill name, skip catalog discovery"));
+        assert!(initial.contains("When paths are known, batch independent reads directly"));
+        assert!(initial.contains("No Skill load is required"));
+        let continued = requests[1].0.to_string();
+        assert!(continued.contains("overview") && continued.contains("tool-reference"));
+        assert!(!continued.contains(SKILL_BODY));
+    }
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn adding_a_skill_mid_turn_does_not_interrupt_the_running_agent() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
