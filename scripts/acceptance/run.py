@@ -768,7 +768,11 @@ def run_interactive(args, directory, record):
         if args.cases is not None:
             command.extend(["--cases", args.cases])
         try:
-            checked(command, "installed-interactive", timeout=420, cwd=scratch_dir)
+            # The complete suite runs all scenarios sequentially, including on
+            # slower ConPTY runners. Keep the tighter bound for focused checks;
+            # individual scenario deadlines and assertions are unchanged.
+            timeout = 900 if record["scenario"] == "full" else 420
+            checked(command, "installed-interactive", timeout=timeout, cwd=scratch_dir)
         finally:
             lifecycle = {}
             for case, name in (("settings", "first-run"), ("defaults", "model-default"),

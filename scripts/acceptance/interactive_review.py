@@ -441,7 +441,7 @@ def dense_transcript(client, reference=False):
         terminal.expect("New session", state="Ready")
         terminal.request("resize", rows=32, cols=140)
         terminal.submit(scenario.prompt)
-        with scenario.running_tool():
+        with scenario.running_tool(terminal=terminal):
             terminal.expect(tool_state)
             terminal.type(scenario.draft)
             measurements = measure_tools(terminal)

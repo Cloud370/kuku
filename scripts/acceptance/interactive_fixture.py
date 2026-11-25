@@ -476,9 +476,21 @@ class DenseTranscript:
         self.session = None
 
     @contextlib.contextmanager
-    def running_tool(self, *, executable=None):
+    def running_tool(self, *, executable=None, terminal=None):
         provider = self.client.provider
-        call = provider.next(self.prompt)
+        try:
+            call = provider.next(self.prompt)
+        except AssertionError as error:
+            if terminal is None:
+                raise
+            # Preserve the actual terminal state before teardown. A PTY write
+            # acknowledgement alone cannot distinguish a lost key from a
+            # pending or failed submission. Do not resend or hide the failure.
+            try:
+                screen = terminal.request("screen")["screen"]
+            except Exception as screen_error:
+                screen = f"Could not capture terminal screen: {screen_error}"
+            raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
         for batch in (self.reads, self.other_tools):
             call.reply([{"type": "tool_use", "id": identity, "name": tool, "input": args}
                         for tool, identity, args in batch])

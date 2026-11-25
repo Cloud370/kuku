@@ -707,6 +707,50 @@ class AcceptanceTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["checks"], [failed])
 
+    def test_full_installed_suite_has_its_own_bounded_timeout(self):
+        binary = self.directory / "kuku"
+        bridge = self.directory / "bridge"
+        binary.write_bytes(b"installed fixture")
+        bridge.write_bytes(b"native PTY fixture")
+        version_log = self.directory / "version.log"
+        version_log.write_text("kuku 0.1.0-alpha.6 (1234567)\n", encoding="utf-8")
+
+        def capture(_command, _directory, _label, **_options):
+            return {"log": str(version_log), "exit_code": 0, "timed_out": False}
+
+        for selection, scenario, timeout in (
+            ([], "full", 900),
+            (["--native-smoke"], "native-smoke", 420),
+            (["--cases", "model-search"], "selected", 420),
+        ):
+            with self.subTest(scenario=scenario):
+                args = ACCEPTANCE.parser().parse_args([
+                    "interactive", "--binary", str(binary), "--bridge-cache", str(bridge),
+                    "--scratch-base", str(self.directory), *selection,
+                ])
+                record = {}
+                with mock.patch.object(ACCEPTANCE, "capture", side_effect=capture) as call:
+                    ACCEPTANCE.run_interactive(args, self.directory, record)
+                installed = [item for item in call.call_args_list if item.args[2] == "installed-interactive"]
+                self.assertEqual(len(installed), 1)
+                self.assertEqual(installed[0].kwargs["timeout"], timeout)
+                self.assertEqual(record["scenario"], scenario)
+                self.assertTrue(record["passed"])
+
+    def test_dense_transcript_missing_provider_call_keeps_failure_and_screen(self):
+        from interactive_fixture import DenseTranscript
+
+        provider = mock.Mock()
+        provider.next.side_effect = AssertionError("No provider call")
+        scenario = DenseTranscript(SimpleNamespace(provider=provider), self.directory)
+        terminal = mock.Mock()
+        terminal.request.return_value = {"screen": "unsent draft"}
+        with self.assertRaisesRegex(AssertionError, r"(?s)No provider call.*Last terminal screen:\nunsent draft"):
+            with scenario.running_tool(terminal=terminal):
+                self.fail("Missing provider call must fail the case")
+        provider.next.assert_called_once_with(scenario.prompt)
+        terminal.request.assert_called_once_with("screen")
+
     def test_cargo_checks_cannot_inherit_another_worktrees_target_directory(self):
         with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/shared-target"}):
             env = ACCEPTANCE.command_environment()
