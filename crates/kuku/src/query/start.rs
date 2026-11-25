@@ -226,6 +226,86 @@ impl Query {
             None
         };
 
+        let mut skill_record = None;
+        let (skill_registry, previous_skill_registry) = if self.disable_skills || compact_only {
+            (None, None)
+        } else {
+            // A paused Turn keeps its original discovery snapshot. A new Turn
+            // discovers the current workspace instead of recycling that snapshot.
+            let previous = self
+                .runtime
+                .is_none()
+                .then(|| {
+                    previous_snapshot_before_turn(
+                        &kuku_home,
+                        &existing_events,
+                        conversation.as_str(),
+                        turn,
+                    )
+                })
+                .transpose()?
+                .flatten();
+            let registry = if let Some(snapshot) =
+                restore_turn_snapshot(&kuku_home, &existing_events, conversation.as_str(), turn)?
+            {
+                bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
+                Some(snapshot.registry)
+            } else {
+                match build_registry_snapshot(
+                    &workspace,
+                    &config.discovery,
+                    plugin_registry_opt.as_ref(),
+                ) {
+                    Ok(registry) => {
+                        let bootstrap_loaded = bootstrap_loaded_names(bootstrap_skill.as_ref());
+                        if let Some(version) = bootstrap_loaded
+                            .first()
+                            .and_then(|name| registry.get(name))
+                            .filter(|def| {
+                                def.source == crate::skill::definition::SkillSource::Builtin
+                            })
+                            .and_then(|_| registry.docs_bundle())
+                        {
+                            bundle::retain(&kuku_home, version).await?;
+                            if let Some(skill) = bootstrap_skill.as_mut()
+                                && skill.body.is_empty()
+                                && let Some(name) = skill.name.as_deref()
+                                && let Some(body) =
+                                    crate::skill::session::admission_body(&registry, name)
+                            {
+                                skill.body = body;
+                            }
+                        }
+                        skill_record = Some((
+                            crate::skill::session::persist_catalog(&kuku_home, &registry)?,
+                            bootstrap_loaded,
+                        ));
+                        Some(registry)
+                    }
+                    Err(_) => None,
+                }
+            };
+            (registry, previous.map(|snapshot| snapshot.registry))
+        };
+
+        // A missing explicitly selected Skill must not consume an input or a Turn.
+        for name in &self.input_skills {
+            if self.disable_skills {
+                return Err(Error::InvalidArgument(
+                    "selected input skill cannot load while skills are disabled".into(),
+                ));
+            }
+            if skill_registry
+                .as_ref()
+                .and_then(|registry| registry.get(name))
+                .is_none()
+            {
+                return Err(Error::InvalidArgument(format!(
+                    "selected input skill '{name}' was not found"
+                )));
+            }
+        }
+
         if resumed_permission.is_none() && !compact_only {
             append_interrupted_active_turn(
                 &events_path,
@@ -262,95 +342,15 @@ impl Query {
             }
         }
 
-        let previous_skill_snapshot =
-            previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
-        let (skill_registry, previous_skill_registry) = if self.disable_skills || compact_only {
-            (None, None)
-        } else if let Some(mut snapshot) =
-            restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
-        {
-            let version = snapshot.registry.docs_bundle();
-            let docs_loaded = version.is_some_and(|version| {
-                crate::skill::session::docs_loaded_in_turn(
-                    &existing_events,
-                    conversation.as_str(),
-                    turn,
-                    version,
-                )
-            });
-            if version != Some(bundle::CURRENT) && !docs_loaded {
-                snapshot.registry = snapshot.registry.with_current_docs();
-                snapshot
-                    .bootstrap_loaded
-                    .retain(|name| name != bundle::NAME);
-                store.append(EventPayload::ContextSkills {
-                    conversation: conversation.as_str().to_string(),
-                    turn,
-                    ts: now_timestamp()?,
-                    registry: serde_json::to_value(&snapshot.registry)?,
-                    bootstrap_loaded: snapshot.bootstrap_loaded.clone(),
-                })?;
-            }
-            bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
-            (
-                Some(snapshot.registry),
-                previous_skill_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.registry.clone()),
-            )
-        } else {
-            match build_registry_snapshot(
-                &workspace,
-                &config.discovery,
-                plugin_registry_opt.as_ref(),
-            ) {
-                Ok(registry) => {
-                    let loads_current_docs = bootstrap_skill
-                        .as_ref()
-                        .is_some_and(|skill| skill.name.as_deref() == Some(bundle::NAME));
-                    let (registry, mut bootstrap_loaded) =
-                        if let Some(mut snapshot) = previous_skill_snapshot.clone() {
-                            snapshot
-                                .bootstrap_loaded
-                                .retain(|name| name != bundle::NAME);
-                            if !loads_current_docs {
-                                bootstrap_skill =
-                                    restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
-                            }
-                            (
-                                snapshot.registry.with_current_docs(),
-                                snapshot.bootstrap_loaded,
-                            )
-                        } else {
-                            (registry, bootstrap_loaded_names(bootstrap_skill.as_ref()))
-                        };
-                    if loads_current_docs {
-                        bundle::retain(&kuku_home, bundle::CURRENT).await?;
-                        bootstrap_loaded.retain(|name| name != bundle::NAME);
-                        bootstrap_loaded.push(bundle::NAME.into());
-                        let definition = registry
-                            .get(bundle::NAME)
-                            .expect("current docs are in the registry");
-                        bootstrap_skill = Some(super::types::BootstrapSkill {
-                            name: Some(bundle::NAME.into()),
-                            body: definition.instructions.clone(),
-                        });
-                    }
-                    store.append(EventPayload::ContextSkills {
-                        conversation: conversation.as_str().to_string(),
-                        turn,
-                        ts: now_timestamp()?,
-                        registry: serde_json::to_value(&registry)?,
-                        bootstrap_loaded,
-                    })?;
-                    (
-                        Some(registry),
-                        previous_skill_snapshot.map(|snapshot| snapshot.registry),
-                    )
-                }
-                Err(_) => (None, None),
-            }
-        };
+        if let Some((registry, bootstrap_loaded)) = skill_record {
+            store.append(EventPayload::ContextSkills {
+                conversation: conversation.as_str().to_string(),
+                turn,
+                ts: now_timestamp()?,
+                registry,
+                bootstrap_loaded,
+            })?;
+        }
 
         if let (None, Some(plugin_reg)) = (&resumed_permission, &plugin_registry_opt) {
             let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::SessionStart);
@@ -473,9 +473,27 @@ impl Query {
         let (admitted_tool_call_ids, tool_rounds) =
             resumed_tools(&existing_events, turn, &conversation);
 
+        let context_cursor = if resumed_permission.is_some()
+            && self.runtime.is_some()
+            && skill_registry.is_some()
+            && resumed_state
+                .queued_tool_calls
+                .iter()
+                .any(|call| super::helpers::is_skill_tool(&call.tool_call.name))
+        {
+            let mut cursor = Box::new(crate::context::runtime::ContextCursor::default());
+            cursor.refresh(
+                &events_path,
+                conversation.as_str(),
+                self.runtime_limits.context_replay_bytes(),
+            )?;
+            Some(cursor)
+        } else {
+            None
+        };
         let cleanup_context = Some((events_path.clone(), turn));
         let pending = PendingRun {
-            context_cursor: None,
+            context_cursor,
             failed_compaction: None,
             session_id: session_id.clone(),
             conversation: conversation.clone(),
@@ -602,16 +620,10 @@ fn restore_bootstrap_skill(
 ) -> Option<crate::query::types::BootstrapSkill> {
     let mut restored = Vec::new();
     for skill_name in &snapshot.bootstrap_loaded {
-        let definition = snapshot.registry.get(skill_name)?;
-        if definition.source == crate::skill::definition::SkillSource::Builtin {
-            restored.push(definition.instructions.clone());
-            continue;
-        }
-        let skill_dir = definition.source_path.as_deref().unwrap_or("");
-        restored.push(format!(
-            "<!-- loaded: {skill_dir} -->\n\n{}",
-            definition.instructions
-        ));
+        restored.push(crate::skill::session::admission_body(
+            &snapshot.registry,
+            skill_name,
+        )?);
     }
 
     if restored.is_empty() {

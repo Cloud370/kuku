@@ -1,30 +1,22 @@
-use std::collections::BTreeSet;
-
 use serde_json::{Value, json};
-
-use crate::event::StoredEvent;
 
 use super::definition::SkillDefinition;
 use super::registry::SkillRegistry;
-use super::session::{docs_loaded_in_turn, loaded_skill_names};
 
 pub(crate) fn list_skills_result(
     registry: &SkillRegistry,
-    events: &[StoredEvent],
-    conversation: &str,
-    turn: u64,
     args: &Value,
+    is_loaded: impl Fn(&str) -> bool,
 ) -> Value {
     let offset = pagination_offset(args);
     let limit = pagination_limit(args, 20, 50);
-    let loaded = loaded_names(registry, events, conversation, turn);
     let definitions = registry.definitions();
     let total = definitions.len();
     let skills = definitions
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(|definition| skill_item(definition, loaded.contains(definition.name.as_str())))
+        .map(|definition| skill_item(definition, is_loaded(&definition.name)))
         .collect::<Vec<_>>();
 
     json!({
@@ -37,10 +29,8 @@ pub(crate) fn list_skills_result(
 
 pub(crate) fn search_skills_result(
     registry: &SkillRegistry,
-    events: &[StoredEvent],
-    conversation: &str,
-    turn: u64,
     args: &Value,
+    is_loaded: impl Fn(&str) -> bool,
 ) -> Value {
     let query = args
         .get("query")
@@ -49,7 +39,6 @@ pub(crate) fn search_skills_result(
         .trim();
     let offset = pagination_offset(args);
     let limit = pagination_limit(args, 10, 25);
-    let loaded = loaded_names(registry, events, conversation, turn);
 
     let mut matches = registry
         .definitions()
@@ -70,7 +59,7 @@ pub(crate) fn search_skills_result(
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(|(_, definition)| skill_item(definition, loaded.contains(definition.name.as_str())))
+        .map(|(_, definition)| skill_item(definition, is_loaded(&definition.name)))
         .collect::<Vec<_>>();
 
     json!({
@@ -79,25 +68,6 @@ pub(crate) fn search_skills_result(
         "total": total,
         "skills": skills,
     })
-}
-
-fn loaded_names(
-    registry: &SkillRegistry,
-    events: &[StoredEvent],
-    conversation: &str,
-    turn: u64,
-) -> BTreeSet<String> {
-    let mut loaded: BTreeSet<_> = loaded_skill_names(events, conversation)
-        .into_iter()
-        .collect();
-    if let Some(version) = registry.docs_bundle() {
-        if docs_loaded_in_turn(events, conversation, turn, version) {
-            loaded.insert(super::bundle::NAME.into());
-        } else {
-            loaded.remove(super::bundle::NAME);
-        }
-    }
-    loaded
 }
 
 fn skill_item(definition: &SkillDefinition, loaded: bool) -> Value {
@@ -227,7 +197,6 @@ fn pagination_limit(args: &Value, default: usize, max: usize) -> usize {
 mod tests {
     use serde_json::json;
 
-    use crate::event::{EventPayload, StoredEvent};
     use crate::skill::definition::{SkillDefinition, SkillSource};
     use crate::skill::registry::SkillRegistry;
 
@@ -279,61 +248,12 @@ mod tests {
             .build()
     }
 
-    fn events() -> Vec<StoredEvent> {
-        vec![
-            StoredEvent {
-                id: 1,
-                payload: EventPayload::ContextSkills {
-                    conversation: "main".to_string(),
-                    turn: 1,
-                    ts: "t1".to_string(),
-                    registry: serde_json::to_value(registry()).unwrap(),
-                    bootstrap_loaded: vec![],
-                },
-            },
-            StoredEvent {
-                id: 2,
-                payload: EventPayload::ToolCall {
-                    turn: 1,
-                    ts: "t2".to_string(),
-                    conversation: Some("main".to_string()),
-                    tool_call_id: "tool_beta".to_string(),
-                    request_id: "req_1".to_string(),
-                    index: 0,
-                    tool: "use_skill".to_string(),
-                    args: json!({ "skill_name": "beta-review" }),
-                },
-            },
-            StoredEvent {
-                id: 3,
-                payload: EventPayload::ToolResult {
-                    turn: 1,
-                    ts: "t3".to_string(),
-                    conversation: Some("main".to_string()),
-                    tool_call_id: "tool_beta".to_string(),
-                    status: "ok".to_string(),
-                    summary: "loaded skill: beta-review".to_string(),
-                    model_content: String::new(),
-                    truncated: false,
-                    files_read: Vec::new(),
-                    files_changed: Vec::new(),
-                    commands_run: Vec::new(),
-                    memory_changed: None,
-                    structured: None,
-                },
-            },
-        ]
-    }
-
     #[test]
     fn list_skills_pages_snapshot_and_marks_loaded() {
-        let result = super::list_skills_result(
-            &registry(),
-            &events(),
-            "main",
-            1,
-            &json!({ "offset": 1, "limit": 1 }),
-        );
+        let result =
+            super::list_skills_result(&registry(), &json!({ "offset": 1, "limit": 1 }), |name| {
+                name == "beta-review"
+            });
 
         assert_eq!(result["offset"], 1);
         assert_eq!(result["limit"], 1);
@@ -348,10 +268,8 @@ mod tests {
     fn search_skills_ranks_name_then_description_then_body() {
         let result = super::search_skills_result(
             &registry(),
-            &events(),
-            "main",
-            1,
             &json!({ "query": "ranking", "limit": 3 }),
+            |name| name == "beta-review",
         );
         let items = result["skills"].as_array().unwrap();
 
@@ -365,10 +283,8 @@ mod tests {
     fn search_skills_is_case_insensitive_and_matches_metadata_title() {
         let result = super::search_skills_result(
             &registry(),
-            &events(),
-            "main",
-            1,
             &json!({ "query": "alpha title", "limit": 10 }),
+            |name| name == "beta-review",
         );
         let items = result["skills"].as_array().unwrap();
 
@@ -378,10 +294,9 @@ mod tests {
 
     #[test]
     fn list_skills_applies_default_and_max_limit() {
-        let default_result =
-            super::list_skills_result(&registry(), &events(), "main", 1, &json!({}));
+        let default_result = super::list_skills_result(&registry(), &json!({}), |_| false);
         let capped_result =
-            super::list_skills_result(&registry(), &events(), "main", 1, &json!({ "limit": 999 }));
+            super::list_skills_result(&registry(), &json!({ "limit": 999 }), |_| false);
 
         assert_eq!(default_result["limit"], 20);
         assert_eq!(capped_result["limit"], 50);
@@ -389,19 +304,14 @@ mod tests {
 
     #[test]
     fn search_skills_applies_default_and_max_limit() {
-        let default_result = super::search_skills_result(
-            &registry(),
-            &events(),
-            "main",
-            1,
-            &json!({ "query": "ranking" }),
-        );
+        let default_result =
+            super::search_skills_result(&registry(), &json!({ "query": "ranking" }), |name| {
+                name == "beta-review"
+            });
         let capped_result = super::search_skills_result(
             &registry(),
-            &events(),
-            "main",
-            1,
             &json!({ "query": "ranking", "limit": 999 }),
+            |name| name == "beta-review",
         );
 
         assert_eq!(default_result["limit"], 10);

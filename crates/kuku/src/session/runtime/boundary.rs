@@ -3,11 +3,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::event::{EventPayload, EventStore};
 use crate::execution::OutputReference;
+use crate::skill::registry::SkillRegistry;
 use crate::{Error, Result};
 
 use super::record::{AgentState, QueuedDelivery, Record, State, timestamp};
 use super::{
-    AgentConfig, AgentStatus, InputSource, InputStatus, InputTiming, Session, UsageTotals,
+    AgentConfig, AgentStatus, Input, InputSource, InputStatus, InputTiming, Session, UsageTotals,
 };
 
 pub(super) struct TurnWork {
@@ -29,13 +30,58 @@ pub(crate) struct StepBoundary {
     pub(crate) skills: Vec<String>,
 }
 
+fn skill_is_eligible(input: &Input, catalog: Option<&SkillRegistry>) -> bool {
+    input
+        .bootstrap_skill
+        .as_ref()
+        .is_none_or(|name| catalog.is_some_and(|catalog| catalog.get(name).is_some()))
+}
+
 impl Session {
+    pub(super) fn validate_steering_skill(&self, agent: &AgentState, input: &Input) -> Result<()> {
+        let Some(name) = input.bootstrap_skill.as_deref().filter(|_| {
+            input.timing == InputTiming::NextStep
+                && (agent.snapshot.status == AgentStatus::Running
+                    || agent.snapshot.permission.is_some())
+        }) else {
+            return Ok(());
+        };
+        let turn = agent.snapshot.turn.filter(|turn| {
+            agent.snapshot.permission.is_some()
+                || agent.permission_reply.is_some()
+                || agent
+                    .snapshot
+                    .execution_id
+                    .is_some_and(|execution| *turn >= execution)
+        });
+        let Some(turn) = turn else {
+            return Err(Error::InvalidArgument(
+                "The current Turn has not prepared its Skill catalog; try again after it starts or send in a new Turn".into(),
+            ));
+        };
+        let events = self.read_agent_events(&input.target)?;
+        let snapshot = crate::skill::session::restore_turn_snapshot(
+            &self.inner.options.data_dir,
+            &events,
+            &input.target,
+            turn,
+        )?;
+        if skill_is_eligible(input, snapshot.as_ref().map(|snapshot| &snapshot.registry)) {
+            Ok(())
+        } else {
+            Err(Error::InvalidArgument(format!(
+                "Skill '{name}' is not available in the current Turn; send it in a new Turn"
+            )))
+        }
+    }
+
     pub(crate) fn prepare_step_boundary(
         &self,
         address: &str,
         execution: u64,
         turn: u64,
         first_step: bool,
+        catalog: Option<&SkillRegistry>,
     ) -> Result<StepBoundary> {
         let mut state = self.inner.state.lock().unwrap();
         let agent = self.executing_agent(&state, address, execution)?;
@@ -55,7 +101,9 @@ impl Session {
                 skills: Vec::new(),
             });
         }
-        let inputs = self.select_inputs(agent, Some(InputTiming::NextStep));
+        let inputs = self.select_inputs(agent, Some(InputTiming::NextStep), |input| {
+            skill_is_eligible(input, catalog)
+        });
         let config = update_model_selection(&agent.snapshot);
         if inputs.iter().any(|entry| !entry.input.images.is_empty()) {
             self.validate_image_route(config.as_ref().unwrap_or(&agent.snapshot.config))?;
@@ -165,7 +213,7 @@ impl Session {
         let inputs = if reply.is_some() {
             agent.accepted.clone()
         } else {
-            self.select_inputs(agent, None)
+            self.select_inputs(agent, None, |_| true)
         };
         if inputs.is_empty() && reply.is_none() {
             self.commit(
@@ -297,15 +345,28 @@ impl Session {
             .any(|entry| entry.input.timing == InputTiming::NextStep))
     }
 
+    pub(crate) fn has_admissible_step_input(
+        &self,
+        address: &str,
+        catalog: Option<&SkillRegistry>,
+    ) -> Result<bool> {
+        let state = self.inner.state.lock().unwrap();
+        Ok(state.agent(address)?.inbox.iter().any(|entry| {
+            entry.input.timing == InputTiming::NextStep && skill_is_eligible(&entry.input, catalog)
+        }))
+    }
+
     fn select_inputs(
         &self,
         agent: &AgentState,
         timing: Option<InputTiming>,
+        eligible_input: impl Fn(&Input) -> bool,
     ) -> Vec<QueuedDelivery> {
         let mut eligible = agent
             .inbox
             .iter()
             .filter(|entry| timing.is_none_or(|timing| entry.input.timing == timing))
+            .filter(|entry| eligible_input(&entry.input))
             .peekable();
         let first = eligible.peek().copied();
         let mut bytes = 0;

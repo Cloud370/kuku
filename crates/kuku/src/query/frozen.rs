@@ -233,7 +233,7 @@ pub(super) async fn prepare(
             }
         }
     }
-    let input_skills = append_input_skills(pending, &mut messages).await?;
+    let input_skills = append_input_skills(pending, &mut messages, &segment.prelude).await?;
     append_dynamic(
         pending,
         &mut messages,
@@ -502,11 +502,7 @@ fn initial_segment(
                 pending.conversation.as_str()
             )));
     }
-    if let Some(text) = pending
-        .skill_registry
-        .as_ref()
-        .and_then(|registry| crate::skill::catalog::render_static_skill_catalog(registry, tools))
-    {
+    if let Some(text) = crate::skill::catalog::render_skill_discovery_hint(tools) {
         assembly
             .prelude_messages
             .push(CanonicalMessage::user_text(text));

@@ -80,6 +80,14 @@ impl OwnedRequestBase {
         })
     }
 
+    pub(super) fn has_skill_admission(&self, body: &str) -> bool {
+        self.assembly
+            .prelude_messages
+            .iter()
+            .chain(&self.assembly.history)
+            .any(|message| crate::skill::session::has_admission(message, body))
+    }
+
     pub(super) fn has_current_images(&self) -> bool {
         self.current_input.parts.iter().any(|message| {
             message

@@ -458,6 +458,7 @@ impl Session {
                 .as_ref()
                 .unwrap_or(&state.agent(&target)?.snapshot.config),
         )?;
+        self.validate_steering_skill(state.agent(&target)?, &input)?;
         let key = input.command_id.clone();
         self.commit(
             &mut state,

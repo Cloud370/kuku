@@ -224,7 +224,9 @@ pub(super) async fn compact(
             }
         } => true,
     };
-    let waiting_for_input = completed && can_admit_input && session.has_step_input(&agent)?;
+    let waiting_for_input = completed
+        && can_admit_input
+        && session.has_admissible_step_input(&agent, pending.skill_registry.as_ref())?;
     pending.model_request_count += 1;
     let elapsed_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let pricing = RequestPricing::new(
@@ -252,6 +254,9 @@ pub(super) async fn compact(
         let summary_with_files = candidate.summary_with_files(summary.text.trim());
         let text = next.render_checkpoint(&summary_with_files)?;
         candidate.fill_checkpoint(&mut next, pending.turn, text);
+        candidate
+            .restore_selected_skills(pending, &mut next)
+            .await?;
         if let Ok(body) = prepare_request(pending, resolved, correlation, &next) {
             let bytes = body.body.as_bytes().len();
             let after_tokens = next.estimated_input_tokens();

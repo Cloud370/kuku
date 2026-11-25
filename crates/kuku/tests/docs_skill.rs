@@ -13,6 +13,9 @@ use kuku::{
 };
 use serde_json::{Value, json};
 
+#[path = "docs_skill/lifecycle.rs"]
+mod lifecycle;
+
 const NAME: &str = "kuku-docs";
 const TOOL: &str = "skill_resources";
 const SKILL_BODY: &str = "Identify the running kuku version if known";
@@ -21,6 +24,10 @@ const INDEX: &str = "references/docs/en/index.md";
 #[derive(Debug)]
 enum Reply {
     Text,
+    Hold(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    ),
     Call(&'static str, &'static str, Value),
     Batch(Vec<(&'static str, &'static str, Value)>),
 }
@@ -71,6 +78,11 @@ impl ModelAdapter for Model {
             }];
             let calls = match reply {
                 Reply::Text => Vec::new(),
+                Reply::Hold(started, resume) => {
+                    started.send(()).expect("fixture is waiting");
+                    resume.await.expect("fixture released the request");
+                    Vec::new()
+                }
                 Reply::Call(id, name, args) => vec![(id, name, args)],
                 Reply::Batch(calls) => calls,
             };
@@ -203,7 +215,7 @@ async fn help_only_admits_requested_skill_material_and_resource_calls_obey_scope
             Reply::Call(
                 "unloaded",
                 TOOL,
-                json!({"skill_name": NAME,"action":"read","path":INDEX}),
+                json!({"skill_name": NAME,"action":"read","path":INDEX,"limit":1}),
             ),
             Reply::Call("load", "use_skill", json!({"skill_name":NAME})),
             Reply::Call("denied", TOOL, json!({"skill_name": NAME,"action":"list"})),
@@ -254,8 +266,8 @@ async fn help_only_admits_requested_skill_material_and_resource_calls_obey_scope
     settled(&session, AgentStatus::Idle).await;
 
     let (status, unloaded, _) = tool_result(&session, "unloaded");
-    assert_eq!(status, "error");
-    assert!(unloaded.contains("Load kuku-docs"));
+    assert_eq!(status, "ok");
+    assert!(unloaded.contains("Lines 1"));
     let (status, instructions, loaded) = tool_result(&session, "load");
     assert_eq!(status, "ok");
     assert!(instructions.contains(SKILL_BODY));
@@ -300,7 +312,7 @@ async fn help_only_admits_requested_skill_material_and_resource_calls_obey_scope
     assert!(
         baseline
             .to_string()
-            .contains("kuku-docs - Explain how to use this version")
+            .contains("Use list_skills to browse available skills.")
     );
     assert!(
         requests[..3]
@@ -308,8 +320,8 @@ async fn help_only_admits_requested_skill_material_and_resource_calls_obey_scope
             .all(|(body, _)| !body.to_string().contains(SKILL_BODY))
     );
     assert!(requests[3].0.to_string().contains(SKILL_BODY));
-    assert!(requests[..6].iter().all(|(_, extracted)| !extracted));
-    assert!(requests[6].1);
+    assert!(requests[..2].iter().all(|(_, extracted)| !extracted));
+    assert!(requests[2].1);
     assert!(
         requests[..8]
             .iter()
@@ -379,7 +391,7 @@ async fn explicit_skill_admission_survives_reopening_a_waiting_turn() {
 }
 
 #[tokio::test]
-async fn configured_docs_skill_uses_turn_admissions_and_reports_when_released() {
+async fn configured_docs_skill_remains_loaded_while_the_body_is_in_context() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let model = Model::new(
@@ -394,6 +406,7 @@ async fn configured_docs_skill_uses_turn_admissions_and_reports_when_released() 
             ),
             Reply::Text,
             Reply::Call("unloaded-list", "list_skills", json!({})),
+            Reply::Call("builtin-reuse", "use_skill", json!({"skill_name":NAME})),
             Reply::Call(
                 "unloaded-read",
                 TOOL,
@@ -446,9 +459,10 @@ async fn configured_docs_skill_uses_turn_admissions_and_reports_when_released() 
     settled(&session, AgentStatus::Idle).await;
     assert_eq!(
         tool_result(&session, "unloaded-list").2["skills"][0]["loaded"],
-        false
+        true
     );
-    assert_eq!(tool_result(&session, "unloaded-read").0, "error");
+    assert_eq!(tool_result(&session, "unloaded-read").0, "ok");
+    assert_eq!(tool_result(&session, "builtin-reuse").2["reused"], true);
     let requests = model.requests.lock().unwrap().clone();
     assert!(!requests[0].0.to_string().contains(SKILL_BODY));
     assert!(
@@ -747,7 +761,7 @@ fn abandoned_standalone_docs_slot_releases_the_blocking_worker() {
 }
 
 #[tokio::test]
-async fn same_batch_skill_tools_see_the_load_across_a_permission_wait() {
+async fn same_batch_resources_do_not_depend_on_skill_body_admission() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let model = Model::new(
@@ -802,9 +816,103 @@ async fn same_batch_skill_tools_see_the_load_across_a_permission_wait() {
     );
     assert_eq!(
         tool_result(&session, "batch-list").2["skills"][0]["loaded"],
-        true
+        false
     );
     assert_eq!(tool_result(&session, "batch-read").0, "ok");
     assert!(!workspace.path().join("permission-check.txt").exists());
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn project_skill_reuses_admitted_revision_and_refreshes_large_catalog_on_next_turn() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".kuku/skills");
+    let write_skill = |name: &str, body: &str| {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            path.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Fixture Skill\n---\n{body}"),
+        )
+        .unwrap();
+    };
+    for index in 0..512 {
+        write_skill(&format!("other-{index}"), &"x".repeat(2400));
+    }
+    let name = "project-fixture";
+    let load = |id| Reply::Call(id, "use_skill", json!({"skill_name":name}));
+    write_skill(name, "unique project revision AAA");
+    let model = Model::new(
+        data.path(),
+        [
+            load("project-first"),
+            load("project-repeat"),
+            Reply::Text,
+            load("project-next"),
+            Reply::Text,
+        ],
+    );
+    let mut options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    options.config.discovery.extra_project_paths = vec![workspace.path().join(".kuku")];
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("first", "main", "Read project fixture."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert_eq!(tool_result(&session, "project-repeat").2["reused"], true);
+    write_skill(name, "unique project revision BBB");
+    session
+        .send(Input::new(
+            "second",
+            "main",
+            "Read updated project fixture.",
+        ))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert_eq!(tool_result(&session, "project-next").2["reused"], false);
+    let requests = model.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        requests[2]
+            .0
+            .to_string()
+            .matches("unique project revision AAA")
+            .count(),
+        1
+    );
+    assert!(
+        !requests[3]
+            .0
+            .to_string()
+            .contains("unique project revision BBB")
+    );
+    assert_eq!(
+        requests[4]
+            .0
+            .to_string()
+            .matches("unique project revision BBB")
+            .count(),
+        1
+    );
+    let records = session.events(0, 512).unwrap();
+    let refs: Vec<_> = records
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ContextSkills { registry, .. } => Some(registry),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refs.len(), 2);
+    assert!(refs.iter().all(|value| value.to_string().len() < 128));
+    assert_ne!(refs[0]["snapshot"], refs[1]["snapshot"]);
     session.close().await.unwrap();
 }

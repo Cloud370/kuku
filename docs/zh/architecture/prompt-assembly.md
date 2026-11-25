@@ -8,7 +8,7 @@
 
 ## 创建上下文段
 
-首次准备时，SDK 加载 Prompt 目录、Agent 指令、工作区指令文件、全局与项目 Memory，以及工具定义。使用选定的资源渲染系统提示和前置消息。内置项目策略不包含当前日期；冻结的 Session 准备会在首次使用以及日期变化时将日期作为持久化运行时消息追加。静态 Agent 和 Skill 目录不包含变化中的对话数量、已加载或变更状态；每轮通知仍保留在后缀中。日志在 `runtime.context_segment` 中记录 Prompt 目录、渲染结果和工具 schema。为不同工作目录准备上下文段时，会重新读取对应目录。[Step 准备与上下文段创建](../../../crates/kuku/src/query/frozen.rs) · [Prompt 资源](../../../crates/kuku/prompts)
+首次准备时，SDK 加载 Prompt 目录、Agent 指令、工作区指令文件、全局与项目 Memory，以及工具定义。使用选定的资源渲染系统提示和前置消息。内置项目策略不包含当前日期；冻结的 Session 准备会在首次使用以及日期变化时将日期作为持久化运行时消息追加。静态 Agent 目录不包含变化中的对话数量；每轮通知仍保留在后缀中。冻结的 Session 前缀只保留稳定的 Skill 发现指引，发现工具读取当前 Turn 固定的目录。Skill 是否可以复用，取决于实际纳入上下文的正文，而不是单独的“已加载”标记。日志在 `runtime.context_segment` 中记录 Prompt 目录、渲染结果和工具 schema。为不同工作目录准备上下文段时，会重新读取对应目录。[Step 准备与上下文段创建](../../../crates/kuku/src/query/frozen.rs) · [Prompt 资源](../../../crates/kuku/prompts)
 
 所选工作区根目录下可读取且含有非空白内容的 `AGENTS.override.md` 是该目录唯一的项目指令来源，即使 Git 忽略了它也会加载。否则 kuku 按顺序加载可读取的 `AGENTS.md`、`CLAUDE.md`。查找仅限所选根目录。更改在重新组装上下文时生效，恢复 Session 时沿用已提交的前置消息。
 

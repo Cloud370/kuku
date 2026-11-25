@@ -16,7 +16,7 @@ const MAX_EXCERPT_BYTES: usize = 180;
 pub(crate) fn definition() -> crate::tool::ToolDefinition {
     crate::tool::ToolDefinition {
         name: TOOL_NAME.into(),
-        description: "List, search or read the bundled references for the kuku-docs skill after loading it in this Turn. Paths are relative to the skill, starting with references/docs. Returns the source version with each result.".into(),
+        description: "List, search or read references from the bundled documentation. Reading a reference does not load the Skill instructions. Paths are relative to the skill, starting with references/docs. Returns the source version with each result.".into(),
         input_schema: json!({
             "type": "object",
             "additionalProperties": false,
@@ -110,6 +110,7 @@ impl Request {
         version: &str,
         cancelled: &impl Fn() -> bool,
     ) -> io::Result<ToolResultEnvelope> {
+        super::retain_cancellable(home, version, cancelled)?;
         super::with_cache(home, version, cancelled, |cache| match &self.action {
             Action::List => Ok(self.list(cache, version)),
             Action::Search(query) => self.search(cache, version, query, cancelled),

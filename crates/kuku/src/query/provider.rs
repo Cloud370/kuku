@@ -171,26 +171,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         }
     }
 
-    if let Some(skill) = pending.bootstrap_skill.as_ref() {
-        let docs_bootstrap = skill.name.as_deref() == Some(crate::skill::bundle::NAME)
-            || crate::skill::session::restore_turn_snapshot(
-                &existing_events,
-                pending.conversation.as_str(),
-                pending.turn,
-            )
-            .is_some_and(|snapshot| {
-                snapshot
-                    .bootstrap_loaded
-                    .iter()
-                    .any(|name| name == crate::skill::bundle::NAME)
-            });
-        if !docs_bootstrap {
-            assembly
-                .prelude_messages
-                .push(CanonicalMessage::user_text(skill.body.clone()));
-        }
-    }
-
     set_model_modalities(
         &mut assembly.prelude_messages,
         &assembly.tools,
@@ -344,12 +324,10 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
                     })
                     .collect(),
                 prompt_asset_sources: assembly.prompt_asset_sources.clone(),
-                skills: pending
-                    .skill_registry
-                    .as_ref()
-                    .map(serde_json::to_value)
-                    .transpose()?
-                    .unwrap_or_else(|| serde_json::json!({})),
+                skills: pending.skill_registry.as_ref().map_or_else(
+                    || serde_json::json!({}),
+                    |registry| serde_json::json!({"fingerprint": registry.hash()}),
+                ),
                 bootstrap_loaded: pending
                     .bootstrap_skill
                     .as_ref()
@@ -507,6 +485,7 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
         execution,
         pending.turn,
         pending.request_num == 1,
+        pending.skill_registry.as_ref(),
     )?;
     pending.query.input_skills.extend(boundary.skills);
     if let Some(source) = boundary.source {

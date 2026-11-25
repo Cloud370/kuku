@@ -44,6 +44,102 @@ async fn cancelling_overflow_compaction_settles_its_card_before_the_agent_stops(
     context_rejection(OverflowCase::Cancelled).await;
 }
 
+#[tokio::test]
+async fn a_selected_skill_survives_compaction_before_dispatch() {
+    const OLD: &str = "OLDER-INPUT-WITH-ORIGINAL-SKILL";
+    const INPUT: &str = "Select the same skill again in this turn.";
+    const SKILL: &str = "Unique selected skill instructions from disk.";
+    let server = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (mut config, path) = options(&server, workspace.path(), data.path());
+    config.config.handoff.enabled = true;
+    config.config.handoff.threshold = 0.98;
+    config.limits.max_request_bytes = Some(48 * 1024);
+    config
+        .config
+        .models
+        .get_mut(&config.config.default_model)
+        .unwrap()
+        .context_window = 131_072;
+    config.config.discovery.extra_project_paths = vec![workspace.path().join(".fixture")];
+    let skill = workspace.path().join(".fixture/skills/keep-selected");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        format!("---\nname: keep-selected\ndescription: Compaction fixture.\n---\n{SKILL}\n"),
+    )
+    .unwrap();
+    let session = Session::open(config).await.unwrap();
+    let mut configured = agent();
+    configured.no_skills = false;
+    configured.tools = Some(Vec::new());
+    session.create_agent("create", "main", configured).unwrap();
+
+    let prior = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let body = request_body(request);
+                let wire = body.to_string();
+                wire.contains(OLD)
+                    && wire.contains(SKILL)
+                    && !wire.contains(INPUT)
+                    && !last_user(&body).is_some_and(|text| text.starts_with("Write a checkpoint"))
+            });
+            then.status(200)
+                .body(response(json!({"content":EARLIER_REPLY}), "stop"));
+        })
+        .await;
+    let mut first = Input::new(
+        "first",
+        "main",
+        format!("{OLD}\n{}", "old details ".repeat(2100)),
+    );
+    first.bootstrap_skill = Some("keep-selected".into());
+    session.send(first).unwrap();
+    idle(&session, "main").await;
+    prior.assert_hits_async(1).await;
+
+    let checkpoint = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                last_user(&request_body(request))
+                    .is_some_and(|text| text.starts_with("Write a checkpoint"))
+            });
+            then.status(200)
+                .body(response(json!({"content":CHECKPOINT}), "stop"));
+        })
+        .await;
+    let replacement = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let wire = request_body(request).to_string();
+                !wire.contains(OLD) && wire.contains(INPUT) && wire.matches(SKILL).count() == 1
+            });
+            then.status(200).body(response(
+                json!({"content":"Kept the selected skill."}),
+                "stop",
+            ));
+        })
+        .await;
+
+    let mut next = Input::new(
+        "second",
+        "main",
+        format!("{INPUT}\n{}", "new details ".repeat(2100)),
+    );
+    next.bootstrap_skill = Some("keep-selected".into());
+    session.send(next).unwrap();
+    idle(&session, "main").await;
+    checkpoint.assert_hits_async(1).await;
+    replacement.assert_hits_async(1).await;
+    assert_eq!(
+        Some("Kept the selected skill."),
+        session.agent("main").unwrap().last_output.as_deref()
+    );
+    session.close().await.unwrap();
+}
+
 #[derive(Clone, Copy)]
 enum OverflowCase {
     Continue,

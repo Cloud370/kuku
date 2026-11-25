@@ -58,13 +58,15 @@ Before writing any code:
 
 ## 运行时快照
 
-每个 Turn 开始时，kuku 将当前发现的 Skill 目录快照写入 Session 日志（`plugin.enabled = true` 时包含 Package 里的 Skill）：
+每个新 Turn 开始时，kuku 重新发现 Skill（`plugin.enabled = true` 时包含 Package 里的 Skill）。Session 日志只记指纹；未变更的目录共用一份不可变快照，存于服务数据目录的 `skill-catalogs/`。迁移或备份服务数据时，请将该目录与 Session 日志一并保留。
 
 - `list_skills`、`search_skills` 与 `use_skill` 均读取当前 Turn 的快照，不中途重读磁盘。
 - 恢复既有 Turn 时沿用其持久化的快照。
 - 磁盘上的修改在下一次新 Turn 生效。
 
-内置的 `kuku-docs` Skill 随运行中的服务构建版本提供。Turn 加载它时会在快照中保留资料版本。升级或回退后恢复该 Turn 时，仍能读取记录中的版本。
+追加到当前 Turn 的输入，在交付前用这个 Turn 的目录校验。如果选择了本轮开始后安装的 Skill，只拒绝这条追加，不中断正在运行的 Turn。可改为在新 Turn 发送。
+
+只有对应版本的正文实际在 Agent 的上下文中时，才算已加载。`use_skill` 遇到已经可见的同一版本，只报告复用，不重复返回正文。如果文件更新或正文已经不在上下文中，Agent 可以重新加载适用的版本。
 
 ## 路径解析
 
@@ -78,7 +80,7 @@ Before writing any code:
 
 ## Skill 资料
 
-`kuku-docs` 将内置的 `docs/` 树提供在 `references/docs/`。Agent 在当前 Turn 加载 Skill 后，可用只读的 `skill_resources` 工具访问。综合问题可先看 `references/docs/zh/index.md` 或 `references/docs/en/index.md`，具体问题可直接读对应页面。
+`kuku-docs` 将内置的 `docs/` 树提供在 `references/docs/`。Agent 可直接用只读的 `skill_resources` 工具访问，不要求先加载正文。首次加载或读取资料时，kuku 保留内置资料的版本，方便中断的 Turn 在服务升级后继续使用。综合问题可先看 `references/docs/zh/index.md` 或 `references/docs/en/index.md`，具体问题可直接读对应页面。
 
 | 操作 | 参数 | 结果 |
 |---|---|---|

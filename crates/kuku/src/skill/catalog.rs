@@ -22,6 +22,23 @@ pub fn render_skill_catalog(
     )
 }
 
+pub(crate) fn render_skill_discovery_hint(tools: &[crate::context::ToolSchema]) -> Option<String> {
+    let mut lines = Vec::new();
+    for (name, hint) in [
+        ("list_skills", HINT_LIST_SKILLS),
+        ("search_skills", HINT_SEARCH_SKILLS),
+        (
+            "use_skill",
+            "Use use_skill to load a Skill's instructions when needed.",
+        ),
+    ] {
+        if tools.iter().any(|tool| tool.name == name) {
+            lines.push(hint);
+        }
+    }
+    (!lines.is_empty()).then(|| format!("<kuku_skills>\n{}\n</kuku_skills>", lines.join("\n")))
+}
+
 pub fn render_static_skill_catalog(
     registry: &SkillRegistry,
     tools: &[crate::context::ToolSchema],

@@ -58,13 +58,15 @@ Skill metadata is descriptive. The Agent's configuration, runtime limits and hos
 
 ## Runtime snapshotting
 
-At the start of each Turn, kuku snapshots discovered Skills into the Session journal (including package Skills when `plugin.enabled = true`):
+At the start of a fresh Turn, kuku discovers Skills (including package Skills when `plugin.enabled = true`). The Session journal records only a fingerprint; unchanged catalogs share one immutable snapshot in the service data directory under `skill-catalogs/`. Keep that directory with the Session journal when moving or backing up the service data.
 
 - `list_skills`, `search_skills`, and `use_skill` all read from the current Turn's snapshot rather than live disk.
 - Resuming a Turn restores its recorded snapshot.
 - Edits on disk take effect on the next fresh Turn.
 
-The built-in `kuku-docs` Skill follows the running service's build. When a Turn loads it, kuku retains the resource version with that Turn's snapshot. Resuming that Turn can still read its recorded version after an upgrade or rollback.
+A steering input is checked against the active Turn’s catalog before delivery. If the selected Skill was installed after that Turn started, the request is rejected without interrupting the active Turn. Send it as a new Turn instead.
+
+A Skill is loaded only when its exact instructions are present in the Agent’s context. If that revision is already present, `use_skill` reports reuse instead of repeating the instructions. If the file changes or those instructions leave context, the Agent can load the applicable revision again.
 
 ## Path resolution
 
@@ -78,7 +80,7 @@ Use the location marker to find a user or project Skill's supporting files. Rela
 
 ## Skill resources
 
-`kuku-docs` provides the embedded `docs/` tree under `references/docs/`. After loading the Skill in the current Turn, the Agent can call the read-only `skill_resources` tool. Start with `references/docs/en/index.md` or `references/docs/zh/index.md` for an overview, or read the page directly for a specific question.
+`kuku-docs` provides the embedded `docs/` tree under `references/docs/`. The read-only `skill_resources` tool can read it without first loading the instructions. On first load or resource access, kuku retains the bundled version so an interrupted Turn can keep using it after a service upgrade. Start with `references/docs/en/index.md` or `references/docs/zh/index.md` for an overview, or read the page directly for a specific question.
 
 | Action | Arguments | Result |
 |---|---|---|

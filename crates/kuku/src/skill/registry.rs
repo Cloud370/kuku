@@ -61,15 +61,6 @@ impl SkillRegistry {
     pub(crate) fn docs_bundle(&self) -> Option<&str> {
         self.docs_bundle.as_deref()
     }
-
-    pub(crate) fn with_current_docs(self) -> Self {
-        SkillRegistryBuilder {
-            definitions: self.definitions,
-            docs_bundle: None,
-        }
-        .with_docs()
-        .build()
-    }
 }
 
 /// Builder for constructing a SkillRegistry from multiple sources.

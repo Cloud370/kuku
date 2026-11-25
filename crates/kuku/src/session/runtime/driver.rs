@@ -345,15 +345,15 @@ impl Session {
     }
 
     fn build_query(&self, address: &str, work: TurnWork) -> Result<crate::Query> {
-        let docs_bootstrap = work.config.bootstrap_skill.as_deref()
-            == Some(crate::skill::bundle::NAME)
-            && !work.config.no_skills;
+        let bootstrap = work
+            .config
+            .bootstrap_skill
+            .clone()
+            .filter(|_| !work.config.no_skills);
         let mut query = self.query_for_config(address, work.config, work.text)?;
         query.input_source = work.source;
         query.input_skills = work.skills;
-        if docs_bootstrap {
-            query.input_skills.push(crate::skill::bundle::NAME.into());
-        }
+        query.input_skills.extend(bootstrap);
         query.runtime_execution = Some(work.execution);
         query.turn_override = Some(work.turn);
         query.skip_user_message = work.skip_user_message;
@@ -402,19 +402,6 @@ impl Session {
         }
         if config.no_agents {
             query = query.no_agents();
-        }
-        if let Some(name) = &config.bootstrap_skill
-            && name != crate::skill::bundle::NAME
-        {
-            let registry = crate::skill::build_registry_snapshot_for_host(
-                &self.inner.options.data_dir,
-                self.workspace_for(&config),
-                &self.inner.options.config,
-            )?;
-            let definition = registry.get(name).ok_or_else(|| {
-                Error::InvalidArgument(format!("bootstrap skill '{name}' was not found"))
-            })?;
-            query = query.bootstrap_skill(name, definition.instructions.clone());
         }
         query.agent_instructions = config.instructions.clone();
         query.tool_registry_override =

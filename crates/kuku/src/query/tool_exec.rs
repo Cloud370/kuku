@@ -157,28 +157,52 @@ fn clamp_skill_tool_result(
     result
 }
 
-fn skill_load_result(
-    pending: &PendingRun,
-    def: &SkillDefinition,
-    location: &str,
-    version: Option<&str>,
-) -> ToolResultEnvelope {
+fn skill_is_admitted(pending: &PendingRun, body: &str) -> bool {
+    if let Some(request) = &pending.request_base {
+        return request.has_skill_admission(body);
+    }
+    pending.context_cursor.as_ref().is_some_and(|cursor| {
+        cursor
+            .segment
+            .as_ref()
+            .into_iter()
+            .flat_map(|segment| &segment.prelude)
+            .chain(cursor.admitted.iter().map(|entry| &entry.message))
+            .any(|message| crate::skill::session::has_admission(message, body))
+    })
+}
+
+fn skill_load_result(pending: &PendingRun, def: &SkillDefinition) -> ToolResultEnvelope {
+    let registry = pending
+        .skill_registry
+        .as_ref()
+        .expect("Skill is registered");
+    let body =
+        crate::skill::session::admission_body(registry, &def.name).expect("Skill is registered");
+    let reused = skill_is_admitted(pending, &body);
     let mut structured = json!({
         "kind": "skill_load",
         "conversation": pending.conversation.as_str(),
         "name": def.name,
         "description": def.description,
         "source": def.source.as_str(),
+        "revision": def.hash,
         "loaded": true,
+        "reused": reused,
     });
-    if let Some(version) = version {
-        structured["version"] = json!(version);
+    if def.source == SkillSource::Builtin {
+        structured["version"] = json!(registry.docs_bundle());
     }
-    ToolResultEnvelope::ok(
-        format!("loaded skill: {}", def.name),
-        format!("<!-- loaded: {location} -->\n\n{}", def.instructions),
-        structured,
-    )
+    let (summary, content) = if reused {
+        let summary = format!(
+            "Skill '{}' is already in your context at this revision.",
+            def.name
+        );
+        (summary.clone(), summary)
+    } else {
+        (format!("loaded skill: {}", def.name), body)
+    };
+    ToolResultEnvelope::ok(summary, content, structured)
 }
 
 fn skill_name(tool_call: &ProviderToolCall) -> &str {
@@ -203,41 +227,7 @@ fn handle_use_skill(
             format!("no skill named '{name}' in the registry"),
         ));
     };
-    let events = current_skill_events(pending)?;
-    let mut skill_names =
-        crate::skill::session::loaded_skill_names(&events, pending.conversation.as_str());
-    let bootstrapped_docs = crate::skill::session::restore_turn_snapshot(
-        &events,
-        pending.conversation.as_str(),
-        pending.turn,
-    )
-    .is_some_and(|snapshot| {
-        snapshot
-            .bootstrap_loaded
-            .iter()
-            .any(|name| name == bundle::NAME)
-    });
-    if !bootstrapped_docs {
-        skill_names.retain(|name| name != bundle::NAME);
-    }
-    if !skill_names.iter().any(|name| name == &def.name) {
-        skill_names.push(def.name.clone());
-        skill_names.sort();
-    }
-    let registry = current_skill_registry(pending);
-    EventStore::open(&pending.events_path)?.append(EventPayload::ContextSkills {
-        conversation: pending.conversation.as_str().to_string(),
-        turn: pending.turn,
-        ts: now_timestamp()?,
-        registry: serde_json::to_value(&registry)?,
-        bootstrap_loaded: skill_names,
-    })?;
-    Ok(skill_load_result(
-        pending,
-        def,
-        def.source_path.as_deref().unwrap_or(""),
-        None,
-    ))
+    Ok(skill_load_result(pending, def))
 }
 
 pub(super) fn uses_skill_bundle(pending: &PendingRun, call: &ProviderToolCall) -> bool {
@@ -288,27 +278,18 @@ pub(super) fn prepare_skill_bundle_operation(
         );
     };
     let action = if let Some(request) = request {
-        let events = current_skill_events(pending)?;
-        if !crate::skill::session::docs_loaded_in_turn(
-            &events,
-            pending.conversation.as_str(),
-            pending.turn,
-            version,
-        ) {
-            return invalid(
-                "Skill not loaded",
-                "Load kuku-docs with use_skill before reading its resources.",
-            );
-        }
         SkillBundleAction::Access(request)
     } else {
         let def = skill_definition(pending, tool_call).expect("bundled Skill was selected");
-        SkillBundleAction::Load(skill_load_result(
-            pending,
-            def,
-            "builtin:kuku-docs",
-            Some(version),
-        ))
+        let result = skill_load_result(pending, def);
+        if result
+            .structured
+            .as_ref()
+            .is_some_and(|facts| facts["reused"] == true)
+        {
+            return Ok(Err(result));
+        }
+        SkillBundleAction::Load(result)
     };
     Ok(Ok(SkillBundleOperation {
         version: version.to_owned(),
@@ -379,15 +360,11 @@ fn handle_list_skills(
     pending: &PendingRun,
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
-    let events = current_skill_events(pending)?;
     let registry = current_skill_registry(pending);
-    let payload = crate::skill::search::list_skills_result(
-        &registry,
-        &events,
-        pending.conversation.as_str(),
-        pending.turn,
-        &tool_call.args,
-    );
+    let payload = crate::skill::search::list_skills_result(&registry, &tool_call.args, |name| {
+        crate::skill::session::admission_body(&registry, name)
+            .is_some_and(|body| skill_is_admitted(pending, &body))
+    });
     let count = payload["skills"].as_array().map_or(0, Vec::len);
     json_result(format!("{count} skills returned"), payload)
 }
@@ -396,15 +373,11 @@ fn handle_search_skills(
     pending: &PendingRun,
     tool_call: &ProviderToolCall,
 ) -> Result<crate::tool::ToolResultEnvelope> {
-    let events = current_skill_events(pending)?;
     let registry = current_skill_registry(pending);
-    let payload = crate::skill::search::search_skills_result(
-        &registry,
-        &events,
-        pending.conversation.as_str(),
-        pending.turn,
-        &tool_call.args,
-    );
+    let payload = crate::skill::search::search_skills_result(&registry, &tool_call.args, |name| {
+        crate::skill::session::admission_body(&registry, name)
+            .is_some_and(|body| skill_is_admitted(pending, &body))
+    });
     let count = payload["skills"].as_array().map_or(0, Vec::len);
     json_result(format!("{count} skill matches returned"), payload)
 }

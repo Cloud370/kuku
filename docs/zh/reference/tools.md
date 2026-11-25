@@ -39,7 +39,7 @@ Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模�
 - `use_skill(skill_name)`
 - `skill_resources(skill_name, action, path?, query?, offset?, limit?)`
 
-用 `list_skills` 或 `search_skills` 找到 Skill，通过 `use_skill` 加载指令。加载内置文档 Skill 后，使用 `skill_resources` 列出、搜索或读取资料。[Skill 资料](skill-format.md#skill-资料)
+用 `list_skills` 或 `search_skills` 找到 Skill，通过 `use_skill` 加载指令。内置文档资料可直接用 `skill_resources` 列出、搜索或读取，不要求先加载正文。[Skill 资料](skill-format.md#skill-资料)
 
 ## Session 协作工具
 

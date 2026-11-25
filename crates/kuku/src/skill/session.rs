@@ -1,5 +1,12 @@
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+use crate::context::{CanonicalMessage, MessageBlock};
+use crate::error::{Error, Result};
 
 use crate::config::DiscoveryConfig;
 use crate::context::revert::filter_rolled_back_events;
@@ -48,67 +55,89 @@ pub(crate) fn build_registry_snapshot(
     Ok(builder.with_docs().build())
 }
 
-pub(crate) fn docs_loaded_in_turn(
-    events: &[StoredEvent],
-    conversation: &str,
-    turn: u64,
-    version: &str,
-) -> bool {
-    let mut calls = BTreeSet::new();
-    filter_rolled_back_events(events)
-        .iter()
-        .any(|event| match &event.payload {
-            EventPayload::ToolCall {
-                conversation: Some(agent),
-                turn: candidate,
-                tool,
-                tool_call_id,
-                ..
-            } if agent == conversation && *candidate == turn && tool == "use_skill" => {
-                calls.insert(tool_call_id);
-                false
-            }
-            EventPayload::ContextSkills {
-                conversation: agent,
-                turn: candidate,
-                registry,
-                bootstrap_loaded,
-                ..
-            } => {
-                agent == conversation
-                    && *candidate == turn
-                    && registry["docs_bundle"] == version
-                    && bootstrap_loaded
-                        .iter()
-                        .any(|name| name == super::bundle::NAME)
-            }
-            EventPayload::ToolResult {
-                conversation: Some(agent),
-                turn: candidate,
-                tool_call_id,
-                status,
-                truncated: false,
-                structured: Some(result),
-                ..
-            } => {
-                agent == conversation
-                    && *candidate == turn
-                    && status == "ok"
-                    && result["kind"] == "skill_load"
-                    && result["name"] == super::bundle::NAME
-                    && result["version"] == version
-                    && calls.contains(tool_call_id)
-            }
-            EventPayload::Unknown(value) => explicitly_loaded_docs(value, conversation, turn),
-            _ => false,
-        })
+/// Render the exact material admitted by both explicit selection and use_skill.
+pub(crate) fn admission_body(registry: &SkillRegistry, name: &str) -> Option<String> {
+    let def = registry.get(name)?;
+    let location = def
+        .source_path
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", def.source.as_str(), def.name));
+    let bundle = (def.source == super::definition::SkillSource::Builtin)
+        .then(|| registry.docs_bundle())
+        .flatten()
+        .unwrap_or("");
+    Some(format!(
+        "<!-- loaded: {location} -->\n<!-- skill-revision: {} {} {bundle} -->\n\n{}",
+        def.source.as_str(),
+        def.hash,
+        def.instructions
+    ))
 }
 
-fn explicitly_loaded_docs(value: &serde_json::Value, conversation: &str, turn: u64) -> bool {
-    value["kind"] == "runtime.step_prepared"
-        && value["agent"] == conversation
-        && value["turn"] == turn
-        && prepared_input_skills(value).any(|name| name == super::bundle::NAME)
+pub(crate) fn has_admission(message: &CanonicalMessage, body: &str) -> bool {
+    message.blocks.iter().any(|block| match block {
+        MessageBlock::Text(text) => {
+            text == body
+                || text
+                    .match_indices("<kuku_skill_input>")
+                    .any(|(offset, tag)| {
+                        let rest = &text[offset + tag.len()..];
+                        rest.strip_prefix(body)
+                            .is_some_and(|end| end.starts_with("</kuku_skill_input>"))
+                    })
+        }
+        // The provider replay intentionally strips most structured tool facts.
+        // Match the actual full body rather than metadata erased by that projection.
+        MessageBlock::ToolResult(result) => {
+            result.status == "ok" && !result.truncated && result.model_content == body
+        }
+        _ => false,
+    })
+}
+
+fn catalog_path(home: &Path, digest: &str) -> PathBuf {
+    home.join("skill-catalogs").join(format!("{digest}.json"))
+}
+
+/// Record just a reference in the journal. The immutable snapshot is shared by
+/// unchanged Turns; reopening a Turn never reads changed workspace files in its place.
+pub(crate) fn persist_catalog(home: &Path, registry: &SkillRegistry) -> Result<Value> {
+    let bytes = serde_json::to_vec(registry)?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let path = catalog_path(home, &digest);
+    if !path.is_file() {
+        let parent = path.parent().expect("catalog has a parent");
+        crate::util::private_directory(parent)?;
+        let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+        staged.write_all(&bytes)?;
+        staged.as_file().sync_all()?;
+        match staged.persist_noclobber(&path) {
+            Ok(_) => {
+                #[cfg(unix)]
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.error.into()),
+        }
+    }
+    Ok(json!({"snapshot": digest}))
+}
+
+fn read_catalog(home: &Path, record: &Value) -> Result<SkillRegistry> {
+    let Some(digest) = record.get("snapshot") else {
+        return Ok(serde_json::from_value(record.clone())?); // Legacy inline snapshots.
+    };
+    let digest = digest
+        .as_str()
+        .filter(|value| value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| Error::InvalidEventStream("invalid Skill catalog reference".into()))?;
+    let bytes = std::fs::read(catalog_path(home, digest))?;
+    if format!("{:x}", Sha256::digest(&bytes)) != digest {
+        return Err(Error::InvalidEventStream(
+            "Skill catalog failed integrity check".into(),
+        ));
+    }
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 fn prepared_input_skills(value: &serde_json::Value) -> impl Iterator<Item = &str> {
@@ -120,40 +149,49 @@ fn prepared_input_skills(value: &serde_json::Value) -> impl Iterator<Item = &str
 }
 
 pub(crate) fn restore_turn_snapshot(
+    home: &Path,
     events: &[StoredEvent],
     conversation: &str,
     turn: u64,
-) -> Option<TurnSkillSnapshot> {
-    let filtered = filter_rolled_back_events(events);
-    restore_turn_snapshot_from_filtered(&filtered, conversation, turn)
+) -> Result<Option<TurnSkillSnapshot>> {
+    find_snapshot(home, events, conversation, |candidate| candidate == turn)
 }
 
 pub(crate) fn previous_snapshot_before_turn(
+    home: &Path,
     events: &[StoredEvent],
     conversation: &str,
     turn: u64,
-) -> Option<TurnSkillSnapshot> {
+) -> Result<Option<TurnSkillSnapshot>> {
+    find_snapshot(home, events, conversation, |candidate| candidate < turn)
+}
+
+fn find_snapshot(
+    home: &Path,
+    events: &[StoredEvent],
+    conversation: &str,
+    matches_turn: impl Fn(u64) -> bool,
+) -> Result<Option<TurnSkillSnapshot>> {
     let filtered = filter_rolled_back_events(events);
-    filtered
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            EventPayload::ContextSkills {
-                conversation: event_conversation,
-                turn: event_turn,
-                registry,
-                bootstrap_loaded,
-                ..
-            } if *event_turn < turn && event_conversation == conversation => {
-                let registry: SkillRegistry = serde_json::from_value(registry.clone()).ok()?;
-                Some(TurnSkillSnapshot {
-                    conversation: event_conversation.clone(),
-                    registry,
-                    bootstrap_loaded: bootstrap_loaded.clone(),
-                })
-            }
-            _ => None,
-        })
+    for event in filtered.into_iter().rev() {
+        if let EventPayload::ContextSkills {
+            conversation: agent,
+            turn,
+            registry,
+            bootstrap_loaded,
+            ..
+        } = &event.payload
+            && agent == conversation
+            && matches_turn(*turn)
+        {
+            return Ok(Some(TurnSkillSnapshot {
+                conversation: agent.clone(),
+                registry: read_catalog(home, registry)?,
+                bootstrap_loaded: bootstrap_loaded.clone(),
+            }));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn loaded_skill_names(events: &[StoredEvent], conversation: &str) -> Vec<String> {
@@ -205,30 +243,6 @@ pub(crate) fn loaded_skill_names(events: &[StoredEvent], conversation: &str) -> 
     }
 
     loaded.into_iter().collect()
-}
-
-fn restore_turn_snapshot_from_filtered(
-    events: &[&StoredEvent],
-    conversation: &str,
-    turn: u64,
-) -> Option<TurnSkillSnapshot> {
-    events.iter().rev().find_map(|event| match &event.payload {
-        EventPayload::ContextSkills {
-            conversation: event_conversation,
-            turn: event_turn,
-            registry,
-            bootstrap_loaded,
-            ..
-        } if *event_turn == turn && event_conversation == conversation => {
-            let registry: SkillRegistry = serde_json::from_value(registry.clone()).ok()?;
-            Some(TurnSkillSnapshot {
-                conversation: event_conversation.clone(),
-                registry,
-                bootstrap_loaded: bootstrap_loaded.clone(),
-            })
-        }
-        _ => None,
-    })
 }
 
 #[cfg(test)]
@@ -301,7 +315,7 @@ mod tests {
         ];
 
         assert_eq!(
-            restore_turn_snapshot(&events, "main", 2),
+            restore_turn_snapshot(Path::new("unused"), &events, "main", 2).unwrap(),
             Some(TurnSkillSnapshot {
                 conversation: "main".to_string(),
                 registry: skill_registry(&["beta"]),
@@ -309,7 +323,7 @@ mod tests {
             })
         );
         assert_eq!(
-            previous_snapshot_before_turn(&events, "main", 2),
+            previous_snapshot_before_turn(Path::new("unused"), &events, "main", 2).unwrap(),
             Some(TurnSkillSnapshot {
                 conversation: "main".to_string(),
                 registry: skill_registry(&["alpha"]),
