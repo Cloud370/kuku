@@ -1,7 +1,6 @@
 mod compaction;
 mod dispatch;
 mod resolve;
-pub(super) use resolve::usable_model_routes;
 mod retry;
 
 use dispatch::dispatch_provider_step;
@@ -55,7 +54,6 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         load_memory_sources(&pending.kuku_home, &pending.workspace, max_bytes)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
-    let models = resolve::usable_model_routes(&pending.config, false, None);
 
     let catalog = if let Some(dir) = &pending.prompts_dir {
         crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
@@ -123,7 +121,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             project_memory,
             history,
             tools,
-            models,
+            models: Vec::new(),
             runtime_blocks,
             enable_memory: true,
             agent_instructions: behavior,

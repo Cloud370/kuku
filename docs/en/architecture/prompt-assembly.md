@@ -16,7 +16,7 @@ The execution context includes the workspace root and the platform of the proces
 
 ## Prepare the next Step
 
-Newly rendered frozen preludes put selected tool guidance first, followed by Agent behavior, project policy, and global and project Memory. Project policy holds workspace instructions, workspace and platform facts, and the model catalog. Guidance follows the Agent's available tools. Behavior precedes workspace policy so workspaces with the same Agent definition can share that prefix. Resumed and successor segments that reuse a recorded prelude preserve its order.
+Newly rendered frozen preludes put selected tool guidance first, followed by Agent behavior, project policy, and global and project Memory. Project policy holds workspace instructions and workspace and platform facts. The configured model catalog is queried on demand with `list_models`, independently of the frozen prelude. Guidance follows the Agent's available tools. Behavior precedes workspace policy so workspaces with the same Agent definition can share that prefix. Resumed and successor segments that reuse a recorded prelude preserve its order.
 
 1. The active cursor reads new committed events for this Agent and retains the previously admitted prefix.
 2. Newly selected user input, assistant messages, tool-result views and runtime messages are recorded in `runtime.context_admitted`. A large tool result contributes its bounded model view while the full retained output remains available to the caller.
@@ -54,14 +54,6 @@ Never guess what the image contains. Attribute any prior observation that you re
 {% endif %}
 ```
 
-The same renderer can present a list of candidate models without constructing the lines in Rust.
-
-```jinja
-{% for model in models %}
-- {{ model.connection }} / {{ model.model }} can receive {{ model.effective_input_modalities | join(", ") }}.
-{% endfor %}
-```
-
 ### Facts and placement
 
 | Fact | Meaning |
@@ -76,7 +68,7 @@ The same renderer can present a list of candidate models without constructing th
 
 Expose facts from their existing owners. For example, the model resolver merges manual declarations with discovered values, and the tool registry resolves the actual tool set. Add a named fact when a template needs a new runtime decision. Keep decisions involving side effects, such as authorization and dispatch, in the runtime.
 
-Choose template data by its placement. System and prelude assets receive segment facts, such as the Agent's model, tools and workspace. A Step-local asset can also use changing facts, such as a permission mode. Put frequently changing guidance in the Step suffix. The `blocks/models.md` asset renders the exact model pairs into `models_rendered` for the project policy's `<kuku_models>` block. A catalog preset receives its name, configured connection and model, tool names, and workspace when the runtime materializes its instructions. Later Steps reuse those instructions. Direct Agent instructions are inserted as text.
+Choose template data by its placement. System and prelude assets receive segment facts, such as the Agent's model, tools and workspace. A Step-local asset can also use changing facts, such as a permission mode. Put frequently changing guidance in the Step suffix. Registered model choices come from `list_models` and are validated when used; a reload does not rewrite the earlier prefix. A catalog preset receives its name, configured connection and model, tool names, and workspace when the runtime materializes its instructions. Later Steps reuse those instructions. Direct Agent instructions are inserted as text.
 
 ### Rendering and verification
 

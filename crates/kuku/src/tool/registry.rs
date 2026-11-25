@@ -205,8 +205,8 @@ fn registry(skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
                 "properties": {
                     "url": {"type": "string", "description": "The URL to fetch."},
                     "prompt": {"type": "string", "description": "How to process the content."},
-                    "connection": {"type": "string", "description": "Named connection for summarization from <kuku_models>."},
-                    "model": {"type": "string", "description": "Exact model ID registered on that connection in <kuku_models>."}
+                    "connection": {"type": "string", "description": "Named connection for summarization. Use list_models if uncertain."},
+                    "model": {"type": "string", "description": "Exact configured model ID on that connection."}
                 },
                 "required": ["url", "prompt", "connection", "model"]
             }),
@@ -215,6 +215,7 @@ fn registry(skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
             "read",
         ),
     ];
+    tools.push(builtin::list_models::definition());
     tools.push(builtin::query_session::query_session_definition());
     if skills_enabled {
         tools.push(builtin::list_skills_definition());
@@ -451,6 +452,7 @@ mod tests {
                 "run_command",
                 "fetch_url",
                 "fetch_web",
+                "list_models",
                 "query_session",
             ]
         );

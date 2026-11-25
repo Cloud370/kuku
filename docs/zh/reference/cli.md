@@ -264,11 +264,12 @@ kuku delete <SESSION_ID>
 kuku config show [--json]
 kuku config models [--discover --connection NAME]
 kuku config validate
+kuku config test --connection NAME --model ID [--check text|image|tools] [--reasoning-effort LEVEL]
 kuku config set <KEY> <VALUE>
 kuku config set --patch <TOML>
 ```
 
-四个命令按同一顺序选择本地配置：
+这些命令按同一顺序选择本地配置：
 
 1. `--config PATH` 指定的文件。
 2. 该数据目录下正在运行的受管服务所用的配置文件。
@@ -279,6 +280,12 @@ kuku config set --patch <TOML>
 `validate` 本地检查文件和模型设置，无需发出 Provider 请求。通过 `service.state` 判断本文件版本是否已加载（`loaded`）、有待重载（`pending_reload`）、指向不同路径（`different_path`）、服务已停止（`stopped`）或状态未知（`unknown`）。服务停止时也能运行配置命令。再次校验可核对已加载的版本。[配置 kuku](../start/configuration.md)
 
 `models` 列出已配置的连接和模型，每项包含 `selection` 或 `error`。加上 `--discover --connection NAME` 后查询指定连接的模型列表，在 `models[].id` 中返回精确 ID。
+
+`test` 对已注册的一组连接和精确模型 ID 执行与交互式设置相同的合成探针。`--check text`（默认）和 `--check image` 各发送一次模型请求。`--check tools` 最多发送两次：先请求合成工具调用，模型确实返回调用时再提交工具结果。这些请求可能产生 Provider 费用。`tested` 只表示探针返回了证据，不表示能力通过验证；请分别查看 `evidence.text_returned`、`evidence.image_match` 或 `evidence.tool_round_trip`。
+
+文本探针使用已配置的推理设置，也可用 `--reasoning-effort LEVEL` 临时覆盖。探针使用自身的输出预算，不使用 Agent 的输出限制。运行 `kuku --config ./draft.toml config test --connection NAME --model ID` 可以试验草稿；该命令不写入配置，也不启动服务。
+
+受管服务向 Agent 提供配置命令时，会给出 CLI 的绝对路径和要求的构建版本。过旧或报告不同构建版本的 CLI 会在执行命令前拒绝调用。这里核对的是报告的版本，不校验二进制完整性。找不到 CLI，或服务未提供受管 CLI 时，请在服务主机上使用已核实的 CLI，不要从 `PATH` 猜测。
 
 `set KEY VALUE` 可修改一个标量。TOML 路径含带引号的模型 ID 时，请给整个路径加引号，例如 `kuku config set 'model.work."your-model-id".max_output_tokens' 8192`。要提交完整改动或创建缺失文件，用 `--patch` 将 TOML 文本作为一个参数传入。
 

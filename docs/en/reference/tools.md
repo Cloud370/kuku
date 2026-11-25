@@ -13,6 +13,7 @@ This page describes the default public Session tool surface used by CLI and serv
 | `read_output` | `id` or `name` | `offset`, `limit`, `search` | `read` |
 | `search_output` | `text` and either `id` or `name` | `stream`, `offset`, `limit` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
+| `list_models` | none | none | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
@@ -52,7 +53,7 @@ Use `list_skills` or `search_skills` for discovery, `use_skill` for a Skill's in
 
 `create_agent` creates a stable, flat Session-local address with independent context; an optional `preset` supplies the contact card. Supply the instructions and task material the recipient needs. `send_message` addresses an existing Agent and returns a durable delivery receipt, not its final work result. Its `wake` defaults to true; false queues the input for explicit advancement. `list_agents` returns a compact status list. Pass `wait_for` with one Agent address to wait up to 30 seconds for its current execution and retrieve its settled reply. A timeout returns the current state. A settled reply can include `last_request` with the model and the requested and provider-reported service tiers. Fields without available evidence are omitted.
 
-Supply `connection` and the exact `model` ID together for an explicit selection. Omit both to use the preset's selection or the Session default. Agents created with this tool receive `send_message` and `list_agents` alongside their selected or preset tools. An empty `tools` array selects only those two tools. The model catalog includes declared and effective modalities for each pair. The creation receipt reports the effective tool list, input and output modalities, and image input support. Hosts use the SDK to set an exact tool list and provider settings.
+Supply `connection` and the exact `model` ID together for an explicit selection. Omit both to use the preset's selection or the Session default. Use `list_models()` if the route is uncertain or configuration changed. It lists registered routes from the current runtime configuration, with reasoning, service tiers, declared media and effective image input. It has no search or pagination parameters. If an exceptionally large catalog does not fit, it reports how many rows were omitted; `kuku config models` lists the configured pairs. It neither probes a provider nor changes the Session default. Creation validates the exact selection again. Agents created with this tool receive `send_message` and `list_agents` alongside their selected or preset tools. An empty `tools` array selects only those two tools. The creation receipt reports the effective tool list, input and output modalities, and image input support. Hosts use the SDK to set an exact tool list and provider settings.
 
 `ask_user` persists a question and yields at the current tool-batch boundary. The host replies to its exact request identity through the SDK, CLI `reply`, or server response endpoint. Question and authorization waiting semantics are defined in [Sessions](../how-it-works/sessions.md#waiting-and-replies).
 

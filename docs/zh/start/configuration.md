@@ -64,6 +64,7 @@ kuku config show
 kuku config validate
 kuku config models
 kuku config models --discover --connection work
+kuku config test --connection work --model MODEL_ID
 ```
 
 把 `work` 换成已配置的连接名。从脚本创建或修改配置的示例见[运行任务](../guides/run-a-task.md)。

@@ -2,17 +2,20 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use kuku::adapter::{ModelSelection, discover_models, inspect_model, validate_model_config};
+use kuku::adapter::{
+    ModelSelection, ModelTrial, TRIAL_OUTPUT_TOKENS, discover_models, inspect_model,
+    trial_model_with_route_request, validate_model_config,
+};
 use kuku::config::{
-    Config, ModelRef, config_sha256, config_text_with_value_in_env, parse_config_text_with_env,
-    patch_config_text_with_loaded_default, publish_config,
+    Config, ModelRef, RequestedOutput, config_sha256, config_text_with_value_in_env,
+    parse_config_text_with_env, patch_config_text_with_loaded_default, publish_config,
 };
 use kuku::session::AgentConfig;
 use kuku_client::local::LocalService;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs};
+use crate::cli_args::{ConfigArgs, ConfigSubcommand, ConnectionArgs, ModelTestKind};
 use crate::commands::CliResult;
 
 #[derive(Serialize)]
@@ -281,6 +284,21 @@ async fn execute(
             validate_models(&config)?;
             Ok(json!({"status":"valid","default_model":config.default_model()}))
         }
+        ConfigSubcommand::Test {
+            connection,
+            model,
+            check,
+            reasoning_effort,
+        } => {
+            let config = parse_config_text_with_env(text, environment)?.resolve()?;
+            test_model(
+                &config,
+                ModelRef { connection, model },
+                check,
+                reasoning_effort,
+            )
+            .await
+        }
         ConfigSubcommand::Set { key, value, patch } => {
             let updated = match (key, value, patch) {
                 (_, _, Some(patch)) => {
@@ -317,6 +335,80 @@ async fn execute(
             Ok(json!({"status":"updated","default_model":config.default_model()}))
         }
     }
+}
+
+async fn test_model(
+    config: &Config,
+    route: ModelRef,
+    check: ModelTestKind,
+    reasoning_effort: Option<String>,
+) -> Result<Value, ConfigError> {
+    if reasoning_effort.is_some() && !matches!(check, ModelTestKind::Text) {
+        return Err(ConfigError::new(
+            "invalid",
+            "config_arguments",
+            Some("reasoning_effort".into()),
+            "--reasoning-effort is supported only for a text test".into(),
+        ));
+    }
+    let provider = config.provider(&route.connection).ok_or_else(|| {
+        ConfigError::new(
+            "invalid",
+            "unknown_connection",
+            Some("connection".into()),
+            format!("connection {:?} is not configured", route.connection),
+        )
+    })?;
+    let registered = config.model(&route).ok_or_else(|| {
+        ConfigError::new(
+            "invalid",
+            "unknown_model",
+            Some(route.config_path()),
+            "select an exact registered model; discover IDs with config models --discover".into(),
+        )
+    })?;
+    let service_tier = registered.service_tier.clone();
+    let (check, trial) = match check {
+        ModelTestKind::Text => {
+            // Resolve portable `think` using the actual test's settings, not Session defaults.
+            let settings = inspect_model(
+                config,
+                &AgentConfig {
+                    connection: Some(route.connection.clone()),
+                    model: Some(route.model.clone()),
+                    reasoning_effort,
+                    max_output_tokens: Some(TRIAL_OUTPUT_TOKENS),
+                    output: Some(RequestedOutput::Text),
+                    ..AgentConfig::default()
+                },
+            )
+            .map_err(|error| invalid_model_settings(&route, error))?
+            .settings;
+            (
+                "text",
+                ModelTrial::Text {
+                    effort: settings.reasoning_effort,
+                    service_tier: settings.service_tier,
+                },
+            )
+        }
+        ModelTestKind::Image => ("image", ModelTrial::ImageInput { service_tier }),
+        ModelTestKind::Tools => ("tools", ModelTrial::Tools { service_tier }),
+    };
+    let evidence =
+        trial_model_with_route_request(provider, &route.model, trial, registered.request.as_ref())
+            .await
+            .map_err(|error| {
+                ConfigError::new(
+                    "error",
+                    "model_test_failed",
+                    Some(route.config_path()),
+                    error.to_string(),
+                )
+            })?;
+    Ok(
+        json!({"status":"tested","connection":route.connection,"model":route.model,"check":check,"evidence":evidence}),
+    )
 }
 
 fn validate_models(config: &Config) -> Result<(), ConfigError> {

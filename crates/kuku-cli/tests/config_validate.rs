@@ -317,6 +317,209 @@ fn discovers_exact_model_ids_from_only_the_requested_connection() {
     catalog.assert_hits(1);
 }
 
+const PROBE_MODEL: &str = "claude-sonnet-4-6";
+const PROBE_SECRET: &str = "mock-secret-from-draft";
+
+fn draft_probe(home: &Path, draft: &Path, build: &str, model: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_kuku-cli"))
+        .env("KUKU_HOME", home)
+        .args(["--require-build", build, "--config"])
+        .arg(draft)
+        .args(["config", "test", "--connection", "native", "--model", model])
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn probe_config(endpoint: &str) -> String {
+    format!(
+        r#"{FIXTURE_CONFIG}
+[provider.native]
+format = "anthropic"
+profile = "anthropic"
+base_url = "{endpoint}/v1"
+api_key = "{PROBE_SECRET}"
+
+[model.native."{PROBE_MODEL}"]
+reasoning_effort = "unsupported-session-effort"
+service_tier = "standard_only"
+"#
+    )
+}
+
+#[test]
+fn draft_text_probe_checks_build_pair_and_final_trial_settings_without_writing() {
+    let mock = MockServer::start();
+    let request = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .header("x-api-key", PROBE_SECRET)
+            .json_body_partial(
+                json!({
+                    "model": PROBE_MODEL,
+                    "max_tokens": kuku::adapter::TRIAL_OUTPUT_TOKENS,
+                    "output_config": {"effort": "medium"},
+                    "service_tier": "standard_only"
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "content": [{"type":"text","text":"377"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 15, "output_tokens": 1}
+        }));
+    });
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().canonicalize().unwrap();
+    let draft = dir.join("draft config.toml");
+    let default_path = dir.join("config.toml");
+    let text = probe_config(&mock.base_url());
+    fs::write(&default_path, FIXTURE_CONFIG).unwrap();
+    fs::write(&draft, &text).unwrap();
+    let opts = ["--reasoning-effort", "medium"];
+    let build = kuku::BUILD_VERSION;
+
+    let mismatch = draft_probe(&dir, &draft, "fixture-different-build", PROBE_MODEL, &opts);
+    assert_eq!(mismatch.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&mismatch.stderr).contains("does not match the running service")
+    );
+    assert!(mismatch.stdout.is_empty());
+    let unknown = draft_probe(&dir, &draft, build, "claude-sonnet-4-6-typo", &opts);
+    assert_eq!(
+        "unknown_model",
+        report(&unknown, 1, &draft)["diagnostics"][0]["code"]
+    );
+    let bad_effort = draft_probe(&dir, &draft, build, PROBE_MODEL, &[]);
+    assert_eq!(
+        "invalid_model_settings",
+        report(&bad_effort, 1, &draft)["diagnostics"][0]["code"]
+    );
+    request.assert_hits(0);
+
+    let outcome = draft_probe(&dir, &draft, build, PROBE_MODEL, &opts);
+    let result = report(&outcome, 0, &draft);
+    assert_eq!("tested", result["status"]);
+    assert_eq!("text", result["check"]);
+    assert_eq!("native", result["connection"]);
+    assert_eq!(PROBE_MODEL, result["model"]);
+    assert_eq!(true, result["evidence"]["text_returned"]);
+    assert_eq!("stopped", result["service"]["state"]);
+    request.assert_hits(1);
+    assert!(!String::from_utf8_lossy(&outcome.stdout).contains(PROBE_SECRET));
+    assert_eq!(text, fs::read_to_string(&draft).unwrap());
+    assert_eq!(FIXTURE_CONFIG, fs::read_to_string(&default_path).unwrap());
+    assert!(!dir.join("service").exists());
+}
+
+#[test]
+fn model_probe_failure_redacts_echoed_credentials_in_stdout_and_stderr() {
+    let mock = MockServer::start();
+    let request = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .header("x-api-key", PROBE_SECRET);
+        then.status(401).json_body(json!({
+            "error": {"type": "authentication_error", "message": format!("bad key {PROBE_SECRET}")}
+        }));
+    });
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().canonicalize().unwrap();
+    let draft = dir.join("draft.toml");
+    fs::write(&draft, probe_config(&mock.base_url())).unwrap();
+    let outcome = draft_probe(
+        &dir,
+        &draft,
+        kuku::BUILD_VERSION,
+        PROBE_MODEL,
+        &["--reasoning-effort", "medium"],
+    );
+    let result = report(&outcome, 1, &draft);
+    assert_eq!("model_test_failed", result["diagnostics"][0]["code"]);
+    assert_eq!("stopped", result["service"]["state"]);
+    request.assert_hits(1);
+    for stream in [&outcome.stdout, &outcome.stderr] {
+        let stream = String::from_utf8_lossy(stream);
+        assert!(stream.contains("<redacted>"), "{stream}");
+        assert!(!stream.contains(PROBE_SECRET));
+    }
+}
+
+#[test]
+fn image_and_tool_probes_do_not_inherit_session_reasoning() {
+    let mock = MockServer::start();
+    let image = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .body_contains("image/png")
+            .json_body_partial(
+                json!({
+                    "model": PROBE_MODEL,
+                    "max_tokens": kuku::adapter::TRIAL_OUTPUT_TOKENS,
+                    "thinking": {"type": "disabled"},
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "content":[{"type":"text","text":"not a color grid"}],
+            "stop_reason": "end_turn"
+        }));
+    });
+    let tool_reply = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .body_contains("\"tool_result\"")
+            .body_contains("\"content\":\"kuku-");
+        then.status(200).json_body(json!({
+            "content":[{"type":"text","text":"not the supplied result"}],
+            "stop_reason": "end_turn"
+        }));
+    });
+    let tool_call = mock.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .body_contains("\"tools\"")
+            .body_contains("kuku_setup_check")
+            .matches(|request| {
+                let body: Value = serde_json::from_slice(request.body.as_deref().unwrap()).unwrap();
+                body["messages"]
+                    .as_array()
+                    .is_some_and(|messages| messages.len() == 1)
+                    && body.get("thinking").is_none()
+            });
+        then.status(200).json_body(json!({
+            "content":[{
+                "type":"tool_use","id":"probe-call","name":"kuku_setup_check","input":{}
+            }],
+            "stop_reason":"tool_use"
+        }));
+    });
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().canonicalize().unwrap();
+    let draft = dir.join("draft.toml");
+    let text = probe_config(&mock.base_url());
+    fs::write(&draft, &text).unwrap();
+    let run = |args: &[&str]| draft_probe(&dir, &draft, kuku::BUILD_VERSION, PROBE_MODEL, args);
+    let rejected = run(&["--check", "image", "--reasoning-effort", "medium"]);
+    assert_eq!(
+        "config_arguments",
+        report(&rejected, 1, &draft)["diagnostics"][0]["code"]
+    );
+    assert_eq!(
+        false,
+        report(&run(&["--check", "image"]), 0, &draft)["evidence"]["image_match"]
+    );
+    assert_eq!(
+        false,
+        report(&run(&["--check", "tools"]), 0, &draft)["evidence"]["tool_round_trip"]
+    );
+    image.assert_hits(1);
+    tool_call.assert_hits(1);
+    tool_reply.assert_hits(1);
+    assert_eq!(text, fs::read_to_string(&draft).unwrap());
+    assert!(!dir.join("service").exists());
+}
+
 #[test]
 fn removing_a_model_with_an_environment_alias_removes_its_registration() {
     let home = tempfile::tempdir().unwrap();

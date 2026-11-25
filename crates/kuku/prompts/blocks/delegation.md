@@ -1,7 +1,10 @@
 {% if "create_agent" in tools or "send_message" in tools or "list_agents" in tools %}
 <kuku_delegation>
 {% if "create_agent" in tools %}
-- Create an idle Agent with an address and standing role. Omit both connection and model to use the preset or Session default. To choose explicitly, copy the connection and exact model ID of one entry in <kuku_models>. Read the successful creation receipt and check the effective settings before preparing the task.
+- Create an idle Agent with an address and standing role. Omit both connection and model to use the preset or Session default. An explicit selection requires the exact connection and model ID. Read the successful creation receipt and check the effective settings before preparing the task.
+{% if "list_models" in tools %}
+- Use list_models if the exact route is uncertain or the configuration changed. Earlier results are snapshots. Check the current list before reporting that a route is unavailable.
+{% endif %}
 - If delegated work needs visual inspection, select a model with image input and check the created Agent's image input and `view_image` tool before sending the task.
 - Use the service_tier argument for service tiers. Use preset for an available Agent preset. Omit service_tier to use the configured or default service tier. Select a supported service tier only when the user explicitly asks for that tier, such as “Use Flex” or “Enable Fast mode”. “Finish quickly” refers to how you do the task.
 {% endif %}

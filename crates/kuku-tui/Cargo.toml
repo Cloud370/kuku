@@ -41,6 +41,11 @@ httpmock = "0.7"
 kuku-server = { path = "../kuku-server" }
 vt100 = "0.18"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# A resize can strand a simultaneous keystroke in the default Mio backend.
+# Use Crossterm's level-triggered poll backend: crossterm-rs/crossterm#1126.
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
+
 [target.'cfg(windows)'.dependencies]
 termina = "0.4"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }

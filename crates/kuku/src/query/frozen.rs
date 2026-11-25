@@ -479,11 +479,7 @@ fn initial_segment(
         project_memory,
         history: Vec::new(),
         tools: tools.to_vec(),
-        models: super::provider::usable_model_routes(
-            &pending.config,
-            pending.query.model_adapter.is_none(),
-            pending.query.runtime_limits.max_output_tokens_per_request,
-        ),
+        models: Vec::new(),
         runtime_blocks: None,
         enable_memory: true,
         agent_instructions: behavior.into(),

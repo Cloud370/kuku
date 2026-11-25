@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -23,6 +24,37 @@ const STREAM_SIGNATURE: &str = concat!(
     "These readers require complete, decodable output. ",
 );
 
+const CONFIG_CLI_GUIDANCE: &str = include_str!("../../../prompts/tools/config-cli.md");
+
+pub(super) fn describe_config_cli(
+    command: &mut ToolDefinition,
+    program: Option<&Path>,
+    data_dir: &Path,
+) {
+    let mut paragraphs = CONFIG_CLI_GUIDANCE.lines().filter(|line| !line.is_empty());
+    let managed = paragraphs.next().expect("managed CLI guidance");
+    let fallback = paragraphs.next().expect("unmanaged CLI guidance");
+    let common = paragraphs.next().expect("config command guidance");
+    let invocation = program
+        .filter(|path| path.is_absolute() && data_dir.is_absolute())
+        .and_then(Path::to_str)
+        .zip(data_dir.to_str())
+        .map(|(program, data_dir)| {
+            json!({
+                "program": program,
+                "args": ["--require-build", crate::BUILD_VERSION, "--data-dir", data_dir]
+            })
+        });
+    let guidance = invocation.map_or_else(
+        || fallback.to_owned(),
+        |invocation| managed.replace("{{ invocation }}", &invocation.to_string()),
+    );
+    // The nested command adapter keeps this property, including in tools.methods.
+    let property = &mut command.input_schema["properties"]["program"]["description"];
+    let original = property.as_str().unwrap_or_default();
+    *property = json!(format!("{original}\n{guidance} {common}"));
+}
+
 pub(super) fn describe_script_command(definition: &mut ToolDefinition, can_read: bool) {
     if let Some(properties) = definition.input_schema["properties"].as_object_mut() {
         properties.remove("background");
@@ -33,7 +65,10 @@ pub(super) fn describe_script_command(definition: &mut ToolDefinition, can_read:
     } else {
         "Larger captures still return a reference. This Agent has no read_output access. "
     };
-    definition.description = [COMMAND_SIGNATURE, STREAM_SIGNATURE, access].concat();
+    let program = definition.input_schema["properties"]["program"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    definition.description = [COMMAND_SIGNATURE, STREAM_SIGNATURE, access, program, "\n"].concat();
 }
 
 struct Draft {

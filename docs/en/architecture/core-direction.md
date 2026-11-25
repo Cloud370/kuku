@@ -52,6 +52,8 @@ Support **OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages** as
 
 Use one resolver for the SDK, user interfaces, main Agents, and subagents. Presets define behavior, tools, and optional initial model defaults. A model is identified by its connection name and exact model ID. Reusable model settings belong to that pair. The configured default is explicit. Agent choices apply to that Agent, while changes to the global default apply to new Sessions.
 
+Expose the current configured model catalog through a parameterless read-only tool instead of automatically injecting it into the immutable Prompt prefix. Validate explicit selections against the current runtime configuration. Listing models does not send provider requests or change the Session default.
+
 Adapters describe and validate available reasoning and service options. These are independent choices: enabling supported acceleration does not implicitly change the model or reasoning. Do not impose a universal `fast/ultrafast` ladder. Unsupported explicit choices fail visibly. Record requested settings, resolved settings sent, and provider-reported settings when available; unavailable confirmation stays unknown.
 
 New Agents start with **independent context by default**, without forking the parent's transcript. A Harness explicitly chooses task material and references. Reusing an Agent preserves its own accumulated context. Resource defaults do not imply context inheritance; a route change must not silently carry incompatible provider-specific settings.

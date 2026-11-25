@@ -373,7 +373,7 @@ fn model_definition_advertises_only_selected_script_methods() {
     let mut tools = crate::tool::builtin_registry(false);
     tools.retain(|tool| tool.name == "read_file");
     tools.push(super::super::definition());
-    super::super::describe_selected_tools(&mut tools);
+    super::super::describe_selected_tools(&mut tools, None, std::path::Path::new("."));
     let script = tools.iter().find(|tool| tool.name == "run_js").unwrap();
     assert!(
         script
@@ -395,6 +395,67 @@ fn model_definition_advertises_only_selected_script_methods() {
         "boolean",
         script.input_schema["properties"]["background"]["type"]
     );
+}
+
+#[test]
+fn managed_cli_prefix_survives_direct_and_script_command_descriptions() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("service data");
+    let program = root.path().join("CLI path 空格").join("kuku");
+    let definitions = |cli| {
+        let mut tools = vec![
+            crate::tool::registry::run_command_definition(&[], true),
+            super::super::definition(),
+        ];
+        super::super::describe_selected_tools(&mut tools, cli, &data_dir);
+        tools
+    };
+    let managed = definitions(Some(program.as_path()));
+    let methods = super::super::method_definitions(|op| {
+        managed.iter().find(|tool| tool.name == op.name()).cloned()
+    });
+    let nested = methods
+        .iter()
+        .find(|tool| tool.name == "run_command")
+        .unwrap();
+    for description in [
+        managed[0].input_schema["properties"]["program"]["description"]
+            .as_str()
+            .unwrap(),
+        managed[1].description.as_str(),
+        nested.description.as_str(),
+    ] {
+        let (_, prefix) = description
+            .split_once("Kuku config invocation prefix: ")
+            .unwrap();
+        let got = serde_json::Deserializer::from_str(prefix)
+            .into_iter::<serde_json::Value>()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            got,
+            serde_json::json!({
+                "program": program,
+                "args": ["--require-build", crate::BUILD_VERSION, "--data-dir", data_dir],
+            })
+        );
+        for operation in [
+            "config validate",
+            "config models --discover",
+            "config test",
+            "--config PATH",
+        ] {
+            assert!(description.contains(operation), "{operation}");
+        }
+    }
+    for no_cli in [None, Some(std::path::Path::new("kuku"))] {
+        let tools = definitions(no_cli);
+        let script = &tools[1].description;
+        assert!(!script.contains("Kuku config invocation prefix:"));
+        assert!(script.contains("No managed kuku CLI is declared."));
+        assert!(script.contains("do not guess a binary from PATH"));
+    }
 }
 
 #[tokio::test]

@@ -204,7 +204,11 @@ impl Session {
         } else {
             available
         };
-        crate::tool::run_js::describe_selected_tools(&mut selected_tools);
+        crate::tool::run_js::describe_selected_tools(
+            &mut selected_tools,
+            self.inner.options.managed_cli.as_deref(),
+            &self.inner.options.data_dir,
+        );
         Ok(selected_tools)
     }
 
