@@ -16,6 +16,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Version injection at build time (`kuku --version`)
 - Makefile with build-web, build, build-all targets
 
+## [0.1.0-alpha.5]
+
+这版把模型配置、内置帮助和中断后的继续操作接到同一套终端流程。首次打开 kuku 时，如果尚未配置模型，会直接进入配置页面。
+
+### 新增功能
+
+- **查看和验证模型路线。** `kuku config models` 查看已配置的连接和精确模型 ID，也可查询指定连接的模型列表。`kuku config validate` 本地校验配置并显示服务加载状态；`kuku config test` 可实际探测文本、图像输入或工具调用。探针可针对草稿配置运行，不会保存配置或启动服务，模型请求可能产生费用。
+- **Agent 按需查看当前模型目录。** `list_models` 从运行配置列出连接、精确模型 ID 和能力，不用用户猜模型名，也不会发请求探测上游。
+- **用脚本运行和继续任务。** `kuku run --prompt-file PATH` 从文件读取提示词，使用 `-` 可从标准输入读取。用 `--session` 指定会话，或用 `--continue` 继续最近的会话。可分别读取最终结果或逐行事件。
+- **随服务提供版本匹配的帮助。** 从 `/` 菜单选择 `kuku-docs`，或直接提问怎么恢复 Session、配置模型。Agent 从真实目录用普通文件工具读取资料，沿用原有授权规则；恢复既有 Turn 时仍使用当时的版本。
+
+### 体验改进
+
+- 默认 Session 的首轮目录保留所有 Skill 名称；描述放得下就完整保留，缩短时会明确标记。新增、更新和移除在下一轮通知，不改写已冻结的前缀。
+- 对应版本的 Skill 正文已在上下文中时不重复加载。用户显式选中的 Skill 在当前 Turn 压缩后仍可用；轮次进行中安装新 Skill 不会打断当前工作。
+- 缺少模型配置与服务连接失败会分别提示，避免把首次设置误当成服务离线。
+
+### Bug 修复
+
+- 修复中断后回退再发送时，消息一直卡在队列的问题。排队期间被删除的 Skill 不会触发模型请求，重开 Session 后仍可回退对应输入。
+- 修复 macOS 终端调整窗口大小后，紧接着的快捷键可能被延迟到下一次输入才交付的问题。
+
+### 安装与升级
+
+- **旧模型配置需要更新。** 默认模型用 `default_model = { connection = "…", model = "…" }` 指定，模型设置改用 `[model.<连接名>."<模型 ID>"]`。脚本显式选模型时同时传 `--connection` 和 `--model`。`kuku init` 已移除，直接运行 `kuku`，或在 TUI 用 `/model`。
+- **脚本输出有变化。** `kuku run --json` 现在只写一个最终结果；需要 alpha.4 的逐行 JSON 事件时，改用 `kuku run --stream-json`。
+- 预发布覆盖 Linux x86-64 / ARM64、Apple Silicon macOS 和 Windows x86-64。安装后运行 `kuku --version` 核对版本。升级已有安装时可参阅[升级指南](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.5/docs/zh/guides/upgrade-kuku.md)。
+- 若要跟踪后续预发布，可设置 `kuku config set update.channel alpha`。
+
 ## [0.1.0-alpha.4]
 
 这版可以在终端粘贴图片、用 ChatGPT 订阅登录，并在对话中切换模型和工作区权限。Linux ARM64 首次提供安装包。

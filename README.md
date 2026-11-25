@@ -13,16 +13,16 @@ kuku stays light enough that a 371 MiB RAM ARM64 board can open and continue a 1
 
 ## Install
 
-Copy the block for your platform to install published release [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4). Follow that release's guide after installing it. [Release guide](https://github.com/Cloud370/kuku/tree/v0.1.0-alpha.4#quick-start) · [中文安装](docs/zh/start/install.md#安装已发布版本)
+Copy the block for your platform to install published release [`v0.1.0-alpha.5`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.5). Follow that release's guide after installing it. [Release guide](https://github.com/Cloud370/kuku/tree/v0.1.0-alpha.5#quick-start) · [中文安装](docs/zh/start/install.md#安装已发布版本)
 
 ### Linux and macOS
 
 Linux x86-64, Linux ARM64, and Apple Silicon Macs.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.4/scripts/install.sh | sh -s -- \
-  --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.4/latest.json \
-  --version 0.1.0-alpha.4
+curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.5/scripts/install.sh | sh -s -- \
+  --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.5/latest.json \
+  --version 0.1.0-alpha.5
 ```
 
 ### Windows
@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.4/script
 Run in PowerShell on Windows x86-64.
 
 ```powershell
-$kukuTag = 'v0.1.0-alpha.4'
+$kukuTag = 'v0.1.0-alpha.5'
 $kukuInstaller = Invoke-RestMethod "https://raw.githubusercontent.com/Cloud370/kuku/$kukuTag/scripts/install.ps1"
 & ([scriptblock]::Create($kukuInstaller)) -Source "https://github.com/Cloud370/kuku/releases/download/$kukuTag/latest.json" -Version ($kukuTag.Substring(1))
 ```
