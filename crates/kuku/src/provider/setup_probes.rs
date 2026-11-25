@@ -135,6 +135,37 @@ pub struct ProbeBatch {
     cooldowns: Vec<(Arc<ProviderConfig>, Instant)>,
 }
 
+/// Supply a settled image probe to setup integration tests without network calls.
+#[cfg(feature = "test_support")]
+pub fn completed_image_probe(connection: ProviderConfig, model: &str, matched: bool) -> ProbeBatch {
+    let mut batch = ProbeBatch::default();
+    batch.add_rows(vec![Probe::Trial {
+        connection: Arc::new(connection),
+        model: model.into(),
+        check: ModelTrial::ImageInput { service_tier: None },
+    }]);
+    batch.rows[0].progress = ProbeProgress::Finished(
+        Duration::ZERO,
+        Ok(ProbeResult::Trial(Box::new(TrialResult {
+            text_returned: true,
+            observed_reasoning: false,
+            reported_effort: None,
+            stop_reason: None,
+            image_match: Some(matched),
+            expected_colors: None,
+            observed_colors: Vec::new(),
+            usage: None,
+            provider_report: None,
+            cost: super::RequestCost::Unknown,
+            tool_round_trip: None,
+            continuation_cost: None,
+            continuation_usage: None,
+            continuation_report: None,
+        }))),
+    );
+    batch
+}
+
 impl ProbeBatch {
     pub fn start(probes: Vec<Probe>) -> Self {
         let mut batch = Self::default();

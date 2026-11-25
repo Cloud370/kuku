@@ -33,6 +33,8 @@ pub use openrouter_catalog::{
     RouteQuote, openrouter_quote_url, openrouter_quotes, route_quote_for_display,
 };
 pub use setup_api::{SetupApiEvidence, setup_api_candidates, setup_endpoint_format};
+#[cfg(feature = "test_support")]
+pub use setup_probes::completed_image_probe;
 pub use setup_probes::{
     Probe, ProbeBatch, ProbeProgress, ProbeResult, ProbeRow, SetupTextCheck, TrialSelection,
     plan_model_trials,

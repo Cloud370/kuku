@@ -737,6 +737,61 @@ async fn image_only_chat_route_does_not_offer_view_image_but_sends_input_images(
 }
 
 #[tokio::test]
+async fn responses_attachment_only_routes_use_input_image_without_offering_view_image() {
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let mut config = media_config(&server, "/workspace-media");
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.options.profile = ProviderProfile::Compatible;
+    let manual = provider
+        .options
+        .model_capabilities
+        .get_mut("vision-fixture")
+        .unwrap()
+        .manual
+        .as_mut()
+        .unwrap();
+    manual
+        .protocols
+        .entry("responses".into())
+        .or_default()
+        .input_modalities = Some(vec!["text".into(), "image".into()]);
+    let request = server.mock_async(|when, then| {
+        when.method(POST).path(ENDPOINT)
+            .body_contains("Inspect the Responses attachment")
+            .body_contains("input_image")
+            .body_contains(PNG);
+        then.status(200).header("content-type", "text/event-stream").body(concat!(
+            "event: response.output_text.delta\ndata: {\"delta\":\"attachment received\"}\n\n",
+            "event: response.completed\ndata: {\"response\":{\"id\":\"image-fixture\",\"status\":\"completed\",\"output\":[]}}\n\n",
+        ));
+    }).await;
+    let session = Session::open(SessionOptions::new(work.path(), data.path(), config))
+        .await
+        .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let selection = session.agent_selection("main").unwrap();
+    assert_eq!(selection.image_input, ImageInputSupport::Supported);
+    assert!(!selection.tools.iter().any(|tool| tool.name == "view_image"));
+    let mut input = Input::new("attach", "main", "Inspect the Responses attachment");
+    input.images.push(
+        session
+            .save_input_image("main", &STANDARD.decode(PNG).unwrap())
+            .await
+            .unwrap(),
+    );
+    session.send(input).unwrap();
+    let state = session.wait_for_agent("main").await.unwrap();
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.last_output.as_deref(), Some("attachment received"));
+    session.close().await.unwrap();
+    request.assert_hits_async(1).await;
+}
+
+#[tokio::test]
 async fn image_request_error_details_stay_in_full_trace_and_out_of_the_journal() {
     const TEXT: &str = "Inspect a rejected attachment";
     const DETAIL: &str = "fixture-specific diagnostic";

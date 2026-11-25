@@ -308,7 +308,7 @@ struct List {
 struct ListModel {
     id: String,
     #[serde(rename = "type")]
-    model_type: Option<String>,
+    model_type: Option<serde_json::Value>,
     #[serde(alias = "display_name")]
     name: Option<String>,
     effort: Option<Effort>,
@@ -318,7 +318,7 @@ struct ListModel {
     input_modalities: Option<Vec<String>>,
     output_modalities: Option<Vec<String>>,
     architecture: Option<Architecture>,
-    model_spec: Option<ModelSpec>,
+    model_spec: Option<serde_json::Value>,
     endpoints: Option<Vec<String>>,
     supported_endpoint_types: Option<Vec<String>>,
     api_capabilities: Option<BTreeMap<String, ProtocolCapabilityDeclaration>>,
@@ -342,17 +342,6 @@ struct Architecture {
     output_modalities: Option<Vec<String>>,
 }
 
-#[derive(Deserialize)]
-struct ModelSpec {
-    capabilities: Option<ModelSpecCapabilities>,
-}
-
-#[derive(Deserialize)]
-struct ModelSpecCapabilities {
-    #[serde(rename = "supportsVision")]
-    supports_vision: Option<bool>,
-}
-
 fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
     let list = serde_json::from_slice::<List>(bytes)
         .map_err(|_| discovery_error("endpoint did not return a standard model list"))?;
@@ -367,10 +356,14 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
         }
         let architecture = model.architecture.unwrap_or_default();
         let vision_modalities = || {
-            if model.model_type.as_deref() != Some("text") {
+            if model.model_type.as_ref()?.as_str()? != "text" {
                 return None;
             }
-            let vision = model.model_spec?.capabilities?.supports_vision?;
+            let vision = model
+                .model_spec
+                .as_ref()?
+                .pointer("/capabilities/supportsVision")?
+                .as_bool()?;
             let mut modalities = vec!["text".into()];
             if vision {
                 modalities.push("image".into());
@@ -472,6 +465,31 @@ mod tests {
             models[0].capabilities.reasoning_default.as_deref()
         );
         assert_eq!(None, models[1].capabilities.reasoning_efforts);
+    }
+
+    #[test]
+    fn catalog_vision_flags_are_a_fallback_for_text_models() {
+        let models = parse_model_list(br#"{"data":[
+            {"id":"vision","type":"text","model_spec":{"capabilities":{"supportsVision":true}}},
+            {"id":"text","type":"text","model_spec":{"capabilities":{"supportsVision":false}}},
+            {"id":"explicit","type":"text","input_modalities":["text","audio"],"model_spec":{"capabilities":{"supportsVision":true}}},
+            {"id":"unrelated","type":12,"model_spec":22},
+            {"id":"unknown","type":"text","model_spec":{"capabilities":{}}}
+        ]}"#).unwrap();
+        assert_eq!(
+            models[0].capabilities.input_modalities,
+            Some(vec!["text".into(), "image".into()])
+        );
+        assert_eq!(
+            models[1].capabilities.input_modalities,
+            Some(vec!["text".into()])
+        );
+        assert_eq!(
+            models[2].capabilities.input_modalities,
+            Some(vec!["text".into(), "audio".into()])
+        );
+        assert_eq!(models[3].capabilities.input_modalities, None);
+        assert_eq!(models[4].capabilities.input_modalities, None);
     }
 
     #[test]

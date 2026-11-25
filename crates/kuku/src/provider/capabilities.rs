@@ -176,14 +176,12 @@ pub(crate) fn resolve_capabilities(
             matches!(
                 modalities.source,
                 CapabilitySource::Manual | CapabilitySource::ProtocolManual
-            )
+            ) || modalities.value.iter().any(|value| value == "image")
         }) {
         let mut value = input_modalities
             .map(|modalities| modalities.value)
             .unwrap_or_else(|| vec!["text".into()]);
-        if !value.iter().any(|modality| modality == "image") {
-            value.push("image".into());
-        }
+        value.push("image".into());
         Some(DeclaredCapability {
             value,
             source: CapabilitySource::ImageProbe,

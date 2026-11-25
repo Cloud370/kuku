@@ -666,7 +666,8 @@ fn check_route_snapshot(
     };
     let selectors_changed = recorded_selectors != selectors;
     let route_changed = effective_route_changed || selectors_changed;
-    let capabilities_changed = capabilities != &resolved.capabilities;
+    let capabilities_changed = capabilities != &resolved.capabilities
+        && !image_input_provenance_changed(capabilities, &resolved.capabilities);
     let media_upgraded = !route_changed
         && builtin_media_adapter_upgraded(capabilities, resolved)
         && segment.last_request_url.as_ref().map_or_else(
@@ -684,52 +685,59 @@ fn check_route_snapshot(
     Ok(route_changed)
 }
 
+fn image_input_provenance_changed(old: &ProviderCapabilities, new: &ProviderCapabilities) -> bool {
+    let (Some(previous), Some(current)) = (&old.input_modalities, &new.input_modalities) else {
+        return false;
+    };
+    previous.value == current.value
+        && (ProviderCapabilities {
+            input_modalities: new.input_modalities.clone(),
+            ..old.clone()
+        }) == *new
+}
+
 fn builtin_media_adapter_upgraded(old: &ProviderCapabilities, resolved: &ResolvedProvider) -> bool {
-    let adapter = resolved.capabilities.media_adapter;
-    if old.media_adapter != MediaAdapterSupport::TextOnly {
-        return false;
-    }
-    if resolved.kind == ProviderKind::OpenAiResponses
-        && adapter == MediaAdapterSupport::ResponsesImageInput
-    {
-        let other_modalities = |capabilities: &ProviderCapabilities| {
-            capabilities.input_modalities.as_ref().map_or_else(
-                || vec!["text".to_owned()],
-                |input| {
-                    input
-                        .value
-                        .iter()
-                        .filter(|value| *value != "image")
-                        .cloned()
-                        .collect()
-                },
+    let new = &resolved.capabilities;
+    let adapter = new.media_adapter;
+    if old.media_adapter != MediaAdapterSupport::TextOnly
+        || !matches!(
+            (resolved.kind, adapter),
+            (
+                ProviderKind::OpenAiCompatible,
+                MediaAdapterSupport::ChatCompletionsImageParts
+            ) | (
+                ProviderKind::Anthropic,
+                MediaAdapterSupport::AnthropicMessagesImageBlocks
+            ) | (
+                ProviderKind::OpenAiResponses,
+                MediaAdapterSupport::ResponsesImageInput
+                    | MediaAdapterSupport::ResponsesImageToolResults
             )
-        };
-        return other_modalities(old) == other_modalities(&resolved.capabilities)
-            && (ProviderCapabilities {
-                media_adapter: adapter,
-                input_modalities: resolved.capabilities.input_modalities.clone(),
-                ..old.clone()
-            }) == resolved.capabilities;
-    }
-    if !matches!(
-        (resolved.kind, adapter),
-        (
-            ProviderKind::OpenAiCompatible,
-            MediaAdapterSupport::ChatCompletionsImageParts
-        ) | (
-            ProviderKind::Anthropic,
-            MediaAdapterSupport::AnthropicMessagesImageBlocks
         )
-    ) {
+    {
         return false;
     }
-    // The new request encoder is not a route change. All declared capabilities
-    // still have to match so the successor segment can retain this history.
-    ProviderCapabilities {
-        media_adapter: adapter,
-        ..old.clone()
-    } == resolved.capabilities
+    let other_modalities = |capabilities: &ProviderCapabilities| {
+        capabilities.input_modalities.as_ref().map_or_else(
+            || vec!["text".to_owned()],
+            |input| {
+                input
+                    .value
+                    .iter()
+                    .filter(|value| *value != "image")
+                    .cloned()
+                    .collect()
+            },
+        )
+    };
+    // An image-only encoder upgrade is not a route change. Other effective
+    // capabilities still have to match so the successor can retain history.
+    other_modalities(old) == other_modalities(new)
+        && (ProviderCapabilities {
+            media_adapter: adapter,
+            input_modalities: new.input_modalities.clone(),
+            ..old.clone()
+        }) == *new
 }
 
 fn append_dynamic(
@@ -970,6 +978,48 @@ mod snapshot_tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("restore the recorded route/profile"));
+    }
+
+    #[test]
+    fn responses_may_enable_user_images_without_changing_a_frozen_route() {
+        let (mut segment, mut route, selectors) = snapshot_fixture();
+        route.kind = ProviderKind::OpenAiResponses;
+        segment.protocol = route.kind.format().as_str().into();
+        route.capabilities.media_adapter = MediaAdapterSupport::ResponsesImageInput;
+        route.capabilities.input_modalities = Some(crate::DeclaredCapability {
+            value: vec!["text".into(), "image".into()],
+            source: crate::CapabilitySource::ImageProbe,
+        });
+        assert!(!check_route_snapshot("main", &segment, 5, &route, &selectors).unwrap());
+
+        let modalities = route.capabilities.input_modalities.as_mut().unwrap();
+        modalities.value.push("audio".into());
+        assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
+        route
+            .capabilities
+            .input_modalities
+            .as_mut()
+            .unwrap()
+            .value
+            .pop();
+        route.options.endpoint_url = Some("https://another.example.test/responses".into());
+        assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
+    }
+
+    #[test]
+    fn same_image_modalities_do_not_invalidate_a_route_when_provenance_changes() {
+        let (mut segment, mut route, selectors) = snapshot_fixture();
+        route.capabilities.media_adapter = MediaAdapterSupport::ResponsesImageInput;
+        route.capabilities.input_modalities = Some(crate::DeclaredCapability {
+            value: vec!["text".into(), "image".into()],
+            source: crate::CapabilitySource::ImageProbe,
+        });
+        segment.capabilities = Some(route.capabilities.clone());
+        route.capabilities.input_modalities.as_mut().unwrap().source =
+            crate::CapabilitySource::ModelList;
+        assert!(!check_route_snapshot("main", &segment, 5, &route, &selectors).unwrap());
+        route.capabilities.tool_calls = Some(false);
+        assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
     }
 
     #[test]
