@@ -256,9 +256,9 @@ impl ContextCommit {
         request.replace_checkpoint_history(model_history(&self.messages, turn), self.current_input);
     }
 
-    pub(in crate::query) async fn restore_selected_skills(
+    pub(in crate::query) fn restore_selected_skills(
         &mut self,
-        pending: &mut PendingRun,
+        pending: &PendingRun,
         request: &mut OwnedRequestBase,
     ) -> crate::Result<()> {
         let restored =
@@ -269,14 +269,12 @@ impl ContextCommit {
         if pending.query.input_skills.is_empty() && restored.is_none() {
             return Ok(());
         }
-        self.input_skills.extend(
-            super::admission::append_input_skills(
+        self.input_skills
+            .extend(super::admission::append_input_skills(
                 pending,
                 &mut self.messages,
                 &self.segment.prelude,
-            )
-            .await?,
-        );
+            )?);
         self.input_skills.sort();
         self.input_skills.dedup();
         request.replace_checkpoint_history(

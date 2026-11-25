@@ -3,10 +3,7 @@ Use tools when the task needs information or an action outside the conversation.
 - Use only the tools listed in the current request.
 - Call the matching tool directly for one action. Make independent calls together when their inputs are known.
 {% if "use_skill" in tools %}
-- Reuse Skill instructions already visible in your context; a new turn is not a reason to reload them. Call `use_skill` when needed instructions are missing or outdated. If you already know the Skill name, skip catalog discovery.
-{% endif %}
-{% if "skill_resources" in tools %}
-- Read only the references you need with `skill_resources`. When paths are known, batch independent reads directly. Search first only if you need to locate a reference. No Skill load is required before reading its references.
+- Reuse Skill instructions already visible in your context; a new turn is not a reason to reload them. Call `use_skill` when needed instructions are missing or outdated. If the name is unknown, search the Skill catalog instead of scanning files. For a selected workflow, use the Skill tool rather than reading its instruction file separately. Resolve references and bundled scripts relative to the real Skill directory.
 {% endif %}
 {% if "run_js" in tools %}
 - Use `run_js` to combine dependent steps or filter large results when you can write the steps or filtering rule before seeing the results.

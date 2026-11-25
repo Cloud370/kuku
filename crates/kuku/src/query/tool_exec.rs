@@ -1,17 +1,13 @@
-use std::sync::Arc;
-
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderToolCall;
 use crate::session::runtime::JobControl;
-use crate::skill::bundle::{self, resources};
 use crate::skill::definition::{SkillDefinition, SkillSource};
 use crate::tool::ToolResultEnvelope;
 use serde_json::json;
-use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::helpers::{is_skill_tool, now_timestamp, resolved_tool_available};
-use super::types::{ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind, WorkspaceAccess};
+use super::types::{ExecSlot, PendingRun, WorkspaceAccess};
 
 pub(super) struct HookBlockResult {
     pub(super) reason: String,
@@ -185,6 +181,7 @@ fn skill_load_result(pending: &PendingRun, def: &SkillDefinition) -> ToolResultE
         "conversation": pending.conversation.as_str(),
         "name": def.name,
         "description": def.description,
+        "skill_directory": def.source_path,
         "source": def.source.as_str(),
         "revision": def.hash,
         "loaded": true,
@@ -228,132 +225,6 @@ fn handle_use_skill(
         ));
     };
     Ok(skill_load_result(pending, def))
-}
-
-pub(super) fn uses_skill_bundle(pending: &PendingRun, call: &ProviderToolCall) -> bool {
-    (call.name == resources::TOOL_NAME
-        || (call.name == "use_skill"
-            && skill_definition(pending, call)
-                .is_some_and(|def| def.source == SkillSource::Builtin)))
-        && resolved_tool_available(pending, &call.name)
-}
-
-enum SkillBundleAction {
-    Load(ToolResultEnvelope),
-    Access(resources::Request),
-}
-
-pub(super) struct SkillBundleOperation {
-    version: String,
-    action: SkillBundleAction,
-}
-
-pub(super) fn prepare_skill_bundle_operation(
-    pending: &PendingRun,
-    tool_call: &ProviderToolCall,
-) -> Result<std::result::Result<SkillBundleOperation, ToolResultEnvelope>> {
-    let invalid = |summary, message| {
-        let result = ToolResultEnvelope::error(summary, message);
-        Ok(Err(clamp_skill_tool_result(
-            inline_skill_tool_max_result_chars(pending, &tool_call.name),
-            result,
-        )))
-    };
-    let request = if tool_call.name == resources::TOOL_NAME {
-        match resources::Request::from_args(&tool_call.args) {
-            Ok(request) => Some(request),
-            Err(error) => return invalid("invalid Skill resource arguments", error),
-        }
-    } else {
-        None
-    };
-    let Some(version) = pending
-        .skill_registry
-        .as_ref()
-        .and_then(|registry| registry.docs_bundle())
-    else {
-        return invalid(
-            "Skill unavailable",
-            "kuku-docs is unavailable in this Turn's Skill snapshot.",
-        );
-    };
-    let action = if let Some(request) = request {
-        SkillBundleAction::Access(request)
-    } else {
-        let def = skill_definition(pending, tool_call).expect("bundled Skill was selected");
-        let result = skill_load_result(pending, def);
-        if result
-            .structured
-            .as_ref()
-            .is_some_and(|facts| facts["reused"] == true)
-        {
-            return Ok(Err(result));
-        }
-        SkillBundleAction::Load(result)
-    };
-    Ok(Ok(SkillBundleOperation {
-        version: version.to_owned(),
-        action,
-    }))
-}
-
-pub(super) fn spawn_skill_bundle_slot(
-    pending: &PendingRun,
-    queued: &QueuedToolCall,
-    operation: SkillBundleOperation,
-    event_tx: mpsc::Sender<(String, SlotEvent)>,
-) -> ExecSlot {
-    let cancel = Arc::new(Notify::new());
-    let stop = cancel.clone();
-    let id = queued.tool_call.id.clone();
-    let home = pending.kuku_home.clone();
-    let max_result_chars = inline_skill_tool_max_result_chars(pending, &queued.tool_call.name);
-    // The worker also sees its owner disappear if the Tokio runtime shuts down.
-    let (owner, keep_running) = oneshot::channel::<()>();
-    let run_events = event_tx.clone();
-    let mut work = tokio::task::spawn_blocking(move || {
-        let SkillBundleOperation { version, action } = operation;
-        let cancelled = || owner.is_closed() || run_events.is_closed();
-        match action {
-            SkillBundleAction::Load(result) => {
-                bundle::retain_cancellable(&home, &version, &cancelled).map(|()| result)
-            }
-            SkillBundleAction::Access(request) => request.execute(&home, &version, &cancelled),
-        }
-    });
-    tokio::spawn(async move {
-        let finished = tokio::select! {
-            biased;
-            _ = stop.notified() => None,
-            _ = event_tx.closed() => None,
-            result = &mut work => Some(result),
-        };
-        let result = match finished {
-            Some(result) => result
-                .map_err(std::io::Error::other)
-                .and_then(|result| result)
-                .unwrap_or_else(|error| {
-                    ToolResultEnvelope::error("Skill resource unavailable", error.to_string())
-                }),
-            None => {
-                drop(keep_running);
-                work.abort();
-                let _ = work.await;
-                ToolResultEnvelope::cancelled("Skill resource access cancelled")
-            }
-        };
-        let result = clamp_skill_tool_result(max_result_chars, result);
-        let _ = event_tx.send((id, SlotEvent::Done(result))).await;
-    });
-    ExecSlot {
-        tool_call_id: queued.tool_call.id.clone(),
-        conversation: Some(pending.conversation.clone()),
-        kind: ToolKind::Simple,
-        workspace_access: WorkspaceAccess::Independent,
-        label: queued.display_summary.clone(),
-        cancel,
-        job: None,
-    }
 }
 
 fn handle_list_skills(
@@ -674,7 +545,6 @@ mod tests {
             resolved: Some(test_resolved_runtime(vec![tool])),
             admitted_tool_call_ids: Default::default(),
             queued_tool_calls: std::collections::VecDeque::new(),
-            skill_bundle_call: None,
             resumed_permission_requests: std::collections::VecDeque::new(),
             config: Arc::new(test_config()),
             prompts_dir: None,

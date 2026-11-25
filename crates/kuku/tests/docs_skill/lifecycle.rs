@@ -5,29 +5,33 @@ use kuku::{Activation, AgentConfig, AgentStatus, Input, InputSource, InputTiming
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use super::{
-    Gate, INDEX, Model, NAME, Reply, SKILL_BODY, TOOL, common, docs_archive_lock, options, settled,
-    tool_result,
-};
+use super::{Gate, INDEX, Model, NAME, Reply, SKILL_BODY, common, options, settled, tool_result};
 
 #[tokio::test]
-async fn prompt_guides_skill_reuse_and_batches_known_references_without_loading() {
-    const TOOLS_PAGE: &str = "references/docs/en/reference/tools.md";
+async fn bundled_skill_uses_real_paths_and_normal_batched_file_tools() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
+    let tool_page = "references/docs/en/reference/tools.md";
     let model = Model::new(
         data.path(),
         [
+            Reply::Call("use-docs", "use_skill", json!({"skill_name":NAME})),
             Reply::Batch(vec![
+                ("overview", "read_file", json!({"path":INDEX,"limit":5})),
                 (
-                    "overview",
-                    TOOL,
-                    json!({"skill_name":NAME,"action":"read","path":INDEX,"limit":4}),
+                    "tool-page",
+                    "read_file",
+                    json!({"path":tool_page,"limit":5}),
                 ),
                 (
-                    "tool-reference",
-                    TOOL,
-                    json!({"skill_name":NAME,"action":"read","path":TOOLS_PAGE,"limit":4}),
+                    "list",
+                    "find_files",
+                    json!({"path":"references/docs/en/reference"}),
+                ),
+                (
+                    "bad-write",
+                    "write_file",
+                    json!({"path":INDEX,"content":"not a document"}),
                 ),
             ]),
             Reply::Text,
@@ -46,32 +50,113 @@ async fn prompt_guides_skill_reuse_and_batches_known_references_without_loading(
         .unwrap();
     session
         .send(Input::new(
-            "ask",
+            "docs",
             "main",
-            "Read the overview and the tool reference.",
+            "Look up the overview and tool reference.",
         ))
         .unwrap();
     settled(&session, AgentStatus::Idle).await;
 
-    let (status, overview, _) = tool_result(&session, "overview");
+    let (status, body, facts) = tool_result(&session, "use-docs");
     assert_eq!(status, "ok");
-    assert!(overview.contains(INDEX));
-    let (status, reference, _) = tool_result(&session, "tool-reference");
+    let root = model.skill_dir().canonicalize().unwrap();
+    assert_eq!(facts["skill_directory"], json!(root));
+    assert!(body.contains(root.to_str().unwrap()));
+    assert!(root.join("SKILL.md").is_file());
+    let (status, page, _) = tool_result(&session, "overview");
     assert_eq!(status, "ok");
-    assert!(reference.contains(TOOLS_PAGE));
+    assert!(page.contains("kuku"));
+    let (status, page, _) = tool_result(&session, "tool-page");
+    assert_eq!(status, "ok");
+    assert!(page.contains("# Tools"));
+    assert_eq!(tool_result(&session, "list").0, "ok");
+    assert!(
+        tool_result(&session, "bad-write")
+            .1
+            .contains("managed by kuku")
+    );
+    assert!(root.join(INDEX).read_link().is_err());
+    assert!(
+        !std::fs::read_to_string(root.join(INDEX))
+            .unwrap()
+            .contains("not a document")
+    );
+    assert!(!workspace.path().join("references").exists());
     {
         let requests = model.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        let initial = requests[0].0.to_string();
-        assert!(initial.contains("Reuse Skill instructions already visible in your context"));
-        assert!(initial.contains("a new turn is not a reason to reload them"));
-        assert!(initial.contains("If you already know the Skill name, skip catalog discovery"));
-        assert!(initial.contains("When paths are known, batch independent reads directly"));
-        assert!(initial.contains("No Skill load is required"));
-        let continued = requests[1].0.to_string();
-        assert!(continued.contains("overview") && continued.contains("tool-reference"));
-        assert!(!continued.contains(SKILL_BODY));
+        assert_eq!(requests.len(), 3);
+        assert!(!requests[0].0.to_string().contains("skill_resources"));
+        assert!(requests[0].0.to_string().contains(
+            "Resolve references and bundled scripts relative to the real Skill directory"
+        ));
+        let final_request = requests[2].0.to_string();
+        assert!(final_request.contains("overview") && final_request.contains("tool-page"));
+        assert_eq!(final_request.matches(SKILL_BODY).count(), 1);
     }
+    session.close().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_skill_script_path_is_real_and_workspace_cwd_is_preserved() {
+    let workspace = tempfile::Builder::new()
+        .prefix("skill workspace ")
+        .tempdir()
+        .unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let skill = workspace.path().join(".kuku/skills/local-script");
+    let script = skill.join("scripts/check.sh");
+    std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+    std::fs::write(workspace.path().join("project-marker"), "available").unwrap();
+    std::fs::write(skill.join("SKILL.md"),
+        "---\nname: local-script\ndescription: Check the working directory.\n---\nRun scripts/check.sh.\n",
+    ).unwrap();
+    std::fs::write(
+        &script,
+        "test -f project-marker && printf 'real skill path plus project cwd\\n'\n",
+    )
+    .unwrap();
+    let model = Model::new(
+        data.path(),
+        [
+            Reply::Call(
+                "use-script",
+                "use_skill",
+                json!({"skill_name":"local-script"}),
+            ),
+            Reply::Call(
+                "execute-script",
+                "run_command",
+                json!({"program":"/bin/sh","args":[script]}),
+            ),
+            Reply::Text,
+        ],
+    );
+    let mut settings = options(
+        workspace.path(),
+        data.path(),
+        model,
+        Arc::new(Gate::default()),
+    );
+    settings.config.discovery.extra_project_paths = vec![workspace.path().join(".kuku")];
+    let session = Session::open(settings).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("run", "main", "Run the local script workflow."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert_eq!(
+        tool_result(&session, "use-script").2["skill_directory"],
+        json!(skill)
+    );
+    let (status, content, _) = tool_result(&session, "execute-script");
+    assert_eq!(status, "ok", "{content}");
+    assert!(
+        content.contains("real skill path plus project cwd"),
+        "{content}"
+    );
     session.close().await.unwrap();
 }
 
@@ -182,64 +267,6 @@ async fn an_ineligible_queued_skill_does_not_interrupt_a_workspace_script() {
     assert_eq!(done.pending_inputs, 1);
     assert_eq!(tool_result(&session, "script").0, "ok");
     session.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn first_docs_access_retains_the_pinned_archive_before_permission_wait() {
-    let workspace = tempfile::tempdir().unwrap();
-    let data = tempfile::tempdir().unwrap();
-    let model = Model::new(
-        data.path(),
-        [
-            Reply::Call(
-                "defer",
-                TOOL,
-                json!({"skill_name":NAME,"action":"read","path":INDEX}),
-            ),
-            Reply::Text,
-        ],
-    );
-    let mut settings = options(
-        workspace.path(),
-        data.path(),
-        model.clone(),
-        Arc::new(Gate::default()),
-    );
-    settings.session_id = Some("first-resource-permission".into());
-    let (archive, lock) = docs_archive_lock(&settings, &model);
-    drop(lock);
-    assert!(!archive.exists());
-    let session = Session::open(settings.clone()).await.unwrap();
-    session
-        .create_agent("create", "main", AgentConfig::default())
-        .unwrap();
-    session
-        .send(Input::new("ask", "main", "Read the bundled documentation."))
-        .unwrap();
-    let waiting = settled(&session, AgentStatus::Waiting)
-        .await
-        .permission
-        .unwrap();
-    assert!(archive.is_file());
-    assert!(!model.extracted());
-    session.close().await.unwrap();
-
-    let reopened = Session::open(settings).await.unwrap();
-    reopened
-        .reply_permission("approve", "main", &waiting.id, true)
-        .unwrap();
-    settled(&reopened, AgentStatus::Idle).await;
-    let (status, page, facts) = tool_result(&reopened, "defer");
-    assert_eq!(status, "ok");
-    assert!(page.contains(INDEX));
-    assert_eq!(
-        facts["version"].as_str(),
-        archive.file_stem().and_then(|name| name.to_str())
-    );
-    for (body, _) in model.requests.lock().unwrap().iter() {
-        assert!(!body.to_string().contains(SKILL_BODY));
-    }
-    reopened.close().await.unwrap();
 }
 
 #[tokio::test]

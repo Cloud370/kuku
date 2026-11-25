@@ -27,7 +27,10 @@ fn main() {
     let docs = fs::canonicalize(docs).expect("locate the canonical docs directory");
     println!("cargo:rerun-if-changed={}", docs.display());
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo supplies OUT_DIR"));
-    let fingerprint = docs::build(&docs, &revision, &out).expect("build the embedded docs bundle");
+    let skill = Path::new("skills/kuku-docs/SKILL.md");
+    println!("cargo:rerun-if-changed={}", skill.display());
+    let fingerprint =
+        docs::build(&docs, &revision, &out, skill).expect("build the embedded docs bundle");
     println!("cargo:rustc-env=KUKU_DOCS_FINGERPRINT={fingerprint}");
 
     let version = env!("CARGO_PKG_VERSION");

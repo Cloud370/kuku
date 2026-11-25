@@ -260,9 +260,7 @@ pub(super) async fn compact(
         let summary_with_files = candidate.summary_with_files(summary.text.trim());
         let text = next.render_checkpoint(&summary_with_files)?;
         candidate.fill_checkpoint(&mut next, pending.turn, text);
-        candidate
-            .restore_selected_skills(pending, &mut next)
-            .await?;
+        candidate.restore_selected_skills(pending, &mut next)?;
         if let Ok(body) = prepare_request(pending, resolved, correlation, &next) {
             let bytes = body.body.as_bytes().len();
             let after_tokens = next.estimated_input_tokens();

@@ -82,14 +82,6 @@ Use the location marker to find a user or project Skill's supporting files. Rela
 
 ## Skill resources
 
-`kuku-docs` provides the embedded `docs/` tree under `references/docs/`. The read-only `skill_resources` tool can read it without first loading the instructions. Kuku retains the bundled version on first load or resource access, or before an active Turn pauses for a resumable permission request. The paused Turn can then still access its pinned version after a service upgrade. Start with `references/docs/en/index.md` or `references/docs/zh/index.md` for an overview, or read the page directly for a specific question.
+Kuku installs the built-in Skill as a local directory in the service data directory. Its version includes both `SKILL.md` and the embedded docs under `references/docs/`. An active or resumed Turn keeps the same directory; a new Turn can discover the updated version.
 
-| Action | Arguments | Result |
-|---|---|---|
-| `list` | Optional directory `path`, `offset`, `limit` | Recursively lists up to 20 paths per page |
-| `search` | Literal case-insensitive `query`, optional directory `path`, `offset`, `limit` | Matches with file paths and line numbers, up to 20 per page |
-| `read` | File `path`, optional 1-based line `offset` and `limit` | Bounded Markdown lines, up to 200 per call |
-
-Pass `skill_name: "kuku-docs"` for each call. The tool applies normal read authorization and confines paths to this Skill's resource directory. Results identify the resource version and source revision. Links between bundled pages remain relative. Links to other repository files point to the corresponding source commit.
-
-Resources decompress on the first resource read and publish only after integrity verification. The cache is shared across Sessions in the service's data directory under `skill-resources/kuku-docs/`, keyed by content fingerprint. [Using built-in help](../guides/use-skills.md#ask-about-kuku)
+Start with `use_skill` to obtain the instructions and the real directory. Read reference files with `read_file`, or use `find_files` and `search_text` to locate them. You can read a known absolute path directly. Use the Skill directory to resolve relative scripts and resources; commands default to the Agent workspace. Bundled files are read-only for file-editing tools.

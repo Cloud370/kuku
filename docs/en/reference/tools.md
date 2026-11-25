@@ -37,9 +37,8 @@ Conditional skill tools:
 - `list_skills(offset?, limit?)`
 - `search_skills(query, offset?, limit?)`
 - `use_skill(skill_name)`
-- `skill_resources(skill_name, action, path?, query?, offset?, limit?)`
 
-Use `list_skills` or `search_skills` for discovery, `use_skill` for a Skill's instructions, and `skill_resources` to list, search, or read the built-in documentation without first loading its instructions. [Skill resources](skill-format.md#skill-resources)
+Use `list_skills` or `search_skills` for discovery and `use_skill` for instructions and the Skill directory. Read its references with normal file tools. [Skill resources](skill-format.md#skill-resources)
 
 ## Session Coordination Tools
 

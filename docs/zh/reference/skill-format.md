@@ -82,14 +82,6 @@ Before writing any code:
 
 ## Skill 资料
 
-`kuku-docs` 将内置的 `docs/` 树提供在 `references/docs/`。Agent 可直接用只读的 `skill_resources` 工具访问，不要求先加载正文。首次加载或读取资料时，或当前 Turn 因可恢复的权限请求暂停前，kuku 会保留内置资料的版本。暂停的 Turn 在服务升级后仍可访问原来的版本。综合问题可先看 `references/docs/zh/index.md` 或 `references/docs/en/index.md`，具体问题可直接读对应页面。
+kuku 将内置 Skill 安装为服务数据目录中的真实目录。版本包含 `SKILL.md` 和 `references/docs/` 下的内置文档。正在执行或恢复的 Turn 沿用原目录，新 Turn 可发现新版本。
 
-| 操作 | 参数 | 结果 |
-|---|---|---|
-| `list` | 可选的目录 `path`、`offset`、`limit` | 递归列出路径，每页最多 20 项 |
-| `search` | 不区分大小写的字面 `query`，可选的目录 `path`、`offset`、`limit` | 返回匹配的文件路径与行号，每页最多 20 项 |
-| `read` | 文件 `path`，可选的起始行 `offset`（从 1 开始）和 `limit` | 返回有界的 Markdown 源码，每次最多 200 行 |
-
-每次调用都传 `skill_name: "kuku-docs"`。工具遵循正常的读取授权，路径限于其资料目录。结果会给出资料版本和源码修订号。内置页面之间保留相对链接，指向仓库其他文件的链接对应源码提交。
-
-资料在首次访问时解压，完整性校验后才发布。缓存位于服务数据目录下的 `skill-resources/kuku-docs/`，以内容指纹区分版本，可供多个 Session 共用。[使用内置帮助](../guides/use-skills.md#询问-kuku-用法)
+通过 `use_skill` 取得指引和真实目录；用 `read_file` 读取资料，或用 `find_files` 和 `search_text` 找文件。已知绝对路径时也可以直接读。相对脚本和资源路径以 Skill 目录为基准，命令仍默认在 Agent 工作区执行。内置文件对文件编辑工具只读。

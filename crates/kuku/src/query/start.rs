@@ -231,6 +231,13 @@ impl Query {
             None
         };
 
+        let needs_skill_paths = !self.input_skills.is_empty()
+            || bootstrap_skill.is_some()
+            || tool_registry_override.as_ref().is_none_or(|tools| {
+                tools
+                    .iter()
+                    .any(|tool| super::helpers::is_skill_tool(&tool.name))
+            });
         let mut skill_record = None;
         let mut skill_catalog_id = None;
         let (skill_registry, previous_skill_registry) = if self.disable_skills || compact_only {
@@ -254,6 +261,20 @@ impl Query {
             let registry = if let Some(snapshot) =
                 restore_turn_snapshot(&kuku_home, &existing_events, conversation.as_str(), turn)?
             {
+                let mut snapshot = snapshot;
+                if needs_skill_paths && snapshot.registry.materialize_docs(&kuku_home).await? {
+                    let catalog = if let Some(runtime) = &runtime {
+                        runtime.persist_skill_catalog(&snapshot.registry)?
+                    } else {
+                        crate::skill::session::persist_catalog(
+                            &kuku_home,
+                            &snapshot.registry,
+                            None,
+                        )?
+                    };
+                    snapshot.catalog_id = catalog["snapshot"].as_str().map(str::to_owned);
+                    skill_record = Some((catalog, snapshot.bootstrap_loaded.clone()));
+                }
                 bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
                 skill_catalog_id = snapshot.catalog_id;
                 Some(snapshot.registry)
@@ -263,25 +284,20 @@ impl Query {
                     &config.discovery,
                     plugin_registry_opt.as_ref(),
                 ) {
-                    Ok(registry) => {
+                    Ok(mut registry) => {
+                        if needs_skill_paths {
+                            registry.materialize_docs(&kuku_home).await?;
+                        }
                         let bootstrap_loaded = bootstrap_loaded_names(bootstrap_skill.as_ref());
-                        if let Some(version) = bootstrap_loaded
-                            .first()
-                            .and_then(|name| registry.get(name))
-                            .filter(|def| {
-                                def.source == crate::skill::definition::SkillSource::Builtin
-                            })
-                            .and_then(|_| registry.docs_bundle())
+                        if let Some(skill) = bootstrap_skill.as_mut()
+                            && skill.body.is_empty()
+                            && let Some(name) = skill.name.as_deref()
+                            && let Some(def) = registry.get(name)
+                            && def.source == crate::skill::definition::SkillSource::Builtin
+                            && let Some(body) =
+                                crate::skill::session::admission_body(&registry, name)
                         {
-                            bundle::retain(&kuku_home, version).await?;
-                            if let Some(skill) = bootstrap_skill.as_mut()
-                                && skill.body.is_empty()
-                                && let Some(name) = skill.name.as_deref()
-                                && let Some(body) =
-                                    crate::skill::session::admission_body(&registry, name)
-                            {
-                                skill.body = body;
-                            }
+                            skill.body = body;
                         }
                         let catalog = if let Some(runtime) = &runtime {
                             runtime.persist_skill_catalog(&registry)?
@@ -517,7 +533,6 @@ impl Query {
             resolved: None,
             admitted_tool_call_ids,
             queued_tool_calls: resumed_state.queued_tool_calls,
-            skill_bundle_call: None,
             resumed_permission_requests: resumed_state.resumed_permission_requests,
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,

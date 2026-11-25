@@ -14,6 +14,8 @@ PLATFORMS = {
 }
 
 CASE_RULES = (
+    (("crates/kuku/src/skill/*", "crates/kuku/skills/*", "crates/kuku/build/docs.rs"),
+     ("skill-real-path",)),
     (("crates/kuku/src/permission/*", "crates/kuku/src/query/run_js*",
       "crates/kuku-tui/src/*permission*", "crates/kuku-tui/src/notifications.rs",
       "scripts/acceptance/interactive_permissions.py"),

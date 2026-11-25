@@ -4,7 +4,7 @@ Skill 把可复用的工作流指令按需加载到当前 Session 中。
 
 ## 询问 kuku 用法
 
-配好模型后，可以直接问 Agent「怎么恢复上一次会话？」。内置的 `kuku-docs` Skill 覆盖模型配置、会话恢复、Skills、CLI 和 Rust SDK。Agent 可以直接查询运行中的服务随附的文档，也可以按需加载该 Skill 的指令。按 `F1` 或输入 `/help` 可再次找到入口。
+配好模型后，可以直接问 Agent「怎么恢复上一次会话？」。内置的 `kuku-docs` Skill 覆盖模型配置、会话恢复、Skills、CLI 和 Rust SDK。Agent 可先加载该 Skill 获取使用指引和真实目录，再用普通文件工具读取随服务打包的资料。按 `F1` 或输入 `/help` 可再次找到入口。
 
 要显式调用，从 `/` 菜单选择 `kuku-docs`，在可编辑的 `/skill:kuku-docs` 前缀后输入问题并发送。从脚本或终端运行时，可在位置参数里使用同一前缀。
 

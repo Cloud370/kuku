@@ -4,7 +4,7 @@ Skills load reusable task instructions into the current Session on demand.
 
 ## Ask about kuku
 
-Once you have configured a model, ask the Agent a usage question such as `How do I resume my last Session?` The built-in `kuku-docs` Skill covers model setup, Session recovery, Skills, CLI, and the Rust SDK. The Agent can look up the docs bundled with the running service directly, or load the Skill’s instructions when useful. See `F1` or `/help` to find this entry again.
+Once you have configured a model, ask the Agent a usage question such as `How do I resume my last Session?` The built-in `kuku-docs` Skill covers model setup, Session recovery, Skills, CLI, and the Rust SDK. The Agent can load the Skill for its instructions and real directory, then read the relevant bundled pages with normal file tools. See `F1` or `/help` to find this entry again.
 
 To choose it explicitly, open the `/` menu and select `kuku-docs`. Type your question after the editable `/skill:kuku-docs` prefix and send it. From a script or terminal, pass the same prefix in the positional prompt.
 

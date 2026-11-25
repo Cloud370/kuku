@@ -243,7 +243,9 @@ impl WorkspaceHost {
                 Err(result) => return Ok(result),
             }
         } else {
-            if let Err(result) = prepare_file_target(name, &mut args, &self.actions.workspace) {
+            if let Err(result) =
+                prepare_file_target(name, &mut args, &self.actions.workspace, &self.home)
+            {
                 return Ok(result);
             }
             self.actions.workspace.clone()
@@ -429,7 +431,8 @@ impl WorkspaceHost {
                 "stopped before prepared action dispatch",
             ));
         }
-        if let Some(blocked) = changed_file_target(name, &args, &self.actions.workspace) {
+        if let Some(blocked) = changed_file_target(name, &args, &self.actions.workspace, &self.home)
+        {
             return Ok(blocked);
         }
         if operation == ScriptOperation::RunCommand {

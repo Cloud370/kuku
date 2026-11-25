@@ -49,8 +49,8 @@ pub(super) fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, ke
     messages.retain(|message| message.turn > through || retained.contains(&message.turn));
 }
 
-pub(super) async fn append_input_skills(
-    pending: &mut PendingRun,
+pub(super) fn append_input_skills(
+    pending: &PendingRun,
     messages: &mut Vec<AdmittedMessage>,
     prelude: &[CanonicalMessage],
 ) -> Result<Vec<String>> {
@@ -84,16 +84,6 @@ pub(super) async fn append_input_skills(
             .any(|message| has_admission(message, &body))
         {
             continue;
-        }
-        if let Some(version) = registry
-            .filter(|registry| {
-                registry
-                    .get(&name)
-                    .is_some_and(|def| def.source == crate::skill::definition::SkillSource::Builtin)
-            })
-            .and_then(|registry| registry.docs_bundle())
-        {
-            crate::skill::bundle::retain(&pending.kuku_home, version).await?;
         }
         admitted.push(name);
         messages.push(AdmittedMessage {

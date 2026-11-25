@@ -254,7 +254,7 @@ pub(super) async fn prepare(
             cursor.admitted.len()
         },
     )?;
-    let input_skills = append_input_skills(pending, &mut messages, &segment.prelude).await?;
+    let input_skills = append_input_skills(pending, &mut messages, &segment.prelude)?;
     append_dynamic(
         pending,
         &mut messages,

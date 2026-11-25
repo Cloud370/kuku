@@ -76,6 +76,7 @@ fn skill_item(definition: &SkillDefinition, loaded: bool) -> Value {
         "name": definition.name,
         "description": definition.description,
         "source": definition.source.as_str(),
+        "skill_directory": definition.source_path,
         "loaded": loaded,
     })
 }

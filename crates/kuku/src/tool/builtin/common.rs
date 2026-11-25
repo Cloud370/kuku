@@ -89,8 +89,18 @@ pub(crate) fn prepare_file_target(
     name: &str,
     args: &mut Value,
     workspace: &Path,
+    data_dir: &Path,
 ) -> Result<(), ToolResultEnvelope> {
     if let Some(path) = prepare_workspace_path(name, args, workspace)? {
+        if matches!(name, "edit_file" | "write_file" | "remove_file")
+            && let Ok(root) = crate::skill::bundle::managed_root(data_dir).canonicalize()
+            && path.starts_with(root)
+        {
+            return Err(ToolResultEnvelope::blocked(
+                "built-in Skill files are read-only",
+                "bundled Skill files are managed by kuku and cannot be changed with file tools",
+            ));
+        }
         let relative = path.strip_prefix(workspace).unwrap_or(&path);
         let target = relative.to_str().ok_or_else(|| {
             ToolResultEnvelope::error("invalid file path", "target must be valid Unicode")
@@ -104,9 +114,10 @@ pub(crate) fn changed_file_target(
     name: &str,
     args: &Value,
     workspace: &Path,
+    data_dir: &Path,
 ) -> Option<ToolResultEnvelope> {
     let mut current = args.clone();
-    if let Err(result) = prepare_file_target(name, &mut current, workspace) {
+    if let Err(result) = prepare_file_target(name, &mut current, workspace, data_dir) {
         return Some(result);
     }
     (current != *args).then(workspace_target_changed)

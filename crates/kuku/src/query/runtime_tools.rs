@@ -14,14 +14,11 @@ use crate::{Error, Result};
 
 use super::helpers::{
     append_permission_decision, append_permission_request, now_timestamp, permission_candidate,
-    permission_rule, resolved_tool_available,
+    permission_rule,
 };
 use super::job_slots::ForegroundJob;
 use super::run::find_tool_definition;
-use super::tool_exec::{
-    execute_tool_call, prepare_skill_bundle_operation, run_tool_pre_hooks, spawn_skill_bundle_slot,
-    uses_skill_bundle,
-};
+use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
 use super::types::{
     ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, SlotEvent, ToolKind, ToolPreparation, UiEvent, WorkspaceAccess,
@@ -107,16 +104,6 @@ pub(super) async fn advance(
                     event: None,
                 });
             }
-            // A resumed Turn may first need these pinned bytes after a service upgrade.
-            if (resolved_tool_available(&pending, "use_skill")
-                || resolved_tool_available(&pending, crate::skill::bundle::resources::TOOL_NAME))
-                && let Some(version) = pending
-                    .skill_registry
-                    .as_ref()
-                    .and_then(|registry| registry.docs_bundle())
-            {
-                crate::skill::bundle::retain(&pending.kuku_home, version).await?;
-            }
             let request = PermissionRequest {
                 id: queued.tool_call.id.clone(),
                 conversation: pending.conversation.clone(),
@@ -195,6 +182,7 @@ pub(super) async fn dispatch(
         &queued.tool_call.name,
         &queued.tool_call.args,
         &pending.workspace,
+        &pending.kuku_home,
     ) {
         return finish_inline(pending, queued, result);
     }
@@ -204,19 +192,6 @@ pub(super) async fn dispatch(
             queued,
             ToolResultEnvelope::blocked("tool capacity reached", "the action was not dispatched"),
         );
-    }
-    if uses_skill_bundle(&pending, &queued.tool_call) {
-        let operation = prepare_skill_bundle_operation(&pending, &queued.tool_call)?;
-        if pending.query.runtime.is_some() {
-            mark_dispatched(&pending, &queued)?;
-        }
-        let operation = match operation {
-            Ok(operation) => operation,
-            Err(result) => return finish_inline(pending, queued, result),
-        };
-        let slot = spawn_skill_bundle_slot(&pending, &queued, operation, event_tx);
-        pending.skill_bundle_call = Some(queued.tool_call.id.clone());
-        return start_slot(pending, queued, slot);
     }
     if pending.query.runtime.is_none() {
         return dispatch_standalone(pending, queued, event_tx).await;
@@ -928,6 +903,7 @@ async fn prepare(
         &queued.tool_call.name,
         &mut queued.tool_call.args,
         &pending.workspace,
+        &pending.kuku_home,
     )
     .map_err(|result| Error::InvalidArgument(result.model_content))?;
     if queued.tool_call.name == "create_agent" {

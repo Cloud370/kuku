@@ -39,7 +39,7 @@ fn registry(skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Search root relative to the workspace. Defaults to the workspace root."},
+                    "path": {"type": "string", "description": "Absolute or workspace-relative search root. Defaults to the workspace root."},
                     "pattern": {"type": "string", "description": "File glob pattern, e.g. *.md or docs/**/*.md."},
                     "max_depth": {"type": "integer", "minimum": 0, "description": "How many levels below the selected directory to look. Defaults to 0 for a listing. With a pattern, the default searches recursively."}
                 }
@@ -50,11 +50,11 @@ fn registry(skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
         ),
         tool(
             "read_file",
-            "Read lines from a file. Use the returned offset to continue reading.",
+            "Read lines from a file, including reference files in a Skill directory. Use the returned offset to continue reading.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the workspace."},
+                    "path": {"type": "string", "description": "Absolute or workspace-relative file path."},
                     "offset": {"type": "integer", "minimum": 1, "description": "Starting line, counted from 1. Defaults to 1."},
                     "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines to return."}
                 },
@@ -219,7 +219,6 @@ fn registry(skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
     if skills_enabled {
         tools.push(builtin::list_skills_definition());
         tools.push(builtin::search_skills_definition());
-        tools.push(crate::skill::bundle::resources::definition());
         tools.push(builtin::use_skill_definition());
     }
     tools
@@ -484,12 +483,7 @@ mod tests {
         let base_count = builtin_registry(false).len();
         assert_eq!(
             names[base_count..],
-            [
-                "list_skills",
-                "search_skills",
-                "skill_resources",
-                "use_skill"
-            ]
+            ["list_skills", "search_skills", "use_skill"]
         );
         let resources = &registry[base_count + 2];
         assert!(resources.read_only);
@@ -503,6 +497,5 @@ mod tests {
         assert!(!names.contains(&"use_skill".to_string()));
         assert!(!names.contains(&"list_skills".to_string()));
         assert!(!names.contains(&"search_skills".to_string()));
-        assert!(!names.contains(&"skill_resources".to_string()));
     }
 }

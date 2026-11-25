@@ -6,12 +6,11 @@ use flate2::bufread::GzDecoder;
 
 use super::definition::{SkillDefinition, SkillSource};
 use format::{
-    FileEntry, HEADER, MAX_CONTENT_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, Manifest,
-    fingerprint, valid_path,
+    HEADER, MAX_CONTENT_BYTES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, Manifest, fingerprint,
+    valid_path,
 };
 
 mod format;
-pub(crate) mod resources;
 #[cfg(test)]
 mod tests;
 
@@ -31,20 +30,17 @@ pub(super) fn definition() -> SkillDefinition {
     definition
 }
 
-/// Save the compressed source before a loaded Skill becomes part of a Turn.
-pub(crate) async fn retain(home: &Path, version: &str) -> io::Result<()> {
+/// Publish the actual Skill directory before returning a path to the model.
+pub(crate) async fn materialize(
+    home: &Path,
+    version: &str,
+    fallback: String,
+) -> io::Result<PathBuf> {
     let home = home.to_path_buf();
     let version = version.to_owned();
-    // The blocking worker can observe the caller dropping this future.
     let (cancel, waiting) = tokio::sync::oneshot::channel::<()>();
     let result = tokio::task::spawn_blocking(move || {
-        let archive = retain_archive(&home, &version, &|| cancel.is_closed())?;
-        crate::util::fs_sync::sync_parent(&archive)?;
-        #[cfg(unix)]
-        for directory in archive.ancestors().skip(1).take(2) {
-            crate::util::fs_sync::sync_parent(directory)?;
-        }
-        Ok(())
+        materialize_cancellable(&home, &version, &fallback, &|| cancel.is_closed())
     })
     .await
     .map_err(io::Error::other)?;
@@ -52,12 +48,53 @@ pub(crate) async fn retain(home: &Path, version: &str) -> io::Result<()> {
     result
 }
 
-pub(crate) fn retain_cancellable(
+pub(crate) fn managed_root(home: &Path) -> PathBuf {
+    home.join("skill-resources").join(NAME)
+}
+
+fn materialize_cancellable(
     home: &Path,
     version: &str,
+    fallback: &str,
     cancelled: &impl Fn() -> bool,
-) -> io::Result<()> {
-    retain_archive(home, version, cancelled).map(drop)
+) -> io::Result<PathBuf> {
+    ensure_active(cancelled)?;
+    let path = version_path(home, version)?;
+    if installed(&path, version, fallback)? {
+        return path.canonicalize();
+    }
+    // Retain the verified compressed input as a repair source before taking the directory lock.
+    retain_archive(home, version, cancelled)?;
+    let _lock = lock(&path, cancelled)?;
+    if !installed(&path, version, fallback)? {
+        publish(&path, version, fallback, cancelled)?;
+    }
+    path.canonicalize()
+}
+
+fn installed(path: &Path, version: &str, fallback: &str) -> io::Result<bool> {
+    let result: io::Result<bool> = (|| {
+        require_directory(path)?;
+        require_directory(&path.join("references"))?;
+        require_directory(&path.join(RESOURCE_ROOT))?;
+        let manifest = parse_manifest(
+            &read_regular(&path.join(MANIFEST), MAX_MANIFEST_BYTES)?,
+            version,
+        )?;
+        let contents = manifest.skill_md.as_deref().unwrap_or(fallback);
+        Ok(read_regular(&path.join("SKILL.md"), contents.len())? == contents.as_bytes())
+    })();
+    match result {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+            ) =>
+        {
+            Ok(false)
+        }
+        other => other,
+    }
 }
 
 fn retain_archive(
@@ -89,82 +126,12 @@ fn retain_archive(
     Ok(archive)
 }
 
-struct Cache {
-    path: PathBuf,
-    manifest: Manifest,
-}
-
-impl Cache {
-    fn open(path: &Path, version: &str) -> io::Result<Self> {
-        require_directory(path)?;
-        require_directory(&path.join("references"))?;
-        require_directory(&path.join(RESOURCE_ROOT))?;
-        let index = read_regular(&path.join(MANIFEST), MAX_MANIFEST_BYTES)?;
-        let manifest = parse_manifest(&index, version)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            manifest,
-        })
-    }
-
-    fn file(&self, relative: &str, entry: &FileEntry) -> io::Result<Vec<u8>> {
-        let mut path = self.path.join(RESOURCE_ROOT);
-        require_directory(&self.path.join("references"))?;
-        require_directory(&path)?;
-        let (directories, file) = relative.rsplit_once('/').unwrap_or(("", relative));
-        if !directories.is_empty() {
-            for part in directories.split('/') {
-                path.push(part);
-                require_directory(&path)?;
-            }
-        }
-        let bytes = read_regular(&path.join(file), entry.bytes)?;
-        if bytes.len() != entry.bytes || fingerprint(&bytes) != entry.sha256 {
-            return Err(invalid("Skill resource file failed integrity check"));
-        }
-        Ok(bytes)
-    }
-}
-
-fn with_cache<T>(
-    home: &Path,
-    version: &str,
-    cancelled: &impl Fn() -> bool,
-    read: impl Fn(&Cache) -> io::Result<T>,
-) -> io::Result<T> {
-    ensure_active(cancelled)?;
-    let path = version_path(home, version)?;
-    if let Some(result) = try_cache(&path, version, &read)? {
-        return Ok(result);
-    }
-    let _lock = lock(&path, cancelled)?;
-    if let Some(result) = try_cache(&path, version, &read)? {
-        return Ok(result);
-    }
-    publish(&path, version, cancelled)?;
-    read(&Cache::open(&path, version)?)
-}
-
-fn try_cache<T>(
+fn publish(
     path: &Path,
     version: &str,
-    read: &impl Fn(&Cache) -> io::Result<T>,
-) -> io::Result<Option<T>> {
-    match Cache::open(path, version).and_then(|cache| read(&cache)) {
-        Ok(result) => Ok(Some(result)),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn publish(path: &Path, version: &str, cancelled: &impl Fn() -> bool) -> io::Result<()> {
+    fallback: &str,
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<()> {
     let retained;
     let bytes = if version == CURRENT {
         CONTENT
@@ -190,6 +157,11 @@ fn publish(path: &Path, version: &str, cancelled: &impl Fn() -> bool) -> io::Res
     let version_dir = staged.path().join("version");
     let docs = version_dir.join(RESOURCE_ROOT);
     fs::create_dir_all(&docs)?;
+    let skill_md = manifest.skill_md.as_deref().unwrap_or(fallback);
+    File::create(version_dir.join("SKILL.md")).and_then(|mut file| {
+        file.write_all(skill_md.as_bytes())?;
+        file.sync_all()
+    })?;
     unpack(&docs, manifest, compressed, cancelled)?;
     File::create(version_dir.join(MANIFEST)).and_then(|mut file| {
         file.write_all(index)?;

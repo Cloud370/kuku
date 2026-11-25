@@ -68,6 +68,32 @@ impl SkillRegistry {
         &self.hash
     }
 
+    pub(crate) async fn materialize_docs(&mut self, home: &Path) -> Result<bool> {
+        let Some(version) = self.docs_bundle.as_deref() else {
+            return Ok(false);
+        };
+        let Some(definition) = self.definitions.get_mut(super::bundle::NAME) else {
+            return Ok(false);
+        };
+        // Older retained archives did not carry the instruction file. Reconstruct it from
+        // the original pinned definition, not from the current build's source.
+        let fallback = format!(
+            "---\nname: {}\ndescription: {}\n---\n\n{}\n",
+            definition.name,
+            serde_json::json!(&definition.description),
+            definition.instructions,
+        );
+        let path = super::bundle::materialize(home, version, fallback).await?;
+        let path = path.to_str().ok_or_else(|| {
+            crate::Error::InvalidArgument("built-in Skill directory must be valid Unicode".into())
+        })?;
+        if definition.source_path.as_deref() == Some(path) {
+            return Ok(false);
+        }
+        definition.source_path = Some(path.into());
+        Ok(true)
+    }
+
     pub(crate) fn docs_bundle(&self) -> Option<&str> {
         self.docs_bundle.as_deref()
     }
