@@ -414,11 +414,15 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && properties["reasoning_effort"]["type"] == "string"
                 && properties["service_tier"]["type"] == "string"
                 && properties["tools"]["description"].as_str().is_some_and(|text| {
-                    text.contains("send_message and list_agents")
+                    text.starts_with("Normally omit this field")
+                        && text.contains("without a preset, all tools available to it")
+                        && text.contains("send_message and list_agents")
                         && text.contains("empty array gives only the two messaging tools")
                 })
                 && !context.contains("<kuku_models>")
                 && context.contains("Omit both connection and model to use the preset or Session default")
+                && context.contains("For ordinary delegation, leave `tools` unset")
+                && context.contains("Set `preset` only when you want a specific Agent preset")
                 && context.contains("Image input is unsupported by the model. The view_image tool is unavailable.")
                 && context.contains("only when the user explicitly asks for that tier")
                 && context.contains("collect its reply with list_agents")
@@ -498,14 +502,17 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             let defaults = parsed("correct-route");
             let preset = parsed("review-preset");
             tool_count(request) == 8
-                && defaults["effective_tools"]
-                    .as_array()
-                    .is_some_and(|tools| tools.contains(&json!("create_agent")))
+                && defaults["effective_tools"].as_array().is_some_and(|tools| {
+                    tools.contains(&json!("create_agent"))
+                        && tools.contains(&json!("read_file"))
+                        && tools.contains(&json!("run_command"))
+                })
                 && preset["model_selection"]["preset"] == "review"
                 && preset["effective_tools"].as_array().is_some_and(|tools| {
                     tools.contains(&json!("read_file"))
                         && tools.contains(&json!("send_message"))
                         && tools.contains(&json!("list_agents"))
+                        && !tools.contains(&json!("run_command"))
                 })
         },
         response(json!({"content":"Reviewers configured."}), "stop"),
