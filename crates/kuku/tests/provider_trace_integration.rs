@@ -126,7 +126,7 @@ async fn openai_adapters_write_redacted_provider_traces() {
             .header("authorization", "Bearer HEADER_SECRET")
             .body_contains("REQUEST_SECRET");
         then.status(200)
-            .header("x-fixture", "RESPONSE_HEADER_SECRET")
+            .header("x-fixture", "RESPONSE_HEADER_VALUE")
             .body(concat!(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"REPLY_SECRET\"}}]}\n\n",
                 "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"index\":0,\"id\":\"ID_SECRET\",\"format\":\"google-gemini-v1\",\"data\":\"CIPHER_SECRET\"}]}}]}\n\n",
@@ -155,7 +155,7 @@ async fn openai_adapters_write_redacted_provider_traces() {
     request.assert_hits(2);
     let raw = trace_contents(env.home.as_path(), "s_trace_diagnostic");
     let auto = trace_contents(env.home.as_path(), "s_default_trace");
-    assert!(auto.contains("REQUEST_SECRET") && auto.contains("RESPONSE_HEADER_SECRET"));
+    assert!(auto.contains("REQUEST_SECRET") && auto.contains("RESPONSE_HEADER_VALUE"));
     assert!(auto.contains("REPLY_SECRET"));
     assert!(auto.contains("<redacted>") && !auto.contains("Bearer HEADER_SECRET"));
     assert!(
@@ -172,7 +172,10 @@ async fn openai_adapters_write_redacted_provider_traces() {
             .is_err()
     );
     assert!(trace_contents(env.home.as_path(), "s_trace_disabled").is_empty());
-    assert!(!raw.contains("SECRET"), "{raw}");
+    assert!(
+        !raw.contains("SECRET") && !raw.contains("RESPONSE_HEADER_VALUE"),
+        "{raw}"
+    );
     let records = raw
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
