@@ -375,4 +375,36 @@ mod tests {
             "2026-05-19"
         ));
     }
+
+    #[test]
+    fn tool_guidance_distinguishes_direct_file_calls_commands_and_scripts() {
+        let catalog = crate::prompt::builtin_prompt_catalog();
+        let render = |tools: &[&str]| {
+            catalog
+                .render(
+                    "blocks/tool-guidance.md",
+                    minijinja::context! { tools => minijinja::value::Serde(tools) },
+                )
+                .unwrap()
+        };
+        let guidance = render(&[
+            "find_files",
+            "read_file",
+            "search_text",
+            "run_command",
+            "run_js",
+        ]);
+        for name in ["find_files", "read_file", "search_text"] {
+            assert!(guidance.contains(&format!("Use `{name}` directly")));
+        }
+        assert!(guidance.contains("call `run_command` directly"));
+        assert!(guidance.contains("prefer the workspace tool when it can do the job"));
+        assert!(guidance.contains("not just to relay a single tool's result"));
+
+        let read_only = render(&["read_file"]);
+        assert!(read_only.contains("Use `read_file` directly"));
+        for name in ["find_files", "search_text", "run_command", "run_js"] {
+            assert!(!read_only.contains(name));
+        }
+    }
 }

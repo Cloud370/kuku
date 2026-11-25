@@ -380,7 +380,12 @@ fn model_definition_advertises_only_selected_script_methods() {
             .description
             .contains("read_file({path,offset?,limit?}) returns result.raw_text")
     );
-    assert!(script.description.contains("r.result.raw_text : r.error"));
+    assert!(
+        script
+            .description
+            .contains("call the matching tool directly")
+    );
+    assert!(!script.description.contains("Read example:"));
     assert!(
         script
             .description
@@ -411,6 +416,12 @@ fn managed_cli_prefix_survives_direct_and_script_command_descriptions() {
         tools
     };
     let managed = definitions(Some(program.as_path()));
+    assert!(
+        managed[1]
+            .description
+            .contains("tools.run_command({program,args?,cwd?})")
+    );
+    assert!(!managed[1].description.contains("Command example:"));
     let methods = super::super::method_definitions(|op| {
         managed.iter().find(|tool| tool.name == op.name()).cloned()
     });

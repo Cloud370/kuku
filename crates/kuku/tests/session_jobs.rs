@@ -835,6 +835,7 @@ fn check_first_request(body: &Value) {
     }
     let description = script["description"].as_str().unwrap();
     for contract in [
+        "call the matching tool directly",
         "tools.run_command(",
         "Set background:true on the outer run_js call",
         "Set title on the outer run_js call",
@@ -845,8 +846,7 @@ fn check_first_request(body: &Value) {
         "duration_ms",
         "capture_complete",
         "output_ref",
-        "stdout:await r.stdout.text()",
-        "r.result.raw_text : r.error",
+        "await r.stdout.text()",
         ".json()",
         ".lines()",
         "{status,result,truncated,error?}",
@@ -856,6 +856,8 @@ fn check_first_request(body: &Value) {
             "first model request does not declare {contract}"
         );
     }
+    assert!(!description.contains("Command example:"));
+    assert!(!description.contains("Read example:"));
     for (name, arguments, fields) in [
         (
             "find_files",
