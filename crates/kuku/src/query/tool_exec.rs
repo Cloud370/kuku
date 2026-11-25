@@ -679,6 +679,7 @@ mod tests {
             config: Arc::new(test_config()),
             prompts_dir: None,
             skill_registry: Some(skill_registry()),
+            skill_catalog_id: None,
             previous_skill_registry: None,
             bootstrap_skill: None,
             frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),

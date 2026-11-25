@@ -70,6 +70,7 @@ pub(super) fn make_test_pending(
         config: std::sync::Arc::new(test_config()),
         prompts_dir: None,
         skill_registry: None,
+        skill_catalog_id: None,
         previous_skill_registry: None,
         bootstrap_skill: None,
         frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),

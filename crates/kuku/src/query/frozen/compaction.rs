@@ -261,7 +261,12 @@ impl ContextCommit {
         pending: &mut PendingRun,
         request: &mut OwnedRequestBase,
     ) -> crate::Result<()> {
-        if pending.query.input_skills.is_empty() {
+        let restored =
+            super::skill_catalog::append_notice(pending, &self.segment, &mut self.messages, 0)?;
+        if restored.is_some_and(|index| index <= self.current_input) {
+            self.current_input += 1;
+        }
+        if pending.query.input_skills.is_empty() && restored.is_none() {
             return Ok(());
         }
         self.input_skills.extend(

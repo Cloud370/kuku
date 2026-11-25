@@ -14,6 +14,8 @@ use super::definition::{SkillDefinition, SkillSource};
 pub struct SkillRegistry {
     definitions: BTreeMap<String, SkillDefinition>,
     names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent_names: Vec<String>,
     hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     docs_bundle: Option<String>,
@@ -33,6 +35,14 @@ impl SkillRegistry {
     /// Return sorted skill names.
     pub fn names(&self) -> &[String] {
         &self.names
+    }
+
+    pub(crate) fn listing_names(&self) -> &[String] {
+        if self.recent_names.is_empty() {
+            &self.names
+        } else {
+            &self.recent_names
+        }
     }
 
     /// Return all skill definitions.
@@ -131,10 +141,35 @@ impl SkillRegistryBuilder {
     pub fn build(self) -> SkillRegistry {
         let mut names: Vec<String> = self.definitions.keys().cloned().collect();
         names.sort();
+        let mut ordered = names
+            .iter()
+            .map(|name| {
+                let modified = self
+                    .definitions
+                    .get(name)
+                    .and_then(|definition| definition.source_path.as_deref())
+                    .and_then(|directory| {
+                        std::fs::metadata(Path::new(directory).join("SKILL.md")).ok()
+                    })
+                    .and_then(|metadata| metadata.modified().ok());
+                (modified, name)
+            })
+            .collect::<Vec<_>>();
+        ordered.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+        let recent_names = if ordered
+            .iter()
+            .zip(&names)
+            .all(|(entry, name)| entry.1 == name)
+        {
+            vec![]
+        } else {
+            ordered.into_iter().map(|(_, name)| name.clone()).collect()
+        };
         let hash = compute_registry_hash(&self.definitions, &names, self.docs_bundle.as_deref());
         SkillRegistry {
             definitions: self.definitions,
             names,
+            recent_names,
             hash,
             docs_bundle: self.docs_bundle,
         }

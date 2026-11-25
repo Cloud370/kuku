@@ -232,6 +232,7 @@ impl Query {
         };
 
         let mut skill_record = None;
+        let mut skill_catalog_id = None;
         let (skill_registry, previous_skill_registry) = if self.disable_skills || compact_only {
             (None, None)
         } else {
@@ -254,6 +255,7 @@ impl Query {
                 restore_turn_snapshot(&kuku_home, &existing_events, conversation.as_str(), turn)?
             {
                 bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
+                skill_catalog_id = snapshot.catalog_id;
                 Some(snapshot.registry)
             } else {
                 match build_registry_snapshot(
@@ -286,6 +288,7 @@ impl Query {
                         } else {
                             crate::skill::session::persist_catalog(&kuku_home, &registry, None)?
                         };
+                        skill_catalog_id = catalog["snapshot"].as_str().map(str::to_owned);
                         skill_record = Some((catalog, bootstrap_loaded));
                         Some(registry)
                     }
@@ -523,6 +526,7 @@ impl Query {
             prompts_dir,
             bootstrap_skill,
             skill_registry,
+            skill_catalog_id,
             previous_skill_registry,
             frozen_turn_prefix: super::types::TurnPrefixFreeze::default(),
             tool_registry_override,

@@ -39,6 +39,7 @@ pub fn build_registry_snapshot_for_host(
 pub(crate) struct TurnSkillSnapshot {
     pub conversation: String,
     pub registry: SkillRegistry,
+    pub catalog_id: Option<String>,
     pub bootstrap_loaded: Vec<String>,
 }
 
@@ -155,8 +156,16 @@ fn read_catalog(home: &Path, record: &Value) -> Result<SkillRegistry> {
     };
     let digest = digest
         .as_str()
-        .filter(|value| value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit()))
         .ok_or_else(|| Error::InvalidEventStream("invalid Skill catalog reference".into()))?;
+    read_catalog_id(home, digest)
+}
+
+pub(crate) fn read_catalog_id(home: &Path, digest: &str) -> Result<SkillRegistry> {
+    if digest.len() != 64 || !digest.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Error::InvalidEventStream(
+            "invalid Skill catalog reference".into(),
+        ));
+    }
     let bytes = std::fs::read(catalog_path(home, digest))?;
     if format!("{:x}", Sha256::digest(&bytes)) != digest {
         return Err(Error::InvalidEventStream(
@@ -213,6 +222,7 @@ fn find_snapshot(
             return Ok(Some(TurnSkillSnapshot {
                 conversation: agent.clone(),
                 registry: read_catalog(home, registry)?,
+                catalog_id: registry["snapshot"].as_str().map(str::to_owned),
                 bootstrap_loaded: bootstrap_loaded.clone(),
             }));
         }
@@ -377,6 +387,7 @@ mod tests {
             Some(TurnSkillSnapshot {
                 conversation: "main".to_string(),
                 registry: skill_registry(&["beta"]),
+                catalog_id: None,
                 bootstrap_loaded: vec!["bootstrap-beta".to_string()],
             })
         );
@@ -385,6 +396,7 @@ mod tests {
             Some(TurnSkillSnapshot {
                 conversation: "main".to_string(),
                 registry: skill_registry(&["alpha"]),
+                catalog_id: None,
                 bootstrap_loaded: vec!["bootstrap-alpha".to_string()],
             })
         );

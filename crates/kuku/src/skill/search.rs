@@ -10,12 +10,13 @@ pub(crate) fn list_skills_result(
 ) -> Value {
     let offset = pagination_offset(args);
     let limit = pagination_limit(args, 20, 50);
-    let definitions = registry.definitions();
-    let total = definitions.len();
-    let skills = definitions
-        .into_iter()
+    let names = registry.listing_names();
+    let total = names.len();
+    let skills = names
+        .iter()
         .skip(offset)
         .take(limit)
+        .filter_map(|name| registry.get(name))
         .map(|definition| skill_item(definition, is_loaded(&definition.name)))
         .collect::<Vec<_>>();
 

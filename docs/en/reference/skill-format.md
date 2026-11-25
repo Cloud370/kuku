@@ -60,6 +60,8 @@ Skill metadata is descriptive. The Agent's configuration, runtime limits and hos
 
 At the start of a fresh Turn, kuku discovers Skills (including package Skills when `plugin.enabled = true`). The Session journal records only a fingerprint; unchanged catalogs share one immutable snapshot in the service data directory under `skill-catalogs/`. Keep that directory with the Session journal when moving or backing up the service data.
 
+- A default Session’s initial model context lists every available Skill name. Descriptions share an estimated 8,192-token budget. Kuku keeps descriptions intact when they fit, marks shortened descriptions, and never removes a name to fit that budget. Instructions are still loaded on demand.
+- At the first request of a new Turn, the runtime adds one notice for catalog additions, revisions, and removals since the last model-visible catalog. It leaves the frozen prefix intact. The same Turn keeps its catalog; a sort-only change does not send a notice.
 - `list_skills`, `search_skills`, and `use_skill` all read from the current Turn's snapshot rather than live disk.
 - Resuming a Turn restores its recorded snapshot.
 - Edits on disk take effect on the next fresh Turn.

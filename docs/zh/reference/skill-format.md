@@ -60,6 +60,8 @@ Before writing any code:
 
 每个新 Turn 开始时，kuku 重新发现 Skill（`plugin.enabled = true` 时包含 Package 里的 Skill）。Session 日志只记指纹；未变更的目录共用一份不可变快照，存于服务数据目录的 `skill-catalogs/`。迁移或备份服务数据时，请将该目录与 Session 日志一并保留。
 
+- 默认 Session 的首次模型上下文列出所有可用 Skill 的完整名称。描述共用约 8,192 tokens 的预算；放得下就保留完整描述，缩短时会标记，不会为了预算省略名称。正文仍按需加载。
+- 新 Turn 的首个请求会追加一条相对上次模型可见目录的新增、版本变更和移除通知，不回写已冻结的前缀。同一 Turn 沿用当前目录；只有排序变化时不发通知。
 - `list_skills`、`search_skills` 与 `use_skill` 均读取当前 Turn 的快照，不中途重读磁盘。
 - 恢复既有 Turn 时沿用其持久化的快照。
 - 磁盘上的修改在下一次新 Turn 生效。

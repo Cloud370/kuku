@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::context::estimate_text_tokens as estimate_text;
 use crate::context::{CanonicalMessage, ContextAssembly, MessageBlock, Role};
 use crate::prompt::{PromptAsset, PromptCatalog};
 use crate::provider::types::{CanonicalPromptInput, ProviderRequest};
@@ -279,20 +280,6 @@ pub(super) fn estimated_message_tokens<'a>(
                 tokens.saturating_add(addition)
             })
     })
-}
-
-fn estimate_text(text: &str) -> u32 {
-    if text.is_ascii() {
-        return u32::try_from(text.len().div_ceil(4)).unwrap_or(u32::MAX);
-    }
-    let (ascii, other) = text.chars().fold((0u32, 0u32), |(ascii, other), ch| {
-        if ch.is_ascii() {
-            (ascii.saturating_add(1), other)
-        } else {
-            (ascii, other.saturating_add(1))
-        }
-    });
-    ascii.div_ceil(4).saturating_add(other)
 }
 
 fn estimate_json(value: &Value) -> u32 {

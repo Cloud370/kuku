@@ -353,6 +353,7 @@ pub(super) struct PendingRun {
     pub(super) config: Arc<Config>,
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
+    pub(super) skill_catalog_id: Option<String>,
     pub(super) previous_skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
     pub(super) frozen_turn_prefix: TurnPrefixFreeze,

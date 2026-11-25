@@ -837,7 +837,7 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(
             path.join("SKILL.md"),
-            format!("---\nname: {name}\ndescription: Fixture Skill\n---\n{body}"),
+            format!("---\nname: {name}\ndescription: A detailed fixture description. This Skill controls a synthetic revision for the catalog budget and discovery contract.\n---\n{body}"),
         )
         .unwrap();
     };
@@ -847,6 +847,13 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
     }
     let load = |id| Reply::Call(id, "use_skill", json!({"skill_name":TARGET}));
     write_skill(TARGET, FIRST_REVISION);
+    std::fs::File::open(root.join(TARGET).join("SKILL.md"))
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(86_400)),
+        )
+        .unwrap();
     let model = Model::new(
         data.path(),
         [
@@ -898,13 +905,18 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
     );
     let (_, _, last_page) = tool_result(&session, "tail-page");
     assert_eq!(last_page["skills"].as_array().unwrap().len(), 2);
-    assert_eq!(last_page["skills"][1]["name"], TARGET);
+    assert_eq!(last_page["skills"][0]["name"], TARGET);
     let (_, _, first_hit) = tool_result(&session, "search-first");
     assert_eq!(first_hit["total"], 1);
     assert_eq!(first_hit["skills"][0]["name"], TARGET);
     assert_eq!(first_hit["skills"][0]["loaded"], false);
     assert_eq!(tool_result(&session, "project-repeat").2["reused"], true);
     write_skill(TARGET, NEXT_REVISION);
+    write_skill(
+        "added-catalog-skill",
+        "A new Skill unrelated to the target.",
+    );
+    std::fs::remove_file(root.join("other-0001").join("SKILL.md")).unwrap();
     session
         .send(Input::new(
             "second",
@@ -922,7 +934,20 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
         let requests = model.requests.lock().unwrap();
         assert_eq!(requests.len(), 7);
         let initial = requests[0].0.to_string();
-        assert!(!initial.contains("other-0000") && !initial.contains(TARGET));
+        assert!(initial.contains("Complete Skill catalog: 1202 names."));
+        assert!(initial.contains("descriptions were shortened"));
+        assert!(initial.contains(TARGET));
+        for index in 0..FILLER_SKILLS {
+            assert!(initial.contains(&format!("other-{index:04} — ")));
+        }
+        assert!(!initial.contains("<kuku_skill_changes>"));
+        for (body, _) in &requests[4..] {
+            let wire = body.to_string();
+            assert_eq!(wire.matches("<kuku_skill_changes>").count(), 1);
+            assert!(wire.contains("Added: added-catalog-skill"));
+            assert!(wire.contains("Updated: zz-project-fixture (new revision)"));
+            assert!(wire.contains("Removed: other-0001"));
+        }
         assert!(
             requests
                 .iter()
