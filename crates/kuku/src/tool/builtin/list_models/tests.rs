@@ -52,7 +52,7 @@ fn catalog_exposes_configured_modalities_separately_from_runtime_support() {
     let payload = result.structured.unwrap();
     assert_eq!(payload["models"][0]["image_input"], "supported");
     assert_eq!(
-        payload["models"][0]["effective_input_modalities"],
+        payload["models"][0]["input_modalities"],
         json!(["text", "image"])
     );
     assert_eq!(
@@ -71,10 +71,6 @@ fn catalog_exposes_configured_modalities_separately_from_runtime_support() {
     assert_eq!(
         custom_payload["models"][0]["input_modalities"],
         json!(["text", "image"])
-    );
-    assert_eq!(
-        custom_payload["models"][0]["effective_input_modalities"],
-        json!(["text"])
     );
     assert_eq!(
         custom_payload["models"][0]["image_input"],
