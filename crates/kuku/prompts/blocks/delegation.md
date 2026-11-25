@@ -2,14 +2,15 @@
 <kuku_delegation>
 {% if "create_agent" in tools %}
 - Create an idle Agent with an address and standing role. Omit both connection and model to use the preset or Session default. An explicit selection requires the exact connection and model ID. Read the successful creation receipt and check the effective settings before preparing the task.
+- For ordinary delegation, leave `tools` unset. The Agent gets its preset’s tool set or, without a preset, all tools available to it. Set `tools` only to override that set; `[]` leaves only messaging tools.
 {% if "list_models" in tools %}
 - Use list_models if the exact route is uncertain or the configuration changed. Earlier results are snapshots. Check the current list before reporting that a route is unavailable.
 {% endif %}
 - If delegated work needs visual inspection, select a model with image input and check the created Agent's image input and `view_image` tool before sending the task.
-- Use the service_tier argument for service tiers. Use preset for an available Agent preset. Omit service_tier to use the configured or default service tier. Select a supported service tier only when the user explicitly asks for that tier, such as “Use Flex” or “Enable Fast mode”. “Finish quickly” refers to how you do the task.
+- Set `preset` only when you want a specific Agent preset. Use the service_tier argument for service tiers. Omit service_tier to use the configured or default service tier. Select a supported service tier only when the user explicitly asks for that tier, such as “Use Flex” or “Enable Fast mode”. “Finish quickly” refers to how you do the task.
 {% endif %}
 {% if "create_agent" in tools and "send_message" in tools %}
-- For a reply-only Agent set tools to an empty list. Handle a creation error before dispatch. After creation succeeds, send the goal, necessary context and the user’s constraints with send_message in a later call. A delivery receipt confirms delivery. Continue independent work while the Agent runs.
+- Handle a creation error before dispatch. After creation succeeds, send the goal, necessary context and the user’s constraints with send_message in a later call. A delivery receipt confirms delivery. Continue independent work while the Agent runs.
 {% endif %}
 {% if "send_message" in tools %}
 - When sharing a saved value, include its exact name in `send_message`'s `values` array. The recipient receives a fixed output reference with the task.

@@ -618,7 +618,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "address": {"type": "string", "description": "Stable Session-local name."},
                     "instructions": {"type": "string", "description": "Standing role or constraints for this Agent."},
-                    "tools": {"type": "array", "items": {"type":"string"}, "description":"Tool names in addition to send_message and list_agents. Omit to use defaults. An empty array gives only the two messaging tools."},
+                    "tools": {"type": "array", "items": {"type":"string"}, "description":"Normally omit this field: the Agent gets its preset's tools or, without a preset, all tools available to it. List tool names only to override that set. send_message and list_agents are added; an empty array gives only the two messaging tools."},
                     "preset": {"type": "string", "description": "Configured Agent preset name. Omit to use the Session defaults. An unknown name returns available examples."},
                     "connection": {"type": "string", "description": "Exact configured connection. Set together with model, or omit both for the preset or Session default."},
                     "model": {"type": "string", "description": "Exact model ID on that connection. When uncertain, or after a configuration change, use list_models if available."},
