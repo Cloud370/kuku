@@ -1047,7 +1047,14 @@ mod tests {
         }));
         let session = Session::open(options).await.unwrap();
         session
-            .create_agent("create-main", "main", AgentConfig::default())
+            .create_agent(
+                "create-main",
+                "main",
+                AgentConfig {
+                    no_skills: true,
+                    ..AgentConfig::default()
+                },
+            )
             .unwrap();
         session
             .send(Input::new("request", "main", "finish the task"))

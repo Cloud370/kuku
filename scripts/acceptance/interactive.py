@@ -815,7 +815,8 @@ def skill_real_path(client):
         content = loaded.tool_result("enter-docs")["content"]
         root = Path(re.search(r"<!-- loaded: (.+?) -->", content).group(1))
         assert root.is_absolute() and (root / "SKILL.md").is_file()
-        assert root.resolve().is_relative_to((client.home / "skill-resources" / "kuku-docs").resolve())
+        cache = client.home / "skill-resources" / "kuku-docs"
+        assert cache.is_dir() and root.parent.samefile(cache), (root, cache)
         files = [("tools-page", "tools.md"), ("skill-page", "skill-format.md")]
         loaded.reply([
             {"type": "tool_use", "id": call_id, "name": "read_file",
