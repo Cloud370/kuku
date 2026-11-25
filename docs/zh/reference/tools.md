@@ -13,6 +13,7 @@
 | `read_output` | `id` 或 `name` | `offset`, `limit`, `search` | `read` |
 | `search_output` | `text` and either `id` or `name` | `stream`, `offset`, `limit` | `read` |
 | `search_text` | `pattern` | `path`, `include`, `view`, `offset`, `limit`, `context` | `read` |
+| `list_models` | 无 | 无 | `read` |
 | `fetch_url` | `url` | none | `read` |
 | `query_session` | none | `search`, `kind`, `conversation`, `after`, `from_turn`, `to_turn`, `limit`, `skip_rolled_back` | `read` |
 | `edit_file` | `path`, `old_text`, `new_text` | `replace_all`, `expected_version`, `brief` | `edit` |
@@ -52,7 +53,7 @@ Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模�
 
 `create_agent` 创建稳定、扁平的 Session 内地址及独立上下文，可选的 `preset` 提供联系卡。应传入接收方所需的完整指令和任务材料。`send_message` 向已有 Agent 投递，返回持久投递回执，不代表最终工作结果。`wake` 默认为 true；false 仅入箱，等待显式推进。`list_agents` 默认读取精简状态列表。传入目标地址 `wait_for` 可等待该 Agent 当前执行结束并读取已完成的回复，最多等待 30 秒，超时返回当前状态。已结束的回复可以附带 `last_request`，其中包含请求所用的模型、请求指定的服务档位和供应商回报的服务档位。缺少依据的字段省略。
 
-显式选择模型时同时提供 `connection` 和精确 `model` ID。都省略时使用预设选中的模型或 Session 默认值。通过此工具创建的 Agent 会在选定工具之外获得 `send_message` 和 `list_agents`。传入空的 `tools` 数组时只提供这两个工具。模型目录列出两项组成的模型声明和实际可用模态。创建回执会列出实际可用的工具、输入和输出模态以及图像输入能力。宿主可通过 SDK 指定工具列表和供应商参数。
+显式选择模型时同时提供 `connection` 和精确 `model` ID。都省略时使用预设选中的模型或 Session 默认值。模型不确定或配置刚变更时，调用 `list_models()`。它从当前运行配置列出已注册的路由、思考等级、服务档位、声明的模态和实际图像输入能力；不探测上游，也不更改 Session 默认值。不需要搜索条件或分页。极大目录超出输出预算时会标明省略数量，完整配置可用 `kuku config models` 查看。创建 Agent 时会再次校验精确的模型选择。通过此工具创建的 Agent 会在选定工具之外获得 `send_message` 和 `list_agents`。传入空的 `tools` 数组时只提供这两个工具。创建回执会列出实际可用的工具、输入和输出模态以及图像输入能力。宿主可通过 SDK 指定工具列表和供应商参数。
 
 `ask_user` 持久化问题，并在当前工具批次边界让出执行。宿主通过 SDK、CLI `reply` 或 server 回复端点，使用精确请求标识作答。问题和授权的等待语义见 [Session](../how-it-works/sessions.md#等待与回复)。
 

@@ -368,7 +368,9 @@ async fn dispatch_standalone(
     queued: QueuedToolCall,
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
 ) -> Result<PendingStep> {
-    if super::helpers::is_skill_tool(&queued.tool_call.name) {
+    if super::helpers::is_skill_tool(&queued.tool_call.name)
+        || queued.tool_call.name == "list_models"
+    {
         pending.record_tool_call(&queued.tool_call.name);
         let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
         return finish_inline_event(pending, queued, result);
@@ -453,6 +455,7 @@ pub(super) fn is_inline(name: &str) -> bool {
         "create_agent"
             | "send_message"
             | "list_agents"
+            | "list_models"
             | "ask_user"
             | "read_output"
             | "search_output"
@@ -632,10 +635,10 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                     "instructions": {"type": "string", "description": "Standing role or constraints for this Agent."},
                     "tools": {"type": "array", "items": {"type":"string"}, "description":"Tool names in addition to send_message and list_agents. Omit to use defaults. An empty array gives only the two messaging tools."},
                     "preset": {"type": "string", "description": "Configured Agent preset name. Omit to use the Session defaults. An unknown name returns available examples."},
-                    "connection": {"type": "string", "description": "Named connection from <kuku_models>. Set together with model, or omit both for the preset or Session default."},
-                    "model": {"type": "string", "description": "Exact model ID on the selected connection, as listed in <kuku_models>."},
-                    "reasoning_effort": {"type": "string", "description": "Supported thinking value from the selected route in <kuku_models>."},
-                    "service_tier": {"type": "string", "description": "Supported service tier from <kuku_models>. Omit to inherit. Set only at the user's explicit request."},
+                    "connection": {"type": "string", "description": "Exact configured connection. Set together with model, or omit both for the preset or Session default."},
+                    "model": {"type": "string", "description": "Exact model ID on that connection. When uncertain, or after a configuration change, use list_models if available."},
+                    "reasoning_effort": {"type": "string", "description": "Supported thinking value for the selected route."},
+                    "service_tier": {"type": "string", "description": "Supported service tier for the selected route. Omit to inherit. Set only at the user's explicit request."},
                     "workspace": {"type": "string", "description": "Working directory when different from the Session workspace."}
                 },
                 "required": ["address"]
@@ -658,6 +661,24 @@ pub(super) async fn execute(
     pending: &mut PendingRun,
     call: &crate::provider::types::ProviderToolCall,
 ) -> Result<ToolResultEnvelope> {
+    if call.name == "list_models" {
+        let session = pending
+            .query
+            .runtime
+            .as_ref()
+            .map(|_| runtime_session(pending))
+            .transpose()?;
+        let config = session.as_ref().map_or_else(
+            || std::borrow::Cow::Borrowed(pending.config.as_ref()),
+            crate::Session::current_model_config,
+        );
+        return Ok(crate::tool::builtin::list_models::list_models(
+            &call.args,
+            &config,
+            pending.query.model_adapter.is_none(),
+            pending.query.runtime_limits.max_output_tokens_per_request,
+        ));
+    }
     let session = runtime_session(pending)?;
     let agent = pending.conversation.as_str();
     let key = format!(

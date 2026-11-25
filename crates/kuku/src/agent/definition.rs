@@ -26,6 +26,7 @@ impl ToolProfile {
             Self::Read => &[
                 "run_js",
                 "list_jobs",
+                "list_models",
                 "wait_job",
                 "cancel_job",
                 "stat_file",
@@ -40,6 +41,7 @@ impl ToolProfile {
             Self::ReadWrite => &[
                 "run_js",
                 "list_jobs",
+                "list_models",
                 "wait_job",
                 "cancel_job",
                 "stat_file",

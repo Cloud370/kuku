@@ -53,6 +53,7 @@ pub struct ContextInput {
     pub project_memory: Option<MemorySource>,
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
+    /// Optional model metadata explicitly supplied by a custom prompt caller.
     pub models: Vec<crate::config::ModelInfo>,
     /// Optional rendered runtime blocks (agent catalog, notices, etc.).
     /// These go into the runtime_context wrapper in the current user turn.
@@ -204,7 +205,9 @@ fn segment_facts(
     agent: minijinja::Value,
 ) -> Result<minijinja::Value> {
     let tools: Vec<_> = input.tools.iter().map(|tool| tool.name.as_str()).collect();
-    let models = (tools.contains(&"create_agent") || tools.contains(&"fetch_web")).then(|| {
+    let models = (!input.models.is_empty()
+        && (tools.contains(&"create_agent") || tools.contains(&"fetch_web")))
+    .then(|| {
         input
             .models
             .iter()

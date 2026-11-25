@@ -346,11 +346,12 @@ async fn provider_context_reflects_each_agents_tools_and_keeps_main_frozen() {
     model.assert_hits_async(5).await;
     let bodies = common::take_http_requests(&path);
     let main = bodies[0]["messages"].to_string();
-    assert!(main.contains("<kuku_models>"));
+    assert!(!main.contains("<kuku_models>"));
     assert!(main.contains("<kuku_delegation>"));
     assert!(main.contains("Use list_skills"));
     assert!(main.contains("Use search_skills"));
     assert!(request_tool_names(&bodies[0]).contains(&"create_agent".into()));
+    assert!(request_tool_names(&bodies[0]).contains(&"list_models".into()));
     for (body, address) in bodies[1..3].iter().zip(["reader", "tool-free"]) {
         let messages = body["messages"].to_string();
         assert!(messages.contains("PROJECT_POLICY_MARKER"));

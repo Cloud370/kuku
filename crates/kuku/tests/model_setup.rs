@@ -200,7 +200,10 @@ think = "provider-default"
             when.method(POST)
                 .path("/gateway/infer")
                 .json_body_partial(r#"{"model":"review-fixture","reasoning_effort":"low"}"#)
-                .body_contains("Independent review");
+                .matches(|request| {
+                    !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
+                        .contains("Independent review")
+                });
             then.header("content-type", "text/event-stream")
                 .body(reply());
         })

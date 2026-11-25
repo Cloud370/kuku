@@ -30,7 +30,7 @@ pub(crate) async fn fetch_web(
     ) else {
         return ToolResultEnvelope::error(
             "failed: missing model selection",
-            "fetch_web requires both connection and exact model ID from <kuku_models>",
+            "fetch_web requires both connection and an exact configured model ID. Use list_models if uncertain.",
         );
     };
     let resolved = match crate::session::runtime::resolve_agent_model(
@@ -370,11 +370,7 @@ mod tests {
             &catalog,
         ));
         assert_eq!(result.status, "error");
-        assert!(
-            result
-                .model_content
-                .contains("connection and exact model ID")
-        );
+        assert!(result.model_content.contains("list_models"));
     }
 
     #[test]

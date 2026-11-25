@@ -406,9 +406,9 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             let context = body["messages"].to_string();
             tool_count(request) == 0
                 && schema["required"] == json!(["address"])
-                && properties["connection"]["description"]
+                && properties["model"]["description"]
                     .as_str()
-                    .is_some_and(|text| text.contains("<kuku_models>"))
+                    .is_some_and(|text| text.contains("list_models"))
                 && properties.as_object().unwrap().len() == 9
                 && properties["model"]["type"] == "string"
                 && properties["reasoning_effort"]["type"] == "string"
@@ -417,11 +417,8 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                     text.contains("send_message and list_agents")
                         && text.contains("empty array gives only the two messaging tools")
                 })
-                && context.contains("<kuku_models>")
-                && context.contains(r#"connection=\"openai\", model=\"session-contract\""#)
+                && !context.contains("<kuku_models>")
                 && context.contains("Omit both connection and model to use the preset or Session default")
-                && context.contains("service provider default, service options flex, priority")
-                && context.contains(r#"input_modalities [\"text\",\"image\"], output_modalities [\"text\"], route input text"#)
                 && context.contains("Image input is unsupported by the model. The view_image tool is unavailable.")
                 && context.contains("only when the user explicitly asks for that tier")
                 && context.contains("collect its reply with list_agents")

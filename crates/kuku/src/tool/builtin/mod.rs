@@ -5,6 +5,7 @@ mod fetch_url;
 mod fetch_web;
 mod file_change;
 mod find_files;
+pub(crate) mod list_models;
 mod memory;
 pub(crate) mod query_session;
 mod read_file;
