@@ -13,14 +13,14 @@ kuku --help
 
 ## 安装已发布版本
 
-复制对应平台的命令，安装已发布的 [`v0.1.0-alpha.6`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.6)。安装后参阅对应版本的文档。[该版本的快速开始](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.6/docs/zh/start/quickstart.md)
+复制对应平台的命令，安装已发布的 [`v0.1.0-alpha.7`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.7)。安装后参阅对应版本的文档。[该版本的快速开始](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.7/docs/zh/start/quickstart.md)
 
 **Linux（x86-64 或 ARM64）和 macOS（Apple Silicon）**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.6/scripts/install.sh | sh -s -- \
-  --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.6/latest.json \
-  --version 0.1.0-alpha.6
+curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.7/scripts/install.sh | sh -s -- \
+  --source https://github.com/Cloud370/kuku/releases/download/v0.1.0-alpha.7/latest.json \
+  --version 0.1.0-alpha.7
 ```
 
 **Windows（x86-64）**
@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/Cloud370/kuku/v0.1.0-alpha.6/script
 在 PowerShell 中运行这组命令。
 
 ```powershell
-$kukuTag = 'v0.1.0-alpha.6'
+$kukuTag = 'v0.1.0-alpha.7'
 $kukuInstaller = Invoke-RestMethod "https://raw.githubusercontent.com/Cloud370/kuku/$kukuTag/scripts/install.ps1"
 & ([scriptblock]::Create($kukuInstaller)) -Source "https://github.com/Cloud370/kuku/releases/download/$kukuTag/latest.json" -Version ($kukuTag.Substring(1))
 ```

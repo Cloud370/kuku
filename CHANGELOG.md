@@ -16,9 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Version injection at build time (`kuku --version`)
 - Makefile with build-web, build, build-all targets
 
-## [0.1.0-alpha.6]
+## [0.1.0-alpha.7]
 
-这版扩展了普通会话的图片输入，同时改进终端里的打断、消息排队、Agent 切换和工具结果阅读。
+这版扩展了普通会话的图片输入，同时改进终端里的打断、消息排队、Agent 切换和工具结果阅读。alpha.6 候选未通过 Windows 完整验收、没有发布；本版接续 alpha.5，并修正完整验收的总时限及失败诊断。
 
 ### 新增功能
 
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **Session HTTP 协议升级到 3。** 终端、Web 客户端和服务端须对应升级；独立或远程服务请同步更新。已有受管服务在空闲时自动切换。SDK 使用者需留意 `MediaAdapterSupport`、`CapabilitySource` 的新增枚举值及图像探测字段。
 - **Provider Trace 默认改为完整记录。** 保存有界的推理请求、响应头、SSE 及有限的 HTTP 错误正文。可识别的凭据会脱敏，但提示词、图片及工具结果仍可能留在本地 trace；如不希望保存，启动服务前设置 `KUKU_PROVIDER_TRACE=0`。包含图片的请求出错时，Session 不再复制可能回显图片的上游错误正文。
-- 预发布覆盖 Linux x86-64 / ARM64、Apple Silicon macOS 和 Windows x86-64；安装后用 `kuku --version` 核对版本。参阅[升级指南](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.6/docs/zh/guides/upgrade-kuku.md)。跟踪后续预发布可运行 `kuku config set --patch 'update.channel = "alpha"'`。
+- 预发布覆盖 Linux x86-64 / ARM64、Apple Silicon macOS 和 Windows x86-64；安装后用 `kuku --version` 核对版本。参阅[升级指南](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.7/docs/zh/guides/upgrade-kuku.md)。跟踪后续预发布可运行 `kuku config set --patch 'update.channel = "alpha"'`。
 
 ## [0.1.0-alpha.5]
 
