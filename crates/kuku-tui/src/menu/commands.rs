@@ -20,7 +20,6 @@ pub(crate) enum CommandMenu {
     Values,
     Server,
     Restart,
-    Web,
     Help,
     Quit,
 }
@@ -45,17 +44,12 @@ impl CommandMenu {
         Self::Values,
         Self::Server,
         Self::Restart,
-        Self::Web,
         Self::Help,
         Self::Quit,
     ];
 
     pub(crate) fn name(self) -> &'static str {
         self.spec().0
-    }
-
-    pub(crate) fn advertised(self) -> bool {
-        self != Self::Web
     }
 
     pub(crate) fn description(self) -> String {
@@ -118,7 +112,7 @@ impl CommandMenu {
             Self::Model => (
                 "model",
                 &["models"],
-                "Choose a model route",
+                "Choose the selected Agent's model",
                 Some(Shortcut::MODEL),
             ),
             Self::Thinking => (
@@ -177,8 +171,12 @@ impl CommandMenu {
                 "Confirm a local service restart",
                 None,
             ),
-            Self::Web => ("web", &["browser"], "Open in the browser", None),
-            Self::Help => ("help", &["hotkeys"], "Show keyboard shortcuts", None),
+            Self::Help => (
+                "help",
+                &["hotkeys"],
+                "Find help and keyboard shortcuts",
+                None,
+            ),
             Self::Quit => ("quit", &["exit", "q"], "Leave the terminal", None),
         }
     }

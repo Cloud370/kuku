@@ -6,6 +6,7 @@ use std::time::Duration;
 use common::TestServer;
 use common::mock_provider::{self, ControlledProvider, text_response};
 use httpmock::Method;
+use kuku::config::ModelRef;
 use kuku::event::{EventPayload, EventStore};
 use kuku::session::{
     Activation, AgentConfig, Input, InputSource, InputTiming, Session, SessionOptions,
@@ -99,10 +100,21 @@ async fn invalid_first_model_leaves_no_journal_and_can_be_corrected_on_the_same_
             .body_contains("keep this original prompt");
         then.status(200).body(text_response("corrected route"));
     });
-    let mut config = mock_provider::make_test_config(mock.port());
-    config.default_tier = "unconfigured".into();
+    let config = mock_provider::make_test_config(mock.port());
     let server = TestServer::start(config).await;
     let id = "correct-first-model";
+    let (status, rejected) = server
+        .command(
+            id,
+            json!({
+                "type":"send","command_id":"invalid-model","text":"keep this original prompt","create":{},
+                "config_patch":{"connection":"anthropic"}
+            }),
+        )
+        .await;
+    assert_eq!(400, status);
+    assert_eq!("invalid_request", rejected["code"]);
+    assert!(!server.events_path(id).exists());
     let mut send = json!({
         "type":"send","command_id":"invalid-model","text":"keep this original prompt",
         "create":{"preset":"review","reasoning_effort":"unsupported"}
@@ -163,13 +175,17 @@ async fn compatible_model_preview_and_first_send_leave_undeclared_reasoning_unse
     });
     let mut config = mock_provider::make_test_config(mock.port());
     config.providers.get_mut("anthropic").unwrap().options = Default::default();
-    let mut light = config.tiers["balanced"].clone();
-    light.model = "claude-haiku-4-5-20251001".into();
-    config.tiers.insert("light".into(), light.clone());
-    let mut invalid = light;
-    invalid.reasoning_effort = Some("none".into());
-    config.tiers.insert("invalid".into(), invalid);
-    config.default_tier = "light".into();
+    let haiku = ModelRef::new("anthropic", "claude-haiku-4-5-20251001");
+    let settings = config.models[&config.default_model].clone();
+    config.models.insert(haiku.clone(), settings.clone());
+    config.models.insert(
+        ModelRef::new("anthropic", "unavailable-settings"),
+        kuku::config::ModelConfig {
+            reasoning_effort: Some("none".into()),
+            ..settings
+        },
+    );
+    config.default_model = haiku;
     let server = TestServer::start(config).await;
 
     let response = server
@@ -188,7 +204,10 @@ async fn compatible_model_preview_and_first_send_leave_undeclared_reasoning_unse
 
     let invalid = server
         .request(wreq::Method::GET, "/models/resolve")
-        .query(&[("tier", "invalid")])
+        .query(&[
+            ("connection", "anthropic"),
+            ("model", "unavailable-settings"),
+        ])
         .send()
         .await
         .unwrap();
@@ -212,6 +231,169 @@ async fn compatible_model_preview_and_first_send_leave_undeclared_reasoning_unse
         })
         .await;
     provider.assert_hits(1);
+}
+
+#[tokio::test]
+async fn exact_model_pair_controls_http_requests_and_session_defaults() {
+    let mut first = ControlledProvider::start().await;
+    let mut second = ControlledProvider::start().await;
+    let mut config = mock_provider::make_test_config(first.port());
+    let original = config.default_model.clone();
+    let alternate = ModelRef::new("alternate", &original.model);
+    let mut provider = config.providers[&original.connection].clone();
+    provider.base_url = format!("http://127.0.0.1:{}", second.port());
+    config
+        .providers
+        .insert(alternate.connection.clone(), provider);
+    config.models.insert(
+        alternate.clone(),
+        kuku::config::ModelConfig {
+            max_output_tokens: Some(1024),
+            ..config.models[&original].clone()
+        },
+    );
+    let server = TestServer::start(config.clone()).await;
+    let catalog: Value = server
+        .request(wreq::Method::GET, "/models")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(json!(original), catalog["default_model"]);
+    assert_eq!(2, catalog["models"].as_array().unwrap().len());
+
+    let old_session = "original-default";
+    server
+        .submit(
+            old_session,
+            json!({"type":"send","command_id":"old-first","text":"first","create":{}}),
+        )
+        .await;
+    let call = first.next().await;
+    assert_eq!(original.model, call.request["model"]);
+    assert_eq!(48_000, call.request["max_tokens"]);
+    call.reply(text_response("original result"));
+    server
+        .wait_for_snapshot(old_session, "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "original result"
+        })
+        .await;
+    second.assert_idle();
+
+    config.default_model = alternate.clone();
+    server.state.config.store(Arc::new(config));
+    server
+        .submit(
+            old_session,
+            json!({"type":"send","command_id":"old-again","text":"Use the same model"}),
+        )
+        .await;
+    let call = first.next().await;
+    assert_eq!(48_000, call.request["max_tokens"]);
+    call.reply(text_response("original default retained"));
+    server
+        .wait_for_snapshot(old_session, "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "original default retained"
+        })
+        .await;
+
+    server.submit(
+        "new-default",
+        json!({"type":"send","command_id":"new-first","text":"Use the new default","create":{}}),
+    ).await;
+    let call = second.next().await;
+    assert_eq!(alternate.model, call.request["model"]);
+    assert_eq!(1024, call.request["max_tokens"]);
+    call.reply(text_response("new default applied"));
+    server
+        .wait_for_snapshot("new-default", "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "new default applied"
+        })
+        .await;
+
+    server
+        .submit(
+            old_session,
+            json!({
+                "type":"send","command_id":"old-switch","text":"Use the alternate connection",
+                "config_patch":{"connection":alternate.connection,"model":alternate.model}
+            }),
+        )
+        .await;
+    let call = second.next().await;
+    assert_eq!(alternate.model, call.request["model"]);
+    assert_eq!(1024, call.request["max_tokens"]);
+    call.reply(text_response("old agent switched"));
+    server
+        .wait_for_snapshot(old_session, "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "old agent switched"
+        })
+        .await;
+    first.assert_idle();
+}
+
+#[tokio::test]
+async fn multiple_projects_share_one_host_and_each_agent_resolves_its_named_connection() {
+    let first = mock_provider::start_mock_provider().await;
+    let second = mock_provider::start_mock_provider().await;
+    mock_provider::mock_text_response(&first, "first result");
+    let selected = second.mock(|when, then| {
+        when.method(Method::POST)
+            .path("/v1/messages")
+            .body_contains("second material")
+            .matches(|request| {
+                !String::from_utf8_lossy(request.body.as_deref().unwrap_or_default())
+                    .contains("first material")
+            });
+        then.status(200).body(text_response("second result"));
+    });
+    let mut config = mock_provider::make_test_config(first.port());
+    let mut connection = config.providers["anthropic"].clone();
+    connection.base_url = second.base_url();
+    config.providers.insert("secondary".into(), connection);
+    let model = config.default_model.model.clone();
+    config.models.insert(
+        ModelRef::new("secondary", &model),
+        config.models[&config.default_model].clone(),
+    );
+    let server = TestServer::start(config).await;
+    let workspace = tempfile::tempdir().unwrap();
+    let id = "shared-service";
+    server.submit(id, json!({"type":"send","command_id":"same","text":"first material","create":{"connection":"anthropic","model":model}})).await;
+    server.submit(id, json!({"type":"send","command_id":"same","text":"second material","workspace":workspace.path(),
+        "create":{"connection":"secondary","model":model}})).await;
+
+    let snapshot = server
+        .wait_for_snapshot(id, "main", |snapshot| {
+            snapshot["agent"]["last_output"] == "first result"
+        })
+        .await;
+    assert_eq!("anthropic", snapshot["selection"]["connection"]);
+    let second_workspace = workspace.path().canonicalize().unwrap();
+    let seen = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response: Value = server
+                .request(wreq::Method::GET, &format!("/sessions/{id}/snapshot"))
+                .query(&[("workspace", second_workspace.to_str().unwrap())])
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if response["agent"]["last_output"] == "second result" {
+                break response;
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!("secondary", seen["selection"]["connection"]);
+    assert_eq!(json!(second_workspace), seen["workspace"]);
+    selected.assert_hits(1);
 }
 
 #[tokio::test]

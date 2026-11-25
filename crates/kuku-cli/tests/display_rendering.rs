@@ -66,11 +66,11 @@ fn error_format() {
 }
 
 #[test]
-fn session_start_shows_tier_and_model() {
+fn session_start_shows_connection_and_model() {
     let d = Display::new(false, "medium");
-    let line = d.session_start("abc123", "strong", "claude-sonnet-4-6");
+    let line = d.session_start("abc123", "work", "claude-sonnet-4-6");
     assert!(line.contains("abc123"));
-    assert!(line.contains("strong"));
+    assert!(line.contains("work"));
     assert!(line.contains("claude-sonnet-4-6"));
 }
 
@@ -238,14 +238,14 @@ fn json_log_serializes_record_for_host_streams() {
 fn json_session_serializes() {
     let line = OutputLine::session_started(
         "abc123".into(),
-        "strong".into(),
+        "work".into(),
         "claude-sonnet-4-6".into(),
         None,
     );
     let json = line.to_json_line();
     assert!(json.contains("\"type\":\"session\""));
     assert!(json.contains("\"event\":\"started\""));
-    assert!(json.contains("\"tier\":\"strong\""));
+    assert!(json.contains("\"connection\":\"work\""));
     assert!(json.contains("\"model\":\"claude-sonnet-4-6\""));
 }
 
@@ -304,6 +304,7 @@ fn event_filter_excludes_main_facts_from_non_main_conversation() {
                 session_id: "s_filter".into(),
                 created_at: "t".into(),
                 kuku_version: "test".into(),
+                default_model: None,
             },
         },
         kuku::event::StoredEvent {

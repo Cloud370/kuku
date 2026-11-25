@@ -205,9 +205,10 @@ fn registry(skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
                 "properties": {
                     "url": {"type": "string", "description": "The URL to fetch."},
                     "prompt": {"type": "string", "description": "How to process the content."},
-                    "model_tier": {"type": "string", "description": "Model tier for summarization. Use a tier name from the configured model tiers (see <kuku_models> in context)."}
+                    "connection": {"type": "string", "description": "Named connection for summarization from <kuku_models>."},
+                    "model": {"type": "string", "description": "Exact model ID registered on that connection in <kuku_models>."}
                 },
-                "required": ["url", "prompt", "model_tier"]
+                "required": ["url", "prompt", "connection", "model"]
             }),
             true,
             80_000,
@@ -218,6 +219,7 @@ fn registry(skills_enabled: bool, session: bool) -> Vec<ToolDefinition> {
     if skills_enabled {
         tools.push(builtin::list_skills_definition());
         tools.push(builtin::search_skills_definition());
+        tools.push(crate::skill::bundle::resources::definition());
         tools.push(builtin::use_skill_definition());
     }
     tools
@@ -476,22 +478,31 @@ mod tests {
     }
 
     #[test]
-    fn builtin_registry_includes_use_skill_when_enabled() {
+    fn builtin_registry_includes_skill_tools_when_enabled() {
         let registry = builtin_registry(true);
         let names = tool_names(&registry);
-        assert!(names.contains(&"use_skill".to_string()));
-        assert!(names.contains(&"list_skills".to_string()));
-        assert!(names.contains(&"search_skills".to_string()));
-        assert_eq!(builtin_registry(false).len() + 3, names.len());
-        assert_eq!(names.last().unwrap(), "use_skill");
+        let base_count = builtin_registry(false).len();
+        assert_eq!(
+            names[base_count..],
+            [
+                "list_skills",
+                "search_skills",
+                "skill_resources",
+                "use_skill"
+            ]
+        );
+        let resources = &registry[base_count + 2];
+        assert!(resources.read_only);
+        assert_eq!(resources.risk, "read");
     }
 
     #[test]
-    fn builtin_registry_excludes_use_skill_when_disabled() {
+    fn builtin_registry_excludes_skill_tools_when_disabled() {
         let registry = builtin_registry(false);
         let names = tool_names(&registry);
         assert!(!names.contains(&"use_skill".to_string()));
         assert!(!names.contains(&"list_skills".to_string()));
         assert!(!names.contains(&"search_skills".to_string()));
+        assert!(!names.contains(&"skill_resources".to_string()));
     }
 }

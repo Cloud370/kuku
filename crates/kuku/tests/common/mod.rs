@@ -178,16 +178,8 @@ impl TestEnv {
         let in_child = process::isolate_test(module, name, |command| {
             let home = tempfile::tempdir().unwrap();
             let workspace = tempfile::tempdir().unwrap();
-            for key in [
-                "KUKU_PROVIDER",
-                "KUKU_ANTHROPIC_API_KEY",
-                "KUKU_OPENAI_API_KEY",
-                "KUKU_API_KEY",
-                "KUKU_PROVIDER_TRACE",
-            ] {
-                command.env_remove(key);
-            }
             command
+                .env_remove("KUKU_PROVIDER_TRACE")
                 .env("KUKU_HOME", home.path())
                 .current_dir(workspace.path());
             (home, workspace)
@@ -220,34 +212,32 @@ impl TestEnv {
 
 // ---------- Test config helpers ----------
 
-/// Build a minimal Config with anthropic + openai providers and a balanced tier.
-/// Builder overrides (.model(), .base_url(), .api_key()) take precedence at resolution time.
+/// Build a fixture with two named connections and an initial model on Anthropic.
 #[allow(
     dead_code,
     reason = "this shared fixture is used by a subset of integration binaries"
 )]
 pub fn test_config() -> kuku::config::Config {
     use kuku::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, ProviderConfig, ThinkLevel, TierConfig,
+        ApiKey, Config, DiscoveryConfig, HandoffConfig, ModelConfig, ModelRef, ProviderConfig,
+        ThinkLevel,
     };
     use std::collections::BTreeMap;
 
-    let mut tiers = BTreeMap::new();
-    tiers.insert(
-        "balanced".to_string(),
-        TierConfig {
+    let default_model = ModelRef::new("anthropic", "claude-sonnet-4-6");
+    let models = BTreeMap::from([(
+        default_model.clone(),
+        ModelConfig {
             request: None,
             reasoning_effort: None,
             service_tier: None,
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
             think: ThinkLevel::Medium,
             context_window: 200_000,
             max_output_tokens: Some(48_000),
-            purpose: "balanced".to_string(),
+            purpose: String::new(),
             output: Default::default(),
         },
-    );
+    )]);
 
     let mut providers = BTreeMap::new();
     providers.insert(
@@ -288,13 +278,30 @@ pub fn test_config() -> kuku::config::Config {
     );
 
     Config {
-        tiers,
+        models,
         providers,
-        default_tier: "balanced".to_string(),
+        default_model,
         discovery: DiscoveryConfig::default(),
         handoff: HandoffConfig::default(),
         logs: kuku::config::LogsConfig::default(),
         plugin: kuku::config::PluginConfig::default(),
         update: kuku::config::UpdateConfig::default(),
     }
+}
+
+#[allow(
+    dead_code,
+    reason = "this shared fixture is used by a subset of integration binaries"
+)]
+pub fn set_test_model<'a>(
+    config: &'a mut kuku::config::Config,
+    connection: &str,
+    model: &str,
+) -> &'a mut kuku::config::ModelConfig {
+    let previous = config.models.remove(&config.default_model).unwrap();
+    config.default_model = kuku::config::ModelRef::new(connection, model);
+    config
+        .models
+        .entry(config.default_model.clone())
+        .or_insert(previous)
 }

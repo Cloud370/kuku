@@ -48,10 +48,9 @@ fn openai_options(
     provider.base_url = server.url("");
     provider.format = format;
     provider.options.profile = ProviderProfile::OpenRouter;
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "deepseek/deepseek-v4.1-flash-1017".into();
-    tier.think = ThinkLevel::Off;
+    let model_settings =
+        common::set_test_model(&mut config, "openai", "deepseek/deepseek-v4.1-flash-1017");
+    model_settings.think = ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
     SessionOptions::new(workspace, data, config)

@@ -1,11 +1,17 @@
+use std::sync::Arc;
+
 use crate::error::Result;
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderToolCall;
 use crate::session::runtime::JobControl;
+use crate::skill::bundle::{self, resources};
+use crate::skill::definition::{SkillDefinition, SkillSource};
+use crate::tool::ToolResultEnvelope;
 use serde_json::json;
+use tokio::sync::{Notify, mpsc, oneshot};
 
-use super::helpers::{is_inline_skill_tool, now_timestamp, resolved_tool_available};
-use super::types::{ExecSlot, PendingRun, WorkspaceAccess};
+use super::helpers::{is_skill_tool, now_timestamp, resolved_tool_available};
+use super::types::{ExecSlot, PendingRun, QueuedToolCall, SlotEvent, ToolKind, WorkspaceAccess};
 
 pub(super) struct HookBlockResult {
     pub(super) reason: String,
@@ -84,7 +90,7 @@ pub(crate) fn write_tool_result(
     })
 }
 
-fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
+pub(super) fn current_skill_events(pending: &PendingRun) -> Result<Vec<crate::event::StoredEvent>> {
     if pending.query.runtime.is_some() {
         super::runtime_tools::runtime_session(pending)?
             .read_agent_events(pending.conversation.as_str())
@@ -138,12 +144,11 @@ fn truncate_to_max_chars(text: &str, max_chars: usize) -> (String, bool) {
     (text.chars().take(max_chars).collect(), true)
 }
 
-fn clamp_inline_skill_tool_result(
-    pending: &PendingRun,
-    tool_name: &str,
-    mut result: crate::tool::ToolResultEnvelope,
-) -> crate::tool::ToolResultEnvelope {
-    let Some(max_result_chars) = inline_skill_tool_max_result_chars(pending, tool_name) else {
+fn clamp_skill_tool_result(
+    max_result_chars: Option<usize>,
+    mut result: ToolResultEnvelope,
+) -> ToolResultEnvelope {
+    let Some(max_result_chars) = max_result_chars else {
         return result;
     };
     let (model_content, truncated) = truncate_to_max_chars(&result.model_content, max_result_chars);
@@ -152,34 +157,69 @@ fn clamp_inline_skill_tool_result(
     result
 }
 
-fn handle_use_skill(
-    pending: &mut PendingRun,
-    tool_call: &ProviderToolCall,
-) -> Result<crate::tool::ToolResultEnvelope> {
-    let skill_name = tool_call
-        .args
-        .get("skill_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let definition = pending
-        .skill_registry
-        .as_ref()
-        .and_then(|reg| reg.get(skill_name))
-        .cloned();
+fn skill_load_result(
+    pending: &PendingRun,
+    def: &SkillDefinition,
+    location: &str,
+    version: Option<&str>,
+) -> ToolResultEnvelope {
+    let mut structured = json!({
+        "kind": "skill_load",
+        "conversation": pending.conversation.as_str(),
+        "name": def.name,
+        "description": def.description,
+        "source": def.source.as_str(),
+        "loaded": true,
+    });
+    if let Some(version) = version {
+        structured["version"] = json!(version);
+    }
+    ToolResultEnvelope::ok(
+        format!("loaded skill: {}", def.name),
+        format!("<!-- loaded: {location} -->\n\n{}", def.instructions),
+        structured,
+    )
+}
 
-    let Some(def) = definition else {
-        return Ok(crate::tool::ToolResultEnvelope::error(
-            format!("skill '{skill_name}' not found"),
-            format!("no skill named '{skill_name}' in the registry"),
+fn skill_name(tool_call: &ProviderToolCall) -> &str {
+    tool_call.args["skill_name"].as_str().unwrap_or_default()
+}
+
+fn skill_definition<'a>(
+    pending: &'a PendingRun,
+    tool_call: &ProviderToolCall,
+) -> Option<&'a SkillDefinition> {
+    pending.skill_registry.as_ref()?.get(skill_name(tool_call))
+}
+
+fn handle_use_skill(
+    pending: &PendingRun,
+    tool_call: &ProviderToolCall,
+) -> Result<ToolResultEnvelope> {
+    let Some(def) = skill_definition(pending, tool_call) else {
+        let name = skill_name(tool_call);
+        return Ok(ToolResultEnvelope::error(
+            format!("skill '{name}' not found"),
+            format!("no skill named '{name}' in the registry"),
         ));
     };
-
-    let skill_dir = def.source_path.as_deref().unwrap_or("").to_string();
-    let result = format!("<!-- loaded: {skill_dir} -->\n\n{}", def.instructions);
-
     let events = current_skill_events(pending)?;
     let mut skill_names =
         crate::skill::session::loaded_skill_names(&events, pending.conversation.as_str());
+    let bootstrapped_docs = crate::skill::session::restore_turn_snapshot(
+        &events,
+        pending.conversation.as_str(),
+        pending.turn,
+    )
+    .is_some_and(|snapshot| {
+        snapshot
+            .bootstrap_loaded
+            .iter()
+            .any(|name| name == bundle::NAME)
+    });
+    if !bootstrapped_docs {
+        skill_names.retain(|name| name != bundle::NAME);
+    }
     if !skill_names.iter().any(|name| name == &def.name) {
         skill_names.push(def.name.clone());
         skill_names.sort();
@@ -192,23 +232,147 @@ fn handle_use_skill(
         registry: serde_json::to_value(&registry)?,
         bootstrap_loaded: skill_names,
     })?;
+    Ok(skill_load_result(
+        pending,
+        def,
+        def.source_path.as_deref().unwrap_or(""),
+        None,
+    ))
+}
 
-    Ok(crate::tool::ToolResultEnvelope {
-        status: "ok".to_string(),
-        summary: format!("loaded skill: {skill_name}"),
-        model_content: result,
-        truncated: false,
-        faults: Default::default(),
-        supplied_full_write: false,
-        structured: Some(json!({
-            "kind": "skill_load",
-            "conversation": pending.conversation.as_str(),
-            "name": def.name,
-            "description": def.description,
-            "source": def.source.as_str(),
-            "loaded": true,
-        })),
-    })
+pub(super) fn uses_skill_bundle(pending: &PendingRun, call: &ProviderToolCall) -> bool {
+    (call.name == resources::TOOL_NAME
+        || (call.name == "use_skill"
+            && skill_definition(pending, call)
+                .is_some_and(|def| def.source == SkillSource::Builtin)))
+        && resolved_tool_available(pending, &call.name)
+}
+
+enum SkillBundleAction {
+    Load(ToolResultEnvelope),
+    Access(resources::Request),
+}
+
+pub(super) struct SkillBundleOperation {
+    version: String,
+    action: SkillBundleAction,
+}
+
+pub(super) fn prepare_skill_bundle_operation(
+    pending: &PendingRun,
+    tool_call: &ProviderToolCall,
+) -> Result<std::result::Result<SkillBundleOperation, ToolResultEnvelope>> {
+    let invalid = |summary, message| {
+        let result = ToolResultEnvelope::error(summary, message);
+        Ok(Err(clamp_skill_tool_result(
+            inline_skill_tool_max_result_chars(pending, &tool_call.name),
+            result,
+        )))
+    };
+    let request = if tool_call.name == resources::TOOL_NAME {
+        match resources::Request::from_args(&tool_call.args) {
+            Ok(request) => Some(request),
+            Err(error) => return invalid("invalid Skill resource arguments", error),
+        }
+    } else {
+        None
+    };
+    let Some(version) = pending
+        .skill_registry
+        .as_ref()
+        .and_then(|registry| registry.docs_bundle())
+    else {
+        return invalid(
+            "Skill unavailable",
+            "kuku-docs is unavailable in this Turn's Skill snapshot.",
+        );
+    };
+    let action = if let Some(request) = request {
+        let events = current_skill_events(pending)?;
+        if !crate::skill::session::docs_loaded_in_turn(
+            &events,
+            pending.conversation.as_str(),
+            pending.turn,
+            version,
+        ) {
+            return invalid(
+                "Skill not loaded",
+                "Load kuku-docs with use_skill before reading its resources.",
+            );
+        }
+        SkillBundleAction::Access(request)
+    } else {
+        let def = skill_definition(pending, tool_call).expect("bundled Skill was selected");
+        SkillBundleAction::Load(skill_load_result(
+            pending,
+            def,
+            "builtin:kuku-docs",
+            Some(version),
+        ))
+    };
+    Ok(Ok(SkillBundleOperation {
+        version: version.to_owned(),
+        action,
+    }))
+}
+
+pub(super) fn spawn_skill_bundle_slot(
+    pending: &PendingRun,
+    queued: &QueuedToolCall,
+    operation: SkillBundleOperation,
+    event_tx: mpsc::Sender<(String, SlotEvent)>,
+) -> ExecSlot {
+    let cancel = Arc::new(Notify::new());
+    let stop = cancel.clone();
+    let id = queued.tool_call.id.clone();
+    let home = pending.kuku_home.clone();
+    let max_result_chars = inline_skill_tool_max_result_chars(pending, &queued.tool_call.name);
+    // The worker also sees its owner disappear if the Tokio runtime shuts down.
+    let (owner, keep_running) = oneshot::channel::<()>();
+    let run_events = event_tx.clone();
+    let mut work = tokio::task::spawn_blocking(move || {
+        let SkillBundleOperation { version, action } = operation;
+        let cancelled = || owner.is_closed() || run_events.is_closed();
+        match action {
+            SkillBundleAction::Load(result) => {
+                bundle::retain_cancellable(&home, &version, &cancelled).map(|()| result)
+            }
+            SkillBundleAction::Access(request) => request.execute(&home, &version, &cancelled),
+        }
+    });
+    tokio::spawn(async move {
+        let finished = tokio::select! {
+            biased;
+            _ = stop.notified() => None,
+            _ = event_tx.closed() => None,
+            result = &mut work => Some(result),
+        };
+        let result = match finished {
+            Some(result) => result
+                .map_err(std::io::Error::other)
+                .and_then(|result| result)
+                .unwrap_or_else(|error| {
+                    ToolResultEnvelope::error("Skill resource unavailable", error.to_string())
+                }),
+            None => {
+                drop(keep_running);
+                work.abort();
+                let _ = work.await;
+                ToolResultEnvelope::cancelled("Skill resource access cancelled")
+            }
+        };
+        let result = clamp_skill_tool_result(max_result_chars, result);
+        let _ = event_tx.send((id, SlotEvent::Done(result))).await;
+    });
+    ExecSlot {
+        tool_call_id: queued.tool_call.id.clone(),
+        conversation: Some(pending.conversation.clone()),
+        kind: ToolKind::Simple,
+        workspace_access: WorkspaceAccess::Independent,
+        label: queued.display_summary.clone(),
+        cancel,
+        job: None,
+    }
 }
 
 fn handle_list_skills(
@@ -221,6 +385,7 @@ fn handle_list_skills(
         &registry,
         &events,
         pending.conversation.as_str(),
+        pending.turn,
         &tool_call.args,
     );
     let count = payload["skills"].as_array().map_or(0, Vec::len);
@@ -237,6 +402,7 @@ fn handle_search_skills(
         &registry,
         &events,
         pending.conversation.as_str(),
+        pending.turn,
         &tool_call.args,
     );
     let count = payload["skills"].as_array().map_or(0, Vec::len);
@@ -272,23 +438,23 @@ pub(super) async fn execute_tool_call(
         )?;
         return Ok(result);
     }
-    if is_inline_skill_tool(&tool_call.name) && !resolved_tool_available(pending, &tool_call.name) {
+    if is_skill_tool(&tool_call.name) && !resolved_tool_available(pending, &tool_call.name) {
         return Ok(crate::tool::ToolResultEnvelope::error(
             format!("failed: unknown tool: {}", tool_call.name),
             format!("unknown tool: {}", tool_call.name),
         ));
     }
-    if matches!(
-        tool_call.name.as_str(),
-        "use_skill" | "list_skills" | "search_skills"
-    ) {
+    if is_skill_tool(&tool_call.name) {
         let result = match tool_call.name.as_str() {
             "use_skill" => handle_use_skill(pending, tool_call)?,
             "list_skills" => handle_list_skills(pending, tool_call)?,
             "search_skills" => handle_search_skills(pending, tool_call)?,
             _ => unreachable!(),
         };
-        let result = clamp_inline_skill_tool_result(pending, &tool_call.name, result);
+        let result = clamp_skill_tool_result(
+            inline_skill_tool_max_result_chars(pending, &tool_call.name),
+            result,
+        );
         let mut store = EventStore::open(&pending.events_path)?;
         store.append(EventPayload::ToolResult {
             turn: pending.turn,
@@ -456,9 +622,9 @@ mod tests {
 
     fn test_config() -> crate::config::Config {
         crate::config::Config {
-            tiers: std::collections::BTreeMap::new(),
+            models: std::collections::BTreeMap::new(),
             providers: std::collections::BTreeMap::new(),
-            default_tier: "balanced".to_string(),
+            default_model: crate::config::ModelRef::default(),
             discovery: crate::config::DiscoveryConfig::default(),
             handoff: crate::config::HandoffConfig::default(),
             logs: crate::config::LogsConfig::default(),
@@ -535,6 +701,7 @@ mod tests {
             resolved: Some(test_resolved_runtime(vec![tool])),
             admitted_tool_call_ids: Default::default(),
             queued_tool_calls: std::collections::VecDeque::new(),
+            skill_bundle_call: None,
             resumed_permission_requests: std::collections::VecDeque::new(),
             config: Arc::new(test_config()),
             prompts_dir: None,

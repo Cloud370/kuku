@@ -28,7 +28,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::config_watcher::ConfigWatcher;
+use crate::config_watcher::{ConfigSource, ConfigWatcher};
 use crate::routes;
 use crate::run_manager::RunManager;
 use crate::server_args::ServerArgs;
@@ -38,7 +38,7 @@ use self::access::{Access, BrowserAccess};
 use self::discovery::{Discovery, Lease};
 
 /// Protocol revision for Session command and observation routes.
-pub const SESSION_PROTOCOL_VERSION: u32 = 1;
+pub const SESSION_PROTOCOL_VERSION: u32 = 2;
 
 /// Independent protocol revision for status, restart and browser handoff.
 pub const MANAGEMENT_VERSION: u32 = 1;
@@ -70,7 +70,7 @@ impl Identity {
 struct ServiceState {
     app: Arc<AppState>,
     identity: Option<Identity>,
-    config_path: Option<PathBuf>,
+    config_source: Option<Arc<ConfigSource>>,
     browser: Option<BrowserAccess>,
     admission: RwLock<()>,
     draining: AtomicBool,
@@ -81,13 +81,13 @@ impl ServiceState {
     fn new(
         app: Arc<AppState>,
         identity: Option<Identity>,
-        config_path: Option<PathBuf>,
+        config_source: Option<Arc<ConfigSource>>,
         browser: Option<BrowserAccess>,
     ) -> Self {
         Self {
             app,
             identity,
-            config_path,
+            config_source,
             browser,
             admission: RwLock::new(()),
             draining: AtomicBool::new(false),
@@ -123,6 +123,8 @@ struct ServiceStatus {
     pid: Option<u32>,
     data_dir: String,
     config_path: Option<String>,
+    config_sha256: Option<String>,
+    config_default_model: Option<kuku::config::ModelRef>,
     busy: Vec<String>,
     draining: bool,
 }
@@ -155,15 +157,15 @@ pub async fn serve(args: ServerArgs, web: Option<Router>) -> Result<(), Box<dyn 
         .transpose()?;
     let config_path = args.config.unwrap_or_else(|| data_dir.join("config.toml"));
     let config_path = canonical_config(config_path)?;
-    let config = kuku::config::load_and_patch_config(&config_path)?.resolve()?;
+    let (config_source, config) = ConfigSource::open(config_path)?;
     let config_store = Arc::new(ArcSwap::from_pointee(config));
-    let _watcher = ConfigWatcher::start(config_path.clone(), config_store.clone());
+    let _watcher = ConfigWatcher::start(config_source.clone(), config_store.clone());
 
     let listener = bind(listen, args.managed).await?;
     let addr = listener.local_addr()?;
     let record = args
         .managed
-        .then(|| Discovery::new(addr, &data_dir, &config_path))
+        .then(|| Discovery::new(addr, &data_dir, &config_source.path))
         .transpose()?;
     let password = record
         .as_ref()
@@ -182,7 +184,7 @@ pub async fn serve(args: ServerArgs, web: Option<Router>) -> Result<(), Box<dyn 
     let service = Arc::new(ServiceState::new(
         state,
         record.as_ref().map(Identity::new),
-        Some(config_path),
+        Some(config_source),
         browser,
     ));
     let app = router(service.clone(), web);
@@ -247,6 +249,10 @@ async fn admit(State(service): State<Arc<ServiceState>>, request: Request, next:
 }
 
 async fn status(State(service): State<Arc<ServiceState>>) -> Response {
+    let loaded = service
+        .config_source
+        .as_ref()
+        .map(|source| source.loaded.load_full());
     let status = ServiceStatus {
         version: BUILD_VERSION,
         protocol_version: SESSION_PROTOCOL_VERSION,
@@ -258,9 +264,11 @@ async fn status(State(service): State<Arc<ServiceState>>) -> Response {
         pid: service.identity.as_ref().map(|identity| identity.pid),
         data_dir: service.app.kuku_home.to_string_lossy().into_owned(),
         config_path: service
-            .config_path
+            .config_source
             .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
+            .map(|source| source.path.to_string_lossy().into_owned()),
+        config_sha256: loaded.as_ref().map(|config| config.sha256.clone()),
+        config_default_model: loaded.map(|config| config.default_model.clone()),
         busy: service.run_manager().await.active_run_ids(),
         draining: service.draining.load(Ordering::Acquire),
     };
@@ -439,7 +447,7 @@ mod tests {
     use std::task::Poll;
 
     use arc_swap::ArcSwap;
-    use kuku::config::Config;
+    use kuku::config::{Config, ModelRef};
     use tokio::sync::Mutex;
 
     use super::{ServiceState, close_for_restart};
@@ -449,9 +457,9 @@ mod tests {
     #[tokio::test]
     async fn restart_defers_while_a_session_command_holds_admission() {
         let config = Config {
-            tiers: Default::default(),
+            models: Default::default(),
             providers: Default::default(),
-            default_tier: String::new(),
+            default_model: ModelRef::new("unused", "unused"),
             discovery: Default::default(),
             handoff: Default::default(),
             logs: Default::default(),

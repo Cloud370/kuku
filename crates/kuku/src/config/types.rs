@@ -63,12 +63,12 @@ impl std::str::FromStr for ProviderFormat {
 // ── Raw config file ──
 
 /// Raw deserialized contents of `config.toml`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfigFile {
-    pub default_model: Option<String>,
+    pub default_model: Option<ModelRef>,
 
     #[serde(default)]
-    pub model: BTreeMap<String, ModelEntry>,
+    pub model: BTreeMap<String, BTreeMap<String, ModelEntry>>,
 
     #[serde(default)]
     pub provider: BTreeMap<String, ProviderEntry>,
@@ -113,10 +113,36 @@ impl Default for DiscoveryConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelEntry {
-    pub provider: String,
+/// Exact identity of a registered model on a named connection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRef {
+    pub connection: String,
     pub model: String,
+}
+
+impl ModelRef {
+    pub fn new(connection: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            connection: connection.into(),
+            model: model.into(),
+        }
+    }
+
+    /// The TOML path where reusable settings for this pair are registered.
+    pub fn config_path(&self) -> String {
+        format!(
+            "model.{}.{}",
+            toml_edit::Key::new(&self.connection),
+            toml_edit::Key::new(&self.model),
+        )
+    }
+}
+
+/// Reusable settings for one model registered in `config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelEntry {
     #[serde(default)]
     pub think: Option<String>,
     #[serde(default)]
@@ -165,12 +191,12 @@ impl fmt::Debug for ProviderEntry {
 
 // ── Validated / resolved config ──
 
-/// Validated configuration for model tiers and providers.
+/// Configuration for exact model identities and their connections.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    pub tiers: BTreeMap<String, TierConfig>,
+    pub models: BTreeMap<ModelRef, ModelConfig>,
     pub providers: BTreeMap<String, ProviderConfig>,
-    pub default_tier: String,
+    pub default_model: ModelRef,
     pub discovery: DiscoveryConfig,
     pub handoff: HandoffConfig,
     pub logs: LogsConfig,
@@ -252,10 +278,10 @@ pub struct PluginConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UpdateConfig {
     pub source: String,
     pub channel: String,
-    #[serde(default)]
     pub sources: BTreeMap<String, String>,
 }
 
@@ -287,10 +313,9 @@ where
     Ok(raw.map(LogsConfig::from))
 }
 
+/// Reusable settings for a single connection and model pair.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TierConfig {
-    pub provider: String,
-    pub model: String,
+pub struct ModelConfig {
     pub think: ThinkLevel,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
@@ -301,6 +326,21 @@ pub struct TierConfig {
     /// Requested media output inherited by Agents on this route.
     pub output: super::RequestedOutput,
     pub request: Option<super::RequestFields>,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            think: ThinkLevel::ProviderDefault,
+            reasoning_effort: None,
+            service_tier: None,
+            context_window: 200_000,
+            max_output_tokens: None,
+            purpose: String::new(),
+            output: super::RequestedOutput::default(),
+            request: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -389,10 +429,10 @@ pub struct ResolvedThinking {
     pub high: Option<toml::Value>,
 }
 
-/// Lightweight tier info for prompt injection.
+/// Lightweight model registration and settings information.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct TierInfo {
-    pub name: String,
+pub struct ModelInfo {
+    pub connection: String,
     pub purpose: String,
     /// Model identifier for this route.
     pub model: String,
@@ -417,24 +457,19 @@ pub struct TierInfo {
 // ── Config methods ──
 
 impl Config {
-    /// Which tier is the default.
-    pub fn default_tier(&self) -> &str {
-        &self.default_tier
+    /// The exact default model for a new Session.
+    pub fn default_model(&self) -> &ModelRef {
+        &self.default_model
     }
 
-    /// Look up a tier by name.
-    pub fn tier(&self, name: &str) -> Option<&TierConfig> {
-        self.tiers.get(name)
+    /// Look up settings for a registered connection and model pair.
+    pub fn model(&self, selection: &ModelRef) -> Option<&ModelConfig> {
+        self.models.get(selection)
     }
 
     /// Look up a provider by name.
     pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.get(name)
-    }
-
-    /// All tier names.
-    pub fn tier_names(&self) -> Vec<&str> {
-        self.tiers.keys().map(|s| s.as_str()).collect()
     }
 
     /// Return the handoff configuration.
@@ -447,22 +482,22 @@ impl Config {
         self.logs.clone()
     }
 
-    /// All tier names with their purpose.
-    pub fn tier_infos(&self) -> Vec<TierInfo> {
-        self.tiers
+    /// Inspect all registered models and their configured settings.
+    pub fn model_infos(&self) -> Vec<ModelInfo> {
+        self.models
             .iter()
-            .map(|(name, tier)| TierInfo {
-                name: name.clone(),
-                purpose: tier.purpose.clone(),
-                model: tier.model.clone(),
-                reasoning_effort: tier.reasoning_effort.clone(),
+            .map(|(selection, config)| ModelInfo {
+                connection: selection.connection.clone(),
+                purpose: config.purpose.clone(),
+                model: selection.model.clone(),
+                reasoning_effort: config.reasoning_effort.clone(),
                 reasoning_choices: Vec::new(),
-                service_tier: tier.service_tier.clone(),
+                service_tier: config.service_tier.clone(),
                 service_choices: None,
                 input_modalities: None,
                 output_modalities: None,
                 image_input: super::ImageInputSupport::Unconfirmed,
-                output: tier.output,
+                output: config.output,
             })
             .collect()
     }
@@ -470,31 +505,42 @@ impl Config {
     /// Redacted display suitable for `kuku config show`.
     pub fn redacted_display(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("default_model = \"{}\"\n\n", self.default_tier));
+        out.push_str(&format!(
+            "default_model = {{ connection = {}, model = {} }}\n\n",
+            toml_edit::value(&self.default_model.connection),
+            toml_edit::value(&self.default_model.model),
+        ));
 
-        for (name, tier) in &self.tiers {
-            out.push_str(&format!("[model.{name}]\n"));
-            out.push_str(&format!("provider = \"{}\"\n", tier.provider));
-            out.push_str(&format!("model = \"{}\"\n", tier.model));
-            out.push_str(&format!("think = \"{}\"\n", tier.think.as_str()));
-            if let Some(effort) = &tier.reasoning_effort {
+        for (selection, config) in &self.models {
+            out.push_str(&format!("[{}]\n", selection.config_path()));
+            out.push_str(&format!("think = \"{}\"\n", config.think.as_str()));
+            if let Some(effort) = &config.reasoning_effort {
                 out.push_str(&format!("reasoning_effort = {effort:?}\n"));
             }
-            if tier.output == super::RequestedOutput::Image {
+            if let Some(service_tier) = &config.service_tier {
+                out.push_str(&format!(
+                    "service_tier = {}\n",
+                    toml_edit::value(service_tier)
+                ));
+            }
+            if config.output == super::RequestedOutput::Image {
                 out.push_str("output = \"image\"\n");
             }
-            out.push_str(&format!("context_window = {}\n", tier.context_window));
-            if let Some(max_output_tokens) = tier.max_output_tokens {
+            out.push_str(&format!("context_window = {}\n", config.context_window));
+            if let Some(max_output_tokens) = config.max_output_tokens {
                 out.push_str(&format!("max_output_tokens = {max_output_tokens}\n"));
             }
-            if !tier.purpose.is_empty() && tier.purpose != *name {
-                out.push_str(&format!("purpose = \"{}\"\n", tier.purpose));
+            if !config.purpose.is_empty() {
+                out.push_str(&format!(
+                    "purpose = {}\n",
+                    toml_edit::value(&config.purpose)
+                ));
             }
             out.push('\n');
         }
 
         for (name, provider) in &self.providers {
-            out.push_str(&format!("[provider.{name}]\n"));
+            out.push_str(&format!("[provider.{}]\n", toml_edit::Key::new(name)));
             out.push_str(&format!("format = \"{}\"\n", provider.format.as_str()));
             if !provider.base_url.is_empty() {
                 out.push_str(&format!("base_url = {:?}\n", provider.base_url));

@@ -53,7 +53,7 @@ pub struct ContextInput {
     pub project_memory: Option<MemorySource>,
     pub history: Vec<CanonicalMessage>,
     pub tools: Vec<ToolSchema>,
-    pub model_tiers: Vec<crate::config::TierInfo>,
+    pub models: Vec<crate::config::ModelInfo>,
     /// Optional rendered runtime blocks (agent catalog, notices, etc.).
     /// These go into the runtime_context wrapper in the current user turn.
     pub runtime_blocks: Option<String>,
@@ -187,9 +187,10 @@ pub(crate) fn render_modalities(modalities: Option<&[String]>) -> String {
 
 #[derive(serde::Serialize)]
 struct PromptModel<'a> {
-    tier: &'a str,
+    connection_text: String,
+    model_text: String,
     #[serde(flatten)]
-    info: &'a crate::config::TierInfo,
+    info: &'a crate::config::ModelInfo,
     effective_input_modalities: &'static [&'static str],
     input_modalities_text: String,
     output_modalities_text: String,
@@ -205,10 +206,11 @@ fn segment_facts(
     let tools: Vec<_> = input.tools.iter().map(|tool| tool.name.as_str()).collect();
     let models = (tools.contains(&"create_agent") || tools.contains(&"fetch_web")).then(|| {
         input
-            .model_tiers
+            .models
             .iter()
             .map(|info| PromptModel {
-                tier: &info.name,
+                connection_text: serde_json::json!(info.connection).to_string(),
+                model_text: serde_json::json!(info.model).to_string(),
                 info,
                 effective_input_modalities: info.image_input.modalities(),
                 input_modalities_text: render_modalities(info.input_modalities.as_deref()),
@@ -222,15 +224,15 @@ fn segment_facts(
         .iter()
         .map(|source| source.content.as_str())
         .collect();
-    let model_tiers_rendered = if models.is_some()
+    let models_rendered = if models.is_some()
         && catalog
             .blocks
             .get("project-policy")
-            .is_some_and(|asset| asset.text.contains("model_tiers_rendered"))
+            .is_some_and(|asset| asset.text.contains("models_rendered"))
     {
         renderer
             .render(
-                "blocks/model-tiers.md",
+                "blocks/models.md",
                 minijinja::context! { models => minijinja::value::Serde(&models), agent => agent.clone(), tools => minijinja::value::Serde(&tools) },
             )?
             .trim_end()
@@ -252,7 +254,7 @@ fn segment_facts(
         current_date => &input.environment.current_date,
         project_instructions => minijinja::value::Serde(&project_instructions),
         project_instructions_rendered => project_instructions_rendered,
-        model_tiers_rendered => model_tiers_rendered,
+        models_rendered => models_rendered,
         memory_enabled => input.enable_memory,
     })
 }
@@ -488,7 +490,7 @@ mod tests {
                     description: "r".into(),
                     input_schema: json!({"type": "object"}),
                 }],
-                model_tiers: vec![],
+                models: vec![],
                 runtime_blocks: None,
                 enable_memory: true,
                 agent_instructions: String::new(),
@@ -556,7 +558,7 @@ mod tests {
                 project_memory: None,
                 history: vec![],
                 tools: vec![],
-                model_tiers: vec![],
+                models: vec![],
                 runtime_blocks: None,
                 enable_memory: false,
                 agent_instructions: String::new(),
@@ -583,7 +585,7 @@ mod tests {
                 project_memory: None,
                 history: vec![],
                 tools: vec![],
-                model_tiers: vec![],
+                models: vec![],
                 runtime_blocks: None,
                 enable_memory: false,
                 agent_instructions: "<kuku_identity>code reviewer</kuku_identity>".into(),
@@ -617,7 +619,7 @@ mod tests {
                 project_memory: None,
                 history: vec![],
                 tools: vec![],
-                model_tiers: vec![],
+                models: vec![],
                 runtime_blocks: Some(
                     "<kuku_agent_catalog><agent name=\"r\"/></kuku_agent_catalog>".into(),
                 ),
@@ -666,7 +668,7 @@ mod tests {
                 project_memory: None,
                 history: vec![],
                 tools: vec![],
-                model_tiers: vec![],
+                models: vec![],
                 runtime_blocks: None,
                 enable_memory: false,
                 agent_instructions: String::new(),

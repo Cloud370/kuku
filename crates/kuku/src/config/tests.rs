@@ -8,27 +8,15 @@ fn temp_config(content: &str) -> tempfile::TempDir {
 }
 
 const FULL_CONFIG: &str = r#"# kuku config
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-context_window = 200000
-max_output_tokens = 64000
-purpose = "deep reasoning"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 context_window = 200000
 max_output_tokens = 48000
 purpose = "general purpose"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
@@ -59,11 +47,16 @@ fn set_value_updates_string_field() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    set_value(&path, "default_model", "strong").unwrap();
+    set_value(
+        &path,
+        "provider.anthropic.base_url",
+        "https://gateway.example/v1",
+    )
+    .unwrap();
 
     let content = fs::read_to_string(&path).unwrap();
-    assert!(content.contains(r#"default_model = "strong""#));
-    assert!(!content.contains(r#"default_model = "balanced""#));
+    assert!(content.contains(r#"base_url = "https://gateway.example/v1""#));
+    assert!(!content.contains("https://api.anthropic.com"));
 }
 
 #[test]
@@ -71,7 +64,7 @@ fn set_value_updates_nested_string_field() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    set_value(&path, "model.balanced.think", "high").unwrap();
+    set_value(&path, "model.anthropic.claude-sonnet-4-6.think", "high").unwrap();
 
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("think = \"high\""));
@@ -82,7 +75,12 @@ fn set_value_updates_integer_field() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    set_value(&path, "model.balanced.context_window", "128000").unwrap();
+    set_value(
+        &path,
+        "model.anthropic.claude-sonnet-4-6.context_window",
+        "128000",
+    )
+    .unwrap();
 
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("context_window = 128000"));
@@ -93,7 +91,7 @@ fn set_value_preserves_comments() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    set_value(&path, "default_model", "light").unwrap();
+    set_value(&path, "model.anthropic.claude-sonnet-4-6.think", "low").unwrap();
 
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains("# kuku config"));
@@ -104,8 +102,8 @@ fn set_value_rejects_invalid_think_level() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    let error = set_value(&path, "model.balanced.think", "invalid").unwrap_err();
-    assert!(error.to_string().contains("ThinkLevel"));
+    let error = set_value(&path, "model.anthropic.claude-sonnet-4-6.think", "invalid").unwrap_err();
+    assert!(error.to_string().contains("think"));
     assert!(error.to_string().contains("off/low/medium/high"));
 }
 
@@ -123,7 +121,12 @@ fn set_value_rejects_zero_context_window() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    let error = set_value(&path, "model.balanced.context_window", "0").unwrap_err();
+    let error = set_value(
+        &path,
+        "model.anthropic.claude-sonnet-4-6.context_window",
+        "0",
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("context_window"));
 }
 
@@ -132,7 +135,12 @@ fn set_value_rejects_non_numeric_for_integer_field() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    let error = set_value(&path, "model.balanced.context_window", "abc").unwrap_err();
+    let error = set_value(
+        &path,
+        "model.anthropic.claude-sonnet-4-6.context_window",
+        "abc",
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("positive integer"));
     assert!(error.to_string().contains("abc"));
 }
@@ -142,7 +150,12 @@ fn set_value_rejects_negative_integer() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    let error = set_value(&path, "model.balanced.context_window", "-1").unwrap_err();
+    let error = set_value(
+        &path,
+        "model.anthropic.claude-sonnet-4-6.context_window",
+        "-1",
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("positive integer"));
 }
 
@@ -151,7 +164,12 @@ fn set_value_rejects_zero_max_output_tokens() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    let error = set_value(&path, "model.balanced.max_output_tokens", "0").unwrap_err();
+    let error = set_value(
+        &path,
+        "model.anthropic.claude-sonnet-4-6.max_output_tokens",
+        "0",
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("positive integer"));
 }
 
@@ -160,16 +178,17 @@ fn set_value_rejects_missing_subsection() {
     let dir = temp_config(FULL_CONFIG);
     let path = dir.path().join("config.toml");
 
-    let error = set_value(&path, "model.nonexistent.think", "high").unwrap_err();
+    let error = set_value(&path, "model.anthropic.nonexistent.think", "high").unwrap_err();
     assert!(error.to_string().contains("unknown config key"));
 }
 
 #[test]
 fn set_value_rejects_invalid_provider_reference() {
-    let dir = temp_config(FULL_CONFIG);
-    let path = dir.path().join("config.toml");
-
-    let error = set_value(&path, "model.balanced.provider", "nonexistent").unwrap_err();
+    let text = FULL_CONFIG.replace(
+        r#"default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }"#,
+        r#"default_model = { connection = "nonexistent", model = "missing" }"#,
+    );
+    let error = parse_config_text(&text).unwrap().resolve().unwrap_err();
     assert!(error.to_string().contains("provider"));
 }
 
@@ -187,27 +206,15 @@ fn set_value_rejects_unknown_dot_path() {
 #[test]
 fn show_redacted_masks_plaintext_api_key() {
     let config = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-context_window = 200000
-max_output_tokens = 64000
-purpose = "deep reasoning"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 context_window = 200000
 max_output_tokens = 48000
 purpose = "general purpose"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
@@ -229,27 +236,15 @@ api_key = "sk-ant-secret123"
 #[test]
 fn show_redacted_preserves_env_var_reference() {
     let config = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-context_window = 200000
-max_output_tokens = 64000
-purpose = "deep reasoning"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 context_window = 200000
 max_output_tokens = 48000
 purpose = "general purpose"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
@@ -279,7 +274,7 @@ fn show_redacted_errors_on_invalid_config() {
     let path = dir.path().join("config.toml");
 
     let error = show_redacted(&path).unwrap_err();
-    assert!(error.to_string().contains("invalid config"));
+    assert!(error.to_string().contains("invalid TOML"));
 }
 
 // ── discovery_config tests ──
@@ -302,21 +297,12 @@ extra_project_paths = [".custom/agents"]
 #[test]
 fn discovery_config_defaults_when_absent() {
     let toml = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -333,21 +319,12 @@ api_key = "test-key"
 #[test]
 fn discovery_config_propagated_to_resolved_config() {
     let toml = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -393,21 +370,12 @@ fn logs_config_partial_uses_defaults_for_missing_fields() {
 // ── handoff_config tests ──
 
 const HANDOFF_VALID_CONFIG: &str = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -481,11 +449,12 @@ fn handoff_propagation() {
 }
 
 #[test]
-fn generate_default_includes_all_sections() {
+fn generated_template_sets_behavior_without_choosing_a_model() {
     let toml_str = generate_default();
     let file: ConfigFile = toml::from_str(toml_str).unwrap();
-    assert!(!file.model.is_empty());
-    assert!(!file.provider.is_empty());
+    assert!(file.model.is_empty());
+    assert!(file.provider.is_empty());
+    assert!(file.default_model.is_none());
     assert!(file.discovery.is_some());
     let h = file.handoff.unwrap();
     assert!(h.enabled);
@@ -505,21 +474,12 @@ fn generate_default_includes_all_sections() {
 #[test]
 fn update_config_from_toml() {
     let input = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -544,21 +504,12 @@ custom = "https://example.com/latest.json"
 #[test]
 fn update_config_defaults_when_absent() {
     let input = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -578,21 +529,12 @@ api_key = "test-key"
 fn update_config_propagated_to_resolved_config() {
     let dir = temp_config(
         r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -615,21 +557,12 @@ channel = "alpha"
 // ── patch_defaults tests ──
 
 const PATCH_FULL_CONFIG: &str = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -664,21 +597,12 @@ fn no_change_when_complete() {
 #[test]
 fn fills_missing_handoff() {
     let input = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -699,21 +623,12 @@ api_key = "test-key"
 #[test]
 fn fills_missing_update() {
     let input = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -740,21 +655,12 @@ enabled = true
 #[test]
 fn fills_missing_logs() {
     let input = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -787,21 +693,12 @@ channel = "stable"
 #[test]
 fn preserves_user_comments() {
     let input = r#"# My custom config
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -816,21 +713,12 @@ api_key = "test-key"
 #[test]
 fn preserves_existing_handoff_values() {
     let input = r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 
 [provider.anthropic]
@@ -919,19 +807,11 @@ fn think_level_from_str_invalid() {
 fn load_and_patch_config_returns_current_disk_content_after_concurrent_edit() {
     let dir = temp_config(
         r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 
 [provider.anthropic]
 format = "anthropic"

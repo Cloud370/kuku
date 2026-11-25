@@ -466,9 +466,7 @@ mod tests {
     }
 
     fn test_config() -> std::sync::Arc<crate::config::Config> {
-        let file: crate::config::ConfigFile =
-            toml::from_str(crate::config::generate_default()).unwrap();
-        std::sync::Arc::new(file.resolve().unwrap())
+        std::sync::Arc::new(crate::config::test_config())
     }
 
     #[test]

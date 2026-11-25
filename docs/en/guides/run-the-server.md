@@ -10,14 +10,6 @@ Running `kuku` or `kuku run` automatically finds or starts a loopback service fo
 
 See [Upgrade kuku](upgrade-kuku.md) for version handoff behavior.
 
-## Open the Web UI
-
-With a [build that embeds the Web assets](../reference/cli.md#kuku-server-and-kuku-web), run `kuku web` from your workspace (optionally with `--session SESSION_ID --agent ADDRESS`), or type `/web` inside the TUI for the selected Agent. Browser and terminal clients can observe the same Session and reply to the same pending requests.
-
-A managed local launch signs in with a single-use ticket. Pointing `kuku web` at an explicit server opens a sign-in page where you enter that server's access token. [CLI reference](../reference/cli.md#kuku-server-and-kuku-web) · [HTTP authentication](../reference/server-api.md#authentication-and-versions)
-
-Browser shortcuts match the TUI: **Enter** sends or steers, **Shift+Enter** inserts a newline, and **Alt+Enter** queues for the next Turn. Use the Agent selector to choose the recipient, **Stop** to interrupt, **Continue** to resume, and **Withdraw** to drop a queued input. If a receipt is lost, the page lets you re-check or resend the original command. [Sessions](../how-it-works/sessions.md)
-
 ## Start an explicit server
 
 On the server host, initialize `KUKU_HOME`, configure provider keys, set `KUKU_SERVER_PASSWORD` to a secret token, and keep the server running:

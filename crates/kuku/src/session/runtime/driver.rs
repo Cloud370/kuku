@@ -345,9 +345,15 @@ impl Session {
     }
 
     fn build_query(&self, address: &str, work: TurnWork) -> Result<crate::Query> {
+        let docs_bootstrap = work.config.bootstrap_skill.as_deref()
+            == Some(crate::skill::bundle::NAME)
+            && !work.config.no_skills;
         let mut query = self.query_for_config(address, work.config, work.text)?;
         query.input_source = work.source;
         query.input_skills = work.skills;
+        if docs_bootstrap {
+            query.input_skills.push(crate::skill::bundle::NAME.into());
+        }
         query.runtime_execution = Some(work.execution);
         query.turn_override = Some(work.turn);
         query.skip_user_message = work.skip_user_message;
@@ -385,9 +391,6 @@ impl Session {
         if let Some(model) = &config.model {
             query = query.model(model);
         }
-        if let Some(tier) = &config.tier {
-            query = query.tier(tier);
-        }
         if let Some(max_output_tokens) = config.max_output_tokens {
             query = query.max_output_tokens(max_output_tokens);
         }
@@ -400,7 +403,9 @@ impl Session {
         if config.no_agents {
             query = query.no_agents();
         }
-        if let Some(name) = &config.bootstrap_skill {
+        if let Some(name) = &config.bootstrap_skill
+            && name != crate::skill::bundle::NAME
+        {
             let registry = crate::skill::build_registry_snapshot_for_host(
                 &self.inner.options.data_dir,
                 self.workspace_for(&config),
@@ -613,8 +618,8 @@ mod tests {
     use std::time::Duration;
 
     use crate::config::{
-        ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig, PluginConfig, ProviderConfig,
-        ProviderFormat, ThinkLevel, TierConfig, UpdateConfig,
+        ApiKey, Config, DiscoveryConfig, HandoffConfig, LogsConfig, ModelConfig, ModelRef,
+        PluginConfig, ProviderConfig, ProviderFormat, ThinkLevel, UpdateConfig,
     };
     use crate::event::EventPayload;
     use crate::{
@@ -644,22 +649,20 @@ mod tests {
     }
 
     fn model_config() -> Config {
-        let mut tiers = BTreeMap::new();
-        tiers.insert(
-            "balanced".into(),
-            TierConfig {
+        let default_model = ModelRef::new("openai", "runtime-test");
+        let models = BTreeMap::from([(
+            default_model.clone(),
+            ModelConfig {
                 request: None,
-                provider: "openai".into(),
-                model: "runtime-test".into(),
                 think: ThinkLevel::Off,
                 reasoning_effort: None,
                 service_tier: None,
                 context_window: 8192,
                 max_output_tokens: Some(128),
-                purpose: "balanced".into(),
+                purpose: String::new(),
                 output: Default::default(),
             },
-        );
+        )]);
         let providers = BTreeMap::from([(
             "openai".into(),
             ProviderConfig {
@@ -670,9 +673,9 @@ mod tests {
             },
         )]);
         Config {
-            tiers,
+            models,
             providers,
-            default_tier: "balanced".into(),
+            default_model,
             discovery: DiscoveryConfig::default(),
             handoff: HandoffConfig::default(),
             logs: LogsConfig::default(),
@@ -684,9 +687,9 @@ mod tests {
     async fn session_with_agent() -> (tempfile::TempDir, Session) {
         let directory = tempfile::tempdir().unwrap();
         let config = Config {
-            tiers: BTreeMap::new(),
+            models: BTreeMap::new(),
             providers: BTreeMap::new(),
-            default_tier: String::new(),
+            default_model: crate::config::ModelRef::default(),
             discovery: DiscoveryConfig::default(),
             handoff: HandoffConfig::default(),
             logs: LogsConfig::default(),

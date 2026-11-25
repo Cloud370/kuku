@@ -13,6 +13,7 @@ fn write_session_events(home: &std::path::Path, workspace: &std::path::Path, ses
             session_id: session_id.into(),
             created_at: "2026-06-09T00:00:00Z".into(),
             kuku_version: "test".into(),
+            default_model: None,
         })
         .unwrap();
     store
@@ -314,6 +315,7 @@ fn write_rewind_group_events(
             session_id: session_id.into(),
             created_at: "2026-06-10T00:00:00Z".into(),
             kuku_version: "test".into(),
+            default_model: None,
         })
         .unwrap();
     let old_target = append_group_user(&mut store, "main", 101, "old prompt");

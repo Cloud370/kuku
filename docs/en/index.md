@@ -13,13 +13,11 @@ kuku is a fast, low-memory, file-native agent runtime and Rust SDK. On a 371 MiB
 - [Architecture](architecture/index.md) — crate boundaries, host apps, prompt assembly, and internal design.
 - [Contributing](contributing/index.md) — development workflow, testing, code style, and releases.
 
-## Recommended Path
+## First Task
 
-1. [Install](start/install.md)
-2. [Quickstart](start/quickstart.md)
-3. [Configuration](start/configuration.md)
-4. [Run a Task](guides/run-a-task.md)
-5. [CLI Reference](reference/cli.md)
+- [Start in the terminal](start/quickstart.md) to configure a model and send a message.
+- [Run from a script](guides/run-a-task.md) to configure and submit a headless task, then read its result.
+- [Embed the Rust SDK](reference/sdk.md#first-request) to open a Session and make a first request.
 
 ## Key Pages
 

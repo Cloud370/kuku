@@ -110,9 +110,8 @@ def open_focused_results(terminal):
     terminal.expect("Save setup")
 
 
-def start_custom(terminal, address, key, *, from_welcome=True):
-    if from_welcome:
-        terminal.open_first_model_settings()
+def start_custom(terminal, address, key):
+    terminal.open_first_model_settings()
     terminal.expect("Find and test models")
     terminal.press("\r")
     choose(terminal, 0, "New custom connection")
@@ -151,8 +150,8 @@ def save_early(binary, bridge, directory):
     try:
         with instance as client:
             endpoint = setup_address(client)
-            with client.terminal(client.workspace("save-early"), "init") as terminal:
-                start_custom(terminal, f"{endpoint}/v1/chat/completions", "fixture-save-early-key", from_welcome=False)
+            with client.terminal(client.workspace("save-early")) as terminal:
+                start_custom(terminal, f"{endpoint}/v1/chat/completions", "fixture-save-early-key")
                 terminal.expect("Choose models", also=("fixture-model",))
                 terminal.press("\r")
                 terminal.expect("› View requests", also=("Save early", "50%", "Try low"))
@@ -163,9 +162,15 @@ def save_early(binary, bridge, directory):
                 assert config.read_text(encoding="utf-8") == ""
                 terminal.press("\x1b[B")
                 terminal.expect("› Stop tests and save")
-                terminal.exit_cleanly("\r")
-                config_text = config.read_text(encoding="utf-8")
-                assert f'provider = "{endpoint.removeprefix("http://")}"' in config_text
+                terminal.press("\r")
+                terminal.expect("New session", state="Ready")
+                stored = client.request("GET", "/models").as_json()
+                selected = {"connection": endpoint.removeprefix("http://"), "model": "fixture-model"}
+                assert stored["default_model"] == selected
+                assert [(item["connection"], item["model"]) for item in stored["models"]] == [
+                    (selected["connection"], selected["model"]),
+                ]
+                terminal.exit_cleanly()
     finally:
         release.set()
 
@@ -228,8 +233,11 @@ def recover_models(binary, bridge, directory):
             choose(terminal, 0, "Save and continue")
             terminal.expect("New session", state="Ready")
             stored = client.request("GET", "/models").as_json()
-            assert {tier["model"] for tier in stored["tiers"]} == {"alpha", "beta"}
-            assert next(tier["model"] for tier in stored["tiers"] if tier["name"] == stored["default_tier"]) == "beta"
+            connection = endpoint.removeprefix("http://")
+            assert stored["default_model"] == {"connection": connection, "model": "beta"}
+            assert {(item["connection"], item["model"]) for item in stored["models"]} == {
+                (connection, "alpha"), (connection, "beta"),
+            }
             terminal.exit_cleanly()
 
 

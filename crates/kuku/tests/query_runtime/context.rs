@@ -32,7 +32,7 @@ async fn provider_step_uses_captured_kuku_home_for_memory_sources() {
 
     let mut run = query("summarize memory")
         .kuku_home(captured_home.path())
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -83,7 +83,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
 
     let first = query("first turn")
         .session("s_drift_notice")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -118,7 +118,7 @@ async fn new_top_level_turn_can_surface_context_drift_notice_for_changed_tracked
 
     let second = query("second turn")
         .session("s_drift_notice")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(second_server.base_url())
         .api_key("test-key")
@@ -181,7 +181,7 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
 
     let first = query("first turn")
         .session("s_drift_deleted_notice")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -213,7 +213,7 @@ async fn new_top_level_turn_can_surface_deleted_tracked_files_in_context_drift_n
 
     let second = query("second turn")
         .session("s_drift_deleted_notice")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(second_server.base_url())
         .api_key("test-key")
@@ -270,7 +270,7 @@ async fn model_request_persists_prompt_assets_and_loaded_source_hashes() {
     });
 
     let output = query("say ok")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")

@@ -15,6 +15,8 @@ pub struct SkillRegistry {
     definitions: BTreeMap<String, SkillDefinition>,
     names: Vec<String>,
     hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    docs_bundle: Option<String>,
 }
 
 impl SkillRegistry {
@@ -55,12 +57,26 @@ impl SkillRegistry {
     pub fn hash(&self) -> &str {
         &self.hash
     }
+
+    pub(crate) fn docs_bundle(&self) -> Option<&str> {
+        self.docs_bundle.as_deref()
+    }
+
+    pub(crate) fn with_current_docs(self) -> Self {
+        SkillRegistryBuilder {
+            definitions: self.definitions,
+            docs_bundle: None,
+        }
+        .with_docs()
+        .build()
+    }
 }
 
 /// Builder for constructing a SkillRegistry from multiple sources.
 #[derive(Default)]
 pub struct SkillRegistryBuilder {
     definitions: BTreeMap<String, SkillDefinition>,
+    docs_bundle: Option<String>,
 }
 
 impl SkillRegistryBuilder {
@@ -70,7 +86,14 @@ impl SkillRegistryBuilder {
         self
     }
 
+    pub(super) fn with_docs(mut self) -> Self {
+        self.add(super::bundle::definition());
+        self.docs_bundle = Some(super::bundle::CURRENT.into());
+        self
+    }
+
     /// Load all skills from a directory of SKILL.md files.
+    /// Returns an error if the requested directory cannot be opened or enumerated.
     pub fn load_from_dir(mut self, dir: &Path, source: SkillSource) -> Result<Self> {
         let defs = super::loader::load_from_dir(dir, source)?;
         for def in defs {
@@ -81,15 +104,32 @@ impl SkillRegistryBuilder {
 
     /// Build the registry by scanning workspace and discovery config.
     pub fn build_with_discovery(
-        mut self,
+        self,
         workspace: &Path,
         config: &crate::config::DiscoveryConfig,
     ) -> Result<Self> {
         let discovered = crate::discovery::discover(workspace, config);
-        for entry in &discovered.skills {
-            self = self.load_from_dir(&entry.path, entry.scope.into())?;
+        Ok(self.with_discovered(discovered.skills))
+    }
+
+    fn with_discovered(mut self, directories: Vec<crate::discovery::DiscoveredEntry>) -> Self {
+        for directory in directories {
+            let warn = |error: &std::io::Error| {
+                eprintln!(
+                    "warning: skill discovery in {}: {error}",
+                    directory.path.display()
+                );
+            };
+            let Ok(entries) = super::loader::skill_entries(&directory.path, directory.scope.into())
+                .inspect_err(warn)
+            else {
+                continue;
+            };
+            for definition in entries.filter_map(|entry| entry.inspect_err(warn).ok()) {
+                self.add(definition);
+            }
         }
-        Ok(self)
+        self
     }
 
     fn add(&mut self, def: SkillDefinition) {
@@ -100,11 +140,12 @@ impl SkillRegistryBuilder {
     pub fn build(self) -> SkillRegistry {
         let mut names: Vec<String> = self.definitions.keys().cloned().collect();
         names.sort();
-        let hash = compute_registry_hash(&self.definitions, &names);
+        let hash = compute_registry_hash(&self.definitions, &names, self.docs_bundle.as_deref());
         SkillRegistry {
             definitions: self.definitions,
             names,
             hash,
+            docs_bundle: self.docs_bundle,
         }
     }
 }
@@ -136,7 +177,8 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
     let mut updated: Vec<String> = new_names
         .intersection(&old_names)
         .filter(|name| {
-            new.get(name).map(|d| d.hash.as_str()) != old.get(name).map(|d| d.hash.as_str())
+            (**name == super::bundle::NAME && old.docs_bundle != new.docs_bundle)
+                || new.get(name).map(|d| d.hash.as_str()) != old.get(name).map(|d| d.hash.as_str())
         })
         .map(|name| (*name).to_string())
         .collect();
@@ -156,7 +198,11 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
     }
 }
 
-fn compute_registry_hash(defs: &BTreeMap<String, SkillDefinition>, names: &[String]) -> String {
+fn compute_registry_hash(
+    defs: &BTreeMap<String, SkillDefinition>,
+    names: &[String],
+    docs_bundle: Option<&str>,
+) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     for name in names {
@@ -166,6 +212,9 @@ fn compute_registry_hash(defs: &BTreeMap<String, SkillDefinition>, names: &[Stri
             hasher.update(def.compute_hash().as_bytes());
             hasher.update(b"\n");
         }
+    }
+    if let Some(docs_bundle) = docs_bundle {
+        hasher.update(docs_bundle.as_bytes());
     }
     format!("sha256:{:x}", hasher.finalize())
 }
@@ -180,6 +229,35 @@ mod tests {
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
         assert!(registry.get("anything").is_none());
+    }
+
+    #[test]
+    fn disappearing_discovery_directory_preserves_other_skills_and_builtin_help() {
+        use crate::discovery::{DiscoveredEntry, Scope};
+
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good");
+        std::fs::create_dir_all(good.join("review")).unwrap();
+        std::fs::write(
+            good.join("review/SKILL.md"),
+            "---\nname: review\ndescription: Review\n---\n\nReview a change.",
+        )
+        .unwrap();
+        let missing = dir.path().join("disappeared");
+        let directories = [good, missing.clone()].map(|path| DiscoveredEntry {
+            path,
+            scope: Scope::Project,
+        });
+        let registry = SkillRegistry::builder()
+            .with_discovered(directories.into())
+            .with_docs()
+            .build();
+        assert_eq!(registry.names(), &["kuku-docs", "review"]);
+        assert!(
+            SkillRegistry::builder()
+                .load_from_dir(&missing, SkillSource::Project)
+                .is_err()
+        );
     }
 
     #[test]

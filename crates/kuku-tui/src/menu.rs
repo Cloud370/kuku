@@ -27,7 +27,7 @@ pub(crate) enum ChoiceKind {
     CreateAgent,
     AgentSetup(crate::app::agent_setup::AgentSetupAction),
     ModelRoute {
-        tier: Box<kuku_client::TierSummary>,
+        model: Box<kuku_client::ModelSummary>,
         current: bool,
     },
     EditModel(crate::setup::SetupIntent),
@@ -478,9 +478,6 @@ impl Picker {
             .local
             .iter()
             .filter(|choice| match (&choice.kind, command_query) {
-                (ChoiceKind::Command(command), Some(_)) if !command.advertised() => {
-                    exact_command == Some(*command)
-                }
                 (ChoiceKind::Command(command), Some(input)) => exact_command.map_or_else(
                     || command.starts_with(input.name) || choice.matches(query),
                     |exact| exact == *command,
@@ -679,7 +676,7 @@ mod tests {
         ] {
             assert!(labels.contains(&retained));
         }
-        assert_eq!(21, choices.len());
+        assert_eq!(20, choices.len());
     }
 
     #[test]
@@ -708,7 +705,6 @@ mod tests {
             ("saved-values", "/values"),
             ("service", "/server"),
             ("restart-service", "/restart"),
-            ("browser", "/web"),
             ("hotkeys", "/help"),
             ("exit", "/quit"),
             ("q", "/quit"),
@@ -722,5 +718,6 @@ mod tests {
             assert_eq!(canonical, input.complete(input.command().unwrap()));
         }
         assert!(CommandInput::draft("/reload").unwrap().command().is_none());
+        assert!(CommandInput::draft("/web").unwrap().command().is_none());
     }
 }

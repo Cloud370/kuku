@@ -62,10 +62,9 @@ async fn concurrent_configuration_between_boundary_and_snapshot_reopens_on_new_r
         .send(Input::new("first", "main", "concurrent boundary first"))
         .unwrap();
     pause.wait_until_reached();
-    session
-        .configure_agent("configure-b", "main", agent_config("route-b"))
-        .unwrap();
+    let configured = session.configure_agent("configure-b", "main", agent_config("route-b"));
     pause.release();
+    configured.unwrap();
 
     let first_snapshot = wait_for_output(&session, "route A answer").await;
     assert_eq!(AgentStatus::Idle, first_snapshot.status);

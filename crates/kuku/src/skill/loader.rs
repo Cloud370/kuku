@@ -1,3 +1,4 @@
+use std::io;
 use std::path::Path;
 
 use crate::error::{Error, Result};
@@ -6,29 +7,43 @@ use crate::util::yaml::split_yaml_frontmatter;
 use super::definition::{SkillDefinition, SkillSource};
 
 pub(crate) fn load_from_dir(dir: &Path, source: SkillSource) -> Result<Vec<SkillDefinition>> {
-    let mut defs = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let skill_dir = entry.path();
-        if !skill_dir.is_dir() {
-            continue;
-        }
-        let skill_md = skill_dir.join("SKILL.md");
-        if !skill_md.exists() {
-            continue;
-        }
-        let content = std::fs::read_to_string(&skill_md)?;
-        match parse_skill(&content, &skill_dir, &source) {
-            Ok(def) => defs.push(def),
-            Err(e) => {
-                eprintln!("warning: skipping skill at {}: {e}", skill_dir.display());
-            }
-        }
-    }
-    Ok(defs)
+    Ok(skill_entries(dir, source)?.collect::<io::Result<_>>()?)
 }
 
-fn parse_skill(content: &str, skill_dir: &Path, source: &SkillSource) -> Result<SkillDefinition> {
+pub(super) fn skill_entries(
+    dir: &Path,
+    source: SkillSource,
+) -> io::Result<impl Iterator<Item = io::Result<SkillDefinition>>> {
+    let entries = std::fs::read_dir(dir)?;
+    Ok(entries.filter_map(move |entry| {
+        entry
+            .map(|entry| read_skill(&entry.path(), &source))
+            .transpose()
+    }))
+}
+
+fn read_skill(skill_dir: &Path, source: &SkillSource) -> Option<SkillDefinition> {
+    let skill_md = skill_dir.join("SKILL.md");
+    if !skill_dir.is_dir() || !skill_md.exists() {
+        return None;
+    }
+    std::fs::read_to_string(skill_md)
+        .map_err(Error::from)
+        .and_then(|content| parse_skill(&content, skill_dir, source))
+        .inspect_err(|error| {
+            eprintln!(
+                "warning: skipping skill at {}: {error}",
+                skill_dir.display()
+            )
+        })
+        .ok()
+}
+
+pub(super) fn parse_skill(
+    content: &str,
+    skill_dir: &Path,
+    source: &SkillSource,
+) -> Result<SkillDefinition> {
     let (frontmatter, body) = split_yaml_frontmatter(content);
     let mapping = frontmatter.ok_or_else(|| {
         Error::InvalidArgument(format!(
@@ -194,6 +209,19 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"tdd"));
         assert!(names.contains(&"review"));
+    }
+
+    #[test]
+    fn load_from_dir_keeps_other_skills_when_a_skill_file_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        create_skill(dir.path(), "real", "Read these instructions.");
+        let malformed = dir.path().join("malformed");
+        std::fs::create_dir(&malformed).unwrap();
+        std::fs::write(malformed.join("SKILL.md"), [0xff]).unwrap();
+
+        let defs = load_from_dir(dir.path(), SkillSource::Project).unwrap();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "real");
     }
 
     #[test]

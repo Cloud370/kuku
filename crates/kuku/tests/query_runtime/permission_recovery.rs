@@ -28,7 +28,7 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
     let mut run = query("run tests")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -43,7 +43,7 @@ async fn pending_permission_resume_reemits_request_before_new_turn() {
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -95,6 +95,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
             session_id: session_id.to_string(),
             created_at: "2026-06-06T00:00:00Z".to_string(),
             kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+            default_model: None,
         })
         .unwrap();
     store
@@ -145,7 +146,7 @@ async fn interrupted_open_tool_blocks_resume_without_fake_result() {
     let error = query("resume should fail before provider")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -197,7 +198,7 @@ async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
     let mut run = query("run tests")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -212,7 +213,7 @@ async fn pending_permission_resume_does_not_append_new_turn_before_decision() {
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -273,7 +274,7 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
     let mut run = query("run tests")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -289,7 +290,7 @@ async fn pending_permission_resume_does_not_resolve_config_or_append_facts_befor
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -356,7 +357,7 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
     let mut run = query("run tests")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -371,7 +372,7 @@ async fn pending_permission_resume_decide_continues_without_duplicate_turn_or_re
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -461,7 +462,7 @@ async fn pending_permission_resume_allow_executes_original_tool() {
     let mut run = query("run resumed command")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -476,7 +477,7 @@ async fn pending_permission_resume_allow_executes_original_tool() {
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -567,7 +568,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
     let mut run = query("deny resumed command")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -582,7 +583,7 @@ async fn pending_permission_resume_deny_records_real_deny() {
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -651,7 +652,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     let mut run = query("run tests then check")
         .session(session_id)
         .permission_mode(kuku::permission::PermissionMode::Ask)
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -681,7 +682,7 @@ async fn pending_permission_resume_preserves_sibling_queued_permission() {
     drop(run);
 
     let mut invalid_config = test_config();
-    invalid_config.default_tier = "missing-tier".to_string();
+    invalid_config.default_model.model = "missing-model".to_string();
 
     let mut resumed = query("second prompt must not be appended yet")
         .session(session_id)

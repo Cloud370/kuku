@@ -18,7 +18,10 @@ use super::helpers::{
 };
 use super::job_slots::ForegroundJob;
 use super::run::find_tool_definition;
-use super::tool_exec::{execute_tool_call, run_tool_pre_hooks};
+use super::tool_exec::{
+    execute_tool_call, prepare_skill_bundle_operation, run_tool_pre_hooks, spawn_skill_bundle_slot,
+    uses_skill_bundle,
+};
 use super::types::{
     ExecSlot, PendingPermission, PendingRun, PendingStep, PermissionChoice, PermissionRequest,
     QueuedToolCall, SlotEvent, ToolKind, ToolPreparation, UiEvent, WorkspaceAccess,
@@ -192,12 +195,23 @@ pub(super) async fn dispatch(
             ToolResultEnvelope::blocked("tool capacity reached", "the action was not dispatched"),
         );
     }
+    if uses_skill_bundle(&pending, &queued.tool_call) {
+        let operation = prepare_skill_bundle_operation(&pending, &queued.tool_call)?;
+        if pending.query.runtime.is_some() {
+            mark_dispatched(&pending, &queued)?;
+        }
+        let operation = match operation {
+            Ok(operation) => operation,
+            Err(result) => return finish_inline(pending, queued, result),
+        };
+        let slot = spawn_skill_bundle_slot(&pending, &queued, operation, event_tx);
+        pending.skill_bundle_call = Some(queued.tool_call.id.clone());
+        return start_slot(pending, queued, slot);
+    }
     if pending.query.runtime.is_none() {
         return dispatch_standalone(pending, queued, event_tx).await;
     }
-    if super::helpers::is_inline_skill_tool(&queued.tool_call.name)
-        || is_inline(&queued.tool_call.name)
-    {
+    if super::helpers::is_skill_tool(&queued.tool_call.name) || is_inline(&queued.tool_call.name) {
         mark_dispatched(&pending, &queued)?;
         pending.record_tool_call(&queued.tool_call.name);
         let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
@@ -354,7 +368,7 @@ async fn dispatch_standalone(
     queued: QueuedToolCall,
     event_tx: tokio::sync::mpsc::Sender<(String, SlotEvent)>,
 ) -> Result<PendingStep> {
-    if super::helpers::is_inline_skill_tool(&queued.tool_call.name) {
+    if super::helpers::is_skill_tool(&queued.tool_call.name) {
         pending.record_tool_call(&queued.tool_call.name);
         let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
         return finish_inline_event(pending, queued, result);
@@ -618,7 +632,8 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
                     "instructions": {"type": "string", "description": "Standing role or constraints for this Agent."},
                     "tools": {"type": "array", "items": {"type":"string"}, "description":"Tool names in addition to send_message and list_agents. Omit to use defaults. An empty array gives only the two messaging tools."},
                     "preset": {"type": "string", "description": "Configured Agent preset name. Omit to use the Session defaults. An unknown name returns available examples."},
-                    "tier": {"type": "string", "description": "Configured model tier from <kuku_models>. Omit to use the preset or Session default."},
+                    "connection": {"type": "string", "description": "Named connection from <kuku_models>. Set together with model, or omit both for the preset or Session default."},
+                    "model": {"type": "string", "description": "Exact model ID on the selected connection, as listed in <kuku_models>."},
                     "reasoning_effort": {"type": "string", "description": "Supported thinking value from the selected route in <kuku_models>."},
                     "service_tier": {"type": "string", "description": "Supported service tier from <kuku_models>. Omit to inherit. Set only at the user's explicit request."},
                     "workspace": {"type": "string", "description": "Working directory when different from the Session workspace."}
@@ -676,7 +691,7 @@ pub(super) async fn execute(
                         .collect::<Vec<_>>()
                 );
                 receipt["model_selection"] = serde_json::json!({
-                    "preset": preset, "model": selection.model,
+                    "preset": preset, "connection": selection.connection, "model": selection.model,
                     "reasoning_effort": selection.settings.reasoning_effort.or_else(|| selection.capabilities.reasoning_default.map(|level| level.value)),
                     "service_tier": selection.settings.service_tier,
                     "input_modalities": selection.capabilities.input_modalities.map(|entry| entry.value),
@@ -806,7 +821,8 @@ struct CreateAgentInput {
     instructions: Option<String>,
     tools: Option<Vec<String>>,
     preset: Option<String>,
-    tier: Option<String>,
+    connection: Option<String>,
+    model: Option<String>,
     reasoning_effort: Option<String>,
     service_tier: Option<String>,
     workspace: Option<std::path::PathBuf>,
@@ -820,13 +836,20 @@ fn create_agent_input(args: &serde_json::Value) -> Result<(String, crate::AgentC
             "tool argument 'address' must not be blank".into(),
         ));
     }
+    if input.connection.is_some() != input.model.is_some() {
+        return Err(Error::InvalidArgument(
+            "tool arguments 'connection' and 'model' must be set together or omitted together"
+                .into(),
+        ));
+    }
     Ok((
         input.address,
         crate::AgentConfig {
             instructions: input.instructions,
             tools: input.tools,
             preset: input.preset,
-            tier: input.tier,
+            connection: input.connection,
+            model: input.model,
             reasoning_effort: input.reasoning_effort,
             service_tier: input.service_tier,
             workspace: input.workspace,
@@ -839,13 +862,7 @@ fn normalize_create_agent_args(args: &mut serde_json::Value) {
     let Some(values) = args.as_object_mut() else {
         return;
     };
-    for field in [
-        "tier",
-        "preset",
-        "workspace",
-        "reasoning_effort",
-        "service_tier",
-    ] {
+    for field in ["preset", "workspace", "reasoning_effort", "service_tier"] {
         if values
             .get(field)
             .and_then(serde_json::Value::as_str)
@@ -1109,16 +1126,20 @@ mod tests {
 
     #[test]
     fn create_agent_preserves_values_outside_optional_identifiers() {
-        let mut args = json!({"address":"reviewer","tier":" ", "instructions":"", "tools":[]});
+        let mut args = json!({"address":"reviewer","preset":" ", "connection":"route", "model":"vendor/exact-model", "instructions":"", "tools":[]});
         normalize_create_agent_args(&mut args);
         let (address, config) = create_agent_input(&args).unwrap();
         assert_eq!("reviewer", address);
-        assert_eq!(None, config.tier);
+        assert_eq!(None, config.preset);
+        assert_eq!(Some("route"), config.connection.as_deref());
+        assert_eq!(Some("vendor/exact-model"), config.model.as_deref());
         assert_eq!(Some(""), config.instructions.as_deref());
         assert_eq!(Some(Vec::new()), config.tools);
         for args in [
             json!({"address":" "}),
-            json!({"tier":"balanced"}),
+            json!({"address":"reviewer","connection":"route"}),
+            json!({"address":"reviewer","model":"vendor/exact-model"}),
+            json!({"address":"reviewer","tier":"legacy"}),
             json!({"address":"reviewer","max_output_tokens":""}),
             json!({"address":"reviewer","no_agents":""}),
         ] {

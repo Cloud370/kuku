@@ -1,5 +1,15 @@
 # Debug CLI runs
 
+## Check the config used by the run
+
+```bash
+kuku config validate
+kuku server status
+kuku config show --json
+```
+
+Compare the config result's `path` and `service.state` with the running service. A `valid` file can be awaiting reload or selected at a different path. Use the same `--data-dir` and, when explicit, `--config` as the task. [Config commands](../reference/cli.md#kuku-config)
+
 ## Inspect the Agent snapshot and events
 
 From the same workspace, replace `SESSION_ID` and the Agent address (`reviewer`):
@@ -10,7 +20,7 @@ kuku show SESSION_ID --agent reviewer --json
 kuku events SESSION_ID --kind runtime.step_prepared --limit 20 --json
 ```
 
-`kuku show --json` returns the Agent's durable status, latest reply, usage totals, and any pending question or permission (`config` shows explicit overrides for that Agent, so inherited defaults appear as `null`). `kuku events` prints the next-page cursor to `stderr`. Start with `runtime.step_prepared` to verify the resolved connection, model, and settings for a request, then correlate `model.response`, `tool.call`, and `tool.result` by Agent, Turn, and request/call ID. [Events](../reference/events.md)
+`kuku run --json` and the final `--stream-json` line give the run outcome. Use the Session ID to query the durable Agent snapshot, including the latest reply, usage totals, and pending questions or permissions. Its `config` describes requested Agent overrides. Start with `runtime.step_prepared` to verify the resolved connection, exact model ID, and request settings, then correlate `model.response`, `tool.call`, and `tool.result` by Agent, Turn, and request or call ID. `kuku events` prints the next-page cursor to stderr. [Events](../reference/events.md)
 
 ## Check provider-reported usage
 

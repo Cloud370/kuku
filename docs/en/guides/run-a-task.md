@@ -1,54 +1,64 @@
 # Run a task
 
-## One-shot runs
+## Set up from a shell
 
-Run a task from any directory — no Git repository is required:
+[Install kuku](../start/install.md) and open a shell in your project directory. If a model already works in the TUI, use the same data directory and skip to [Submit a task](#submit-a-task).
 
-```bash
-kuku run "check this project"
-kuku run --tier strong "review this diff"
-kuku run --connection <configured-name> --model <model-id> "task"
-```
-
-Pass `--workspace <path>` to target another directory. The default local policy allows file and command tools, so inspect changed files and command results before treating a task as done. Full flags are in [CLI reference](../reference/cli.md).
-
-## Interactive TUI
+For a new script setup, set a key in `MY_GATEWAY_KEY` and run the following. Use the base URL and exact model ID for your connection. The quoted heredoc leaves the variable reference intact in the config.
 
 ```bash
-kuku
+export KUKU_HOME="$HOME/.kuku-script"
+
+kuku config set --patch "$(cat <<'TOML'
+default_model = { connection = "work", model = "your-model-id" }
+
+[provider.work]
+format = "openai-responses"
+base_url = "https://gateway.example/v1"
+api_key = "$MY_GATEWAY_KEY"
+TOML
+)"
+kuku config validate
 ```
 
-Type a prompt and press **Enter** to send. While an Agent is running:
+Export the key before sending the first task so the managed local service inherits it. A new data directory reports `status: "valid"` and `service.state: "stopped"` until the first run starts the service. For the selected path, a running service, or model discovery, see [CLI config commands](../reference/cli.md#kuku-config).
 
-- **Enter** sends a follow-up that takes effect at the next safe model-request boundary (or starts a new Turn if the current Turn finishes first).
-- **Alt+Enter** queues the message for the next Turn.
-- **Shift+Enter** or **Ctrl+J** inserts a newline.
-- **Esc** interrupts the selected Agent while keeping your draft (in a menu, **Esc** closes the menu).
+## Submit a task
 
-Use `/new` for a fresh Session draft, `/resume` to reopen a Session in the current workspace, and `/agents` to pick which Agent receives your next message. Closing the terminal leaves accepted work running in the local service. [Terminal controls](../reference/cli.md#terminal-interface)
+Save a prompt in `task.txt` and run it from the current directory.
+
+```bash
+cat > task.txt <<'EOF'
+Inspect the project files.
+Tell me how to run the tests.
+EOF
+kuku run --json --prompt-file task.txt > result.json
+jq -r '.response' result.json
+session_id="$(jq -er '.session_id' result.json)"
+```
+
+To read from a pipeline and get live JSON Lines, run `cat task.txt | kuku run --stream-json --prompt-file -`. A short task can use a positional prompt such as `kuku run "Check this project"`. Use `--workspace PATH` for a different directory, or `--connection work --model your-model-id` to select an exact pair. [CLI run options and exit codes](../reference/cli.md#kuku-run)
+
+## Handle the result
+
+Check the exit status of `kuku run` when scripting. A completed result contains the final `response`. For `waiting` (exit 3), get the exact request ID from `question.id` or `permission.id` and use `kuku reply` in the same workspace and data directory.
+
+```bash
+request_id="$(jq -er '.question.id' result.json)"
+kuku reply "$session_id" "$request_id" --answer "Use the project test configuration"
+```
+
+For a permission request, use `.permission.id` and choose `--allow` or `--deny`. Use `--agent` if the result names an Agent other than `main`. For `failed` (exit 1), read the result's `error` and stderr, then inspect the Session with [Debug CLI runs](debug-cli.md). `Ctrl+C` requests cancellation of the active run and waits for owned commands to clean up.
 
 ## Continue existing work
 
 ```bash
-kuku run --session <session-id> "continue"
-kuku run --continue "continue"
+kuku run --session "$session_id" --json "Now summarize what you found"
+kuku show "$session_id"
 ```
 
-## Inspect output
+Keep using the same workspace and data directory. Use `kuku list` to find a Session or `kuku events "$session_id"` to read its durable events. In the TUI, open `/resume` to find the same Session. [Manage Sessions](manage-sessions.md)
 
-- `kuku show <session-id>` — latest durable answer
-- `kuku events <session-id>` — persisted event log
-- `kuku list` — recent Sessions in the current workspace
+## Run interactively
 
-## Machine-readable and verbose modes
-
-- `--json` — one final JSON object with durable state and provider-reported metrics
-- `--stream-json` — live JSON lines of transient progress, ending with the same final object
-- `--verbose` — human-readable output with state, settings, and usage
-- `--raw` — plain text only
-
-Field schemas and request options live in [CLI reference](../reference/cli.md#kuku-run). Usage counters come from the provider; a missing field does not mean zero usage.
-
-When an Agent pauses for a question or permission, `--json` / `--stream-json` ends with `event: "waiting"` and the exact `request_id`. Answer it with `kuku reply <session-id> <request-id> --answer "..."`, `--allow`, or `--deny` using the same workspace and data directory. [Manage Sessions](manage-sessions.md)
-
-Pressing `Ctrl-C` waits for owned child commands to clean up. The Session log and retained outputs survive closing and reopening. [File layout](../reference/file-layout.md) · [Events](../reference/events.md)
+Run `kuku` and press Enter to send a task. While the Agent is running, Enter sends a follow-up at the next safe boundary and Alt+Enter queues it for the next Turn. Shift+Enter or Ctrl+J inserts a newline and Esc interrupts while keeping your draft. Use `/new` for a fresh Session and `/agents` to pick the recipient. [Terminal controls](../reference/cli.md#terminal-interface)

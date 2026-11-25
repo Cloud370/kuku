@@ -8,7 +8,6 @@ mod app;
 mod browser;
 mod clipboard;
 mod config;
-mod config_file;
 mod contextual;
 mod editor;
 mod interaction;
@@ -45,28 +44,7 @@ pub async fn run(options: ConnectionOptions, build: &'static str) -> io::Result<
     terminal::run(options, build).await
 }
 
-/// Open shared provider and credential settings from the CLI.
-pub async fn setup(options: ConnectionOptions) -> io::Result<()> {
-    let config = options
-        .config
-        .clone()
-        .or_else(|| options.data_dir().ok().map(|path| path.join("config.toml")));
-    let guidance = format!(
-        "`kuku init` needs an interactive terminal. Edit {} or use `kuku config set`.",
-        config.map_or_else(
-            || "the resolved config.toml".to_owned(),
-            |path| path.display().to_string()
-        )
-    );
-    setup::validate_entry(
-        &options,
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        &guidance,
-    )?;
-    setup::run(options).await.map(|_| ())
-}
-
 /// Open an HTTP or HTTPS URL in the user's browser.
-pub fn open_browser(url: &str) -> io::Result<()> {
+fn open_browser(url: &str) -> io::Result<()> {
     browser::open_with(url, |url| open::that_detached(url))
 }

@@ -1,12 +1,12 @@
 # Server API
 
-The terminal, script and browser clients use the same HTTP Session contract. The server owns execution and resolves workspaces, model selection and provider credentials on its machine. Observers can disconnect and return while execution continues. For local service discovery and explicit server setup, see [Run the server](../guides/run-the-server.md).
+The terminal and script clients use the same HTTP Session contract. The server owns execution and resolves workspaces, model selection and provider credentials on its machine. Observers can disconnect and return while execution continues. [Run the server](../guides/run-the-server.md)
 
 ## Authentication and versions
 
-Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback. For managed local launches, `kuku web` opens the embedded browser with a short-lived, single-use ticket in the URL fragment. The page removes the fragment and exchanges the ticket for a separate browser bearer token, stored in that tab's `sessionStorage`. Reloading the same tab keeps its connection credentials for that service instance. An explicitly started service uses its configured access token. The default server tool policy trusts the authenticated user and permits file and command tools.
+Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback. An explicitly started service uses its configured access token. The default server tool policy trusts the authenticated user and permits file and command tools.
 
-`GET /health` is public and reports `version`, `protocol_version` and `management_version`. The Session HTTP API is v1, reported as `protocol_version: 1`. Managed service status and restart use `management_version`. Missing or rejected credentials return `401` with `auth_required`. A managed server also checks its loopback host and the supplied browser origin.
+`GET /health` is public and reports `version`, `protocol_version` and `management_version`. The current Session HTTP API reports `protocol_version: 2`. Managed service status and restart use `management_version`. Missing or rejected credentials return `401` with `auth_required`. A managed server also checks its loopback host and any supplied origin.
 
 ## Endpoints
 
@@ -16,8 +16,6 @@ Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback.
 | `GET` | `/service/status` | Effective service identity and activity |
 | `GET` | `/service/model-default-plan` | Validate a file-only model-default plan against the managed service config |
 | `POST` | `/service/restart` | Ask a managed service to release its Sessions and stop for orderly replacement |
-| `POST` | `/service/browser-ticket` | Issue an authenticated one-time browser handoff ticket |
-| `POST` | `/service/browser-session` | Exchange a ticket on the managed browser origin |
 | `GET` | `/sessions` | List retained Sessions, optionally filtered by `workspace` or `search` |
 | `DELETE` | `/sessions/{id}` | Delete a closed Session |
 | `POST` | `/sessions/{id}/commands` | Submit a durable command |
@@ -43,9 +41,9 @@ Authenticated clients send `Authorization: Bearer TOKEN`, including on loopback.
 | `GET` | `/workspaces` | List workspaces |
 | `GET` | `/workspaces/resolve`, `/workspaces/files`, `/workspaces/skills` | Resolve a server path or discover workspace files and Skills |
 
-The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes active work such as running Jobs in `busy`. The managed client starts the replacement after the previous process releases its service lease.
+The status response includes the build and protocol versions, `instance_id`, `pid`, effective `data_dir` and `config_path`, `draining`, and `busy`. For a file-backed service, `config_sha256` identifies the loaded file revision and `config_default_model` gives the default pair the service resolved from those bytes. For a managed restart, `202` acknowledges that writers have been released and the process is stopping. `409` with `service_busy` includes active work such as running Jobs in `busy`. The managed client starts the replacement after the previous process releases its service lease.
 
-`GET /service/model-default-plan` is available only on a managed service with an active config file. It requires the usual bearer authentication and loopback/origin checks, returns `Cache-Control: no-store`, and accepts only the query fields `connection`, `model`, and `config_sha256`. The service reads its active config file and validates the requested route in the service process environment. `config_sha256` must match the exact bytes held by the client. The response contains only `tier`, `overwrite_user_default`, and `config_sha256`; it neither writes the file nor resolves credentials or sends a model request. The client remains responsible for the local, guarded config edit. A changed config, unusable route, unmanaged service, or unavailable config is rejected with a generic error.
+`GET /service/model-default-plan` is available on a managed service with an active config file. It requires bearer authentication and accepts the query fields `connection`, `model`, and `config_sha256`. The service checks the requested connection and exact model ID against its active file in its own environment. The response includes `config_sha256` and, when the old default needs an explicit registration, `register_previous_default`. The client can use this response to perform a guarded local file edit. Planning is a file-only check and returns `Cache-Control: no-store`.
 
 Pass `workspace` as a query parameter for both permission endpoints. Workspace mode is a JSON string (`"full"`, `"ask"`, or `"read-only"`), or `null` on GET before a preference is saved. PUT accepts a mode string and applies it to the workspace’s open Sessions. The Session endpoint returns `approvals` containing `request` and optional `job_id`. Reply with a `reply_permission` command for the request’s Agent and ID.
 
@@ -67,7 +65,7 @@ Each entry in the optional `images` array on `send` contains `label`, `offset`, 
 }
 ```
 
-Use `create: {}` for the configured default settings. Supply initial model settings inside `create` or send an explicit `configure` command for an existing Agent. An Agent keeps its own retained context and settings across clients. Model selection uses the [SDK resolver](sdk.md#operations).
+Use `create: {}` for the Session default. For an explicit selection, pass both `connection` and the exact `model` ID in `create`, for example `{"connection":"work","model":"your-model-id"}`. Send a `configure` command to select a different pair on an existing Agent. An Agent keeps its own context and settings across clients. [SDK selection](sdk.md#operations)
 
 | Command `type` | Additional fields | Effect |
 |---|---|---|
@@ -123,7 +121,7 @@ When available, `agent.turn_started_at_ms` is the latest Turn's first admission 
 
 `GET /sessions/{id}/history/destinations/{event_id}/files` accepts `workspace` and `agent`. It returns `changes`, `skipped` and the plan `fingerprint`. Each change includes `path`, `remove` and `lines` (added and removed, or null). Pass the approved fingerprint as `history_jump.file_restore` to apply the preview. Omitting it keeps the files.
 
-When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids`, `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`. `message_rewind` and `history_jump` frames carry `rewind_command_id` so the initiating client can restore the unsent draft on commit.
+When present, a committed frame's `delivery` associates queue changes with command IDs. `accepted` carries `input_ids` and the frame’s `turn` identifies the Turn admitting them, including steering admissions. `withdrawn` carries `input_id`, and `replaced` carries `input_id` and `replacement_id`. `message_rewind` and `history_jump` frames carry `rewind_command_id` so the initiating client can restore the unsent draft on commit.
 
 A snapshot requested with `progress=true` may include `reply_preview` for the selected Agent. It carries `execution_id`, `turn`, optional `turn_number`, `phase`, `text` and `truncated`. The phase is `thinking`, `streaming` or `tool_arguments`. The text is a UTF-8 prefix of the active request's visible reply capped at 64 KiB. `truncated` means the reply has already exceeded the retained prefix. An optional `reasoning_preview` carries a bounded prefix of provider-visible reasoning text or a published summary for the selected Agent. Responses can supply this through typed reasoning or summary text in the stream or final output. Opaque reasoning state contributes activity and stays in provider replay. Live `reasoning_preview` events append to the text. Committed assistant entries can carry the same field.
 
@@ -181,6 +179,6 @@ On `send` to an existing Agent, `values` can carry the selected `reference` obje
 
 ## Discover models and workspaces
 
-`/models` returns `default_tier`, `connections` and `tiers`. A subscription connection includes a `subscription_label` with an account alias and masked email when available. A tier identifies its `name`, `connection`, `model` and `purpose`, plus the request URL, effective settings, capability sources, and requested output or a resolution error. `/models/resolve` accepts the proposed Agent's `tier`, `connection`, `model`, `reasoning_effort`, `service_tier`, `output`, and `max_output_tokens`. The returned `selection` separates model declarations from the adapter's media support.
+`/models` returns `default_model` as a connection and model pair, plus `connections` and `models`. A subscription connection includes a `subscription_label` with an account alias and masked email when available. A model reports its `connection`, `model`, `purpose`, and resolved request URL, settings, capabilities and output, or a resolution error. `/models/resolve` accepts `connection` and `model` together for an explicit selection, and supports `reasoning_effort`, `service_tier`, `output`, and `max_output_tokens` overrides. The returned `selection` separates model declarations from the adapter's media support.
 
 `/workspaces` returns `workspaces`. Pass an existing absolute directory as `workspace` to `/workspaces/resolve` to obtain the canonical path. `/workspaces/files` and `/workspaces/skills` also accept a `query` filter and return `paths` and `skills`, respectively. File matches are workspace-relative paths and Skill matches include names and descriptions.

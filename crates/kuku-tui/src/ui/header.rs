@@ -189,15 +189,32 @@ pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_
     if let Some(notice) = empty_notice(app, width, show_problem).into_iter().next() {
         lines.push(notice);
     }
+    let help = if !app.setup_required && lines.len() < height {
+        let text = match width {
+            42.. => "Start a task or ask “How do I use kuku?”",
+            24.. => "Ask “How do I use kuku?”",
+            _ => "Ask about kuku",
+        };
+        Some(Line::styled(
+            shorten(text, width),
+            Style::default().fg(MUTED),
+        ))
+    } else {
+        None
+    };
     let actions = if app.setup_required && lines.len() < height {
         vec![Line::from(vec![
             Span::styled("/model", emphasis(ACCENT)),
             Span::styled("  Set up a model", Style::default().fg(MUTED)),
         ])]
     } else {
-        welcome_actions(width, height.saturating_sub(lines.len()))
+        welcome_actions(
+            width,
+            height.saturating_sub(lines.len() + usize::from(help.is_some())),
+        )
     };
-    let remaining = height.saturating_sub(lines.len() + actions.len());
+    let remaining =
+        height.saturating_sub(lines.len() + actions.len() + usize::from(help.is_some()));
     let separated = spacious && remaining >= 4;
     let details_rows = remaining.saturating_sub(2 * usize::from(separated));
     if details_rows >= 2 && width >= 22 {
@@ -209,6 +226,7 @@ pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_
             lines.push(Line::default());
         }
     }
+    lines.extend(help);
     lines.extend(actions);
     if spacious && lines.len() < height {
         let shortcuts = welcome_shortcuts();

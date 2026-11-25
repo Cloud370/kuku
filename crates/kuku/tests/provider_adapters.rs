@@ -733,12 +733,10 @@ fn openai_chat_completions_url_appends_path() {
 
 #[test]
 fn responses_url_appends_path() {
-    let config: kuku::config::ConfigFile =
-        toml::from_str(kuku::config::generate_default()).unwrap();
     assert_eq!(
         resolve_request_url(
             ProviderFormat::OpenAiResponses,
-            &config.provider["openai"].base_url,
+            ProviderFormat::OpenAiResponses.default_base_url(),
             None
         )
         .unwrap(),

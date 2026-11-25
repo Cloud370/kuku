@@ -25,21 +25,29 @@ struct Daemon {
 
 impl Daemon {
     async fn start(home: &Path, config: &kuku::config::Config, web: Option<Router>) -> Self {
-        let mut config = config.clone();
-        for tier in ["strong", "light"] {
-            config
-                .tiers
-                .insert(tier.into(), config.tiers["balanced"].clone());
-        }
-        let content = config.redacted_display().replace(
-            "[provider.anthropic]",
-            "[provider.anthropic]\nprofile = \"compatible\"\nreasoning_efforts = [\"none\"]",
+        let provider = &config.providers["anthropic"];
+        let model = &config.default_model.model;
+        let content = format!(
+            r#"
+default_model = {{ connection = "anthropic", model = {model:?} }}
+
+[provider.anthropic]
+format = "anthropic"
+base_url = {:?}
+api_key = "test-key"
+profile = "compatible"
+reasoning_efforts = ["none"]
+
+[model.anthropic.{model:?}]
+think = "off"
+max_output_tokens = 48000
+
+[discovery]
+auto_discover = false
+"#,
+            provider.base_url
         );
-        fs::write(
-            home.join("config.toml"),
-            format!("{content}\n[discovery]\nauto_discover = false\n[plugin]\nenabled = false\n"),
-        )
-        .unwrap();
+        fs::write(home.join("config.toml"), content).unwrap();
         let args = args(home);
         let task = tokio::spawn(async move {
             kuku_server::service::serve(args, web).await.unwrap();
@@ -208,7 +216,7 @@ async fn model_default_plan_is_authenticated_hash_bound_and_has_no_path_input() 
     raw.push_str("\n# safe-plan-secret-marker\n");
     fs::write(&path, &raw).unwrap();
     let digest = format!("{:x}", sha2::Sha256::digest(raw.as_bytes()));
-    let model = &config.tiers["balanced"].model;
+    let model = &config.default_model.model;
     let route = format!(
         "/service/model-default-plan?connection=anthropic&model={model}&config_sha256={digest}"
     );
@@ -227,10 +235,7 @@ async fn model_default_plan_is_authenticated_hash_bound_and_has_no_path_input() 
         .cloned()
         .collect::<Vec<_>>();
     fields.sort();
-    assert_eq!(
-        ["config_sha256", "overwrite_user_default", "tier"],
-        fields.as_slice()
-    );
+    assert_eq!(["already_default", "config_sha256"], fields.as_slice());
     assert!(!plan.to_string().contains("safe-plan-secret-marker"));
 
     let mismatch = route.replace(&digest, &"0".repeat(64));
@@ -250,6 +255,47 @@ async fn model_default_plan_is_authenticated_hash_bound_and_has_no_path_input() 
             .unwrap()
             .status()
     );
+}
+
+#[tokio::test]
+async fn status_reports_the_configuration_loaded_by_the_running_service() {
+    let home = tempfile::tempdir().unwrap();
+    let config = common::mock_provider::make_test_config(9);
+    let daemon = Daemon::start(home.path(), &config, None).await;
+    let path = home.path().join("config.toml");
+    let original = fs::read_to_string(&path).unwrap();
+    let original_hash = kuku::config::config_sha256(original.as_bytes());
+    let status = async || {
+        daemon
+            .native(Method::GET, "/service/status")
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(original_hash, status().await["config_sha256"]);
+
+    let updated = original.replace("48000", "4096");
+    let updated_hash = kuku::config::config_sha256(updated.as_bytes());
+    fs::write(&path, updated).unwrap();
+    tokio::time::timeout(READY_TIMEOUT, async {
+        while status().await["config_sha256"] != updated_hash {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("service did not publish the successfully loaded config hash");
+    let resolved = daemon
+        .native(Method::GET, "/models/resolve")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(4096, resolved["selection"]["max_output_tokens"]);
 }
 
 #[tokio::test]

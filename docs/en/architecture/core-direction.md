@@ -8,7 +8,7 @@ Read this page first, then only task-relevant code and [Evolution](evolution.md)
 
 ## Product and design test
 
-kuku is an **embeddable, file-native Rust Agent SDK with a usable default Harness**. A small, complete execution runtime supports interactive work, independent subagents, Teams, and event-driven long-running work. Embedded callers use the public SDK directly. For the interactive product, the server owns execution through that SDK and the CLI, TUI and WebUI use a common client protocol. [Interactive clients](interactive-clients.md)
+kuku is an **embeddable, file-native Rust Agent SDK with a usable default Harness**. A small, complete execution runtime supports interactive work, independent subagents, Teams, and event-driven long-running work. Embedded callers use the public SDK directly. For the interactive product, the server owns execution through that SDK and the CLI and TUI use a common client protocol. [Interactive clients](interactive-clients.md)
 
 Give reliability, low resource use, and low human/model cognitive cost equal weight. A mechanism needs a concrete job and one owner. The default Harness supplies working prompts, tools, model selection, and delegation; callers need not assemble an agent platform. Custom Harnesses choose recipients, context, scheduling, and work completion through explicit SDK operations, without replacing persistence, authorization, or execution.
 
@@ -50,7 +50,7 @@ Record creation relationships separately. A default main Agent has no intrinsic 
 
 Support **OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages** as distinct wire protocols through the same runtime. Each must support the core streaming, tool-use, and multi-turn execution path. Resolve capabilities for the actual configured endpoint/model; sharing a protocol does not imply identical reasoning, caching, service options, or server-side state. Keep protocol encoding, connection authentication, and model capabilities separate. Vendor-specific handling stays at the provider boundary without adding another executor or changing the core context model.
 
-Use one resolver for the SDK, user interfaces, main Agents, and subagents. Presets define behavior/tools/initial defaults; Tiers are reusable model-route/settings defaults. Select an exact configured connection and model, never the first connection matching a protocol. Explicit Agent choices override defaults and never mutate other Agents or process-wide defaults.
+Use one resolver for the SDK, user interfaces, main Agents, and subagents. Presets define behavior, tools, and optional initial model defaults. A model is identified by its connection name and exact model ID. Reusable model settings belong to that pair. The configured default is explicit. Agent choices apply to that Agent, while changes to the global default apply to new Sessions.
 
 Adapters describe and validate available reasoning and service options. These are independent choices: enabling supported acceleration does not implicitly change the model or reasoning. Do not impose a universal `fast/ultrafast` ladder. Unsupported explicit choices fail visibly. Record requested settings, resolved settings sent, and provider-reported settings when available; unavailable confirmation stays unknown.
 

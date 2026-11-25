@@ -2,18 +2,18 @@
 
 ## Build from source
 
-With Rust and Cargo installed, install the `kuku` binary from the workspace package:
+With Rust and Cargo installed, run the following from the checkout root to install the binary that matches these docs.
 
 ```bash
-cargo install --locked --git https://github.com/Cloud370/kuku kuku-app
+cargo install --locked --path apps/kuku
 kuku --help
 ```
 
-Source builds and release packages include the TUI, CLI commands, and HTTP server by default. To use `kuku web`, [build from a checkout with embedded Web assets](../reference/cli.md#kuku-server-and-kuku-web).
+The workspace package includes the TUI, script commands, and HTTP server. To build directly from the development branch, run `cargo install --locked --git https://github.com/Cloud370/kuku kuku-app`.
 
 ## Install a published release
 
-Copy the installation commands for the current alpha from the [README](../../../README.md#install).
+Find the installer commands and guide for the published alpha in the [README](../../../README.md#install). For another release, open its tag in [GitHub Releases](https://github.com/Cloud370/kuku/releases) to find the matching docs.
 
 Pick the `latest.json` asset URL from a tagged [GitHub Release](https://github.com/Cloud370/kuku/releases), then run the installer from a checkout:
 
@@ -34,4 +34,4 @@ On Linux and macOS, the installer adds the install directory to your shell profi
 
 ## Next step
 
-Make sure your home directory is writable (or point `KUKU_HOME` to a writable directory), then follow the [Quickstart](quickstart.md).
+With the binary built from this source tree, follow the [Quickstart](quickstart.md). Make sure your home directory is writable or point `KUKU_HOME` to a writable directory.

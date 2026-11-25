@@ -5,9 +5,9 @@
 - `kuku` 在交互终端打开全屏客户端（TUI）。
 - `kuku run ...` 执行非交互任务，适用于脚本或无 TTY 环境。
 
-TUI、`kuku run` 和浏览器界面都通过 kuku 服务提交任务。本地客户端复用所选数据目录的受管服务。[运行服务](../guides/run-the-server.md)
+TUI 和 `kuku run` 都通过 kuku 服务提交任务。本地客户端复用所选数据目录的受管服务。[运行服务](../guides/run-the-server.md)
 
-首次运行向导与 `kuku init` 共用本地 Provider 配置流程。`kuku init` 需要 TTY，可编辑有效的已有配置，不会启动服务，也不配置远程服务。[配置 kuku](../start/configuration.md)
+直接运行 `kuku`，交互配置第一个连接和模型。无头配置可用 [`kuku config set --patch`](#kuku-config)。[配置 kuku](../start/configuration.md)
 
 ## 连接与工作区选项
 
@@ -25,7 +25,7 @@ TUI、`kuku run` 和浏览器界面都通过 kuku 服务提交任务。本地客
 
 | 命令 | 用途 |
 |---|---|
-| `kuku run <prompt...>` | 提交任务并观察执行 |
+| `kuku run ...` | 提交文本或提示词文件并观察执行 |
 | `kuku reply <session-id> <request-id>` | 回复持久问题或授权请求 |
 | `kuku show <session-id>` | 查看 Session 的最终输出 |
 | `kuku events <session-id>` | 查看持久 Session 事件 |
@@ -33,14 +33,12 @@ TUI、`kuku run` 和浏览器界面都通过 kuku 服务提交任务。本地客
 | `kuku pending ...` | 核对丢失回执的提交 |
 | `kuku delete <session-id>` | 删除 Session |
 | `kuku config ...` | 查看、验证或修改配置 |
-| `kuku init` | 打开本地 Provider 与凭据配置向导 |
 | `kuku prompts ...` | 查看或导出 Prompt 资产 |
 | `kuku agents ...` | 列出或查看 Agent 预设 |
 | `kuku skills ...` | 列出或查看 Skill |
 | `kuku server ...` | 显式启动 HTTP 服务 |
 | `kuku server status` | 查看服务身份与当前活动 |
 | `kuku server restart` | 空闲时重启受管本地服务 |
-| `kuku web ...` | 打开所选服务的浏览器界面 |
 
 ## `kuku auth`
 
@@ -86,7 +84,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `Ctrl+C` | 有草稿时清空草稿；草稿为空时退出 TUI（服务端工作继续）。在编辑弹窗中只清空当前输入框。 |
 | `Shift+Enter` 或 `Ctrl+J` | 草稿中换行。 |
 | `Esc` | 关闭弹窗、退出聚焦控件，或运行/清理期间打断执行。关闭答复编辑器保留草稿；空闲且草稿为空时连按两次 `Esc` 打开对话历史。 |
-| `Ctrl+P` 或 `F1` | 打开只读快捷键帮助，保留当前草稿。 |
+| `Ctrl+P` 或 `F1` | 查看快捷键和用法帮助入口，保留当前草稿。 |
 | 空草稿按 `/`，或 `Ctrl+P` 后按 `/` | 搜索斜杠命令和 Skill；选中 Skill 会填入可编辑的 `/skill:NAME` 前缀。 |
 | `@` 或 `Tab` | 补全工作区相对路径。 |
 | `Alt+←` / `Alt+→` | 在 Agent 间循环切换（`main` 排第一，其余按地址排序）。 |
@@ -117,7 +115,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `/compact` | `/compress`、`/summarize` | 空闲时压缩当前 Agent 的较早上下文（支持 `/compact retry` 与 `/compact undo`）。 |
 | `/agents` | `/agent`、`/subagents` | 搜索 Session 中的 Agent、切换接收者或新建 Agent。 |
 | `/jobs` | `/job`、`/ps` | 列出当前 Agent 的后台 Job，读取实时输出或取消（`/jobs cancel <id>`）。 |
-| `/model` | `/models` | Enter 切换到高亮路由，`d` 设为默认并切换，`e` 编辑，`/` 搜索。Ctrl+L 打开同一个列表。 |
+| `/model` | `/models` | Enter 为当前 Agent 选择高亮的连接和模型。`d` 打开设为新 Session 默认的确认页，`e` 编辑，`/` 搜索。`Ctrl+L` 打开同一个列表。 |
 | `/speed [档位]` | `/fast`、`/ultra`、`/ultrafast` | 在会话输入框上方选择当前 Agent 的服务档位。快捷命令选择 `fast` 或 `ultrafast`。选择 **Follow model default** 清除覆盖设置。输入可筛选已有档位，按 Tab 补全选中的档位。添加未知档位时可以选择是否探测。 |
 | `/thinking` | `/think`、`/effort` | 设置当前 Agent 思考等级，选 **Use default** 清除覆盖，或在可写本地路由上按 `D` + `Enter` 设为模型默认。 |
 | `/statusline` | `/status-line` | 预览、开关、排序并保存状态栏字段到 `tui.toml`。 |
@@ -127,8 +125,7 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 | `/values` | `/value`、`/saved-values` | 浏览保存值，读取或附到草稿。 |
 | `/server` | `/service` | 查看已连接的服务（`Ctrl+R` 重连）。 |
 | `/restart` | `/restart-service` | 确认重启受管本地服务（有任务运行时会延后）。 |
-| `/web` | `/browser` | 在浏览器中打开当前对话。 |
-| `/help` | `/hotkeys` | 查看键盘快捷键。 |
+| `/help` | `/hotkeys` | 查看键盘快捷键和用法帮助入口。 |
 | `/quit` | `/exit`、`/q` | 退出 TUI（已接纳任务在服务端继续）。 |
 
 ### 阅读对话
@@ -166,21 +163,46 @@ Agent 空闲时按 `Ctrl+G` 或输入 `/rewind`（或 `/jump`）打开对话历�
 
 ```text
 kuku run [OPTIONS] <PROMPT...>
+kuku run [OPTIONS] --prompt-file <PATH|->
 ```
 
 | 选项 | 含义 |
 |---|---|
+| `--prompt-file <PATH\|->` | 读取完整的 UTF-8 提示词，用 `-` 从标准输入读取。只能选一种输入来源。 |
 | `-s`、`--session <id>` | 继续已有 Session |
-| `-a`、`--agent <name>` | 指定目标 Agent（默认 `main`） |
-| `-m`、`--model <spec>` | 为本次运行覆盖模型路由 |
-| `--json` | 每行输出一条 JSON |
-| `-o`、`--output <path>` | 将最终输出写入文件 |
-| `--no-wait` | 服务接纳输入后立即返回 |
-| `--auto-approve` | 本次运行自动批准权限请求 |
-| `--wait-for-reply` | 有持久请求等待外部回复时保持连接 |
-| `--timeout <seconds>` | 等待超时后退出（不取消服务端工作） |
+| `-c`、`--continue` | 继续最近的 Session |
+| `--agent <address>` | 指定目标 Agent，默认 `main` |
+| `--preset <name>` | 在新 Session 中按预设创建 Agent |
+| `--connection <name>` 与 `--model <id>` | 按精确 ID 选择已配置模型，两个选项同时传入 |
+| `--reasoning-effort <value>` | 覆盖选中模型的原生思考强度 |
+| `--service-tier <value>` | 覆盖 Provider 原生服务档位 |
+| `--max-output-tokens <n>` | 每次模型请求的输出 token 上限 |
+| `--command-id <id>` | 为本次提交指定稳定 ID，以便原样重试 |
+| `--json` | 向标准输出写入一个最终 JSON 结果 |
+| `--stream-json` | 向标准输出写入逐行 JSON 事件，末行为最终结果 |
+| `--raw` / `--verbose` | 选择纯文本输出或详细的可读输出 |
+| `--show-thinking` | 观察运行时展示已回报的思考内容 |
+| `--prompts-dir <path>` | 覆盖随附的 Prompt 资产 |
+| `--no-agents` / `--no-skills` | 关闭委派工具或关闭 Skill 工具与加载 |
 
-`--json` 模式按行输出 `session`、`accepted`、`delta`、`tool.call`、`tool.result`、`request`、`turn.completed`、`turn.failed` 和 `error`。等待超时退出码为 `124`。[运行任务](../guides/run-a-task.md)
+从文件或标准输入读取的内容会按文本传入，包括其中的换行。若要[显式调用 Skill](../guides/use-skills.md#运行时使用-skill)，请使用位置参数传入提示词。
+
+最终结果包含 `type: "session"`、表示结果的 `status` 和 `event`，以及可用的 `session_id` 和 `agent`。运行完成后返回最终 `response`，运行失败时返回 `error`。已知的实际连接、模型和用量分别见 `connection`、`model` 和 `usage`。等待时，`question` 或 `permission` 中的 `id` 标识待答复的请求。诊断写往 stderr。参数无效时可能在生成 Session 结果前退出。
+
+回执标识本次提交的输入。Agent 接纳输入后，即使另一客户端开启了后续 Turn，流式输出和最终结果也只来自接纳该输入的 Turn。结果会在用量信息可用时返回该 Turn 的用量。排队中的输入被撤回或替换后，本次运行结束，返回 `status: "cancelled"` 和 `input_status: "withdrawn"`。
+
+用已提交的 `--command-id` 重试时，返回原始 `receipt`、`replayed: true` 和已知的当前 `input_status`。用 `kuku show <SESSION_ID> --json` 查看 Agent 的当前状态。
+
+| 退出码 | 结果状态 | 含义 |
+|---|---|---|
+| `0` | `completed` | 运行完成 |
+| `0` | `acknowledged` | 已有持久提交回执 |
+| `3` | `waiting` | Agent 等待答复或授权 |
+| `1` | `failed` | 运行失败 |
+| `130` | `cancelled` | 运行已取消 |
+| `2` | | 命令行参数无效 |
+
+[运行任务](../guides/run-a-task.md)
 
 ## `kuku reply`
 
@@ -188,11 +210,9 @@ kuku run [OPTIONS] <PROMPT...>
 kuku reply <SESSION_ID> <REQUEST_ID> --allow
 kuku reply <SESSION_ID> <REQUEST_ID> --deny
 kuku reply <SESSION_ID> <REQUEST_ID> --answer "<text>"
-kuku reply <SESSION_ID> <REQUEST_ID> --answer-file <path>
-kuku reply <SESSION_ID> <REQUEST_ID> --answer-stdin
 ```
 
-答复持久授权请求或问题。同一回复已落盘时幂等成功返回。
+答复持久授权请求或问题，并观察后续运行。要回复 `main` 之外的 Agent，请传 `--agent <address>`。可用 `--command-id <id>` 原样重试回复。首次答复返回接纳答案或恢复授权操作的 Turn 结果。答复后台脚本的授权请求会返回对应 Job 的结果。Ctrl-C 针对本次答复的后续执行。原样重试时，返回原回执及 `state` 中的当前 Agent 快照。
 
 ## `kuku show`
 
@@ -214,46 +234,68 @@ kuku events --file <EVENTS_JSONL> [--agent <name>] [--kind <kind>] [--after <id>
 ## `kuku list`
 
 ```text
-kuku list [--json]
+kuku list [-a | --all] [--json]
+kuku list <SESSION_ID> [--json]
 ```
 
-列出所选工作区的 Session。
+列出所选工作区的 Session，也可用 `--all` 查看所有工作区。传入 Session ID 可列出其中的 Agent。
 
 ## `kuku pending`
 
 ```text
-kuku pending list [--json]
-kuku pending reconcile [--id <record-id>] [--json]
-kuku pending drop <record-id> [--json]
+kuku pending list
+kuku pending resend <COMMAND_ID> [--session <id>]
+kuku pending discard <COMMAND_ID> [--session <id>]
 ```
 
-查看并核对因超时或断连而丢失回执的提交。
+查看因超时或断连而丢失回执的提交。`list` 查询回执。提交仍未确认时，用 `resend` 原样重试，或用 `discard` 移除本地待确认记录。
 
 ## `kuku delete`
 
 ```text
-kuku delete <SESSION_ID> [--force]
+kuku delete <SESSION_ID>
 ```
 
-删除指定 Session。
+删除 Session，必要时先关闭。执行、清理或 Job 尚未结束时无法删除。
 
 ## `kuku config`
 
 ```text
-kuku config path
-kuku config show
+kuku config show [--json]
+kuku config models [--discover --connection NAME]
 kuku config validate
-kuku config set <key> <value>
-kuku config init
+kuku config set <KEY> <VALUE>
+kuku config set --patch <TOML>
 ```
 
-`kuku config show` 会遮盖 API 密钥。`kuku config set` 修改标量配置项（如 `default_model`、`provider.<name>.model_pricing.<model>.mode`、`provider.<name>.proxy.mode`）。`kuku config init` 写入初始模板（非交互）；交互式 Provider 与凭据配置请用 `kuku init`。
+四个命令按同一顺序选择本地配置：
+
+1. `--config PATH` 指定的文件。
+2. 该数据目录下正在运行的受管服务所用的配置文件。
+3. 数据目录下的 `config.toml`。
+
+`show` 将脱敏 TOML 写到 stdout，将路径写到 stderr。加 `--json` 可在 JSON 结果的 `config` 字段中读取 TOML。其他命令默认输出 JSON，包含 `path`、`status`、`diagnostics`（适用时带字段名）和 `service.state`。校验成功时状态为 `valid`，写入成功时为 `updated`。
+
+`validate` 本地检查文件和模型设置，无需发出 Provider 请求。通过 `service.state` 判断本文件版本是否已加载（`loaded`）、有待重载（`pending_reload`）、指向不同路径（`different_path`）、服务已停止（`stopped`）或状态未知（`unknown`）。服务停止时也能运行配置命令。再次校验可核对已加载的版本。[配置 kuku](../start/configuration.md)
+
+`models` 列出已配置的连接和模型，每项包含 `selection` 或 `error`。加上 `--discover --connection NAME` 后查询指定连接的模型列表，在 `models[].id` 中返回精确 ID。
+
+`set KEY VALUE` 可修改一个标量。TOML 路径含带引号的模型 ID 时，请给整个路径加引号，例如 `kuku config set 'model.work."your-model-id".max_output_tokens' 8192`。要提交完整改动或创建缺失文件，用 `--patch` 将 TOML 文本作为一个参数传入。
+
+可选的顶层 `delete` 数组指定应用补丁前要删除的 TOML 路径。例如，可同时删除一条模型注册并将默认值改为另一个已配置模型。
+
+```toml
+delete = ['model.work."your-model-id"']
+default_model = { connection = "work", model = "another-model-id" }
+```
+
+用 `provider.NAME` 删除连接时，在同一补丁中一并删除或替换依赖它的模型注册。补丁合并嵌套表，并整体替换 `default_model`。命令校验完整结果后才写入。补丁无效或并发写入冲突时返回非零退出码和诊断。[最小配置](config.md#最小配置) · [从 shell 配置](../guides/run-a-task.md#从-shell-配置)
 
 ## `kuku prompts`
 
 ```text
-kuku prompts list [--json]
-kuku prompts show <name> [--json]
+kuku prompts
+kuku prompts show [NAME]
 kuku prompts export <dir>
 ```
 
@@ -270,26 +312,16 @@ kuku skills show <name>
 
 列出和查看已发现的 Agent 预设与 Skill。
 
-## `kuku server` 与 `kuku web`
+## `kuku server`
 
 ```text
-kuku server [--host <addr>] [--port <port>] [--password <secret>]
+kuku server [--listen <addr:port>] [--password <secret>] [--max-concurrent-runs <n>]
 kuku server status
-kuku server restart
-kuku web [--session <id>] [--agent <name>] [--print-url]
+kuku server restart [--config PATH]
 ```
 
 - `kuku server` 需指定 `--password` 或 `KUKU_SERVER_PASSWORD`。
-- `kuku web` 打开内嵌 Web 资源的服务所提供的浏览器界面。受管登录链接带短期一次性 ticket，可用 `--print-url` 打印链接。
 - `kuku server status` 返回 JSON 格式的服务状态（本地服务未运行时为 `{"state":"stopped"}`）。
 - `kuku server restart` 忙碌时退出码为 `1` 并输出 `state: "deferred"`，重启成功输出 `state: "restarted"`。
-
-从源码仓库构建内置 Web 界面（需要 Node.js 24 与 npm）：
-
-```bash
-npm --prefix apps/web ci
-npm --prefix apps/web run build
-cargo run --locked -p kuku-app --features embedded-web-assets -- web
-```
 
 [运行服务](../guides/run-the-server.md) · [HTTP 服务 API](server-api.md)

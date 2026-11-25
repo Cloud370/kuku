@@ -8,7 +8,7 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, Terminal, eventually, json_response, run_cases
+from interactive_fixture import is_composer_heading, InstalledClient, Response, TOOL_OUTPUT, TOOL_PROGRAM, Terminal, eventually, http_fixture, json_response, run_cases
 from interactive_history import paginated_rewind, rewind_files
 from interactive_model_recovery import assert_live_elapsed, assert_testing_navigation, assert_wide_setup, recovery_cases
 from interactive_rendering import has_selected_queued_input, queued_input_click_position
@@ -120,8 +120,9 @@ def first_run_credential_repair(binary, bridge, directory):
         environment["KUKU_HOME"] = str(login / ".kuku")
     else:
         environment.pop("KUKU_HOME")
-    for workspace in (login, project):
-        with Terminal(bridge, binary, workspace, environment) as terminal:
+    for workspace, legacy_key in ((login, None), (project, "fixture-unused-legacy-key")):
+        env = environment if legacy_key is None else {**environment, "OPENROUTER_API_KEY": legacy_key}
+        with Terminal(bridge, binary, workspace, env) as terminal:
             terminal.expect("New session")
             terminal.request("resize", rows=20, cols=60)
             terminal.expect("Set up a model", rows=20)
@@ -172,11 +173,11 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("Choose a provider", also=("Existing · test-anthropic",))
             terminal.press("\r\r\r")
-            terminal.expect("Paste your API key")
+            terminal.expect("API key variable name", also=("KUKU_ACCEPTANCE_MISSING_KEY", "Key missing"))
             terminal.press("\x1b")
-            missing = terminal.expect("API key source", also=("not detected", "› Paste API key"))["screen"]
+            missing = terminal.expect("API key source", also=("› Environment · not detected", "Paste API key"))["screen"]
             client.provider.assert_idle()
-            terminal.press("\r")
+            terminal.press("\x1b[B\r")
             terminal.expect("Paste your API key")
             terminal.press(f"\x1b[200~{key}\x1b[201~")
             masked = terminal.expect(f"{key[:7]}{'•' * (len(key) - 12)}{key[-5:]}")["screen"]
@@ -197,6 +198,12 @@ def first_run_credential_repair(binary, bridge, directory):
             terminal.press("\r")
             terminal.expect("New session", state="Ready")
             client.provider.assert_idle()
+            catalog = client.request("GET", "/models").as_json()
+            selected = {"connection": "test-anthropic", "model": "claude-sonnet-4-6"}
+            assert catalog["default_model"] == selected
+            assert [(item["connection"], item["model"]) for item in catalog["models"]] == [
+                (selected["connection"], selected["model"]),
+            ]
             terminal.submit(prompt)
             call = client.provider.next(prompt)
             assert call.request["model"] == "claude-sonnet-4-6", call.request["model"]
@@ -355,19 +362,21 @@ def shared_model_editor(binary, bridge, directory):
             terminal.expect(draft, absent=("Connected", "F2 Restart", "Model route"))
             assert len(list((client.home / "credentials").iterdir())) == 1
             catalog = client.request("GET", "/models").as_json()
-            assert catalog["default_tier"] == "default"
-            for item in catalog["tiers"]:
+            connection = endpoint.removeprefix("http://")
+            assert catalog["default_model"] == {"connection": connection, "model": "beta"}
+            assert {(item["connection"], item["model"]) for item in catalog["models"]} == {
+                (connection, model) for model in ("alpha", "beta", "gamma", "delta")
+            }
+            for item in catalog["models"]:
                 assert item["capabilities"]["reasoning_source"] is None
                 assert item["capabilities"]["input_modalities"] is None
                 assert item["capabilities"]["output_modalities"] is None
-            assert next(item for item in catalog["tiers"] if item["name"] == "default")["model"] == "beta"
-            assert next(item for item in catalog["tiers"] if item["name"] == "gamma")["model"] == "delta"
 
             terminal.press("\x0c")
             terminal.expect("gamma", state="Model route", also=("delta",))
-            terminal.press("/gamma")
-            match = terminal.expect("/ gamma", also=("›gamma",))["screen"]
-            terminal.click_text(match, "›gamma")
+            terminal.press("/delta")
+            match = terminal.expect("/ delta", also=("›delta",))["screen"]
+            terminal.click_text(match, "›delta")
             terminal.expect(draft, also=("delta",), absent=("Model route", "Model settings"))
             terminal.press("\r")
             terminal.expect("Model route changed", also=("beta → delta", "Enter Send", draft))
@@ -603,7 +612,7 @@ def setup_probe_progress(binary, bridge, directory):
                 terminal.expect("› Save and continue")
                 terminal.press("\r")
                 terminal.expect("New session", state="Ready")
-                saved_models = client.request("GET", "/models").as_json()["tiers"]
+                saved_models = client.request("GET", "/models").as_json()["models"]
                 assert {item["model"]: item["settings"]["reasoning_effort"] for item in saved_models} == {
                     "alpha": "none", "beta": "low", "gamma": "medium",
                 }
@@ -626,80 +635,106 @@ def setup_probe_progress(binary, bridge, directory):
 
 def persistent_model_default(client):
     workspace = client.workspace("work-model-default")
-    chosen = "fixture-saved-model"
+    model = "claude-sonnet-4-6"
+    original = {"connection": "test-anthropic", "model": model}
+    alternate = {"connection": "fixture-alternate", "model": model}
     config_path = client.home / "config.toml"
-    config_path.write_text(config_path.read_text(encoding="utf-8").replace(
-        '[model.light]\nprovider = "test-anthropic"\nmodel = "claude-sonnet-4-6"',
-        f'[model.light]\nprovider = "test-anthropic"\nmodel = "{chosen}"',
-    ), encoding="utf-8")
-    prompt = "Verify the separately chosen Session model"
-    with client.terminal(workspace) as terminal:
-        terminal.expect("New session", state="Ready")
+    alternate_requests = []
+
+    def alternate_provider(method, path, headers, body):
+        alternate_requests.append((method, path, headers.get("x-api-key")))
+        return client.provider.dispatch(method, path, headers, body)
+
+    def model_picker(terminal, route):
         terminal.press("/model\r")
-        models = terminal.expect("light", also=(chosen,))["screen"]
-        initial_models = models
-        terminal.click_text(models, "light")
-        tier_return = terminal.expect("New session", state="Ready", also=(chosen,),
-                                      absent=("Model route",))["screen"]
+        screen = terminal.expect(model, state="Model route",
+                                 also=(original["connection"], alternate["connection"]))["screen"]
+        terminal.press(f"/{route['connection']}")
+        terminal.expect(f"/ {route['connection']}", also=(f"›{model}",))
+        return screen
+
+    def reply(terminal, prompt, answer, *, limit, confirm_switch=False):
         terminal.submit(prompt)
+        if confirm_switch:
+            terminal.expect("Model route changed", also=("Enter Send",))
+            client.provider.assert_idle(duration=0.2)
+            terminal.press("\r")
         call = client.provider.next(prompt)
-        assert call.request["model"] == chosen, call.request["model"]
-        call.text("The Session model is selected.")
-        terminal.expect("The Session model is selected.", state="Finished")
-        session = client.session(workspace)
+        assert (call.request["model"], call.request["max_tokens"]) == (model, limit), call.request
+        call.text(answer)
+        return terminal.expect(answer, state="Finished")["screen"]
 
-        terminal.press("/model\r")
-        terminal.expect("balanced", also=("Model route",))
-        terminal.press("/balanced\r")
-        terminal.expect("The Session model is selected.", absent=("Model route",))
-        eventually("the current Session uses balanced",
-                   lambda: client.snapshot(workspace, session)["config"].get("tier") == "balanced")
+    with http_fixture(alternate_provider) as endpoint:
+        config = config_path.read_text(encoding="utf-8") + f'''
+[model.fixture-alternate."{model}"]
+think = "off"
+context_window = 200000
+max_output_tokens = 2048
 
-        terminal.press("/model\r")
-        terminal.press("/light")
-        terminal.expect("/ light", also=("›light",))
-        terminal.press("\x1b")
-        models = terminal.expect("d Default + switch", also=(chosen,))["screen"]
-        terminal.press("d")
-        eventually("the service loads light as the default model",
-                   lambda: client.request("GET", "/models").as_json()["default_tier"] == "light")
-        saved = terminal.expect("Settings saved for the next safe model boundary", also=(chosen,))["screen"]
-        eventually("the current Session uses light",
-                   lambda: client.snapshot(workspace, session)["config"].get("tier") == "light")
-        terminal.exit_cleanly()
-    config = (client.home / "config.toml").read_text(encoding="utf-8")
-    assert 'default_model = "light"' in config and chosen in config
-    client.cli(workspace, "server", "restart")
-    new_workspace = client.workspace("work-new-default")
-    with client.terminal(new_workspace) as terminal:
-        terminal.expect("New session", state="Ready", also=(chosen,))
-        terminal.submit("Verify the new Session default")
-        created = client.provider.next("Verify the new Session default")
-        assert created.request["model"] == chosen, created.request["model"]
-        created.text("The saved default opened a new Session.")
-        terminal.expect("The saved default opened a new Session.", state="Finished")
-        terminal.exit_cleanly()
-    client.cli(workspace, "server", "restart")
-    with client.terminal(new_workspace) as terminal:
-        terminal.resume("Verify the new Session default")
-        terminal.expect("The saved default opened a new Session.")
-        terminal.submit("Verify the reopened Session model")
-        reopened = client.provider.next("Verify the reopened Session model")
-        assert reopened.request["model"] == chosen, reopened.request["model"]
-        reopened.text("The reopened Session kept its model.")
-        terminal.expect("The reopened Session kept its model.", state="Finished")
-        terminal.exit_cleanly()
+[provider.fixture-alternate]
+format = "anthropic"
+base_url = "{endpoint}"
+api_key = "fixture-alternate-key"
+profile = "compatible"
+reasoning_efforts = ["none"]
+'''
+        config_path.write_text(config, encoding="utf-8")
+        with client.terminal(workspace) as terminal:
+            terminal.expect("New session", state="Ready")
+            initial_models = model_picker(terminal, alternate)
+            terminal.press("\r")
+            terminal.expect("New session", state="Ready", absent=("Model route",))
+            reply(terminal, "Use the alternate connection", "The first Agent used the alternate route.", limit=2048)
+            session = client.session(workspace)
+            assert client.request("GET", "/models").as_json()["default_model"] == original
+            assert config_path.read_text(encoding="utf-8") == config
+
+            model_picker(terminal, original)
+            terminal.press("\r")
+            terminal.expect("The first Agent used the alternate route.", absent=("Model route",))
+
+            def current_model_is_original():
+                view = client.snapshot(workspace, session)["config"]
+                return {field: view.get(field) for field in original} == original
+
+            eventually("the current Agent to select the original connection", current_model_is_original)
+            model_picker(terminal, alternate)
+            terminal.press("\x1b")
+            terminal.expect("e Edit", also=(model,))
+            terminal.press("d")
+            confirmation = terminal.expect("Save as default", also=(model, "› Cancel"))["screen"]
+            assert config_path.read_text(encoding="utf-8") == config
+            terminal.press("\x1b[A\r")
+            eventually("the service to load the new default connection",
+                       lambda: client.request("GET", "/models").as_json()["default_model"] == alternate)
+            assert current_model_is_original()
+            saved = reply(terminal, "Keep the current Agent connection",
+                          "The current Agent kept its route.", limit=4096, confirm_switch=True)
+            terminal.exit_cleanly()
+
+        client.cli(workspace, "server", "restart")
+        new_workspace = client.workspace("work-new-default")
+        with client.terminal(new_workspace) as terminal:
+            terminal.expect("New session", state="Ready", also=(model,))
+            reply(terminal, "Verify the new Session default", "The saved default opened a new Session.", limit=2048)
+            terminal.exit_cleanly()
+        client.cli(workspace, "server", "restart")
+        with client.terminal(new_workspace) as terminal:
+            terminal.resume("Verify the new Session default")
+            terminal.expect("The saved default opened a new Session.")
+            reply(terminal, "Verify the reopened Session model", "The reopened Session kept its model.", limit=2048)
+            terminal.exit_cleanly()
+    assert alternate_requests == [("POST", "/v1/messages", "fixture-alternate-key")] * 3
     client.provider.assert_idle()
     (client.directory / "model-default.json").write_text(json.dumps({
         "initial_models_screen": initial_models,
-        "screen_after_tier_click": tier_return,
-        "models_before_save": models,
+        "default_confirmation_screen": confirmation,
         "saved_default_screen": saved,
-        "current_session_model": chosen,
-        "new_session_model": created.request["model"],
-        "reopened_session_model": reopened.request["model"],
+        "current_session_model": original,
+        "new_session_model": alternate,
+        "reopened_session_model": alternate,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Persistent default {chosen} was used by current, new, and reopened Sessions.")
+    print("Model selection kept same-ID connections distinct and applied the saved default to new Sessions.")
 
 
 def readonly_rewind(client):

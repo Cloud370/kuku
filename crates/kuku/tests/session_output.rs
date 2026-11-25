@@ -118,10 +118,8 @@ async fn output_session(
 ) -> Session {
     let mut config = common::test_config();
     config.providers.get_mut("openai").unwrap().base_url = server.url("");
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "session-output".into();
-    tier.think = kuku::config::ThinkLevel::Off;
+    let model_settings = common::set_test_model(&mut config, "openai", "session-output");
+    model_settings.think = kuku::config::ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
     let mut options = SessionOptions::new(workspace, data, config);

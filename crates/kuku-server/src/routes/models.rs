@@ -49,19 +49,19 @@ pub(super) async fn list(State(state): State<Arc<AppState>>) -> Json<Value> {
             connection
         })
         .collect::<Vec<_>>();
-    let tiers = config
-        .tiers
+    let models = config
+        .models
         .iter()
-        .map(|(name, tier)| {
+        .map(|(route, model)| {
             let selection = AgentConfig {
-                tier: Some(name.clone()),
+                connection: Some(route.connection.clone()),
+                model: Some(route.model.clone()),
                 ..AgentConfig::default()
             };
             let mut value = json!({
-                "name":name,
-                "connection":tier.provider,
-                "model":tier.model,
-                "purpose":tier.purpose,
+                "connection":route.connection,
+                "model":route.model,
+                "purpose":model.purpose,
             });
             match inspect_model(&config, &selection) {
                 Ok(resolved) => {
@@ -76,7 +76,7 @@ pub(super) async fn list(State(state): State<Arc<AppState>>) -> Json<Value> {
         })
         .collect::<Vec<_>>();
     Json(
-        json!({"ok":true,"default_tier":config.default_tier,"connections":connections,"tiers":tiers}),
+        json!({"ok":true,"default_model":config.default_model,"connections":connections,"models":models}),
     )
 }
 

@@ -142,6 +142,7 @@ pub enum EventPayload {
         session_id: String,
         created_at: String,
         kuku_version: String,
+        default_model: Option<crate::config::ModelRef>,
     },
     PromptSnapshot {
         ts: String,
@@ -371,6 +372,10 @@ impl EventPayload {
                 session_id: string_field(object, "session_id")?,
                 created_at: string_field(object, "created_at")?,
                 kuku_version: string_field(object, "kuku_version")?,
+                default_model: match object.get("default_model") {
+                    Some(value) => serde_json::from_value(value.clone()).ok()?,
+                    None => None,
+                },
             }),
             "prompt.snapshot" => Some(Self::PromptSnapshot {
                 ts: string_field(object, "ts")?,
@@ -470,6 +475,7 @@ impl EventPayload {
                 session_id,
                 created_at,
                 kuku_version,
+                default_model,
             } => Ok(serde_json::json!({
                 "id": id,
                 "ts": ts,
@@ -478,6 +484,7 @@ impl EventPayload {
                 "session_id": session_id,
                 "created_at": created_at,
                 "kuku_version": kuku_version,
+                "default_model": default_model,
             })),
             Self::ContextSources {
                 turn,

@@ -225,6 +225,7 @@ async fn resume_after_cancel_includes_turn_end_in_history() {
                 session_id: "test".to_string(),
                 created_at: "2026-05-20T00:00:00Z".to_string(),
                 kuku_version: "0.1.0".to_string(),
+                default_model: None,
             })
             .unwrap();
         store

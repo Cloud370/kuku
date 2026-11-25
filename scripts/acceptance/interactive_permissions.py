@@ -237,7 +237,8 @@ def cli_script_permission(client, workspace):
             "run_js", "cli-script",
             code='return await tools.write_file({path:"cli.txt",content:"approved"});',
         )
-        output, _ = client.finish(process)
+        output, _ = client.finish(process, success=False)
+        assert process.returncode == 3
     waiting = json.loads(output)
     assert waiting["event"] == "waiting" and waiting["permission"]["tool"] == "write_file", waiting
     assert not (workspace / "cli.txt").exists()
@@ -266,7 +267,8 @@ def cli_detached_script_permission(client, workspace):
                 'return await tools.write_file({path:"cli-second.txt",content:"second"});'
             ),
         )
-        output, _ = client.finish(process)
+        output, _ = client.finish(process, success=False)
+        assert process.returncode == 3
     waiting = json.loads(output)
     session = waiting["session_id"]
     client.provider.next("cli-detached").text("The script is running in the background.")

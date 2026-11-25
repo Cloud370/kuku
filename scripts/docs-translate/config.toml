@@ -1,21 +1,14 @@
-default_model = "strong"
+default_model = { connection = "translation", model = "$CI_LLM_MODEL" }
 
-[model.strong]
-provider = "anthropic_compat"
-model = "claude-opus-4-7"
-think = "high"
+[discovery]
+extra_project_paths = ["/run/kuku-docs-translate"]
 
-[model.balanced]
-provider = "anthropic_compat"
-model = "claude-opus-4-7"
-think = "high"
+[model.translation."$CI_LLM_MODEL"]
+reasoning_effort = "high"
+max_output_tokens = 32768
 
-[model.light]
-provider = "anthropic_compat"
-model = "claude-haiku-4-5-20251001"
-think = "low"
-
-[provider.anthropic_compat]
-format = "anthropic"
-base_url = "$KUKU_ANTHROPIC_BASE_URL"
-api_key = "$KUKU_ANTHROPIC_API_KEY"
+[provider.translation]
+format = "openai-responses"
+base_url = "$CI_LLM_BASE_URL"
+api_key = "file:/run/kuku-docs-translate.key"
+reasoning_efforts = ["high"]

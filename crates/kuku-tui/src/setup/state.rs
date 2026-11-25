@@ -1,7 +1,8 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use kuku::adapter::ProbeBatch;
 use kuku::config::{
-    ApiKey, ModelPricing, ProviderFormat, ProviderProxy, RequestedOutput, SubscriptionAccount,
+    ApiKey, ModelPricing, ModelRef, ProviderFormat, ProviderProxy, RequestedOutput,
+    SubscriptionAccount,
 };
 
 use crate::editor::Editor;
@@ -116,7 +117,7 @@ impl ReviewAction {
 pub(crate) enum SetupIntent {
     Default,
     Add,
-    Edit(String),
+    Edit(ModelRef),
 }
 
 pub(super) struct SetupState {
@@ -152,7 +153,6 @@ pub(super) struct SetupState {
     pub(super) credential_source: CredentialSource,
     pub(super) subscription: Option<SubscriptionAccount>,
     pub(super) enrollment: Option<super::subscription::enrollment::Enrollment>,
-    pub(super) subscription_saved: bool,
     pub(super) review_selection: usize,
     pub(super) finish: Option<Finish>,
     pub(super) problem: Option<String>,
@@ -164,18 +164,19 @@ pub(super) struct SetupState {
 }
 
 impl SetupState {
+    #[cfg(test)]
     pub(super) fn new(settings: &Settings) -> Self {
         Self::for_intent(settings, SetupIntent::Default)
     }
 
     pub(super) fn for_intent(settings: &Settings, intent: SetupIntent) -> Self {
         let edit = match &intent {
-            SetupIntent::Edit(tier) => settings.resolved.tier(tier),
+            SetupIntent::Edit(model) => Some(model),
             SetupIntent::Default | SetupIntent::Add => None,
         };
         let initial = edit.map_or_else(
             || settings.initial_choice(),
-            |tier| ConnectionChoice::Existing(tier.provider.clone()),
+            |model| ConnectionChoice::Existing(model.connection.clone()),
         );
         let choices = settings.connection_choices();
         let selected = choices
@@ -215,7 +216,6 @@ impl SetupState {
             credential_source: CredentialSource::Environment,
             subscription: None,
             enrollment: None,
-            subscription_saved: false,
             review_selection: 0,
             finish: None,
             problem: None,
@@ -284,12 +284,8 @@ impl SetupState {
             return None;
         }
         match settings.key_for(self.choice()) {
-            Some(ApiKey::File(path)) if settings.file_reference_in_current_store(path) => {
+            Some(ApiKey::File(_) | ApiKey::Plaintext(_)) => {
                 Some("Leave blank to keep your saved key.")
-            }
-            Some(ApiKey::File(_)) => Some("Leave blank to copy your saved key here."),
-            Some(ApiKey::Plaintext(_)) => {
-                Some("Existing inline key will move to private storage when saved.")
             }
             _ => None,
         }
@@ -741,12 +737,10 @@ impl SetupState {
 
     pub(super) fn load_selection(&mut self, settings: &Settings) {
         let choice = self.choice().clone();
-        let original = self
-            .route_name(settings)
-            .and_then(|name| settings.resolved.tier(name));
-        let initial_model = original.filter(
-            |tier| matches!(&choice, ConnectionChoice::Existing(name) if *name == tier.provider),
-        );
+        let original = self.configured_model(settings).filter(
+            |model| matches!(&choice, ConnectionChoice::Existing(name) if *name == model.connection),
+        ).cloned();
+        let initial_model = original.as_ref().and_then(|model| settings.model(model));
         self.protocol = settings.protocol_for(&choice);
         self.protocol_fixed = choice != ConnectionChoice::Custom;
         let (address, full_url, models_url) = settings.address_for(&choice);
@@ -754,16 +748,13 @@ impl SetupState {
         self.full_url = full_url;
         self.models_url = models_url;
         self.proxy = match &choice {
-            ConnectionChoice::Existing(name) => {
-                settings.resolved.providers[name].options.proxy.clone()
-            }
+            ConnectionChoice::Existing(name) => settings.providers()[name].options.proxy.clone(),
             _ => ProviderProxy::Environment,
         };
         self.model_pricing = match &choice {
-            ConnectionChoice::Existing(name) => settings.resolved.providers[name]
-                .options
-                .model_pricing
-                .clone(),
+            ConnectionChoice::Existing(name) => {
+                settings.providers()[name].options.model_pricing.clone()
+            }
             _ => Default::default(),
         };
         self.proxy_address.set_text(match &self.proxy {
@@ -777,9 +768,7 @@ impl SetupState {
         self.models = Models::default();
         self.model.set_text(match &self.intent {
             SetupIntent::Add if matches!(choice, ConnectionChoice::Existing(_)) => String::new(),
-            _ => {
-                initial_model.map_or_else(|| settings.model_for(&choice), |tier| tier.model.clone())
-            }
+            _ => original.map_or_else(|| settings.model_for(&choice), |model| model.model.clone()),
         });
         self.reasoning = initial_model.map(|tier| {
             tier.reasoning_effort
@@ -793,13 +782,7 @@ impl SetupState {
         self.environment.set_text(settings.environment_for(&choice));
         self.subscription = settings.subscription_for(&choice).cloned();
         self.subscription_available = settings.subscription_available(&choice);
-        self.credential_source = if self.intent == SetupIntent::Add
-            && matches!(settings.key_for(&choice), Some(ApiKey::Env(_)))
-        {
-            CredentialSource::Environment
-        } else {
-            settings.source_for(&choice)
-        };
+        self.credential_source = settings.source_for(&choice);
         self.stored_key.set_text(String::new());
         self.saved_key_available = settings.saved_key_available(&choice);
         self.refresh_environment_detection();
@@ -859,7 +842,7 @@ impl SetupState {
             SetupMode::FirstRun if self.credential_ready() && !self.primary_failed() => {
                 ReviewAction::SaveAndContinue
             }
-            SetupMode::FirstRun | SetupMode::Init => ReviewAction::SaveAndExit,
+            SetupMode::FirstRun => ReviewAction::SaveAndExit,
             SetupMode::Session => ReviewAction::Save,
         }
     }

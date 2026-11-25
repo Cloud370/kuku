@@ -37,11 +37,11 @@ fn previous_name(name: &str, connection: &ProviderConfig) -> Option<String> {
 }
 
 pub(super) fn existing(settings: &Settings, name: &str) -> String {
-    let Some(connection) = settings.resolved.provider(name) else {
+    let Some(connection) = settings.provider(name) else {
         return name.into();
     };
     if let Some(label) = previous_name(name, connection) {
-        if settings.resolved.providers.contains_key(&label) && label != name {
+        if settings.providers().contains_key(&label) && label != name {
             return format!("{label} · {name}");
         }
         return label;
@@ -64,7 +64,7 @@ pub(super) fn for_save(
         ConnectionChoice::Custom => connection_host(connection).unwrap_or_else(|| "custom".into()),
     };
     let taken = |candidate: &str| {
-        settings.resolved.providers.iter().any(|(name, provider)| {
+        settings.providers().iter().any(|(name, provider)| {
             name == candidate
                 || previous_name(name, provider).is_some_and(|label| label == candidate)
         })

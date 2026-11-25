@@ -2,7 +2,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 use kuku_client::Timing;
 
 use crate::app::{App, Modal, Notice};
-use crate::jobs::Job;
 use crate::menu::{Choice, CommandInput, CommandMenu, PickerKind};
 
 use super::is_text;
@@ -185,12 +184,6 @@ impl App {
             CommandMenu::Values => self.open_values(),
             CommandMenu::Server => self.open_server(),
             CommandMenu::Restart => self.open_restart(),
-            CommandMenu::Web if self.require_service() => {
-                self.effects.push(Job::Web(
-                    self.pane().exists.then(|| self.selection().target),
-                ));
-            }
-            CommandMenu::Web => {}
             CommandMenu::Help => self.show_shortcut_help(),
             CommandMenu::Quit => self.exit(),
         }

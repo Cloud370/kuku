@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SubmitEvent, ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { errorMessage } from "@/api/client";
-import type { AgentStatus, Command, SendTiming, Target } from "@/api/sessions";
+import type { AgentStatus, Command, ModelRef, SendTiming, Target } from "@/api/sessions";
 import { Composer } from "@/components/chat/Composer";
 import { ConversationTimeline } from "@/components/chat/ConversationTimeline";
 import { ErrorNotice } from "@/components/chat/ErrorNotice";
@@ -57,7 +57,7 @@ export function Session({ target, workspacePanel }: { target: Target; workspaceP
   const pending = useCommands((s) => s.pending);
   const submit = useCommands((s) => s.submit);
   const navigate = useNavigate();
-  const [tier, setTier] = useState("");
+  const [draftModel, setDraftModel] = useState<ModelRef>();
   const [error, setError] = useState<string>();
   const [creatingAgent, setCreatingAgent] = useState(false);
   const viewport = useRef<HTMLDivElement>(null);
@@ -128,9 +128,8 @@ export function Session({ target, workspacePanel }: { target: Target; workspaceP
   function send(text: string, timing: SendTiming) {
     if (isNew) {
       if (unconfirmedCreate) return;
-      const initial = tier ? { tier } : {};
       void dispatch(
-        { type: "send", text, timing, create: initial },
+        { type: "send", text, timing, create: draftModel ?? {} },
         { ...target, session: `s-${crypto.randomUUID()}` },
         () => {
           changeDraft(key, "");
@@ -143,18 +142,19 @@ export function Session({ target, workspacePanel }: { target: Target; workspaceP
     }
   }
 
-  function changeTier(value: string) {
+  function changeModel(model?: ModelRef) {
     if (!snapshot) {
-      setTier(value);
+      setDraftModel(model);
       return;
     }
+    if (!model) return;
     const config = {
       ...snapshot.agent.config,
-      tier: value || null,
-      connection: null,
-      model: null,
+      ...model,
       reasoning_effort: null,
       service_tier: null,
+      output: null,
+      max_output_tokens: null,
     };
     void dispatch({ type: "configure", config });
   }
@@ -171,7 +171,6 @@ export function Session({ target, workspacePanel }: { target: Target; workspaceP
   const context = {
     model: snapshot?.selection?.model,
     provider: snapshot?.selection?.connection,
-    tier: snapshot?.agent.config.tier,
     turn: snapshot?.agent.turn,
     tokens: snapshot?.agent.usage,
     sessionId: session,
@@ -439,8 +438,8 @@ export function Session({ target, workspacePanel }: { target: Target; workspaceP
           modelControl={
             <ModelControl
               snapshot={snapshot}
-              tier={tier}
-              onChange={changeTier}
+              draftModel={draftModel}
+              onChange={changeModel}
               disabled={!isNew && (!enabled || pendingAction("configure"))}
             />
           }

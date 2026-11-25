@@ -2,18 +2,33 @@
 
 ## 配置文件位置
 
-默认路径为 `~/.kuku/config.toml`；设置 `KUKU_HOME` 后为 `$KUKU_HOME/config.toml`。
+默认文件是数据目录下的 `config.toml`。数据目录按 `--data-dir`、`KUKU_HOME`、`~/.kuku` 的顺序选择。
 
-HTTP 服务默认读取数据目录下的 `config.toml`，也可通过 `--config <path>` 指定。运行中的受管服务可用 `kuku server status` 查看实际生效配置。
+服务可用 `--config PATH` 指定配置。运行 `kuku server status` 查看服务已加载的文件。首次配置和 TUI 的 `/model` 会编辑本地配置。[配置指南](../start/configuration.md) · [CLI 路径选择](cli.md#kuku-config) · [终端偏好](#终端偏好)
 
-首次运行向导、`kuku init` 与 TUI `/model` 均读写此文件。[配置指南](../start/configuration.md) · [终端偏好](#终端偏好)
+## 最小配置
+
+```toml
+default_model = { connection = "work", model = "your-model-id" }
+
+[provider.work]
+format = "openai-responses"
+base_url = "https://gateway.example/v1"
+api_key = "$MY_GATEWAY_KEY"
+```
+
+用该连接实际提供的 URL 和模型 ID 替换示例值。在服务的环境中设置 `MY_GATEWAY_KEY`，也可改为自己选的变量名。必填的 `default_model` 已注册该连接上的模型，因此这份配置可以直接使用。[环境变量引用](environment-variables.md#配置中的引用)
+
+在 TUI 或通过 CLI 补丁切换默认模型时，只要之前的连接仍在且没有显式删除旧模型，kuku 会保留那条模型注册。手动编辑配置时，可以先加上 `[model.old_connection."old-model"]` 这样的表，再改 `default_model`，这样已有 Session 仍能使用原模型。删除模型后，依赖它的 Agent 需要切换到其他已配置模型。
+
+CLI 补丁编辑本地服务已加载的文件版本时，kuku 以服务实际解析出的原默认模型为准。如果编辑进程中的旧模型变量取值不同或尚未设置，kuku 会使用精确 ID 为原先隐式注册的模型建表。
 
 ## 顶层配置项
 
 | 键 | 类型 | 含义 |
 |---|---|---|
-| `default_model` | string | 默认模型档位名 |
-| `model.<name>` | table | 模型档位定义 |
+| `default_model` | table | 必填的新 Session 默认 `connection` 和精确 `model` ID |
+| `model.<connection>."<model-id>"` | table | 一个已注册模型的设置 |
 | `provider.<name>` | table | Provider 连接定义 |
 | `discovery` | table | Agent 与 Skill 自动发现设置 |
 | `handoff` | table | 上下文压缩（Handoff）设置 |
@@ -21,26 +36,31 @@ HTTP 服务默认读取数据目录下的 `config.toml`，也可通过 `--config
 | `plugin` | table | Package 扩展加载开关 |
 | `update` | table | 更新源与频道 |
 
-## `model.<name>`
+## 模型设置
+
+要添加模型或设置默认模型的选项，按连接和模型分别添加表。模型 ID 含点、斜杠等 TOML 键的特殊字符时须加引号。同一个 ID 可以在不同连接上注册，并分别设置。
+
+```toml
+[model.work."your-model-id"]
+context_window = 200000
+max_output_tokens = 8192
+
+[model.work."another-model-id"]
+max_output_tokens = 4096
+```
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
-| `provider` | string | 对应 `provider.<name>` 中的连接名 |
-| `model` | string | Provider 模型 ID |
-| `think` | `provider-default`\|`off`\|`low`\|`medium`\|`high` | 可移植思考偏好（`provider-default` 不下发线级 effort） |
+| `think` | `provider-default`\|`off`\|`low`\|`medium`\|`high` | 可移植思考偏好，默认 `provider-default` |
 | `reasoning_effort` | string | 协议原生推理值，覆盖 `think` |
 | `service_tier` | string | 协议原生服务档位，独立于思考设置 |
-| `context_window` | integer | 最大输入 token 数 |
-| `max_output_tokens` | 正整数（可选） | 本档位生成上限（若 Provider 计入输出，也含思考 token） |
+| `context_window` | integer | 最大输入 token 数，默认 200,000 |
+| `max_output_tokens` | 正整数（可选） | 生成上限（若 Provider 计入输出，也含思考 token） |
 | `purpose` | string | 展示给用户和子 Agent 的路由用途说明 |
 | `output` | `text`\|`image` | 期望输出类型，默认 `text` |
 | `request` | table | 模型路由的[请求头与请求体](#请求头与请求体)覆盖项 |
 
-可通过 `default_model` 指定默认档位；只有一个路由时也可省略。既有 `strong`、`balanced`、`light` 路由继续有效。TUI 的 **Set current model as default** 会复用匹配档位，或创建/更新普通 `user-default` 档位并通过 `default_model` 选中。
-
-添加更多路由时，设置向导使用模型名，重名时加数字后缀，例如 `gpt-6.1-terra-2`。Agent 通过这些名称选择路由。
-
-Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值；原生 Anthropic Messages 需要数值（内置 Sonnet/Haiku 预设已在 TOML 中填写，自定义 Messages 路由可从档位、Agent 或宿主获取）。单次响应仍受可用上下文余量约束。
+Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值。原生 Anthropic Messages 需要从模型设置、Agent 或宿主取得数值。每次响应仍受可用上下文余量约束。
 
 ## `provider.<name>`
 
@@ -66,7 +86,7 @@ Chat 与 Responses 省略 `max_output_tokens` 时沿用上游默认值；原生 
 
 ### 端点与代理
 
-- `base_url` 与 `endpoint_url` 二选一。内置 `openai` 使用 `https://api.openai.com/v1`（Responses 追加 `/responses`；DeepSeek Chat 会在 `https://api.deepseek.com` 或 `/v1` 后追加 `/chat/completions`）。`endpoint_url` 原样保留路径；若模型目录在独立地址，设置 `models_url`。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- `base_url` 与 `endpoint_url` 二选一。Responses 会在 `https://api.openai.com/v1` 这样的基础地址后追加 `/responses`，Chat Completions 会追加 `/chat/completions`。适配器直接使用完整的 `endpoint_url`。若模型目录在独立地址，设置 `models_url`。[OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create)
 - `proxy.mode` 支持 `environment`（默认）、`direct` 或 `explicit`。`explicit` 需填写 `proxy.url`（`http://`、客户端解析 DNS 的 `socks5://` 或代理解析 DNS 的 `socks5h://`）。带认证的代理设置 `proxy.auth.username` 以及 `proxy.auth.password_env` 或 `proxy.auth.password_file`（绝对路径，沿用密钥文件权限校验）。
 
 ### 费率与费用估算
@@ -123,7 +143,7 @@ require_parameters = true
 data_collection = "deny"
 zdr = true
 
-[model.haiku.request.body]
+[model.openrouter."anthropic/claude-haiku-4.5".request.body]
 cache_control = { type = "ephemeral", ttl = "1h" }
 ```
 
@@ -216,7 +236,7 @@ custom = "https://example.com/latest.json"
 
 ## 默认配置示例
 
-初始配置模板见 `crates/kuku/assets/default-config.toml`。
+初始模板包含可选的运行时设置和注释中的连接示例。[初始配置模板](../../../crates/kuku/assets/default-config.toml)
 
 ## 终端偏好
 

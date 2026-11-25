@@ -9,7 +9,7 @@ Use [Testing](testing.md) to select the routine checks. Run the recipes below on
 | Goal | Run `python3 scripts/acceptance/run.py interactive` with these arguments |
 | --- | --- |
 | Focused native smoke | `--binary PATH_TO_BINARY --native-smoke` |
-| Browser handoff | `--archive ARCHIVE --browser` or an asset-enabled `--binary` |
+| Browser handoff for the optional development build | `--binary PATH --browser` with a binary built using `embedded-web-assets` |
 | Upgrade during an active tool | `--archive NEW_ARCHIVE --upgrade-from OLD_ARCHIVE` |
 | Linux desktop and IBus | `--archive ARCHIVE --desktop` |
 | Windows Terminal | `--archive ARCHIVE --desktop --windows-terminal WINDOWS_TERMINAL_EXE` |

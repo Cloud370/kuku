@@ -61,7 +61,7 @@ pub struct PromptCapabilityMetadata {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RequestProvenance {
     pub request_id: String,
-    pub tier: String,
+    pub connection: String,
     pub workspace: String,
     pub platform: String,
     pub current_date: String,
@@ -128,7 +128,7 @@ mod tests {
 
         let provenance = RequestProvenance {
             request_id: "req_1".to_string(),
-            tier: "balanced".to_string(),
+            connection: "work".to_string(),
             workspace: "/workspace".to_string(),
             platform: "linux".to_string(),
             current_date: "2026-05-14".to_string(),
@@ -157,7 +157,7 @@ mod tests {
 
         let super::RequestProvenance {
             request_id,
-            tier,
+            connection,
             workspace,
             platform,
             current_date,
@@ -180,7 +180,7 @@ mod tests {
         } = provenance;
 
         assert_eq!(request_id, "req_1");
-        assert_eq!(tier, "balanced");
+        assert_eq!(connection, "work");
         assert_eq!(workspace, "/workspace");
         assert_eq!(platform, "linux");
         assert_eq!(current_date, "2026-05-14");
@@ -211,7 +211,7 @@ mod tests {
         };
         let provenance = RequestProvenance {
             request_id: "req_1".to_string(),
-            tier: "balanced".to_string(),
+            connection: "work".to_string(),
             workspace: "/workspace".to_string(),
             platform: "linux".to_string(),
             current_date: "2026-05-18".to_string(),
@@ -249,7 +249,7 @@ mod tests {
         // When agent_registry is None, it should be absent from JSON.
         let provenance_none = RequestProvenance {
             request_id: "req_2".to_string(),
-            tier: "strong".to_string(),
+            connection: "other".to_string(),
             workspace: "/ws".to_string(),
             platform: "linux".to_string(),
             current_date: "2026-05-18".to_string(),

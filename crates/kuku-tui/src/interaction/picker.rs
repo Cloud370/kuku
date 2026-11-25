@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use kuku::config::ModelRef;
 
 use crate::app::speed::SpeedAction;
 use crate::app::{App, Modal};
@@ -109,14 +110,15 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return true;
         }
-        let Some(ChoiceKind::ModelRoute { tier, .. }) = picker.selected_choice() else {
+        let Some(ChoiceKind::ModelRoute { model, .. }) = picker.selected_choice() else {
             return true;
         };
+        let route = ModelRef::new(&model.connection, &model.model);
         self.close_picker();
         if action == 'd' {
-            self.save_and_use_model(tier);
+            self.prepare_model_default(Some(route));
         } else {
-            self.open_model_editor(crate::setup::SetupIntent::Edit(tier.name));
+            self.open_model_editor(crate::setup::SetupIntent::Edit(route));
         }
         true
     }

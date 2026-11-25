@@ -71,11 +71,15 @@ def choose_agent_entry(terminal, screen, label):
         terminal.press("\x1b[B" if target > row else "\x1b[A")
 
         def moved():
-            current = terminal.request("screen")["screen"]
-            current_selection = selected(current)
-            return current if current_selection is not None and current_selection != selection else None
+            nonlocal screen
+            screen = terminal.request("screen")["screen"]
+            current_selection = selected(screen)
+            return screen if current_selection is not None and current_selection[0] != row else None
 
-        screen = eventually(f"move the Agent picker selection toward {label}", moved)
+        try:
+            screen = eventually(f"move the Agent picker selection toward {label}", moved)
+        except AssertionError as error:
+            raise AssertionError(f"{error}\nLast terminal screen:\n{screen}") from error
     raise AssertionError(f"Could not select {label} in the Agent picker")
 
 
@@ -85,8 +89,7 @@ def agent_setup(client):
     text = config.read_text(encoding="utf-8")
     text = text.replace('reasoning_efforts = ["none"]',
                         'reasoning_efforts = ["none", "high"]\nservice_tiers = ["flex", "priority"]')
-    text = text.replace('[model.strong]\nprovider = "test-anthropic"\nmodel = "claude-sonnet-4-6"',
-                        '[model.strong]\nprovider = "test-anthropic"\nmodel = "review-model"')
+    text += '\n[model.test-anthropic."review-model"]\nthink = "off"\nmax_output_tokens = 4096\n'
     config.write_text(text, encoding="utf-8")
 
     with client.terminal(workspace) as terminal:
@@ -94,7 +97,7 @@ def agent_setup(client):
         terminal.expect("New session", state="Ready", rows=28)
         terminal.submit("Start the Agent setup check")
         client.provider.next("Start the Agent setup check").text("Ready to create a reviewer.")
-        terminal.expect("Ready to create a reviewer.")
+        terminal.expect("Ready to create a reviewer.", state="Finished")
         terminal.press("/agents\r")
         roster = terminal.expect("Create Agent", state="Switch Agent")["screen"]
         choose_agent_entry(terminal, roster, "Create Agent")
@@ -103,8 +106,8 @@ def agent_setup(client):
         terminal.press("\r")
         review = terminal.expect("› Create Agent", also=("Agent reviewer", "Thinking · None", "Service tier · Default"))["screen"]
         choose_agent_entry(terminal, review, "Model · claude-sonnet-4-6")
-        models = terminal.expect("strong · review-model", state="Agent model")["screen"]
-        choose_agent_entry(terminal, models, "strong · review-model")
+        models = terminal.expect("review-model", state="Agent model", also=("test-anthropic",))["screen"]
+        choose_agent_entry(terminal, models, "review-model")
         review = terminal.expect("Model · review-model", also=("Thinking · None", "Esc Back"))["screen"]
         choose_agent_entry(terminal, review, "Thinking · None")
         thinking = terminal.expect("High", state="Agent thinking")["screen"]
@@ -166,7 +169,7 @@ def composer_actions(client):
 
     def action(terminal, command):
         terminal.press("\x10")
-        terminal.expect("Keyboard shortcuts")
+        terminal.expect("Help and shortcuts")
         terminal.submit(command)
 
     def thinking(terminal):
@@ -176,13 +179,20 @@ def composer_actions(client):
     def position(screen, text):
         return next((row, line.index(text)) for row, line in enumerate(screen.splitlines()) if text in line)
 
+    def reached_builtin_skill(terminal):
+        terminal.press("\x1b[6~")
+        return "›/skill:kuku-docs" in terminal.request("screen")["screen"]
+
     with client.terminal(workspace) as terminal:
         terminal.request("resize", rows=28, cols=60)
         terminal.expect(f"{model} none")
         terminal.press("/")
         terminal.expect("›/new", also=("Actions and Skills",))
+        eventually("the built-in Skill at the end of the action menu", lambda: reached_builtin_skill(terminal))
+        terminal.press("\x1b[B")
+        terminal.expect("›/new")
         terminal.press("\x1b[A")
-        terminal.expect("›/quit")
+        terminal.expect("›/skill:kuku-docs")
         terminal.press("\x1b[B")
         terminal.expect("›/new")
         terminal.press("\x7f")
@@ -194,7 +204,7 @@ def composer_actions(client):
         terminal.press("\t")
         terminal.expect("/model", absent=("Actions and Skills", "/models"))
         terminal.press("\r")
-        models = terminal.expect("Model route", also=("Search models…", "Default ·"))["screen"]
+        models = terminal.expect("Model route", also=("Search models…", "New Sessions default"))["screen"]
         assert position(models, "Model route")[0] == position(models, "Search models…")[0]
         assert position(models, "Model route")[0] < position(models, "Ready")[0]
         screens.append(("Models at 60 columns", models))
@@ -261,7 +271,7 @@ def composer_actions(client):
 
         def saved_default():
             catalog = client.request("GET", "/models").as_json()
-            return next(tier for tier in catalog["tiers"] if tier["name"] == "balanced")["settings"]["reasoning_effort"]
+            return next(item for item in catalog["models"] if item["model"] == model)["settings"]["reasoning_effort"]
 
         eventually("Low persisted as the model default", lambda: saved_default() == "low")
         assert selected("high"), "Saving the default must retain the explicit Agent override"
@@ -278,7 +288,7 @@ def composer_actions(client):
         eventually("turbo applies on the next turn",
                    lambda: (snapshot().get("pending_selection") or {}).get("settings", {}).get("service_tier") == "turbo")
         catalog = client.request("GET", "/models").as_json()
-        capabilities = next(tier for tier in catalog["tiers"] if tier["name"] == "balanced")["capabilities"]
+        capabilities = next(item for item in catalog["models"] if item["model"] == model)["capabilities"]
         assert capabilities["custom_service_tiers"] == {"turbo": "unverified"}, capabilities
 
         terminal.press("\x03")

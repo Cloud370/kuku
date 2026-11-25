@@ -1,3 +1,4 @@
+pub(crate) mod bundle;
 pub(crate) mod catalog;
 pub mod definition;
 pub(crate) mod loader;

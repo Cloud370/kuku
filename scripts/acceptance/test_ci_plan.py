@@ -19,9 +19,18 @@ class CiPlanTests(TestCase):
         self.assertEqual(1, len(jobs))
         self.assertEqual("selected", jobs[0]["installed"])
         cases = jobs[0]["cases"].split(",")
+        self.assertIn("agent-setup", cases)
         self.assertIn("keyboard-queue", cases)
         self.assertIn("statusline", cases)
         self.assertFalse(jobs[0]["web"])
+
+    def test_cli_configuration_pr_exercises_the_installed_headless_contract(self):
+        jobs, _, verify_web = plan("pull_request", paths=("crates/kuku-cli/src/commands/config.rs",))
+        core, = jobs
+        self.assertEqual("selected", core["installed"])
+        self.assertIn("remote-and-script", core["cases"].split(","))
+        self.assertFalse(core["web"])
+        self.assertFalse(verify_web)
 
     def test_web_pr_runs_browser_only_and_checks_frontend_in_the_web_build(self):
         jobs, _, verify_web = plan("pull_request", paths=("apps/web/src/main.ts",))

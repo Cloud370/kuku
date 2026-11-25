@@ -45,7 +45,78 @@ pub(crate) fn build_registry_snapshot(
             builder = builder.load_from_dir(skill_dir, (*tier).into())?;
         }
     }
-    Ok(builder.build())
+    Ok(builder.with_docs().build())
+}
+
+pub(crate) fn docs_loaded_in_turn(
+    events: &[StoredEvent],
+    conversation: &str,
+    turn: u64,
+    version: &str,
+) -> bool {
+    let mut calls = BTreeSet::new();
+    filter_rolled_back_events(events)
+        .iter()
+        .any(|event| match &event.payload {
+            EventPayload::ToolCall {
+                conversation: Some(agent),
+                turn: candidate,
+                tool,
+                tool_call_id,
+                ..
+            } if agent == conversation && *candidate == turn && tool == "use_skill" => {
+                calls.insert(tool_call_id);
+                false
+            }
+            EventPayload::ContextSkills {
+                conversation: agent,
+                turn: candidate,
+                registry,
+                bootstrap_loaded,
+                ..
+            } => {
+                agent == conversation
+                    && *candidate == turn
+                    && registry["docs_bundle"] == version
+                    && bootstrap_loaded
+                        .iter()
+                        .any(|name| name == super::bundle::NAME)
+            }
+            EventPayload::ToolResult {
+                conversation: Some(agent),
+                turn: candidate,
+                tool_call_id,
+                status,
+                truncated: false,
+                structured: Some(result),
+                ..
+            } => {
+                agent == conversation
+                    && *candidate == turn
+                    && status == "ok"
+                    && result["kind"] == "skill_load"
+                    && result["name"] == super::bundle::NAME
+                    && result["version"] == version
+                    && calls.contains(tool_call_id)
+            }
+            EventPayload::Unknown(value) => explicitly_loaded_docs(value, conversation, turn),
+            _ => false,
+        })
+}
+
+fn explicitly_loaded_docs(value: &serde_json::Value, conversation: &str, turn: u64) -> bool {
+    value["kind"] == "runtime.step_prepared"
+        && value["agent"] == conversation
+        && value["turn"] == turn
+        && prepared_input_skills(value).any(|name| name == super::bundle::NAME)
+}
+
+fn prepared_input_skills(value: &serde_json::Value) -> impl Iterator<Item = &str> {
+    value["input_skills"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
 }
 
 pub(crate) fn restore_turn_snapshot(
@@ -123,6 +194,11 @@ pub(crate) fn loaded_skill_names(events: &[StoredEvent], conversation: &str) -> 
                 if let Some(skill_name) = pending_use_skill.get(tool_call_id) {
                     loaded.insert(skill_name.clone());
                 }
+            }
+            EventPayload::Unknown(value)
+                if value["kind"] == "runtime.step_prepared" && value["agent"] == conversation =>
+            {
+                loaded.extend(prepared_input_skills(value).map(str::to_owned));
             }
             _ => {}
         }

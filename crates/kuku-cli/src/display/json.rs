@@ -88,7 +88,7 @@ pub enum OutputLine {
     SessionStarted {
         session_id: String,
         event: String,
-        tier: String,
+        connection: String,
         model: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         previous_input_tokens: Option<u64>,
@@ -97,7 +97,7 @@ pub enum OutputLine {
     SessionCompleted {
         session_id: String,
         event: String,
-        tier: String,
+        connection: String,
         model: String,
         turns: u64,
         input_tokens: u64,
@@ -113,7 +113,7 @@ pub enum OutputLine {
     SessionInterrupted {
         session_id: String,
         event: String,
-        tier: String,
+        connection: String,
         model: String,
         turns: u64,
         input_tokens: u64,
@@ -312,14 +312,14 @@ impl OutputLine {
 
     pub fn session_started(
         session_id: String,
-        tier: String,
+        connection: String,
         model: String,
         previous_input_tokens: Option<u64>,
     ) -> Self {
         OutputLine::SessionStarted {
             session_id,
             event: "started".into(),
-            tier,
+            connection,
             model,
             previous_input_tokens,
         }
@@ -329,7 +329,7 @@ impl OutputLine {
         OutputLine::SessionCompleted {
             session_id: summary.session_id,
             event: "completed".into(),
-            tier: summary.tier,
+            connection: summary.connection,
             model: summary.model,
             turns: summary.turns,
             input_tokens: summary.input_tokens,
@@ -347,7 +347,7 @@ impl OutputLine {
         OutputLine::SessionInterrupted {
             session_id: summary.session_id,
             event: "interrupted".into(),
-            tier: summary.tier,
+            connection: summary.connection,
             model: summary.model,
             turns: summary.turns,
             input_tokens: summary.input_tokens,
@@ -364,7 +364,7 @@ impl OutputLine {
 
 pub struct RunMetrics {
     pub session_id: String,
-    pub tier: String,
+    pub connection: String,
     pub model: String,
     pub turns: u64,
     pub input_tokens: u64,

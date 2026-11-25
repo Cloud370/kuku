@@ -1,3 +1,3 @@
-/docs-translate
-Sync {{TARGET_PATH}} from {{SOURCE_PATH}}.
-Target locale: {{TARGET_LOCALE}}.
+Use the `docs-translate` Skill to follow the repository's translation conventions.
+
+Translate `{{SOURCE_PATH}}` into locale `{{TARGET_LOCALE}}` and save it to `{{TARGET_PATH}}`.

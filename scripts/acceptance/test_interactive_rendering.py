@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 from interactive import wait_restart_and_recover_crash
+from interactive_composer import choose_agent_entry
 from interactive_fixture import InstalledClient, ProviderCall, Terminal, TOOL_OUTPUT, run_cases
 from interactive_fixture import (
     has_standalone_assistant_rail, page_up_after_rendered_resize, rendered_running_transcript,
@@ -19,6 +20,20 @@ from interactive_rendering import (
 
 
 class AcceptanceCaseTests(unittest.TestCase):
+    def test_agent_picker_ignores_activity_repaint_until_selection_moves(self):
+        terminal = Mock()
+        terminal.request.side_effect = [
+            {"screen": "› main · Finished · Current\n  Create Agent"},
+            {"screen": "  main · Finished · Current\n› Create Agent"},
+        ]
+
+        with patch("interactive_composer.os") as operating_system:
+            operating_system.name = "nt"
+            choose_agent_entry(terminal, "› main · Running · Current\n  Create Agent", "Create Agent")
+
+        presses = [invocation.args[0] for invocation in terminal.press.call_args_list]
+        self.assertEqual(["\x1b[B", "\r"], presses)
+
     def test_failed_case_does_not_hide_later_cases_or_turn_into_success(self):
         calls = []
 

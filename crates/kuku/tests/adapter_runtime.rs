@@ -198,10 +198,12 @@ fn options(
     );
     assert!(std::env::var_os(&absent).is_none());
     config.providers.get_mut("openai").unwrap().api_key = kuku::config::ApiKey::Env(absent);
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "external-model".into();
-    tier.think = kuku::config::ThinkLevel::Off;
+    let model_settings = common::set_test_model(&mut config, "openai", "external-model");
+    model_settings.think = kuku::config::ThinkLevel::Off;
+    let child_settings = model_settings.clone();
+    config
+        .models
+        .insert(kuku::ModelRef::new("openai", "child-model"), child_settings);
     let mut options = SessionOptions::new(workspace, data, config);
     options.model_adapter = Some(model);
     options.tools.push(tool);
@@ -254,10 +256,8 @@ async fn optional_output_limit_is_omitted_from_ordinary_provider_requests() {
         provider.format = protocol;
         provider.base_url = base_url.into();
         provider.options = Default::default();
-        let tier = config.tiers.get_mut("balanced").unwrap();
-        tier.provider = "openai".into();
-        tier.model = model_id.into();
-        tier.max_output_tokens = None;
+        let model_settings = common::set_test_model(&mut config, "openai", model_id);
+        model_settings.max_output_tokens = None;
         let mut options = SessionOptions::new(workspace.path(), data.path(), config);
         options.model_adapter = Some(model.clone());
         let session = Session::open(options).await.unwrap();
@@ -493,7 +493,7 @@ async fn external_model_and_tool_use_final_selection_authority_and_durable_bound
             "child",
             AgentConfig {
                 model: Some("child-model".into()),
-                tier: Some("balanced".into()),
+                connection: Some("openai".into()),
                 max_output_tokens: Some(65536),
                 tools: Some(Vec::new()),
                 no_agents: true,

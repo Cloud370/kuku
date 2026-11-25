@@ -12,12 +12,15 @@ use crate::session::{global_memory_path, project_memory_path};
 
 use super::types::{PendingRun, PermissionChoice, PermissionRequest};
 
-pub(super) fn is_inline_skill_tool(name: &str) -> bool {
-    matches!(name, "list_skills" | "search_skills" | "use_skill")
+pub(super) fn is_skill_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "list_skills" | "search_skills" | "use_skill" | crate::skill::bundle::resources::TOOL_NAME
+    )
 }
 
 pub(super) fn resolved_tool_available(pending: &PendingRun, name: &str) -> bool {
-    if is_inline_skill_tool(name) && pending.query.disable_skills {
+    if is_skill_tool(name) && pending.query.disable_skills {
         return false;
     }
     if let Some(resolved) = pending.resolved.as_ref() {
@@ -140,6 +143,11 @@ pub(super) fn display_summary(
             .and_then(|v| v.as_str())
             .unwrap_or("search skills")
             .to_string(),
+        crate::skill::bundle::resources::TOOL_NAME => {
+            let action = args["action"].as_str().unwrap_or("access");
+            let path = args["path"].as_str().unwrap_or("references/docs");
+            format!("{action} {path}")
+        }
         "remember_memory" | "forget_memory" => args
             .get("text")
             .and_then(|v| v.as_str())

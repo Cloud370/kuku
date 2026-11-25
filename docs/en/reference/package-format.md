@@ -63,7 +63,7 @@ command = "hooks/audit-tool.sh"
 
 **Implemented events**: `session.start`, `session.end`, `tool.pre_execute`, `tool.post_execute`, `model.pre_request`, `model.post_response`.
 
-**Matcher syntax**: operators `==`, `!=`, `contains`, `&&`, `||`. Common variables: `event`, `tool_name`, `tool_call_id`, `args.<field>`, `status`, `summary`, `tier`, `text`, `stop_reason`.
+Matchers use the operators `==`, `!=`, `contains`, `&&`, and `||`. Common variables include `event`, `tool_name`, `tool_call_id`, `args.<field>`, `status`, `summary`, `text`, and `stop_reason`.
 
 ## Hook protocol
 

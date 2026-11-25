@@ -9,7 +9,7 @@
 | 目标 | 运行 `python3 scripts/acceptance/run.py interactive` 时附加的参数 |
 | --- | --- |
 | 原生终端冒烟 | `--binary PATH_TO_BINARY --native-smoke` |
-| 浏览器交接 | `--archive ARCHIVE --browser`，也可用内嵌 Web 资源的 `--binary` |
+| 可选开发构建的浏览器交接 | `--binary PATH --browser`，使用通过 `embedded-web-assets` 构建的二进制 |
 | 工具执行期间升级 | `--archive NEW_ARCHIVE --upgrade-from OLD_ARCHIVE` |
 | Linux 桌面和 IBus | `--archive ARCHIVE --desktop` |
 | Windows Terminal | `--archive ARCHIVE --desktop --windows-terminal WINDOWS_TERMINAL_EXE` |

@@ -63,7 +63,7 @@ command = "hooks/audit-tool.sh"
 
 **已实现事件**：`session.start`、`session.end`、`tool.pre_execute`、`tool.post_execute`、`model.pre_request`、`model.post_response`。
 
-**Matcher 语法**：支持运算符 `==`、`!=`、`contains`、`&&`、`||`；常用变量包括 `event`、`tool_name`、`tool_call_id`、`args.<field>`、`status`、`summary`、`tier`、`text`、`stop_reason`。
+Matcher 支持运算符 `==`、`!=`、`contains`、`&&` 和 `||`。常用变量包括 `event`、`tool_name`、`tool_call_id`、`args.<field>`、`status`、`summary`、`text` 和 `stop_reason`。
 
 ## Hook 协议
 

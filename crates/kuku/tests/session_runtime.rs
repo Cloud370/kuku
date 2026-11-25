@@ -30,9 +30,8 @@ fn options(
 ) -> SessionOptions {
     let mut config = common::test_config();
     config.providers.get_mut("openai").unwrap().base_url = server.url("");
-    config.tiers.get_mut("balanced").unwrap().provider = "openai".into();
-    config.tiers.get_mut("balanced").unwrap().model = "runtime-test".into();
-    config.tiers.get_mut("balanced").unwrap().think = kuku::config::ThinkLevel::Off;
+    common::set_test_model(&mut config, "openai", "runtime-test").think =
+        kuku::config::ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
     SessionOptions::new(workspace, data, config)
@@ -208,8 +207,8 @@ async fn provider_measurements_are_request_bound_and_replay_per_agent() {
     let mut original = options(&server, workspace.path(), data.path());
     original
         .config
-        .tiers
-        .get_mut("balanced")
+        .models
+        .get_mut(&original.config.default_model)
         .unwrap()
         .context_window = 100_000;
     let mut fixtures = Vec::new();
@@ -226,6 +225,10 @@ async fn provider_measurements_are_request_bound_and_replay_per_agent() {
         ("output-only", json!({"completion_tokens": 30})),
         ("input-only", json!({"prompt_tokens": 20_000})),
     ] {
+        original.config.models.insert(
+            kuku::ModelRef::new("openai", model),
+            original.config.models[&original.config.default_model].clone(),
+        );
         let expected_body = json!({"model": model}).to_string();
         let body = common::openai_sse_response(json!({
             "id": "usage-fixture", "model": model, "usage": usage,
@@ -251,6 +254,7 @@ async fn provider_measurements_are_request_bound_and_replay_per_agent() {
                 &format!("create:{agent}"),
                 agent,
                 AgentConfig {
+                    connection: Some("openai".into()),
                     model: Some(model.into()),
                     ..AgentConfig::default()
                 },
@@ -283,6 +287,7 @@ async fn provider_measurements_are_request_bound_and_replay_per_agent() {
             "new-route",
             "main",
             AgentConfig {
+                connection: Some("openai".into()),
                 model: Some("input-only".into()),
                 ..AgentConfig::default()
             },
@@ -828,7 +833,7 @@ async fn request_limit_is_shared_across_agents_and_turns_and_resets_on_reopen() 
 }
 
 #[tokio::test]
-async fn presets_select_the_final_tools_and_explicit_model_overrides_tier_defaults() {
+async fn presets_select_the_final_tools_and_accept_an_explicit_model_pair() {
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -845,6 +850,12 @@ async fn presets_select_the_final_tools_and_explicit_model_overrides_tier_defaul
                 .body(response(json!({"content":"read only"}), "stop"));
         })
         .await;
+    for model in ["explore", "explicit"] {
+        config.config.models.insert(
+            kuku::ModelRef::new("openai", model),
+            config.config.models[&config.config.default_model].clone(),
+        );
+    }
     let session = Session::open(config).await.unwrap();
     for (address, tools) in [
         ("explore", None),
@@ -856,7 +867,7 @@ async fn presets_select_the_final_tools_and_explicit_model_overrides_tier_defaul
                 address,
                 AgentConfig {
                     preset: Some("explore".into()),
-                    tier: Some("balanced".into()),
+                    connection: Some("openai".into()),
                     model: Some(address.into()),
                     tools,
                     no_skills: true,

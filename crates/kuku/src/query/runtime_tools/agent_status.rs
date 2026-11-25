@@ -54,6 +54,9 @@ fn last_request(events: &[StoredEvent], address: &str, turn: u64) -> Option<Valu
             Some("runtime.step_prepared") => {
                 let request_id = fact["request_id"].as_str()?;
                 let mut result = json!({"model": fact["model"].as_str()?});
+                if let Some(connection) = fact["connection"].as_str() {
+                    result["connection"] = connection.into();
+                }
                 if let Some(tier) = fact["settings"]["service_tier"].as_str() {
                     result["requested_service_tier"] = tier.into();
                 }

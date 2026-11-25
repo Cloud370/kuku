@@ -187,12 +187,12 @@ pub enum Action {
 /// A service-validated plan for setting a resolved model route as the default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelDefaultPlan {
-    /// Existing tier to select as default, or `user-default` for a fallback edit.
-    pub tier: String,
-    /// Whether the client must create or replace the ordinary `user-default` tier.
-    pub overwrite_user_default: bool,
     /// SHA-256 of the exact active configuration bytes validated by the service.
     pub config_sha256: String,
+    /// The selected model is already the effective default.
+    pub already_default: bool,
+    /// Old implicitly registered model to preserve when writing a new default.
+    pub register_previous_default: Option<kuku::config::ModelRef>,
 }
 
 /// A durable receipt and its command's currently known disposition.
@@ -260,6 +260,8 @@ pub struct AgentSettlement {
     pub output: Option<String>,
     /// Failure text or a bounded excerpt, according to observation scope.
     pub error: Option<String>,
+    /// Measurements recorded for this Turn, when the observation includes its full settlement.
+    pub usage: Option<crate::UsageTotals>,
 }
 
 /// Latest identifiable phase from an Agent's durable execution or live provider activity.
@@ -423,6 +425,8 @@ pub struct RetryMetadata {
 pub struct Snapshot {
     /// Stable Session identity.
     pub session_id: String,
+    /// Default paired connection and model captured when this Session was created.
+    pub session_default_model: Option<kuku::config::ModelRef>,
     /// Canonical workspace on the service machine.
     pub workspace: PathBuf,
     /// Last durable Session event included in this state.

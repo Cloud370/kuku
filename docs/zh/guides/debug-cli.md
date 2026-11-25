@@ -1,5 +1,15 @@
 # 排查 CLI 运行
 
+## 核对运行所用的配置
+
+```bash
+kuku config validate
+kuku server status
+kuku config show --json
+```
+
+将配置结果中的 `path` 和 `service.state` 与运行中的服务对照。文件校验为 `valid` 时，仍可能有待重载，或与服务使用的路径不同。沿用任务的 `--data-dir`，显式指定过文件时也沿用 `--config`。[CLI 配置命令](../reference/cli.md#kuku-config)
+
 ## 查看 Agent 快照与事件
 
 在同一工作区里把 `SESSION_ID` 和 `reviewer` 替换成实际值：
@@ -10,7 +20,7 @@ kuku show SESSION_ID --agent reviewer --json
 kuku events SESSION_ID --kind runtime.step_prepared --limit 20 --json
 ```
 
-`kuku show --json` 返回该 Agent 已落盘的状态、最近回复、累计用量以及待决问题/授权（`config` 只含该 Agent 的显式覆盖项，沿用默认值的字段为 `null`）。`kuku events` 会把下一页游标打印到 `stderr`。排查时先看 `runtime.step_prepared` 确认请求实际命中的连接、模型和参数，再按 Agent、Turn 和请求/调用 ID 对照 `model.response`、`tool.call` 与 `tool.result`。[事件参考](../reference/events.md)
+`kuku run --json` 和 `--stream-json` 的末行给出运行结果。拿到 Session ID 后，可查 Agent 的持久快照，包括最近回复、累计用量和待决问题或授权。其中的 `config` 描述 Agent 请求的覆盖设置。先通过 `runtime.step_prepared` 核对实际连接、精确模型 ID 和请求设置，再按 Agent、Turn 和请求或调用 ID 对照 `model.response`、`tool.call` 与 `tool.result`。`kuku events` 将翻页游标写往 stderr。[事件参考](../reference/events.md)
 
 ## 核对模型用量
 

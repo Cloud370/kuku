@@ -225,7 +225,7 @@ def targeted_delegation(client):
         create = client.provider.next(prompt)
         schema = next(tool["input_schema"] for tool in create.request["tools"]
                       if tool["name"] == "create_agent")
-        assert set(schema["properties"]) == {"address", "instructions", "tools", "tier", "preset", "workspace",
+        assert set(schema["properties"]) == {"address", "instructions", "tools", "connection", "model", "preset", "workspace",
                                             "reasoning_effort", "service_tier"}
         create.tool("create_agent", "create-writer", address="writer", tools=[])
         client.provider.next("create-writer").tool("send_message", "dispatch", to="writer", message=task)
@@ -250,7 +250,7 @@ def targeted_delegation(client):
         content = tool["content"]
         reply, = json.loads(content if isinstance(content, str) else content[0]["text"])
         assert reply == {"address": "writer", "status": "idle", "last_output": result,
-                         "last_request": {"model": child.request["model"]}}, reply
+                         "last_request": {"connection": "test-anthropic", "model": child.request["model"]}}, reply
         timeline = terminal.expect("Timeline · 3 calls", also=("Finished · Proof of delivery",))["screen"]
         terminal.click_text(timeline, "Timeline")
         checked = terminal.expect("Agent check · writer (Idle, reply available)")["screen"]

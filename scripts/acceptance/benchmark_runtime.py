@@ -53,7 +53,8 @@ def prepare_benchmark_agent(args, case, source, attempt, record):
     record["session_id"] = "benchmark-" + uuid4().hex[:12]
     command += ["--workspace", case["workspace"], "--prompt-file", "/kuku/instruction.md",
                 "--config", config, "--data-dir", "/kuku/data", "--session-id", record["session_id"],
-                "--agent", "main", "--connection", args.connection, "--output", "/logs/agent/result.json", *args.sdk_args]
+                "--agent", "main", "--connection", args.connection, "--model", args.model,
+                "--output", "/logs/agent/result.json", *args.sdk_args]
     mount = ["--mount", f"type=bind,source={instruction_path},target=/kuku/instruction.md,readonly"]
     return command, mount, config
 

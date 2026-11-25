@@ -2,13 +2,13 @@
 
 ## 配置文件位置
 
-kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读取 `$KUKU_HOME/config.toml`。
+运行 `kuku config show` 查看选中的配置，凭据会脱敏。运行 `kuku config validate` 查看绝对路径、诊断结果，以及本地服务是否已加载该版本。[CLI 参考](../reference/cli.md#kuku-config)说明路径选择顺序，也可用 `--config PATH` 指定其他文件。
 
-用 `--config PATH` 可以临时指定配置文件，运行 `kuku server status` 可查看本地服务当前生效的路径。如果受管服务已经在跑，等它空闲后运行 `kuku server restart --config PATH` 即可切换配置。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
+运行 `kuku server status` 可查看本地服务当前生效的路径。要切换受管服务的配置文件，等它空闲后运行 `kuku server restart --config PATH`。[文件布局](../reference/file-layout.md) · [运行服务](../guides/run-the-server.md)
 
 ## 交互式配置
 
-当配置缺失、为空，或者默认模型的凭据不可用时，运行 `kuku` 会在欢迎页引导你通过 `/model` 配好第一条线路；也可以直接在终端运行 `kuku init` 进入同一向导。向导不会覆盖已有配置，遇到格式错误的配置文件只会报错而保留原文件。
+在项目目录运行 `kuku`，配置第一个连接和模型。设置页按 `F1` 可打开与构建版本对应的配置指南。若 kuku 报告配置文件格式错误，请修正对应文件或用 `--config PATH` 选择其他配置。
 
 向导提供两种方式：
 
@@ -17,11 +17,15 @@ kuku 默认读取 `~/.kuku/config.toml`；如果设置了 `KUKU_HOME`，则读�
 
 ChatGPT 设置读取所选账号的模型目录。可以在 **Settings** 里手动发起生成测试。
 
-在模型列表里可以直接打字搜索、按 `Space` 多选、`Enter` 确认。试跑结果可以在 **Model tests** 里逐项查看，也可以进 **Settings** 调整思考档位、输出上限、能力标记与费率。想确认工具调用是否正常，点 **Settings → Test tools** 测一次合成工具调用——能正常回文本不代表支持工具调用；如果某条 Chat 线路需要走 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测再保存。
+首次配置时在模型列表里搜索并保存一个精确的模型 ID。试跑结果可在 **Model tests** 里查看，也可以进 **Settings** 调整思考强度、输出上限、能力标记与费率。通过 **Settings → Test tools** 检查工具调用。若某条 Chat 线路需要 Responses 才能调用工具，可在 **Settings → API type → Responses** 切换并重测。
 
 选择自定义连接、已有连接或预设。使用 API Key 时，填写供应商 URL、网络路径和密钥。自定义连接以 URL 的域名和非默认端口命名。同一域名和端口下的连接会用编号区分。已有连接和预设沿用其协议，标准请求 URL 可直接识别。选择模型后，新自定义 Base URL 会并发验证候选协议。优先使用 Responses，确认上游不支持时依次尝试采用 Chat Completions、Messages 的结果。无法确定时会显示 API 类型选项。网络可选择跟随代理环境变量、直连，或使用 HTTP、SOCKS5、SOCKS5H。裸域名有多个标准候选路径时，设置会并发查询，逐条显示进度和结果，找到可用目录就自动打开模型列表。目录无法读取时，可以直接填写已知的模型 ID。
 
-在 Session 里随时可以输入 `/model` 或按 `Ctrl+L` 添加/修改连接，选择 **Use in this Session** 切换当前 Agent 的线路，或 **Set as default** 存为新 Session 的默认线路。[终端控制](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
+稍后可以打开 `/model`，选择 **Add model or connection** 添加模型。选中已有模型再按 `e` 可修改设置。
+
+## 选择模型
+
+在 `/model` 里选中连接和模型，按 Enter 可切换当前 Agent。要改新 Session 的默认值，选中模型后按 `d`，再确认配置变更。这两项可独立设置。[终端操作](../reference/cli.md#斜杠命令) · [配置参考](../reference/config.md)
 
 保存没有配置思考档位的模型时，若支持 `medium`，设置优先选它。其余情况取已知顺序中间偏低的一档、唯一可用的档位，或在档位顺序未知时采用有效的上游声明默认值。能力信息不足时跟随供应商默认。手动设置优先。
 
@@ -29,18 +33,13 @@ ChatGPT 设置读取所选账号的模型目录。可以在 **Settings** 里手�
 
 ## Provider 与凭据
 
-默认配置包含两个 Provider：
+设置时可选择输入密钥或使用环境变量。填写自己设置的变量名，例如 `MY_GATEWAY_KEY`，配置会写入 `api_key = "$MY_GATEWAY_KEY"`。如果粘贴了密钥，kuku 会将其存入数据目录下的 `credentials/`，以仅所有者可读的明文文件保存，并在 TOML 里记录 `file:` 路径。[环境变量](../reference/environment-variables.md) · [文件布局](../reference/file-layout.md)
 
-- `provider.anthropic`：`api_key = "$ANTHROPIC_API_KEY"`
-- `provider.openai`：`api_key = "$OPENAI_API_KEY"`
-
-密钥推荐使用环境变量引用（`api_key = "$VARIABLE_NAME"`）或独立密钥文件（`api_key = "file:<绝对路径>"`）。在交互向导里粘贴的密钥会以仅所有者可读的明文文件存到 `$KUKU_HOME/credentials/`，TOML 里只写 `file:` 路径；文件未加密。[配置参考](../reference/config.md) · [文件布局](../reference/file-layout.md)
-
-环境变量由服务端进程读取，而不是终端客户端。如果本地服务启动后你才在终端里改了环境变量，等服务空闲后运行 `kuku server restart` 才会生效；连远程服务时请在服务端机器上配置密钥。`config.toml` 里其他字符串字段同样支持在加载时展开 `$ENV_VAR_NAME`（例如 `base_url = "$KUKU_ANTHROPIC_BASE_URL"`）。
+手写配置可以从[单模型 TOML 示例](../reference/config.md#最小配置)开始。请在运行服务的主机上设置引用的环境变量。本地服务启动后改了环境变量时，等它空闲后运行 `kuku server restart`。
 
 ### 在无头主机登录订阅
 
-在 `kuku init` 或 `/model` 的 **Add model** 中选择 **Preset · ChatGPT subscription**。选择网络模式，可选填账号别名。在自己的浏览器打开 **Open authorization link**，或用 **Ctrl+Y** 复制分隔线之间的完整授权地址。授权后，把地址栏里的回调 URL 粘贴到 kuku。如果浏览器无法连接回调页面，从错误页的地址栏复制。回调输入提示会显示光标，粘贴的 URL 不回显。OpenAI 拒绝授权码时，请使用 kuku 显示的新授权链接。登录后账号会保存，设置界面随即查询该账号的模型。
+在首次配置或 `/model` 中添加连接，选择 **Preset · ChatGPT subscription**。选择网络模式，可选填账号别名。在自己的浏览器打开 **Open authorization link**，或用 **Ctrl+Y** 复制分隔线之间的完整授权地址。授权后，把地址栏里的回调 URL 粘贴到 kuku。如果浏览器无法连接回调页面，从错误页的地址栏复制。回调输入提示会显示光标，粘贴的 URL 不回显。OpenAI 拒绝授权码时，请使用 kuku 显示的新授权链接。登录后账号会保存，设置界面随即查询该账号的模型。
 
 也可以在运行 kuku 的主机上执行 `kuku auth login chatgpt [名称]`。省略名称时，登录会保存 `chatgpt` 或 `chatgpt-2` 这样的短连接名。重新授权时可以使用已保存的连接名或账号别名。
 
@@ -58,17 +57,16 @@ ChatGPT 的方案和应用额度可在[管理用量](https://chatgpt.com/setting
 
 远程或 token 认证的服务需要在服务端修复凭据并重启，TUI 不会为这类连接写本地密钥文件。
 
-## 模型档（Tier）
-
-命名 Tier 把连接、模型、思考档位和 token 限额打包在一起（例如 `strong`、`balanced`、`light`）。`default_model = "balanced"` 指定默认档；运行时可以用 `--tier <name>` 切档，或用 `--connection <name> --model <model-id>` 精确指定线路。
-
 ## 常用配置命令
 
 ```bash
 kuku config show
 kuku config validate
-kuku config set model.balanced.think high
+kuku config models
+kuku config models --discover --connection work
 ```
+
+把 `work` 换成已配置的连接名。从脚本创建或修改配置的示例见[运行任务](../guides/run-a-task.md)。
 
 ## 其他配置分区
 

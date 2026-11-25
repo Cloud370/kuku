@@ -96,7 +96,10 @@ pub struct AgentDefinition {
     pub name: String,
     pub description: String,
     pub instructions: String,
-    pub tier: String,
+    /// Preset's named connection. Set with the exact model ID.
+    pub connection: Option<String>,
+    /// Preset's exact model ID. Set with the connection name.
+    pub model: Option<String>,
     pub tool_profile: ToolProfile,
     #[serde(default)]
     pub tools: Option<Vec<String>>,
@@ -113,11 +116,12 @@ impl AgentDefinition {
     pub fn compute_hash(&self) -> String {
         use sha2::{Digest, Sha256};
         let canonical = format!(
-            "{}|{}|{}|{}|{}|{}|{:?}",
+            "{}|{}|{}|{:?}|{:?}|{}|{}|{:?}",
             self.name,
             self.description,
             self.instructions,
-            self.tier,
+            self.connection,
+            self.model,
             self.tool_profile.as_str(),
             self.max_turns,
             self.tools,

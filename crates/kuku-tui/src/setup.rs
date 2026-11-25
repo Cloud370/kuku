@@ -17,8 +17,9 @@ use std::io;
 use kuku::config::{ProviderFormat, ProviderProfile, SubscriptionChannel};
 use kuku_client::ConnectionOptions;
 
+pub(crate) use config::{model_entry, set_default_model};
 pub(crate) use editor::{
-    ModelEditor, ModelEditorAction, SavedModelSetting, ThinkingDefaults, ThinkingSaveTarget,
+    ModelEditor, ModelEditorAction, ThinkingDefaults, ThinkingSaveTarget, ThinkingSetting,
     save_setting, thinking_defaults,
 };
 pub(crate) use repair::{CredentialRepair, CredentialRepairAction};
@@ -35,7 +36,6 @@ pub use subscription::SubscriptionSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupMode {
-    Init,
     FirstRun,
     Session,
 }
@@ -96,15 +96,6 @@ impl ProviderPreset {
         }
     }
 
-    pub(crate) fn default_env(self) -> &'static str {
-        match self {
-            Self::Anthropic => "ANTHROPIC_API_KEY",
-            Self::OpenAi => "OPENAI_API_KEY",
-            Self::DeepSeek => "DEEPSEEK_API_KEY",
-            Self::OpenRouter => "OPENROUTER_API_KEY",
-        }
-    }
-
     pub(crate) fn format(self) -> ProviderFormat {
         match self {
             Self::Anthropic => ProviderFormat::Anthropic,
@@ -148,44 +139,6 @@ pub(crate) async fn first_run_required(options: ConnectionOptions) -> io::Result
         .is_some())
 }
 
-pub(crate) async fn run(options: ConnectionOptions) -> io::Result<bool> {
-    let mut settings = config::Settings::load(options).await?;
-    let mut state = state::SetupState::new(&settings);
-    let finish = loop {
-        let finish = ui::run(&mut settings, &mut state, SetupMode::Init).await?;
-        if finish == Finish::Cancel {
-            if state.subscription_saved {
-                println!("ChatGPT account saved. Model setup canceled.");
-            } else {
-                println!("Setup canceled.");
-            }
-            return Ok(false);
-        }
-        match config::save(&settings, &state) {
-            Ok(_) => break finish,
-            Err(error) => state.problem = Some(error.to_string()),
-        }
-        state.finish = None;
-    };
-    println!("Saved settings to {}.", settings.config_path.display());
-    match state.credential_source {
-        _ if state.subscription.is_some() => {}
-        CredentialSource::Environment => {
-            if let Some(name) = state
-                .environment_name()
-                .filter(|_| !state.environment_set())
-            {
-                println!("Set {name} in the shell that launches kuku.");
-            }
-        }
-        CredentialSource::StoredKey => println!(
-            "Saved locally as plaintext, not encrypted, under {}.",
-            settings.credentials_dir.display()
-        ),
-    }
-    Ok(finish == Finish::SaveAndContinue)
-}
-
 async fn first_run_service_is_idle(options: &ConnectionOptions) -> bool {
     let Ok(service) = options.local_service() else {
         return false;
@@ -203,26 +156,6 @@ pub(super) fn should_offer_setup(
 
 pub(super) fn service_is_idle(status: Result<bool, ()>) -> bool {
     matches!(status, Ok(false))
-}
-
-pub(crate) fn validate_entry(
-    options: &ConnectionOptions,
-    terminal: bool,
-    guidance: &str,
-) -> io::Result<()> {
-    if !terminal {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("{guidance} No files were changed."),
-        ));
-    }
-    if options.remote.is_some() || options.token.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Provider settings are local-only; omit --remote and --token.",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

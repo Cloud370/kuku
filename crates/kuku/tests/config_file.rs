@@ -1,64 +1,9 @@
-mod config {
-    pub use kuku::config::{
-        ApiKey, Config, CustomServiceTier, MediaAdapterSupport, ModelCapabilityDeclaration,
-        ModelCapabilityEntry, ModelThinkingTest, ProtocolCapabilityDeclaration, ProviderConfig,
-        ProviderFormat, ProviderOptions, ProviderProfile, RequestFields, RequestedOutput,
-        ResolvedThinking, SubscriptionChannel, ThinkLevel, TierConfig, load_and_patch_config,
-        load_config, resolve_request_url,
-    };
-}
-
-mod context {
-    pub use kuku::context::{CanonicalMessage, ContextAssembly};
-}
-
-mod prompt {
-    pub use kuku::prompt::PromptCatalog;
-}
-
-mod error {
-    pub use kuku::{Error, Result};
-}
-
-mod provider {
-    #[allow(
-        dead_code,
-        reason = "this target includes the production modules to exercise the configuration boundary"
-    )]
-    pub mod types {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/provider/types.rs"
-        ));
-    }
-
-    #[allow(
-        dead_code,
-        reason = "this target includes the production modules to exercise the configuration boundary"
-    )]
-    pub mod capabilities {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/provider/capabilities.rs"
-        ));
-    }
-
-    #[allow(
-        dead_code,
-        reason = "this target includes the production modules to exercise the configuration boundary"
-    )]
-    pub mod config {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/provider/config.rs"
-        ));
-    }
-}
-
 mod common;
 
-use config::{ApiKey, Config, ThinkLevel, load_config};
-use provider::config::{ResolveConfigInput, resolve_config};
+use kuku::config::{
+    ApiKey, Config, ModelConfig, ModelRef, ProviderFormat, ThinkLevel, load_and_patch_config,
+    load_config, parse_config_text_with_env,
+};
 
 fn config_from_toml(toml: &str) -> Config {
     let dir = tempfile::tempdir().unwrap();
@@ -70,29 +15,18 @@ fn config_from_toml(toml: &str) -> Config {
 
 fn minimal_valid_toml() -> &'static str {
     r#"
-default_model = "balanced"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-think = "high"
-context_window = 200000
-max_output_tokens = 64000
-purpose = "deep reasoning"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+[model.anthropic."claude-sonnet-4-6"]
 think = "medium"
 context_window = 200000
 max_output_tokens = 48000
 
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."claude-haiku-4-5-20251001"]
 think = "off"
 context_window = 200000
 max_output_tokens = 32000
+purpose = "low-latency review"
 
 [provider.anthropic]
 format = "anthropic"
@@ -105,22 +39,20 @@ api_key = "sk-ant-123"
 fn full_config_round_trip() {
     let cfg = config_from_toml(minimal_valid_toml());
 
-    assert_eq!(cfg.default_tier(), "balanced");
-    let strong = cfg.tier("strong").unwrap();
-    assert_eq!(strong.provider, "anthropic");
-    assert_eq!(strong.model, "claude-sonnet-4-6");
-    assert_eq!(strong.think, ThinkLevel::High);
-    assert_eq!(strong.context_window, 200_000);
-    assert_eq!(Some(64_000), strong.max_output_tokens);
-    assert_eq!(strong.purpose, "deep reasoning");
+    assert_eq!(
+        cfg.default_model(),
+        &ModelRef::new("anthropic", "claude-sonnet-4-6")
+    );
+    let default = cfg.model(cfg.default_model()).unwrap();
+    assert_eq!(default.think, ThinkLevel::Medium);
+    assert_eq!(Some(48_000), default.max_output_tokens);
 
-    let balanced = cfg.tier("balanced").unwrap();
-    assert_eq!(balanced.think, ThinkLevel::Medium);
-    assert_eq!(Some(48_000), balanced.max_output_tokens);
-
-    let light = cfg.tier("light").unwrap();
-    assert_eq!(light.think, ThinkLevel::Off);
-    assert_eq!(Some(32_000), light.max_output_tokens);
+    let review = cfg
+        .model(&ModelRef::new("anthropic", "claude-haiku-4-5-20251001"))
+        .unwrap();
+    assert_eq!(review.think, ThinkLevel::Off);
+    assert_eq!(Some(32_000), review.max_output_tokens);
+    assert_eq!("low-latency review", review.purpose);
 
     assert_eq!(
         cfg.provider("anthropic").unwrap().format.as_str(),
@@ -134,34 +66,47 @@ fn full_config_round_trip() {
 }
 
 #[test]
-fn generated_messages_presets_supply_the_required_output_limit() {
-    let cfg = config_from_toml(kuku::config::generate_default());
-    for (tier, limit) in [
-        ("strong", 128_000),
-        ("balanced", 128_000),
-        ("light", 64_000),
-    ] {
-        let selection = kuku::adapter::inspect_model(
-            &cfg,
-            &kuku::AgentConfig {
-                tier: Some(tier.into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(Some(limit), cfg.tier(tier).unwrap().max_output_tokens);
-        assert_eq!(Some(limit), selection.max_output_tokens);
-    }
+fn the_default_pair_is_registered_without_a_model_table() {
+    let cfg = config_from_toml(
+        r#"
+default_model = { connection = "work", model = "model.with.version" }
+[provider.work]
+format = "openai-responses"
+base_url = "https://gateway.example/v1"
+api_key = "$UNUSED_FIXTURE_KEY"
+"#,
+    );
+    assert_eq!(
+        &ModelRef::new("work", "model.with.version"),
+        cfg.default_model()
+    );
+    assert_eq!(cfg.models.len(), 1);
+    assert_eq!(
+        &ModelConfig::default(),
+        cfg.model(cfg.default_model()).unwrap()
+    );
 }
 
 #[test]
-fn missing_optional_tier_keeps_a_valid_default() {
-    let text = minimal_valid_toml();
-    let start = text.find("[model.strong]").unwrap();
-    let end = text.find("[model.balanced]").unwrap();
-    let config = config_from_toml(&format!("{}{}", &text[..start], &text[end..]));
-    assert_eq!("balanced", config.default_tier());
-    assert!(config.tier("strong").is_none());
+fn legacy_named_tier_toml_identifies_the_replacement() {
+    let error = kuku::config::parse_config_text(
+        r#"
+default_model = "balanced"
+[model.balanced]
+provider = "work"
+model = "fixture"
+"#,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, kuku::Error::ConfigField { ref field, .. } if field == "default_model")
+    );
+    assert!(error.to_string().contains("connection ="));
+    assert!(
+        error
+            .to_string()
+            .contains("named model tiers were replaced")
+    );
 }
 
 #[test]
@@ -171,18 +116,10 @@ fn invalid_think_level_is_rejected() {
     std::fs::write(
         &path,
         r#"
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
+
+[model.anthropic."claude-sonnet-4-6"]
 think = "extreme"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
 
 [provider.anthropic]
 format = "anthropic"
@@ -193,7 +130,10 @@ api_key = "sk-ant-123"
     .unwrap();
     let file = load_config(&path).unwrap();
     let err = file.resolve().unwrap_err();
-    assert!(err.to_string().contains("think 'extreme' is invalid"));
+    assert!(
+        err.to_string()
+            .contains(".think: value \"extreme\" must be")
+    );
 }
 
 #[test]
@@ -203,17 +143,7 @@ fn api_key_env_ref_resolves() {
     std::fs::write(
         &path,
         r#"
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
 [provider.anthropic]
 format = "anthropic"
@@ -247,17 +177,7 @@ fn base_url_env_ref_resolves() {
     std::fs::write(
         &path,
         r#"
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
 [provider.anthropic]
 format = "anthropic"
@@ -292,17 +212,7 @@ fn missing_base_url_env_ref_is_rejected() {
     std::fs::write(
         &path,
         r#"
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
 [provider.anthropic]
 format = "anthropic"
@@ -314,9 +224,10 @@ api_key = "sk-ant-123"
 
     let err = load_config(&path).unwrap_err();
 
-    assert!(err.to_string().contains(
-        "env var 'MISSING_BASE_URL_VAR' referenced by provider.anthropic.base_url is not set"
-    ));
+    assert!(
+        err.to_string()
+            .contains("provider.anthropic.base_url: env var \"MISSING_BASE_URL_VAR\" is not set")
+    );
 }
 
 #[test]
@@ -325,7 +236,7 @@ fn env_ref_resolves_before_toml_typed_deserialize() {
         module_path!(),
         stringify!(env_ref_resolves_before_toml_typed_deserialize),
         |command| {
-            command.env("TEST_DEFAULT_MODEL", "balanced");
+            command.env("TEST_DEFAULT_MODEL", "provider/exact-1.2");
             command.env("TEST_PROVIDER_FORMAT", "anthropic");
         },
     ) {
@@ -336,19 +247,10 @@ fn env_ref_resolves_before_toml_typed_deserialize() {
     std::fs::write(
         &path,
         r#"
-default_model = "$TEST_DEFAULT_MODEL"
+default_model = { connection = "anthropic", model = "$TEST_DEFAULT_MODEL" }
 
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+[model.anthropic."$TEST_DEFAULT_MODEL"]
+max_output_tokens = 1200
 
 [provider.anthropic]
 format = "$TEST_PROVIDER_FORMAT"
@@ -361,10 +263,17 @@ api_key = "sk-ant-123"
     let file = load_config(&path).unwrap();
     let cfg = file.resolve().unwrap();
 
-    assert_eq!(cfg.default_tier(), "balanced");
+    assert_eq!(
+        cfg.default_model(),
+        &ModelRef::new("anthropic", "provider/exact-1.2")
+    );
+    assert_eq!(
+        Some(1200),
+        cfg.model(cfg.default_model()).unwrap().max_output_tokens
+    );
     assert_eq!(
         cfg.provider("anthropic").unwrap().format,
-        config::ProviderFormat::Anthropic
+        ProviderFormat::Anthropic
     );
 }
 
@@ -386,17 +295,7 @@ fn load_and_patch_config_resolves_env_refs_on_runtime_path() {
     std::fs::write(
         &path,
         r#"
-[model.strong]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.balanced]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[model.light]
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
+default_model = { connection = "anthropic", model = "claude-sonnet-4-6" }
 
 [provider.anthropic]
 format = "$TEST_PROVIDER_FORMAT"
@@ -406,10 +305,10 @@ api_key = "$TEST_API_KEY_VAR"
     )
     .unwrap();
 
-    let file = config::load_and_patch_config(&path).unwrap();
+    let file = load_and_patch_config(&path).unwrap();
     let cfg = file.resolve().unwrap();
 
-    assert_eq!(cfg.default_tier(), "balanced");
+    assert_eq!(cfg.default_model().connection, "anthropic");
     assert_eq!(
         cfg.provider("anthropic").unwrap().base_url,
         "https://gateway.example/v1"
@@ -423,17 +322,7 @@ fn unsupported_format_is_rejected() {
     std::fs::write(
         &path,
         r#"
-[model.strong]
-provider = "custom"
-model = "test"
-
-[model.balanced]
-provider = "custom"
-model = "test"
-
-[model.light]
-provider = "custom"
-model = "test"
+default_model = { connection = "custom", model = "test" }
 
 [provider.custom]
 format = "grpc"
@@ -447,23 +336,14 @@ api_key = "key"
 }
 
 #[test]
-fn tier_referencing_missing_provider_is_rejected() {
+fn default_model_referencing_missing_connection_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
-[model.strong]
-provider = "nonexistent"
-model = "test"
+default_model = { connection = "nonexistent", model = "test" }
 
-[model.balanced]
-provider = "nonexistent"
-model = "test"
-
-[model.light]
-provider = "nonexistent"
-model = "test"
 "#,
     )
     .unwrap();
@@ -481,22 +361,18 @@ fn redacted_display_never_leaks_api_keys() {
 }
 
 #[test]
-fn resolution_chain_builder_model_wins() {
-    let cfg = config_from_toml(minimal_valid_toml());
-
-    let resolved = resolve_config(ResolveConfigInput {
-        model: Some("claude-opus-4-7".to_string()),
-        config: Some(cfg.clone()),
-        ..Default::default()
-    })
-    .unwrap();
-    assert_eq!(resolved.model, "claude-opus-4-7");
-
-    let resolved = resolve_config(ResolveConfigInput {
-        config: Some(cfg),
-        ..Default::default()
-    })
-    .unwrap();
-    assert_eq!(resolved.model, "claude-sonnet-4-6");
-    assert_eq!(resolved.api_key.resolve().unwrap(), "sk-ant-123");
+fn model_table_env_references_cannot_duplicate_an_exact_registration() {
+    let error = parse_config_text_with_env(
+        r#"
+default_model = { connection = "work", model = "model.with.version" }
+[model.work."$FIXTURE_ID"]
+[model.work."model.with.version"]
+"#,
+        |name| {
+            assert_eq!("FIXTURE_ID", name);
+            Ok("model.with.version".into())
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("duplicates the registration"));
 }

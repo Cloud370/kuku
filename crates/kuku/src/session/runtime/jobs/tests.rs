@@ -40,9 +40,9 @@ fn dispatch_recorded_call(path: &Path, tool: &str, id: &str, turn: u64) -> Event
 
 fn session_options(root: &Path) -> SessionOptions {
     let config = Config {
-        tiers: BTreeMap::new(),
+        models: BTreeMap::new(),
         providers: BTreeMap::new(),
-        default_tier: String::new(),
+        default_model: crate::config::ModelRef::default(),
         discovery: DiscoveryConfig::default(),
         handoff: HandoffConfig::default(),
         logs: LogsConfig::default(),

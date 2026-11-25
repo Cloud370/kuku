@@ -238,18 +238,14 @@ async fn send(
 }
 
 fn merge_config(mut current: AgentConfig, update: AgentConfig) -> AgentConfig {
-    if update.tier.is_some() || update.connection.is_some() || update.model.is_some() {
-        current.reasoning_effort = None;
-        current.service_tier = None;
-    }
-    if update.connection.is_some() {
+    if update.connection.is_some() && update.model.is_some() {
+        if current.connection != update.connection || current.model != update.model {
+            current.reasoning_effort = None;
+            current.service_tier = None;
+            current.output = None;
+            current.max_output_tokens = None;
+        }
         current.connection = update.connection;
-    }
-    if update.tier.is_some() {
-        current.tier = update.tier;
-        current.model = None;
-    }
-    if update.model.is_some() {
         current.model = update.model;
     }
     if update.reasoning_effort.is_some() {

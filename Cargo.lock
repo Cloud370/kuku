@@ -2092,6 +2092,7 @@ dependencies = [
  "lru",
  "memchr",
  "minijinja",
+ "pulldown-cmark",
  "readability",
  "regex",
  "regex-syntax",
@@ -2141,6 +2142,7 @@ dependencies = [
 name = "kuku-cli"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "clap",
  "httpmock",
  "kuku",
@@ -2198,6 +2200,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "toml",
  "tower-http",
  "tracing",
  "tracing-subscriber",
@@ -2211,7 +2214,6 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "crossterm",
- "fslock",
  "futures-util",
  "httpmock",
  "image",

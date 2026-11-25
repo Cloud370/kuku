@@ -38,7 +38,7 @@ async fn standalone_run_cancellation_interrupts_initial_stream_preflight() {
     });
 
     let mut run = query("cancel stalled stream")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(base_url)
         .api_key("test-key")
@@ -83,7 +83,7 @@ async fn runtime_logs_are_fanned_out_without_events_payloads_or_immediate_info_f
     });
 
     let mut run = query("emit diagnostics")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -167,7 +167,7 @@ async fn run_convenience_path_persists_buffered_runtime_info_logs_on_completion(
     });
 
     let output = query("persist diagnostics")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -218,7 +218,7 @@ async fn runtime_log_preserves_turn_model_log_event_order() {
     });
 
     let mut run = query("ordered diagnostics")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -247,7 +247,7 @@ async fn provider_start_failure_still_delivers_runtime_model_request_log() {
     let server = MockServer::start();
 
     let mut run = query("provider fails")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -310,7 +310,7 @@ async fn context_too_large_failure_still_delivers_runtime_model_request_log() {
     });
 
     let mut run = query("context overflow")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -359,7 +359,7 @@ async fn truncated_provider_stream_is_recorded_as_failed_turn() {
     });
 
     let mut run = query("trigger truncation")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -410,7 +410,7 @@ async fn provider_error_writes_single_terminal_event() {
     });
 
     let mut run = query("provider failure")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")
@@ -477,7 +477,7 @@ async fn duplicate_terminal_writes_for_same_turn_are_ignored() {
     });
 
     let mut run = query("provider failure")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("test-key")

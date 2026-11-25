@@ -111,13 +111,13 @@ async fn main() {
 pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyError> {
     if args.contains_key("help") {
         println!(
-            "session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --tier TIER --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens N --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]"
+            "session_task --workspace DIR --prompt-file FILE --config FILE --data-dir DIR --output FILE [--session-id ID --agent main --connection NAME --model MODEL --reasoning-effort low --service-tier VALUE --max-requests N --no-provider-retry --max-agents 64 --max-output-tokens N --max-context-tokens 131072 --max-request-bytes BYTES --timeout 300 --command-id KEY --inspect-named-value NAME --seed-named-json FILE]"
         );
         println!(
             "--max-requests optionally caps provider attempts across this open session. --no-provider-retry disables the default pre-stream retry."
         );
         println!(
-            "--max-output-tokens optionally caps each model request. Omit it to use the selected tier or provider default."
+            "--max-output-tokens optionally caps each model request. Omit it to use the selected model configuration or provider default."
         );
         println!(
             "--max-request-bytes caps the serialized provider request. Omit it to use the provider's request-size limits."
@@ -141,8 +141,8 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
         return Err("--max-context-tokens must be positive".into());
     }
     let timeout = number(&args, "timeout", 300_u64)?;
-    for tier in config.tiers.values_mut() {
-        tier.context_window = tier.context_window.min(max_context_tokens);
+    for model in config.models.values_mut() {
+        model.context_window = model.context_window.min(max_context_tokens);
     }
     let mut options = SessionOptions::new(workspace, data_dir, config);
     options.session_id = args.get("session-id").cloned();
@@ -171,9 +171,8 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
     let session = Session::open(options).await?;
     let agent = args.get("agent").map(String::as_str).unwrap_or("main");
     let mut named_before = None;
-    let selection = AgentConfig {
+    let mut selection = AgentConfig {
         connection: args.get("connection").cloned(),
-        tier: args.get("tier").cloned(),
         model: args.get("model").cloned(),
         reasoning_effort: args.get("reasoning-effort").cloned(),
         service_tier: args.get("service-tier").cloned(),
@@ -191,10 +190,19 @@ pub(crate) async fn execute(args: BTreeMap<String, String>) -> Result<bool, AnyE
     let mut observer = session.observe(0);
     let task = async {
         match session.agent(agent) {
-            Ok(existing) if existing.config != selection => {
-                session.configure_agent(&format!("configure:{command_id}"), agent, selection)?;
+            Ok(existing) => {
+                if selection.connection.is_none() && selection.model.is_none() {
+                    selection.connection.clone_from(&existing.config.connection);
+                    selection.model.clone_from(&existing.config.model);
+                }
+                if existing.config != selection {
+                    session.configure_agent(
+                        &format!("configure:{command_id}"),
+                        agent,
+                        selection,
+                    )?;
+                }
             }
-            Ok(_) => {}
             Err(_) => {
                 session.create_agent(&format!("create:{agent}"), agent, selection)?;
             }
@@ -401,7 +409,6 @@ pub(crate) fn arguments(
                 | "agent"
                 | "connection"
                 | "model"
-                | "tier"
                 | "reasoning-effort"
                 | "service-tier"
                 | "max-requests"

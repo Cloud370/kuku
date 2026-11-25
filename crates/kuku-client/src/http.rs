@@ -1044,9 +1044,9 @@ mod tests {
             .to_owned();
         *captured.lock().await = Some((authorization, query));
         Json(ModelDefaultPlan {
-            tier: "service-tier".into(),
-            overwrite_user_default: false,
             config_sha256: "a".repeat(64),
+            already_default: false,
+            register_previous_default: None,
         })
     }
 
@@ -1066,8 +1066,6 @@ mod tests {
             .model_default_plan("my connection", "model/id", &"a".repeat(64))
             .await
             .unwrap();
-        assert_eq!("service-tier", plan.tier);
-        assert!(!plan.overwrite_user_default);
         assert_eq!("a".repeat(64), plan.config_sha256);
         assert_eq!(
             Some((

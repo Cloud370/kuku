@@ -15,9 +15,9 @@ use crate::query::types::{
 
 fn test_config() -> crate::config::Config {
     crate::config::Config {
-        tiers: std::collections::BTreeMap::new(),
+        models: std::collections::BTreeMap::new(),
         providers: std::collections::BTreeMap::new(),
-        default_tier: "balanced".to_string(),
+        default_model: crate::config::ModelRef::default(),
         discovery: crate::config::DiscoveryConfig::default(),
         handoff: crate::config::HandoffConfig::default(),
         logs: crate::config::LogsConfig::default(),
@@ -65,6 +65,7 @@ pub(super) fn make_test_pending(
         resolved: None,
         admitted_tool_call_ids: Default::default(),
         queued_tool_calls: std::collections::VecDeque::new(),
+        skill_bundle_call: None,
         resumed_permission_requests: std::collections::VecDeque::new(),
         config: std::sync::Arc::new(test_config()),
         prompts_dir: None,
@@ -258,7 +259,7 @@ fn test_resolved_runtime() -> ResolvedRuntime {
     }
 }
 
-fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summary: bool) {
+async fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summary: bool) {
     let directory = tempfile::tempdir().unwrap();
     let events_path = directory.path().join("events.jsonl");
     let mut writer = EventStore::open(&events_path).unwrap();
@@ -382,7 +383,9 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
     pending.turn = 3;
     pending.resolved = Some(test_resolved_runtime());
     pending.context_cursor = Some(Box::new(cursor));
-    let prepared = crate::query::frozen::prepare(&mut pending, false).unwrap();
+    let prepared = crate::query::frozen::prepare(&mut pending, false)
+        .await
+        .unwrap();
     let request = prepared.request.request();
     let has_text = |messages: &[crate::context::CanonicalMessage], text: &str| {
         messages.iter().any(|message| {
@@ -406,10 +409,10 @@ fn assert_prepared_handoff_after_rewind(target_before_handoff: bool, expect_summ
     assert!(!has_text(&request.assembly.history, "rewound target input"));
 }
 
-#[test]
-fn prepare_rehydrates_only_handoffs_that_precede_rewind_target() {
-    assert_prepared_handoff_after_rewind(false, true);
-    assert_prepared_handoff_after_rewind(true, false);
+#[tokio::test]
+async fn prepare_rehydrates_only_handoffs_that_precede_rewind_target() {
+    assert_prepared_handoff_after_rewind(false, true).await;
+    assert_prepared_handoff_after_rewind(true, false).await;
 }
 
 fn make_queued_run(events_path: std::path::PathBuf, dir: &std::path::Path) -> Run {

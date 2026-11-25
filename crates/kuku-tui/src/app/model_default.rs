@@ -1,14 +1,16 @@
+use kuku::config::ModelRef;
 use kuku_client::{Action, AgentConfig, Error, ModelSelection};
 
 use crate::jobs::{Job, Selection};
 use crate::menu::{Choice, ChoiceKind, PickerKind};
-use crate::model_default::{PreparedDefaultSave, ResolvedModel};
+use crate::model_default::PreparedDefaultSave;
 
 use super::{App, Modal, Pane, PendingStage};
 
 pub(super) struct PendingDefaultSave {
     ticket: u64,
     selection: Selection,
+    follow_current: bool,
     plan: PreparedDefaultSave,
 }
 
@@ -51,7 +53,7 @@ impl Pane {
 }
 
 impl App {
-    pub(crate) fn resolved_model_route(&self) -> Result<ResolvedModel, &'static str> {
+    pub(crate) fn resolved_model_route(&self) -> Result<ModelRef, &'static str> {
         let pane = self.pane();
         if pane.exists {
             if self.model_change_in_flight() {
@@ -69,7 +71,7 @@ impl App {
                 .as_ref()
                 .or(snapshot.selection.as_ref())
                 .ok_or("Resolve a model before setting it as the default.")?;
-            Ok(ResolvedModel {
+            Ok(ModelRef {
                 connection: selection.connection.clone(),
                 model: selection.model.clone(),
             })
@@ -84,7 +86,7 @@ impl App {
                 .initial_model
                 .as_ref()
                 .ok_or("Wait for the draft's model selection to resolve, then reopen /model.")?;
-            Ok(ResolvedModel {
+            Ok(ModelRef {
                 connection: selection.connection.clone(),
                 model: selection.model.clone(),
             })
@@ -94,7 +96,7 @@ impl App {
     pub(crate) fn model_default_choice(&self) -> Choice {
         let detail = self
             .resolved_model_route()
-            .map(|route| route.model)
+            .map(|route| format!("{} · {}", route.model, route.connection))
             .unwrap_or_else(str::to_owned);
         Choice::new(
             "Set current model as default",
@@ -103,11 +105,20 @@ impl App {
         )
     }
 
-    pub(crate) fn prepare_model_default(&mut self) {
+    pub(crate) fn prepare_model_default(&mut self, selected: Option<ModelRef>) {
+        if self.remote {
+            self.problem(crate::local_settings::LOCAL_SERVICE_REQUIRED);
+            return;
+        }
         if !self.require_service() {
             return;
         }
-        let route = match self.resolved_model_route() {
+        if self.saving_model_default.is_some() {
+            self.problem("Wait for the default model save to finish.");
+            return;
+        }
+        let follow_current = selected.is_none();
+        let route = match selected.map_or_else(|| self.resolved_model_route(), Ok) {
             Ok(route) => route,
             Err(problem) => {
                 self.problem(problem);
@@ -124,6 +135,7 @@ impl App {
             ticket,
             selection,
             route,
+            follow_current,
         });
     }
 
@@ -136,9 +148,10 @@ impl App {
             self.problem("The selected Agent changed; reopen /model before saving.");
             return;
         }
-        if !self
-            .resolved_model_route()
-            .is_ok_and(|route| route == *pending.plan.route())
+        if pending.follow_current
+            && !self
+                .resolved_model_route()
+                .is_ok_and(|route| route == *pending.plan.route())
         {
             self.problem("The model selection changed; reopen /model before saving.");
             return;
@@ -180,6 +193,7 @@ impl App {
         &mut self,
         ticket: u64,
         selection: Selection,
+        follow_current: bool,
         result: Result<PreparedDefaultSave, String>,
     ) {
         let current_modal = matches!(
@@ -197,9 +211,10 @@ impl App {
         }
         match result {
             Ok(plan)
-                if self
-                    .resolved_model_route()
-                    .is_ok_and(|route| route == *plan.route()) =>
+                if !follow_current
+                    || self
+                        .resolved_model_route()
+                        .is_ok_and(|route| route == *plan.route()) =>
             {
                 let header = plan.confirmation_header();
                 let choices = vec![
@@ -224,6 +239,7 @@ impl App {
                 self.pending_model_default = Some(PendingDefaultSave {
                     ticket,
                     selection,
+                    follow_current,
                     plan,
                 });
             }
@@ -245,7 +261,7 @@ impl App {
         &mut self,
         ticket: u64,
         selection: Selection,
-        result: Result<(), String>,
+        result: Result<bool, String>,
     ) {
         let active_save =
             self.saving_model_default
@@ -253,13 +269,19 @@ impl App {
                 .is_some_and(|(active_ticket, active_selection)| {
                     *active_ticket == ticket && *active_selection == selection
                 });
-        if !active_save || selection != self.selection() {
+        if !active_save {
             return;
         }
         self.saving_model_default = None;
         match result {
-            Ok(()) => {
-                self.confirmation("Saved as default · the current Session and Agent are unchanged")
+            Ok(true) => {
+                if !self.pane().exists {
+                    self.preview_model();
+                }
+                self.confirmation("New Session default loaded by the service");
+            }
+            Ok(false) => {
+                self.message("Default saved to config · waiting for the service to load it")
             }
             Err(problem) => self.problem(problem),
         }
@@ -267,8 +289,7 @@ impl App {
 
     pub(super) fn model_change_in_flight(&self) -> bool {
         let target = self.target(&self.active);
-        self.default_switch_pending()
-            || self.pane().waiting_for_configuration()
+        self.pane().waiting_for_configuration()
             || self.pending.values().any(|item| {
                 item.command.target == target
                     && matches!(item.command.action, Action::Configure { .. })

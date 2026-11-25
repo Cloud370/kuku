@@ -84,6 +84,10 @@ pub enum Error {
     #[error("config: {0}")]
     ConfigLoad(String),
 
+    /// A configuration error with an addressable TOML field.
+    #[error("config: {field}: {message}")]
+    ConfigField { field: String, message: String },
+
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
@@ -148,7 +152,7 @@ impl Error {
             Error::OutputQuotaExceeded { .. } => "output_quota_exceeded",
             Error::InterruptedOpenTool(_) => "interrupted_open_tool",
             Error::PromptRender(_) => "internal",
-            Error::ConfigLoad(_) => "internal",
+            Error::ConfigLoad(_) | Error::ConfigField { .. } => "internal",
             Error::InvalidArgument(_) => "invalid_request",
             Error::SessionLocked { .. } => "session_locked",
             Error::DelegatedPermissionRequested { .. } => "internal",
@@ -182,8 +186,8 @@ mod tests {
     #[test]
     fn missing_provider_config_variant_formats_message() {
         assert_eq!(
-            Error::MissingProviderConfig("set KUKU_PROVIDER".to_string()).to_string(),
-            "missing provider configuration: set KUKU_PROVIDER"
+            Error::MissingProviderConfig("choose a registered model".to_string()).to_string(),
+            "missing provider configuration: choose a registered model"
         );
     }
 

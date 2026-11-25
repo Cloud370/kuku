@@ -1,4 +1,5 @@
 use crossterm::event::Event;
+use kuku_client::ModelSummary;
 
 use crate::jobs::Job;
 use crate::menu::{Choice, ChoiceKind, PickerKind};
@@ -19,88 +20,49 @@ impl App {
             return;
         }
         self.clear_model_default_if_closed();
-        let save_default = self.model_default_choice();
-        self.picker(
-            PickerKind::Models,
+        let actions = if self.remote {
+            Vec::new()
+        } else {
             vec![
                 Choice::new(
                     "Add model or connection",
                     "",
                     ChoiceKind::EditModel(SetupIntent::Add),
                 ),
-                save_default,
-            ],
-        );
+                self.model_default_choice(),
+            ]
+        };
+        self.picker(PickerKind::Models, actions);
         self.search(true);
     }
 
-    pub(crate) fn use_model_route(&mut self, tier: &kuku_client::TierSummary) {
-        if let Some(error) = &tier.error {
+    pub(crate) fn use_model_route(&mut self, model: &ModelSummary) {
+        if let Some(error) = &model.error {
             self.problem(error.message.clone());
             return;
         }
-        let mut config = self.route_config();
-        config.tier = Some(tier.name.clone());
-        self.configure(config);
-    }
-
-    pub(crate) fn save_and_use_model(&mut self, tier: Box<kuku_client::TierSummary>) {
-        if self.remote {
-            self.problem("Change the default model on the service host.");
-            return;
-        }
-        if let Some(error) = &tier.error {
-            self.problem(error.message.clone());
-            return;
-        }
-        if !self.require_service() {
-            return;
-        }
-        if self.saving_default_and_switch.is_some() || self.model_change_in_flight() {
-            self.problem("Wait for the previous settings change to be resolved.");
-            return;
-        }
-        let selection = self.selection();
-        self.saving_default_and_switch = Some(selection.clone());
-        self.effects.push(Job::SaveAndUseModel(selection, tier));
-    }
-
-    pub(super) fn default_switch_pending(&self) -> bool {
-        self.saving_default_and_switch
-            .as_ref()
-            .is_some_and(|selection| selection.target == self.target(&self.active))
-    }
-
-    pub(super) fn model_default_and_switch_saved(
-        &mut self,
-        selection: crate::jobs::Selection,
-        tier: Box<kuku_client::TierSummary>,
-        result: Result<bool, String>,
-    ) {
-        if self.saving_default_and_switch.as_ref() != Some(&selection) {
-            return;
-        }
-        self.saving_default_and_switch = None;
-        if matches!(result, Ok(true)) && selection == self.selection() {
-            if self.model_change_in_flight() {
-                self.message(format!(
-                    "Saved {} as default · wait for the pending model change",
-                    tier.model
-                ));
+        let same_model = self.resolved_model_route().is_ok_and(|current| {
+            current.connection == model.connection && current.model == model.model
+        });
+        let current = self.pane().config();
+        let mut config = if same_model {
+            if current.connection.as_ref() == Some(&model.connection)
+                && current.model.as_ref() == Some(&model.model)
+            {
                 return;
             }
-            self.use_model_route(&tier);
-            self.confirmation(format!("Saved {} as default and switched", tier.model));
-        } else if matches!(result, Ok(false)) && selection == self.selection() {
-            self.problem("Saved the default model · the service timed out before switching");
+            current.clone()
         } else {
-            self.model_setting_saved(result);
-        }
+            self.route_config()
+        };
+        config.connection = Some(model.connection.clone());
+        config.model = Some(model.model.clone());
+        self.configure(config);
     }
 
     pub(crate) fn open_model_editor(&mut self, intent: SetupIntent) {
         if self.remote {
-            self.problem("Open kuku init on the service host to change model settings.");
+            self.problem(crate::local_settings::LOCAL_SERVICE_REQUIRED);
             return;
         }
         if !self.setup_required && !self.require_service() {
@@ -172,6 +134,10 @@ impl App {
             Ok(_) if editor.is_first_run() => {
                 if current {
                     self.modal = None;
+                    if editor.exit_after_save() {
+                        self.exit();
+                        return;
+                    }
                 }
                 self.reconnect();
             }

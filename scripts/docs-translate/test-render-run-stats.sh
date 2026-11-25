@@ -7,7 +7,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 SUMMARY_JSON="$TMP_DIR/session-run.json"
 cat > "$SUMMARY_JSON" <<'EOF'
-{"type":"session","event":"completed","session_id":"s_123","tier":"balanced","model":"claude-sonnet-4-6","turns":2,"input_tokens":1234,"output_tokens":567,"cache_read_input_tokens":89,"cache_creation_input_tokens":21,"duration_ms":3456}
+{"type":"session","event":"completed","session_id":"s_123","connection":"translation","model":"deepseek-flash","turns":2,"usage":{"input_tokens":1234,"output_tokens":567,"cache_read_input_tokens":89},"duration_ms":3456}
 EOF
 
 OUTPUT="$(bash "$SCRIPT_DIR/render-run-stats.sh" "$SUMMARY_JSON")"
@@ -20,12 +20,24 @@ OUTPUT="$(bash "$SCRIPT_DIR/render-run-stats.sh" "$SUMMARY_JSON")"
     printf 'expected session id\n' >&2
     exit 1
 }
+[[ "$OUTPUT" == *'- Connection: `translation`'* ]] || {
+    printf 'expected connection name\n' >&2
+    exit 1
+}
+[[ "$OUTPUT" == *'- Model: `deepseek-flash`'* ]] || {
+    printf 'expected exact model ID\n' >&2
+    exit 1
+}
 [[ "$OUTPUT" == *'- Turns: `2`'* ]] || {
     printf 'expected turns\n' >&2
     exit 1
 }
 [[ "$OUTPUT" == *'- Input tokens: `1234`'* ]] || {
     printf 'expected input tokens\n' >&2
+    exit 1
+}
+[[ "$OUTPUT" == *'- Cache write tokens: `unreported`'* ]] || {
+    printf 'expected unreported cache write tokens\n' >&2
     exit 1
 }
 [[ "$OUTPUT" == *'- Duration: `3.4s`'* ]] || {

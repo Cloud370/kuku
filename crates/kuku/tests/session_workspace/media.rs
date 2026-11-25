@@ -88,6 +88,7 @@ async fn authorized_image_replays_from_retained_bytes_after_reopen() {
             .any(|tool| tool.name == "view_image")
     );
     let text_only = AgentConfig {
+        connection: Some("openai".into()),
         model: Some("text-fixture".into()),
         ..Default::default()
     };
@@ -235,6 +236,7 @@ async fn switching_to_text_only_reports_modalities_and_omits_a_recent_image() {
         .unwrap();
     run(&session, "inspect", "View the PNG.").await;
     let text = AgentConfig {
+        connection: Some("openai".into()),
         model: Some("text-fixture".into()),
         ..Default::default()
     };
@@ -272,9 +274,10 @@ fn media_config(server: &MockServer, path: &str) -> kuku::config::Config {
             },
         );
     }
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "vision-fixture".into();
+    let settings = common::set_test_model(&mut config, "openai", "vision-fixture").clone();
+    config
+        .models
+        .insert(kuku::ModelRef::new("openai", "text-fixture"), settings);
     config
 }
 
@@ -444,6 +447,7 @@ async fn user_image_reopens_and_reaches_only_an_image_capable_route() {
             "switch",
             "main",
             AgentConfig {
+                connection: Some("openai".into()),
                 model: Some("text-fixture".into()),
                 ..Default::default()
             },
@@ -891,10 +895,10 @@ async fn current_images_can_trigger_compaction_before_inference() {
         })
         .await;
     let mut config = media_config(&server, "/image-compaction");
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.think = kuku::config::ThinkLevel::Off;
-    tier.context_window = 24_000;
-    tier.max_output_tokens = None;
+    let model_settings = config.models.get_mut(&config.default_model).unwrap();
+    model_settings.think = kuku::config::ThinkLevel::Off;
+    model_settings.context_window = 24_000;
+    model_settings.max_output_tokens = None;
     config.handoff.enabled = true;
     config.handoff.threshold = 0.45;
     let mut options = SessionOptions::new(work.path(), data.path(), config);

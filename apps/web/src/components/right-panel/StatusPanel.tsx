@@ -1,7 +1,6 @@
 interface StatusContext {
   model?: string;
   provider?: string;
-  tier?: string | null;
   turn?: number | null;
   tokens?: { input_tokens: number | null; output_tokens: number | null };
   sessionId?: string;
@@ -35,7 +34,6 @@ export function StatusPanel({
     ["Agent", context.agent],
     ["Model", context.model],
     ["Connection", context.provider],
-    ["Model tier", context.tier],
     ["Turn", context.turn],
     [
       "Tokens",

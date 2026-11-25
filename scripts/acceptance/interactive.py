@@ -13,6 +13,7 @@ from urllib.parse import urlencode, urlsplit
 from interactive_composer import agent_setup, composer_actions, startup_info
 from interactive_permissions import workspace_permissions
 from interactive_stream import profile_markdown_stream
+from interactive_script import remote_authorization_and_script_json
 from interactive_review import dense_transcript, release_review, replay_release_review, write_renderings
 from interactive_lifecycle import first_run_credential_repair, lifecycle_checks, shared_model_editor, verify_restored_tool
 from interactive_rendering import (
@@ -35,36 +36,68 @@ def installed_upgrade(client, previous, current):
     prompt = "finish the tool across a package upgrade"
     output = "upgrade tool finished once"
     target_hash = config_record(client.binary)["sha256"]
+    config_path = client.home / "config.toml"
+    exact_config = config_path.read_text(encoding="utf-8")
     install(previous, prefix, client.env)
     assert config_record(client.binary)["sha256"] != target_hash, "Upgrade needs two distinct executables"
+    previous_help, _ = client.cli(workspace, "config", "models", "--help")
+    legacy_config = "--discover" not in previous_help
+    if legacy_config:
+        _, header, provider_settings = exact_config.partition("[provider.")
+        config_path.write_text('''default_model = "legacy-fixture"
+
+[model.legacy-fixture]
+provider = "test-anthropic"
+model = "claude-sonnet-4-6"
+think = "off"
+context_window = 200000
+max_output_tokens = 4096
+
+''' + header + provider_settings, encoding="utf-8")
     with client.terminal(workspace) as terminal:
         terminal.expect("New session", state="Ready")
         terminal.submit(prompt)
         client.gated_tool(workspace, client.provider.next(prompt), "upgrade-gated-tool")
         session = client.session(workspace)
         original = client.connection()
-        original_version = client.status()["version"]
+        original_status = client.status()
         terminal.exit_cleanly()
 
+    previous_config = config_path.read_bytes()
     install(current, prefix, client.env)
     assert config_record(client.binary)["sha256"] == target_hash
+    assert config_path.read_bytes() == previous_config, "Installer altered the active configuration"
+    if legacy_config:
+        stdout, _ = client.cli(workspace, "config", "validate", success=False)
+        assert "default_model" in json.dumps(json.loads(stdout)["diagnostics"])
+        assert config_path.read_bytes() == previous_config
+        config_path.write_text(exact_config, encoding="utf-8")
     version, _ = client.cli(workspace, "--version")
     with client.terminal(workspace) as terminal:
         terminal.expect("Waiting for the previous version to finish")
         client.assert_current_service(original)
         client.release_tool(workspace)
-        client.completed_tool(workspace, "upgrade-gated-tool").text(output)
-        eventually("old service to complete the tool", lambda: client.snapshot(workspace, session)["last_output"] == output)
+        completed = client.completed_tool(workspace, "upgrade-gated-tool")
         client.verify_tool(workspace)
+        completed.text(output)
         terminal.expect("New session", state="Ready")
         assert client.connection()["instance_id"] != original["instance_id"]
-        assert version.strip() == "kuku " + client.status()["version"]
-        terminal.resume(prompt)
-        terminal.expect(output)
+        current_status = client.status()
+        assert version.strip() == "kuku " + current_status["version"]
+        if current_status["protocol_version"] == original_status["protocol_version"]:
+            terminal.resume(prompt)
+            terminal.expect(output)
+        else:
+            new_prompt = "Run with the replacement package"
+            terminal.submit(new_prompt)
+            call = client.provider.next(new_prompt)
+            assert call.request["model"] == "claude-sonnet-4-6"
+            call.text("Replacement package finished.")
+            terminal.expect("Replacement package finished.", state="Finished")
         terminal.exit_cleanly()
     client.verify_tool(workspace)
     client.provider.assert_idle()
-    print(f"Upgraded {original_version} to {version.strip()} across a busy tool and restored Session {session}.")
+    print(f"Upgraded {original_status['version']} to {version.strip()} after Session {session} settled its busy tool.")
 
 
 @contextlib.contextmanager
@@ -486,51 +519,16 @@ def wait_restart_and_recover_crash(client, workspace, session, title):
     print("After recovery, the terminal showed the interrupted work.")
 
 
-def remote_authorization_and_script_json(client, workspace):
-    stdout, stderr = client.cli(workspace, success=False)
-    assert "kuku run" in stdout + stderr, "Non-interactive help must identify the script command"
-    client.cli(workspace, "server", "restart")
-    connection = client.connection()
-    address = f"http://{connection['address']}"
-    assert client.request("GET", f"/sessions?{urlencode({'workspace': workspace})}",
-                          authenticated=False).status == 401
-    args = ("run", "--remote", address, "--workspace", str(workspace), "--json")
-    client.cli(workspace, *args, "unauthenticated prompt", success=False)
-    client.cli(workspace, *args, "invalid token prompt", success=False, token="invalid-fixture-token")
-    client.assert_current_service(connection)
-    client.provider.assert_idle()
-
-    prompt, answer = "script json contract", "script final output"
-    with client.command(workspace, *args, prompt, token=connection["token"]) as process:
-        client.provider.next(prompt).text(answer)
-        stdout, _ = client.finish(process)
-    result = json.loads(stdout)
-    assert len(stdout.splitlines()) == 1 and result["type"] == "session" and result["event"] == "completed"
-    assert result["agent"] == "main" and result["response"] == answer
-    session = result["session_id"]
-    stdout, _ = client.cli(workspace, "show", session, "--json")
-    assert json.loads(stdout)["last_output"] == answer
-
-    prompt = "script jsonl contract"
-    with client.command(workspace, "run", "--stream-json", prompt) as process:
-        client.provider.next(prompt).text("script streamed output")
-        stdout, _ = client.finish(process)
-    progress = [json.loads(line) for line in stdout.splitlines()]
-    assert len(progress) >= 2 and progress[-1]["response"] == "script streamed output"
-
-    client.provider.assert_idle()
-    print("Remote requests required authentication and installed scripts produced JSON and JSONL.")
-
-
 def recover_from_provider_failure(client):
     workspace = client.workspace("work-provider-error")
     prompt = "provider failure in scripted run"
     with client.command(workspace, "run", "--json", prompt) as process:
         client.provider.next(prompt).fail()
         stdout, stderr = client.finish(process, success=False)
+        assert process.returncode == 1
     assert "fixture provider failure" in stdout + stderr
     failed = json.loads(stdout)
-    assert failed["error"] and failed["status"] == "interrupted"
+    assert failed["error"] and failed["status"] == "failed" and failed["agent_status"] == "interrupted"
     session = failed["session_id"]
     recovery = "recover explicitly from provider failure"
     with client.terminal(workspace) as terminal:
@@ -594,10 +592,14 @@ def lost_first_receipt(client):
         partitioned = False
         stdout, _ = client.cli(workspace, *args, token=connection["token"])
         replayed = json.loads(stdout)
-        assert replayed["event"] == "acknowledged" and replayed["replayed"] is True
+        assert replayed["status"] == replayed["event"] == "acknowledged"
+        assert replayed["replayed"] is True and replayed["input_status"] == "accepted"
         assert replayed["receipt"] == committed[0]["receipt"]
+        assert "response" not in replayed
         assert client.session(workspace) == session
-        assert replayed["state"]["usage"]["model_requests"] == 2, (
+        snapshot = client.snapshot(workspace, session)
+        assert snapshot["last_output"] == "first receipt executed once"
+        assert snapshot["usage"]["model_requests"] == 2, (
             "Replayed receipt must keep the original request and its tool continuation"
         )
         client.verify_tool(workspace)
@@ -761,7 +763,7 @@ def markdown_document(client, document=None, reference=False):
             terminal.type(document.draft)
             terminal.press("\x10")
             help_screen = terminal.expect(
-                "Keyboard shortcuts", state="Finished", also=(document.draft,)
+                "Help and shortcuts", state="Finished", also=(document.draft,)
             )["screen"]
             assert document.draft in help_screen, help_screen
             terminal.press("\x1b")
@@ -772,7 +774,7 @@ def markdown_document(client, document=None, reference=False):
                     document.draft in screen
                     and preview in screen
                     and "Finished" in screen
-                    and "Keyboard shortcuts" not in screen
+                    and "Help and shortcuts" not in screen
                 ):
                     return screen
 
@@ -873,6 +875,7 @@ def main():
                  ("permissions", workspace_permissions),
                  ("startup-info", startup_info),
                  ("composer-actions", composer_actions),
+                 ("agent-setup", agent_setup),
                  ("interrupt", preserve_draft_after_interrupt),
                  ("paste", editable_multiline_paste),
                  ("remote-and-script", lambda client: remote_authorization_and_script_json(

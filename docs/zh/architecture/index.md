@@ -9,7 +9,7 @@
 - [Overview](overview.md)
 - [Host Apps](host-apps.md)
 - [交互客户端重构计划](interactive-clients.md) — server、Rust TUI 与 WebUI 的客户端契约、交付顺序和终端测试
-- [Web 客户端](web-client.md) — 浏览器工作台设计：交互模型、token 系统、投影契约与交付阶段
+- [Web 客户端](web-client.md) — 浏览器工作台的目标设计与可选开发客户端
 - [工作区执行与会话变量](workspace-execution.md) — 跨端脚本、宿主事实、命名数据及采纳条件
 - [Prompt Assembly](prompt-assembly.md)
 - [Module Contracts](module-contracts.md)

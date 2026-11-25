@@ -41,7 +41,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
     if pending.query.runtime.is_some() {
-        let context = super::frozen::prepare(&mut pending, false)?;
+        let context = super::frozen::prepare(&mut pending, false).await?;
         pending.request_base = Some(context.request);
         return dispatch_provider_step(pending, resolved_config, Vec::new(), Some(context.commit))
             .await;
@@ -55,7 +55,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
         load_memory_sources(&pending.kuku_home, &pending.workspace, max_bytes)?;
     let platform = platform_label().to_string();
     let current_date = current_date_string();
-    let model_tiers = resolve::usable_model_routes(&pending.config, false);
+    let models = resolve::usable_model_routes(&pending.config, false, None);
 
     let catalog = if let Some(dir) = &pending.prompts_dir {
         crate::prompt::PromptCatalog::load_from_dir(dir).map_err(|e| {
@@ -123,7 +123,7 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
             project_memory,
             history,
             tools,
-            model_tiers,
+            models,
             runtime_blocks,
             enable_memory: true,
             agent_instructions: behavior,
@@ -172,11 +172,23 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     }
 
     if let Some(skill) = pending.bootstrap_skill.as_ref() {
-        assembly
-            .prelude_messages
-            .push(crate::context::CanonicalMessage::user_text(
-                skill.body.clone(),
-            ));
+        let docs_bootstrap = skill.name.as_deref() == Some(crate::skill::bundle::NAME)
+            || crate::skill::session::restore_turn_snapshot(
+                &existing_events,
+                pending.conversation.as_str(),
+                pending.turn,
+            )
+            .is_some_and(|snapshot| {
+                snapshot
+                    .bootstrap_loaded
+                    .iter()
+                    .any(|name| name == crate::skill::bundle::NAME)
+            });
+        if !docs_bootstrap {
+            assembly
+                .prelude_messages
+                .push(CanonicalMessage::user_text(skill.body.clone()));
+        }
     }
 
     set_model_modalities(
@@ -272,17 +284,8 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
     }
 
     let request_id = format!("req_{}", pending.request_num);
-    let _tier_name = pending
-        .query
-        .tier
-        .clone()
-        .unwrap_or_else(|| pending.config.default_tier().to_string());
     let think = resolved_config.think_level;
     let max_output = resolved_config.max_output_tokens;
-    let _params = serde_json::json!({
-        "max_output_tokens": max_output,
-        "temperature": pending.query.temperature,
-    });
 
     {
         let mut store = EventStore::open(&pending.events_path)?;
@@ -455,7 +458,7 @@ pub(super) async fn compact_context(mut pending: PendingRun, closed_turn: bool) 
         _ = pending.cancel_token.notified() => return Ok(()),
         permit = capacity.acquire_owned() => permit.map_err(|_| crate::Error::InvalidArgument("session model capacity is closed".into()))?,
     };
-    let mut context = super::frozen::prepare(&mut pending, true)?;
+    let mut context = super::frozen::prepare(&mut pending, true).await?;
     let correlation = request_correlation(&pending, &resolved);
     let before_bytes =
         match dispatch::prepare_request(&pending, &resolved, &correlation, &context.request) {
@@ -512,7 +515,6 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
     if let Some(config) = boundary.config {
         pending.config = std::sync::Arc::new(session.current_model_config().into_owned());
         pending.query.connection = config.connection;
-        pending.query.tier = config.tier;
         pending.query.model = config.model;
         pending.query.reasoning_effort = config.reasoning_effort;
         pending.query.output = config.output;

@@ -3,7 +3,7 @@ use std::time::Duration;
 use kuku::adapter::{
     ModelTrial, inspect_connection_model, inspect_model, trial_model_with_route_request,
 };
-use kuku::config::{CustomServiceTier, RequestFields};
+use kuku::config::{CustomServiceTier, ModelRef, RequestFields};
 use kuku_client::{Connection, ConnectionOptions};
 use toml_edit::{InlineTable, Item, TableLike, Value};
 
@@ -40,27 +40,21 @@ pub(crate) async fn custom_service_tier(
     work: SpeedWork,
 ) -> Result<SpeedResult, String> {
     let (service, settings) = active_settings(options, connection).await?;
-    let route =
-        inspect_model(&settings.resolved, &target.config).map_err(|error| error.to_string())?;
+    let config = settings
+        .resolved
+        .as_ref()
+        .ok_or("Choose a configured model before adding a service tier.")?;
+    let route = inspect_model(config, &target.config).map_err(|error| error.to_string())?;
     if !target.same_route(&route) {
         return Err("The selected Agent's model changed. Reopen /speed.".into());
     }
-    let provider = settings
-        .resolved
+    let provider = config
         .provider(&route.connection)
         .ok_or("Choose a configured connection before adding a service tier.")?;
+    let id = ModelRef::new(&route.connection, &route.model);
     match work {
         SpeedWork::Probe(tier) => {
-            let tier_name = target
-                .config
-                .tier
-                .as_deref()
-                .unwrap_or_else(|| settings.resolved.default_tier());
-            let request = settings
-                .resolved
-                .tier(tier_name)
-                .filter(|model| model.provider == route.connection && model.model == route.model)
-                .and_then(|model| model.request.as_ref());
+            let request = config.model(&id).and_then(|model| model.request.as_ref());
             probe(
                 provider,
                 &route.model,
@@ -87,16 +81,7 @@ pub(crate) async fn custom_service_tier(
 
             let current = active_service(options, connection).await?;
             ensure_same_service(&service, &current)?;
-            let routes: Vec<_> = settings
-                .resolved
-                .tiers
-                .iter()
-                .filter_map(|(name, model)| {
-                    (model.provider == route.connection && model.model == route.model)
-                        .then_some(name.as_str())
-                })
-                .collect();
-            config::save_model_document(&settings, &document, &routes)?;
+            config::save_model_document(&settings, &document, &[&id])?;
             wait_for_tier(connection, target, &tier).await?;
             Ok(SpeedResult::Saved(tier))
         }

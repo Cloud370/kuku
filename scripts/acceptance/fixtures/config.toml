@@ -1,22 +1,6 @@
-default_model = "balanced"
+default_model = { connection = "test-anthropic", model = "claude-sonnet-4-6" }
 
-[model.strong]
-provider = "test-anthropic"
-model = "claude-sonnet-4-6"
-think = "off"
-context_window = 200000
-max_output_tokens = 4096
-
-[model.balanced]
-provider = "test-anthropic"
-model = "claude-sonnet-4-6"
-think = "off"
-context_window = 200000
-max_output_tokens = 4096
-
-[model.light]
-provider = "test-anthropic"
-model = "claude-sonnet-4-6"
+[model.test-anthropic."claude-sonnet-4-6"]
 think = "off"
 context_window = 200000
 max_output_tokens = 4096

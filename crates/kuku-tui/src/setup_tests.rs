@@ -43,27 +43,6 @@ fn screen(
         .join("\n")
 }
 
-#[test]
-fn init_gate_requires_a_terminal_and_local_options_without_creating_paths() {
-    let directory = tempfile::tempdir().unwrap();
-    let options = options(directory.path());
-    let data_dir = options.data_dir.clone().unwrap();
-    let error =
-        super::validate_entry(&options, false, "Use a terminal or edit config.toml.").unwrap_err();
-    assert!(error.to_string().contains("No files were changed"));
-    assert!(!data_dir.exists());
-
-    let mut remote = options.clone();
-    remote.remote = Some("https://service.invalid".into());
-    assert!(
-        super::validate_entry(&remote, true, "guidance")
-            .unwrap_err()
-            .to_string()
-            .contains("local-only")
-    );
-    assert!(!data_dir.exists());
-}
-
 #[tokio::test]
 async fn stored_key_paste_is_masked_and_small_terminals_are_safe() {
     let directory = tempfile::tempdir().unwrap();
@@ -72,16 +51,16 @@ async fn stored_key_paste_is_masked_and_small_terminals_are_safe() {
     state.step = SetupStep::Credential;
     state.credential_source = CredentialSource::StoredKey;
     let fixture = "fixture-only-not-a-real-key";
-    state.handle(Event::Paste(fixture.into()), &settings, SetupMode::Init);
+    state.handle(Event::Paste(fixture.into()), &settings, SetupMode::Session);
 
-    let rendered = screen(&settings, &mut state, SetupMode::Init, 80, 24);
+    let rendered = screen(&settings, &mut state, SetupMode::Session, 80, 24);
     assert!(!rendered.contains(fixture));
     assert!(rendered.contains("fixture"));
     assert!(rendered.contains("•l-key"));
     assert_eq!("•••••••", super::ui::mask_key("1234567"));
     assert_eq!("12••••78", super::ui::mask_key("12345678"));
 
-    let small = screen(&settings, &mut state, SetupMode::Init, 24, 7);
+    let small = screen(&settings, &mut state, SetupMode::Session, 24, 7);
     assert!(small.contains("Terminal too small"));
     assert!(small.contains("Esc / Ctrl+C cancels"));
     state.step = SetupStep::Credential;
@@ -165,7 +144,7 @@ async fn minimum_size_renders_the_working_connection_choices() {
     let settings = Settings::load(options(directory.path())).await.unwrap();
     let mut state = SetupState::new(&settings);
     state.step = SetupStep::Connection;
-    let rendered = screen(&settings, &mut state, SetupMode::Init, 60, 20);
+    let rendered = screen(&settings, &mut state, SetupMode::Session, 60, 20);
     assert!(rendered.contains("Choose a provider"));
     assert!(rendered.contains("› New custom connection"));
     assert!(rendered.find("New custom connection") < rendered.find("Preset"));
@@ -180,7 +159,8 @@ async fn minimum_size_renders_the_working_connection_choices() {
     assert!(rendered.contains("Preset · OpenAI"));
 
     state.step = SetupStep::Consent;
-    let consent = screen(&settings, &mut state, SetupMode::Init, 60, 20);
+    let consent = screen(&settings, &mut state, SetupMode::FirstRun, 60, 20);
+    assert!(consent.contains("F1  Configuration guide"));
     assert!(consent.lines().nth(18).unwrap().starts_with("│Esc exit"));
 }
 
@@ -197,8 +177,8 @@ async fn minimum_size_keeps_save_and_settings_separate() {
 
     state.model.set_text("fixture".into());
     state.address.set_text("https://fixture.test/v1".into());
-    let init = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(init.contains("Save and exit"));
+    let init = screen(&settings, &mut state, SetupMode::Session, 60, 20);
+    assert!(init.contains("Save models"));
     assert!(init.contains("API URL"));
     assert!(init.contains("Settings"));
     assert!(!init.contains("Model capabilities"));
@@ -223,21 +203,21 @@ async fn credential_source_status_is_visible_at_minimum_size() {
     let mut state = SetupState::new(&settings);
     state.step = SetupStep::CredentialSource;
     state.credential_source = CredentialSource::Environment;
-    state.environment.set_text("ANTHROPIC_API_KEY".into());
+    state.environment.set_text("MY_GATEWAY_KEY".into());
     state.environment_detected = false;
 
-    let missing = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(missing.contains("Environment · not detected · ANTHROPIC_API_KEY"));
+    let missing = screen(&settings, &mut state, SetupMode::Session, 60, 20);
+    assert!(missing.contains("Environment · not detected · MY_GATEWAY_KEY"));
     assert!(missing.contains("Paste API key (save locally)"));
     assert!(missing.contains("Keys are tested after you choose a model."));
 
     state.environment_detected = true;
-    let detected = screen(&settings, &mut state, SetupMode::Init, 60, 20);
-    assert!(detected.contains("Environment · detected · ANTHROPIC_API_KEY"));
+    let detected = screen(&settings, &mut state, SetupMode::Session, 60, 20);
+    assert!(detected.contains("Environment · detected · MY_GATEWAY_KEY"));
 
     state.environment.set_text("K".repeat(200));
     state.environment_detected = false;
-    let long_name = screen(&settings, &mut state, SetupMode::Init, 60, 20);
+    let long_name = screen(&settings, &mut state, SetupMode::Session, 60, 20);
     assert!(long_name.contains("Environment · not detected ·"));
 }
 
@@ -287,7 +267,7 @@ async fn first_run_missing_credential_defaults_to_paste_repair() {
     let mut state = SetupState::new(&settings);
     state.step = SetupStep::Review;
     state.credential_source = CredentialSource::Environment;
-    state.environment.set_text("ANTHROPIC_API_KEY".into());
+    state.environment.set_text("MY_GATEWAY_KEY".into());
     state.environment_detected = false;
 
     assert_eq!(
@@ -485,7 +465,7 @@ async fn discovery_failure_preserves_the_form_and_search_preserves_selection() {
     state.handle(key(KeyCode::Enter), &settings, SetupMode::FirstRun);
     assert_eq!(Some("beta"), state.primary_model().as_deref());
     assert_eq!(vec!["alpha", "beta"], state.model_ids().unwrap());
-    let config = super::config::save(&settings, &state).unwrap();
-    assert_eq!("beta", config.tier(config.default_tier()).unwrap().model);
-    assert_eq!(2, config.tiers.len());
+    let (config, _) = super::config::save(&settings, &state).unwrap();
+    assert_eq!("beta", config.default_model.model);
+    assert_eq!(2, config.models.len());
 }

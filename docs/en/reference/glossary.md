@@ -18,15 +18,15 @@
 | Term | Meaning |
 |---|---|
 | `Provider` | Model API adapter and connection configuration |
-| `Tier` | Named model preset such as `strong`, `balanced`, or `light` |
-| `Think level` | Portable reasoning level: `off`, `low`, `medium`, or `high` |
+| Model pair | A connection name and the exact model ID on that connection |
+| `Think level` | Portable reasoning preference including `provider-default`, `off`, `low`, `medium`, and `high` |
 | `Handoff` | Compaction summary written to open a successor context segment |
 
 ## Extensions
 
 | Term | Meaning |
 |---|---|
-| Agent preset | Discoverable Markdown file defining initial instructions, tier, and tools |
+| Agent preset | Discoverable Markdown file defining initial instructions, model selection, and tools |
 | `Skill` | Packaged instruction set loaded into the current Session |
 | `Package` | Bundle of hooks, Skills, and related assets |
 | `Hook` | External process triggered by runtime lifecycle events |

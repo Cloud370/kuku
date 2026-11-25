@@ -119,9 +119,7 @@ pub(crate) async fn prepare(
     )
     .map_err(|_| CHANGED)?;
     if let Some(account) = settings
-        .resolved
-        .providers
-        .get(&route.connection)
+        .provider(&route.connection)
         .and_then(|provider| provider.options.subscription.as_ref())
     {
         return Err(format!(
@@ -130,7 +128,7 @@ pub(crate) async fn prepare(
             account.name().unwrap_or("ACCOUNT")
         ));
     }
-    if !settings.can_store_key() || !settings.resolved.providers.contains_key(&route.connection) {
+    if !settings.can_store_key() || settings.provider(&route.connection).is_none() {
         return Err("Private credential storage is unavailable for this connection. Correct the service configuration on its host and restart it before retrying.".into());
     }
     verify_config_route(&settings, &route)?;
@@ -242,11 +240,7 @@ fn verify_route(snapshot: &Snapshot, route: &FailedRoute) -> Result<(), String> 
 }
 
 fn verify_config_route(settings: &Settings, route: &FailedRoute) -> Result<(), String> {
-    let provider = settings
-        .resolved
-        .providers
-        .get(&route.connection)
-        .ok_or(CHANGED)?;
+    let provider = settings.provider(&route.connection).ok_or(CHANGED)?;
     let endpoint = Url::parse(&provider.base_url).map_err(|_| CHANGED)?;
     if provider.format != route.protocol || endpoint != route.endpoint {
         return Err(CHANGED.into());

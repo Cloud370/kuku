@@ -1,9 +1,16 @@
-use std::io::Write as _;
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::fs::{self, File, Permissions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use sha2::{Digest, Sha256};
+use tempfile::NamedTempFile;
+use toml_edit::{DocumentMut, Item, Key, Table, TableLike};
+
 use super::resolve::parse_config_text;
-use crate::config::types::{ConfigFile, HandoffConfig, ThinkLevel};
+use super::types::ModelRef;
+use crate::config::types::{ConfigFile, HandoffConfig, ThinkLevel, UpdateConfig};
 use crate::error::{Error, Result};
 
 /// Generate a default config file content as a TOML string.
@@ -91,8 +98,9 @@ fn inject_update_section(doc: &mut toml_edit::DocumentMut) {
         "\n\n# Update system: self-update source, channel, and custom mirrors.\n",
         "",
     );
-    section["source"] = toml_edit::value("github");
-    section["channel"] = toml_edit::value("stable");
+    let defaults = UpdateConfig::default();
+    section["source"] = toml_edit::value(defaults.source);
+    section["channel"] = toml_edit::value(defaults.channel);
     doc["update"] = toml_edit::Item::Table(section);
 }
 
@@ -106,105 +114,523 @@ pub(crate) fn load_and_patch_config_with_hook(
     path: &Path,
     before_guarded_write: impl FnOnce(),
 ) -> Result<ConfigFile> {
-    let raw = std::fs::read_to_string(path)
+    let raw = fs::read_to_string(path)
         .map_err(|error| Error::ConfigLoad(format!("cannot read config file {path:?}: {error}")))?;
     let (patched, changed) = config_patch_defaults(&raw)?;
+    let file = parse_config_text(&patched)?;
     if changed {
-        // Guard against concurrent edits: only write back if the file hasn't
-        // changed since we read it, so we don't overwrite user modifications.
-        before_guarded_write();
-        if let Ok(current) = std::fs::read_to_string(path) {
-            if current == raw {
-                let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|error| {
-                    Error::ConfigLoad(format!("cannot create temp file: {error}"))
-                })?;
-                std::io::Write::write_all(&mut temp, patched.as_bytes())
-                    .map_err(|error| Error::ConfigLoad(format!("cannot write config: {error}")))?;
-                temp.persist(path)
-                    .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
+        match publish_config(
+            path,
+            Some(raw.as_bytes()),
+            None,
+            patched.as_bytes(),
+            before_guarded_write,
+        ) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return parse_config_text(&fs::read_to_string(path)?);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(file)
+}
+
+/// SHA-256 of the exact bytes of a configuration snapshot.
+pub fn config_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Publish a staged configuration if the file still has the expected contents.
+///
+/// Use `None` for the original bytes only when creating an absent file. Writers
+/// using this API share a non-blocking lock. A conflicting write returns
+/// `AlreadyExists` after comparing the bytes, or `WouldBlock` if another writer
+/// still holds the lock. The pre-comparison hook runs with the lock held.
+pub fn publish_config(
+    config_path: &Path,
+    original_bytes: Option<&[u8]>,
+    original_permissions: Option<&Permissions>,
+    bytes: &[u8],
+    before_compare: impl FnOnce(),
+) -> io::Result<()> {
+    let parent = config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = config_path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "configuration path has no file name",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let parent = fs::canonicalize(parent)?;
+    let path = parent.join(name);
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let mut lock = fslock::LockFile::open(&PathBuf::from(lock_path))?;
+    if !lock.try_lock()? {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "configuration update is already in progress. Retry the update",
+        ));
+    }
+
+    let permissions = match fs::symlink_metadata(&path) {
+        Ok(metadata) if original_bytes.is_some() && metadata.is_file() => Some(
+            original_permissions
+                .cloned()
+                .unwrap_or_else(|| metadata.permissions()),
+        ),
+        Err(error) if original_bytes.is_none() && error.kind() == io::ErrorKind::NotFound => None,
+        Ok(_) => return Err(config_changed()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(config_changed()),
+        Err(error) => return Err(error),
+    };
+    let mut temporary = NamedTempFile::new_in(&parent)?;
+    if let Some(permissions) = permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
+    #[cfg(windows)]
+    crate::util::set_config_temp_security(
+        original_bytes.map(|_| path.as_path()),
+        temporary.path(),
+        temporary.as_file(),
+    )?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    before_compare();
+
+    if let Some(original) = original_bytes {
+        let current = fs::symlink_metadata(&path).and_then(|metadata| {
+            if metadata.is_file() {
+                fs::read(&path)
             } else {
-                return parse_config_text(&current);
+                Err(config_changed())
+            }
+        });
+        match current {
+            Ok(bytes) if bytes == original => {}
+            Ok(_) => return Err(config_changed()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(config_changed()),
+            Err(error) => return Err(error),
+        }
+        temporary.persist(&path).map_err(|error| error.error)?;
+    } else {
+        temporary.persist_noclobber(&path).map_err(|error| {
+            if error.error.kind() == io::ErrorKind::AlreadyExists {
+                config_changed()
+            } else {
+                error.error
+            }
+        })?;
+    }
+    if let Ok(directory) = File::open(&parent) {
+        let _ = directory.sync_all();
+    }
+    Ok(())
+}
+
+fn config_changed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "configuration changed since it was read. Retry the update",
+    )
+}
+
+/// Apply a literal TOML patch, preserving unrelated comments and fields.
+///
+/// Remove the TOML dotted paths in the top-level `delete` array, then merge
+/// tables with the remaining keys. An explicitly supplied `default_model`
+/// replaces the entire pair. Callers validate the resulting text before publishing.
+pub fn patch_config_text_with_env(
+    raw: &str,
+    patch: &str,
+    environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    patch_config_text_with_loaded_default(raw, patch, None, environment)
+}
+
+/// Apply a patch with the effective default from a service that loaded these exact bytes.
+/// The host must match the source file and its hash before supplying the pair.
+pub fn patch_config_text_with_loaded_default(
+    raw: &str,
+    patch: &str,
+    loaded_default: Option<&ModelRef>,
+    environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    let mut doc = parse_document(raw)?;
+    let mut patch: DocumentMut = patch
+        .parse::<DocumentMut>()
+        .map_err(|error| config_field("patch", error.message()))?;
+    let original = read_default(&doc);
+    // The service and the editing process can resolve the same reference differently.
+    // Only the original default's two components are known from the loaded snapshot.
+    let previous_environment = |name: &str| {
+        if let (Some(raw), Some(loaded)) = (&original, loaded_default) {
+            if raw.connection.strip_prefix('$') == Some(name) {
+                return Ok(loaded.connection.clone());
+            }
+            if raw.model.strip_prefix('$') == Some(name) {
+                return Ok(loaded.model.clone());
+            }
+        }
+        environment(name)
+    };
+    let previous = original
+        .as_ref()
+        .and_then(|raw| resolve_pair(raw, &previous_environment));
+    let delete = patch.remove("delete");
+    let delete = delete
+        .as_ref()
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| config_field("delete", "expected an array of TOML paths"))
+        })
+        .transpose()?;
+    let mut removed_previous = false;
+    if let Some(paths) = delete {
+        for (index, path) in paths.iter().enumerate() {
+            let path = path.as_str().ok_or_else(|| {
+                config_field(format!("delete[{index}]"), "expected a TOML dotted path")
+            })?;
+            let keys = Key::parse(path).map_err(|error| config_field(path, error.message()))?;
+            let covers_previous = original.as_ref().is_some_and(|raw| {
+                removes_model(
+                    &keys,
+                    previous.as_ref().unwrap_or(raw),
+                    &raw.model,
+                    &previous_environment,
+                )
+            });
+            let keys = resolve_model_path(&doc, keys, &previous_environment);
+            if !remove_path(doc.as_table_mut(), &keys) && !covers_previous {
+                return Err(config_field(path, "configuration path does not exist"));
+            }
+            removed_previous |= covers_previous;
+        }
+    }
+
+    resolve_patch_model_keys(&mut doc, &mut patch, &previous_environment)?;
+    merge_tables(doc.as_table_mut(), patch.as_table(), true);
+    if let (Some(previous), Some(raw)) = (&previous, &original) {
+        let new_default = read_default(&doc);
+        let is_still_default = new_default
+            .as_ref()
+            .and_then(|pair| resolve_pair(pair, &previous_environment))
+            .as_ref()
+            == Some(previous);
+        let registered = model_table(&doc, &previous.connection).is_some_and(|models| {
+            models.contains_key(&raw.model)
+                || registered_model_key(models, &previous.model, &previous_environment).is_some()
+        });
+        if removed_previous && is_still_default && !registered {
+            return Err(config_field(
+                "default_model.model",
+                "cannot delete the default model without selecting a replacement",
+            ));
+        }
+        if !removed_previous
+            && !registered
+            && new_default.as_ref() != Some(raw)
+            && has_connection(&doc, &previous.connection)
+        {
+            let old_key = if loaded_default.is_some()
+                && raw.model.starts_with('$')
+                && resolve_model_key(&raw.model, &environment).as_ref() != Some(&previous.model)
+            {
+                &previous.model
+            } else {
+                &raw.model
+            };
+            let model = ensure_table(doc.as_table_mut(), "model")?;
+            let connection = ensure_table(model, &previous.connection)?;
+            connection.insert(old_key, Item::Table(Table::new()));
+        }
+    }
+    Ok(doc.to_string())
+}
+
+fn read_default(doc: &DocumentMut) -> Option<ModelRef> {
+    let pair = doc.get("default_model")?.as_table_like()?;
+    Some(ModelRef::new(
+        pair.get("connection")?.as_str()?,
+        pair.get("model")?.as_str()?,
+    ))
+}
+
+fn resolve_pair(raw: &ModelRef, environment: &impl Fn(&str) -> EnvValue) -> Option<ModelRef> {
+    let resolve = |value: &str| match value.strip_prefix('$') {
+        Some(name) => environment(name).ok(),
+        None => Some(value.to_owned()),
+    };
+    Some(ModelRef::new(
+        resolve(&raw.connection)?,
+        resolve(&raw.model)?,
+    ))
+}
+
+fn has_connection(doc: &DocumentMut, name: &str) -> bool {
+    doc.get("provider")
+        .and_then(Item::as_table_like)
+        .is_some_and(|providers| providers.contains_key(name))
+}
+
+type EnvValue = std::result::Result<String, std::env::VarError>;
+
+fn model_table<'a>(doc: &'a DocumentMut, connection: &str) -> Option<&'a dyn TableLike> {
+    doc.get("model")?
+        .as_table_like()?
+        .get(connection)?
+        .as_table_like()
+}
+
+fn registered_model_key<'a>(
+    models: &'a dyn TableLike,
+    model: &str,
+    environment: &impl Fn(&str) -> EnvValue,
+) -> Option<&'a str> {
+    models
+        .iter()
+        .find_map(|(name, _)| model_key_matches(name, model, environment).then_some(name))
+}
+
+fn model_key_matches(key: &str, model: &str, environment: &impl Fn(&str) -> EnvValue) -> bool {
+    if key.starts_with('$') {
+        resolve_model_key(key, environment).as_deref() == Some(model)
+    } else {
+        key == model
+    }
+}
+
+fn resolve_model_key(key: &str, environment: &impl Fn(&str) -> EnvValue) -> Option<String> {
+    key.strip_prefix('$')
+        .and_then(|name| environment(name).ok())
+}
+
+fn removes_model(
+    keys: &[Key],
+    model: &ModelRef,
+    raw_model: &str,
+    environment: &impl Fn(&str) -> EnvValue,
+) -> bool {
+    let path = keys.iter().map(Key::get).collect::<Vec<_>>();
+    match path.as_slice() {
+        ["model"] => true,
+        ["model", connection] => *connection == model.connection,
+        ["model", connection, id] => {
+            *connection == model.connection
+                && (*id == raw_model || model_key_matches(id, &model.model, environment))
+        }
+        _ => false,
+    }
+}
+
+fn resolve_model_path(
+    doc: &DocumentMut,
+    mut keys: Vec<Key>,
+    environment: &impl Fn(&str) -> EnvValue,
+) -> Vec<Key> {
+    if let [root, connection, id, ..] = keys.as_mut_slice()
+        && root.get() == "model"
+        && let Some(models) = model_table(doc, connection.get())
+        && !models.contains_key(id.get())
+    {
+        let model = resolve_model_key(id.get(), environment).unwrap_or_else(|| id.get().to_owned());
+        if let Some(raw_key) = registered_model_key(models, &model, environment) {
+            *id = Key::new(raw_key);
+        }
+    }
+    keys
+}
+
+fn resolve_patch_model_keys(
+    doc: &mut DocumentMut,
+    patch: &mut DocumentMut,
+    environment: &impl Fn(&str) -> EnvValue,
+) -> Result<()> {
+    let (Some(models), Some(changes)) = (
+        doc.get_mut("model").and_then(Item::as_table_like_mut),
+        patch.get_mut("model").and_then(Item::as_table_like_mut),
+    ) else {
+        return Ok(());
+    };
+    for (connection, entry) in changes.iter_mut() {
+        let Some(registrations) = entry.as_table_like_mut() else {
+            continue;
+        };
+        let Some(existing) = models
+            .get_mut(connection.get())
+            .and_then(Item::as_table_like_mut)
+        else {
+            continue;
+        };
+        let aliases = registrations
+            .iter()
+            .filter_map(|(id, _)| {
+                if existing.contains_key(id) {
+                    return None;
+                }
+                let model = resolve_model_key(id, environment).unwrap_or_else(|| id.to_owned());
+                registered_model_key(existing, &model, environment)
+                    .map(|key| (id.to_owned(), key.to_owned()))
+            })
+            .collect::<Vec<_>>();
+        let mut targets = BTreeSet::new();
+        for (incoming, target) in &aliases {
+            if registrations.contains_key(target) || !targets.insert(target) {
+                return Err(config_field(
+                    ModelRef::new(connection.get(), incoming).config_path(),
+                    format!("patch names the same model twice through {target:?}"),
+                ));
+            }
+            if incoming.starts_with('$') {
+                // Keep the requested reference so later config loads resolve the same table.
+                if let Some(item) = existing.remove(target) {
+                    existing.insert(incoming, item);
+                }
+            } else if let Some(item) = registrations.remove(incoming) {
+                registrations.insert(target, item);
             }
         }
     }
-    parse_config_text(&patched)
+    Ok(())
 }
 
-/// Modify a single value in a config file by dot-notation key.
-///
-/// Validates the modified config structurally (cross-references, types, enum values).
-/// Does NOT validate runtime constraints (env var existence).
-/// Preserves comments and formatting via `toml_edit`.
-pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| Error::ConfigLoad(format!("cannot read config: {error}")))?;
-
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|error| Error::ConfigLoad(format!("invalid config: {error}")))?;
-
-    let parts: Vec<&str> = dot_key.split('.').collect();
-    if parts.is_empty() {
-        return Err(Error::ConfigLoad("empty config key".to_string()));
+fn ensure_table<'a>(parent: &'a mut dyn TableLike, key: &str) -> Result<&'a mut dyn TableLike> {
+    if !parent.contains_key(key) {
+        let mut table = Table::new();
+        table.set_implicit(true);
+        parent.insert(key, Item::Table(table));
     }
+    parent
+        .get_mut(key)
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| config_field(key, "expected a table"))
+}
 
-    let (parent_parts, leaf_key) = parts.split_at(parts.len() - 1);
-    let leaf = leaf_key[0];
-
-    let mut table = doc.as_table_mut();
-    for part in parent_parts {
-        let item = table.get_mut(part).ok_or_else(|| {
-            Error::ConfigLoad(format!("unknown config key: segment '{part}' not found"))
-        })?;
-        table = item.as_table_mut().ok_or_else(|| {
-            Error::ConfigLoad(format!(
-                "unknown config key: segment '{part}' is not a table"
-            ))
-        })?;
+fn remove_path(table: &mut dyn TableLike, keys: &[Key]) -> bool {
+    match keys.split_first() {
+        Some((key, [])) => table.remove(key.get()).is_some(),
+        Some((key, rest)) => table
+            .get_mut(key.get())
+            .and_then(Item::as_table_like_mut)
+            .is_some_and(|child| remove_path(child, rest)),
+        None => false,
     }
+}
 
-    let new_value = match leaf {
-        "context_window" | "max_output_tokens" | "max_age_days" | "max_total_size_mb" => {
-            let n: i64 = value.parse().map_err(|_| {
-                Error::ConfigLoad(format!(
-                    "'{dot_key}' must be a positive integer, got '{value}'"
-                ))
+fn merge_tables(target: &mut dyn TableLike, patch: &dyn TableLike, root: bool) {
+    for (key, item) in patch.iter() {
+        if !(root && key == "default_model")
+            && let Some(child) = target.get_mut(key).and_then(Item::as_table_like_mut)
+            && let Some(changes) = item.as_table_like()
+        {
+            merge_tables(child, changes, false);
+        } else {
+            replace_item(target, key, item.clone());
+        }
+    }
+}
+
+fn replace_item(table: &mut dyn TableLike, key: &str, mut item: Item) {
+    if let Some(previous) = table.get_mut(key).and_then(Item::as_value_mut)
+        && let Some(replacement) = item.as_value_mut()
+    {
+        *replacement.decor_mut() = previous.decor().clone();
+        *previous = replacement.clone();
+    } else {
+        table.insert(key, item);
+    }
+}
+
+fn parse_document(raw: &str) -> Result<DocumentMut> {
+    raw.parse::<DocumentMut>()
+        .map_err(|error| Error::ConfigLoad(error.message().to_owned()))
+}
+
+fn config_field(field: impl Into<String>, message: impl Into<String>) -> Error {
+    Error::ConfigField {
+        field: field.into(),
+        message: message.into(),
+    }
+}
+
+/// Edit one scalar value using a TOML dotted path, preserving comments and formatting.
+pub fn config_text_with_value(raw: &str, dot_key: &str, value: &str) -> Result<String> {
+    config_text_with_value_in_env(raw, dot_key, value, |name| std::env::var(name))
+}
+
+/// Edit one scalar using the caller's environment to locate a registered model by exact ID.
+pub fn config_text_with_value_in_env(
+    raw: &str,
+    dot_key: &str,
+    value: &str,
+    environment: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    let mut doc = parse_document(raw)?;
+    let keys = Key::parse(dot_key).map_err(|error| config_field(dot_key, error.message()))?;
+    let keys = resolve_model_path(&doc, keys, &environment);
+    let (leaf, parents) = keys
+        .split_last()
+        .ok_or_else(|| config_field(dot_key, "empty config key"))?;
+    let mut table: &mut dyn TableLike = doc.as_table_mut();
+    for key in parents {
+        table = table
+            .get_mut(key.get())
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| {
+                config_field(
+                    dot_key,
+                    format!("unknown config key: table {key} does not exist"),
+                )
             })?;
-            if n <= 0 {
-                return Err(Error::ConfigLoad(format!(
-                    "'{dot_key}' must be a positive integer, got '{value}'"
-                )));
-            }
+    }
+    let item = match leaf.get() {
+        "context_window" | "max_output_tokens" | "max_age_days" | "max_total_size_mb"
+        | "keep_turns" => {
+            let n = value
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| {
+                    config_field(
+                        dot_key,
+                        format!("expected a positive integer, got {value:?}"),
+                    )
+                })?;
             toml_edit::value(n)
         }
         "think" => {
-            ThinkLevel::from_str(value)?;
+            ThinkLevel::from_str(value)
+                .map_err(|error| config_field(dot_key, error.to_string()))?;
             toml_edit::value(value)
         }
         "format" => {
             value
                 .parse::<super::types::ProviderFormat>()
-                .map_err(|msg| Error::ConfigLoad(format!("{msg}, got '{value}'")))?;
+                .map_err(|message| config_field(dot_key, message))?;
             toml_edit::value(value)
         }
         _ => toml_edit::value(value),
     };
+    if keys.first().is_some_and(|key| key.get() == "default_model") {
+        return Err(config_field(
+            dot_key,
+            "use a patch to update the complete default model pair",
+        ));
+    }
+    replace_item(table, leaf.get(), item);
+    Ok(doc.to_string())
+}
 
-    table[leaf] = new_value;
-
-    let modified_text = doc.to_string();
-    let config_file: ConfigFile = toml::from_str(&modified_text)
-        .map_err(|error| Error::ConfigLoad(format!("modified config is invalid: {error}")))?;
-    config_file.validate_all()?;
-
-    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(dir)
-        .map_err(|error| Error::ConfigLoad(format!("cannot create temp file: {error}")))?;
-    temp.write_all(modified_text.as_bytes())
-        .map_err(|error| Error::ConfigLoad(format!("cannot write config: {error}")))?;
-    temp.persist(path)
-        .map_err(|error| Error::ConfigLoad(format!("cannot save config: {error}")))?;
-
+/// Validate and publish a single scalar edit to an existing configuration file.
+pub fn set_value(path: &Path, dot_key: &str, value: &str) -> Result<()> {
+    let raw = fs::read_to_string(path)?;
+    let modified = config_text_with_value(&raw, dot_key, value)?;
+    parse_config_text(&modified)?.resolve()?;
+    publish_config(path, Some(raw.as_bytes()), None, modified.as_bytes(), || {})?;
     Ok(())
 }

@@ -163,6 +163,10 @@ async fn open_authorized(
     let root = tempfile::tempdir().unwrap();
     let mut options =
         SessionOptions::new(root.path(), root.path().join("data"), common::test_config());
+    options.config.models.insert(
+        kuku::ModelRef::new("anthropic", "updated-fixture-model"),
+        options.config.models[&options.config.default_model].clone(),
+    );
     let (model, calls) = mpsc::unbounded_channel();
     let tool = Arc::new(HoldTool::default());
     options.model_adapter = Some(Arc::new(Model(model)));
@@ -859,6 +863,7 @@ async fn retry_uses_the_prepared_body_and_leaves_new_input_and_selection_for_the
             "select",
             "main",
             AgentConfig {
+                connection: Some("anthropic".into()),
                 model: Some("updated-fixture-model".into()),
                 ..AgentConfig::default()
             },

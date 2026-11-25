@@ -21,28 +21,67 @@ if [[ -z "$RUN_ID" ]]; then
 fi
 KUKU_HOME_HOST="$CACHE_ROOT/kuku-home-runs/$RUN_ID"
 KUKU_HOME_CONTAINER="$CONTAINER_CACHE_DIR/kuku-home-runs/$RUN_ID"
-
 mkdir -p "$CACHE_ROOT/target" "$CACHE_ROOT/kuku-home-runs" "$CACHE_ROOT/cargo-home" "$CACHE_ROOT/rustup" "$KUKU_HOME_HOST"
 
+SOURCE_REVISION="${KUKU_SOURCE_REVISION:-$(git -C "$WORKSPACE_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+BUILD_MOUNTS=(-v "$WORKSPACE_ROOT:/workspace:ro")
+BUILD_PACKAGE=kuku-app
+if [[ -n "${KUKU_CHECK_DOCS_CHECKOUT:-}" ]]; then
+    docs_tree="$(git -C "$KUKU_CHECK_DOCS_CHECKOUT" write-tree --prefix=docs/)"
+    BUILD_MOUNTS+=(-v "$KUKU_CHECK_DOCS_CHECKOUT/docs:/workspace/docs:ro" -e KUKU_DOCS_INPUT_TREE="$docs_tree")
+    BUILD_PACKAGE=kuku
+fi
 docker run --rm \
     --user "$(id -u):$(id -g)" \
     -e CARGO_TARGET_DIR="$CONTAINER_CACHE_DIR/target" \
     -e CARGO_HOME="$CONTAINER_CACHE_DIR/cargo-home" \
-    -e KUKU_HOME="$KUKU_HOME_CONTAINER" \
     -e RUSTUP_HOME="$CONTAINER_CACHE_DIR/rustup" \
+    -e KUKU_SOURCE_REVISION="$SOURCE_REVISION" \
+    "${BUILD_MOUNTS[@]}" \
+    -v "$CACHE_ROOT/target:$CONTAINER_CACHE_DIR/target" \
+    -v "$CACHE_ROOT/cargo-home:$CONTAINER_CACHE_DIR/cargo-home" \
+    -v "$CACHE_ROOT/rustup:$CONTAINER_CACHE_DIR/rustup" \
+    -w /workspace \
+    "$IMAGE_TAG" \
+    cargo build --locked -p "$BUILD_PACKAGE" >&2
+
+RUNNER_DIR=/run/kuku-docs-translate
+RUNTIME_ARGS=(
+    -v "$SCRIPT_DIR/check-in-container.sh:$RUNNER_DIR/check-in-container.sh:ro"
+    -v "$SCRIPT_DIR/config.toml:$RUNNER_DIR/config.toml:ro"
+    -v "$SCRIPT_DIR/agent.md:$RUNNER_DIR/agents/docs-translation.md:ro"
+    -v "$WORKSPACE_ROOT/.kuku/skills/docs-translate/SKILL.md:$RUNNER_DIR/skills/docs-translate/SKILL.md:ro"
+)
+if [[ "${KUKU_CHECK_RUN:-1}" == "1" && -z "${KUKU_CHECK_SESSION_ID:-}" ]]; then
+    if [[ -z "${CI_LLM_API_KEY:-}" || -z "${CI_LLM_BASE_URL:-}" ]]; then
+        printf 'CI_LLM_API_KEY and CI_LLM_BASE_URL are required for a model run\n' >&2
+        exit 1
+    fi
+    key_file="$(mktemp)"
+    trap 'rm -f -- "$key_file"' EXIT
+    printf '%s' "$CI_LLM_API_KEY" > "$key_file"
+    RUNTIME_ARGS+=(-v "$key_file:/run/kuku-docs-translate.key:ro")
+fi
+
+if [[ -n "${KUKU_CHECK_WORKSPACE:-}" ]]; then
+    RUNTIME_ARGS+=(-v "$KUKU_CHECK_WORKSPACE:/translation" -w /translation)
+else
+    RUNTIME_ARGS+=(-v "$WORKSPACE_ROOT/docs:/workspace/docs:ro" -w /workspace)
+fi
+
+docker run --rm --read-only --tmpfs /tmp \
+    --user "$(id -u):$(id -g)" \
+    -e KUKU_HOME="$KUKU_HOME_CONTAINER" \
     -e KUKU_CHECK_RUN="${KUKU_CHECK_RUN:-1}" \
-    -e KUKU_CHECK_MODEL="${KUKU_CHECK_MODEL:-balanced}" \
     -e KUKU_CHECK_OUTPUT_MODE="${KUKU_CHECK_OUTPUT_MODE:-raw}" \
+    -e KUKU_CHECK_PRESET \
     -e KUKU_CHECK_PROMPT="${KUKU_CHECK_PROMPT:-}" \
     -e KUKU_CHECK_SESSION_ID="${KUKU_CHECK_SESSION_ID:-}" \
     -e KUKU_CHECK_SHOW_SKILL_INFO="${KUKU_CHECK_SHOW_SKILL_INFO:-0}" \
-    -e KUKU_CONFIG_SOURCE=/workspace/scripts/docs-translate/config.toml \
-    -e GH_TOKEN="${GH_TOKEN:-}" \
-    -e GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
-    -e KUKU_ANTHROPIC_BASE_URL="${KUKU_ANTHROPIC_BASE_URL:-}" \
-    -e KUKU_ANTHROPIC_API_KEY="${KUKU_ANTHROPIC_API_KEY:-}" \
-    -v "$WORKSPACE_ROOT:/workspace" \
-    -v "$CACHE_ROOT:$CONTAINER_CACHE_DIR" \
-    -w /workspace \
+    -e CI_LLM_BASE_URL \
+    -e CI_LLM_MODEL \
+    -v "$CACHE_ROOT/target/debug/kuku:/usr/local/bin/kuku:ro" \
+    -v "$KUKU_HOME_HOST:$KUKU_HOME_CONTAINER" \
+    "${RUNTIME_ARGS[@]}" \
     "$IMAGE_TAG" \
-    bash scripts/docs-translate/check-in-container.sh
+    bash "$RUNNER_DIR/check-in-container.sh"

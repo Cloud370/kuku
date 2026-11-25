@@ -369,7 +369,6 @@ fn update_model_selection(snapshot: &super::AgentSnapshot) -> Option<AgentConfig
     let active = snapshot.active_config.as_ref()?;
     let config = AgentConfig {
         connection: requested.connection.clone(),
-        tier: requested.tier.clone(),
         model: requested.model.clone(),
         reasoning_effort: requested.reasoning_effort.clone(),
         output: requested.output,

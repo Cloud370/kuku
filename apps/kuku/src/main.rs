@@ -10,7 +10,7 @@ mod web;
 async fn main() {
     if let Err(error) = run(Cli::parse()).await {
         eprintln!("error: {error}");
-        std::process::exit(1);
+        std::process::exit(kuku_cli::commands::exit_status(error.as_ref()));
     }
 }
 
@@ -32,26 +32,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     .await?;
             }
         },
-        Some(Command::Web(args)) => {
-            let connection = cli.target.connect().await?;
-            let session = args.session.as_deref();
-            let agent = args.agent.as_deref();
-            let url = if connection.local.is_some() {
-                connection
-                    .client
-                    .browser_url(&connection.workspace, session, agent)
-                    .await?
-            } else {
-                connection
-                    .client
-                    .web_url(&connection.workspace, session, agent)?
-            };
-            if args.print_url {
-                println!("{url}");
-            } else {
-                kuku_tui::open_browser(url.as_str())?;
-            }
-        }
         Some(command) => kuku_cli::commands::dispatch(command, &cli.target).await?,
     }
     Ok(())

@@ -1,36 +1,94 @@
-use crate::config::{
-    Config, ProviderConfig as CfgProvider, ProviderFormat, ThinkLevel, TierConfig,
-};
+use crate::config::{Config, ModelRef, ThinkLevel};
 use crate::error::{Error, Result};
 
 use super::capabilities::{resolve_capabilities, resolve_settings};
 use super::types::{Provider, ProviderKind, ResolvedProvider, SecretString};
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct ResolveConfigInput {
+pub(crate) struct ResolveConfigInput<'a> {
     pub(crate) connection: Option<String>,
     pub(crate) provider: Option<Provider>,
     pub(crate) model: Option<String>,
-    pub(crate) tier: Option<String>,
     pub(crate) base_url: Option<String>,
     pub(crate) api_key: Option<String>,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) max_output_tokens_per_request: Option<u32>,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) service_tier: Option<String>,
-    pub(crate) config: Option<Config>,
+    pub(crate) config: Option<&'a Config>,
     pub(crate) output: Option<crate::config::RequestedOutput>,
 }
 
-pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvider> {
-    let cfg = input.config.as_ref();
-    let tier = select_tier(cfg, input.tier.as_deref())?;
-    let (name, connection) = select_connection(cfg, tier, &input)?;
+pub(crate) fn resolve_config(input: ResolveConfigInput<'_>) -> Result<ResolvedProvider> {
+    resolve(input, true)
+}
+
+pub(crate) fn validate_model_config(config: &Config, model: &ModelRef) -> Result<()> {
+    resolve(
+        ResolveConfigInput {
+            connection: Some(model.connection.clone()),
+            model: Some(model.model.clone()),
+            config: Some(config),
+            ..Default::default()
+        },
+        model == config.default_model(),
+    )?;
+    Ok(())
+}
+
+fn resolve(input: ResolveConfigInput<'_>, require_output_limit: bool) -> Result<ResolvedProvider> {
+    let (name, model, connection, model_config) = if input.connection.is_none()
+        && input.base_url.is_some()
+        && input.api_key.is_some()
+        && let (Some(provider), Some(model)) = (input.provider, &input.model)
+    {
+        // The standalone Query builder can supply a complete connection directly.
+        (
+            ProviderKind::from(provider).as_str().into(),
+            model.clone(),
+            None,
+            None,
+        )
+    } else {
+        let config = input.config.ok_or_else(|| {
+            Error::MissingProviderConfig("configure a named connection and model".into())
+        })?;
+        let selection =
+            match (&input.connection, &input.model) {
+                (Some(connection), Some(model)) => ModelRef::new(connection, model),
+                (None, None) => config.default_model.clone(),
+                _ => return Err(Error::InvalidArgument(
+                    "specify both connection and exact model ID, or omit both to use the default"
+                        .into(),
+                )),
+            };
+        let connection = config.provider(&selection.connection).ok_or_else(|| {
+            Error::MissingProviderConfig(format!(
+                "connection {:?} for model {:?} is not configured",
+                selection.connection, selection.model,
+            ))
+        })?;
+        let model_config = config.model(&selection).ok_or_else(|| {
+            Error::MissingProviderConfig(format!(
+                "model {:?} is not registered on connection {:?}; register [{}] or choose a configured pair",
+                selection.model, selection.connection, selection.config_path(),
+            ))
+        })?;
+        (
+            selection.connection,
+            selection.model,
+            Some(connection),
+            Some(model_config),
+        )
+    };
+    if model.is_empty() || model.trim() != model {
+        return Err(Error::InvalidArgument(
+            "model ID must be nonempty with no surrounding whitespace".into(),
+        ));
+    }
     let kind = match connection {
         Some(connection) => ProviderKind::from(connection.format),
-        None => input.provider.map(ProviderKind::from).ok_or_else(|| {
-            Error::MissingProviderConfig(format!("connection '{name}' is not configured"))
-        })?,
+        None => ProviderKind::from(input.provider.expect("complete standalone Query provider")),
     };
     if input
         .provider
@@ -40,13 +98,6 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             "connection '{name}' uses a different wire protocol from the requested provider"
         )));
     }
-    let model = input
-        .model
-        .clone()
-        .or_else(|| tier.map(|tier| tier.model.clone()))
-        .ok_or_else(|| {
-            Error::MissingProviderConfig("no model configured; choose a model or tier".into())
-        })?;
     let base_url = input
         .base_url
         .clone()
@@ -74,23 +125,19 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         options.endpoint_url.as_deref(),
     )?;
     let capabilities = resolve_capabilities(&endpoint, &model, kind, &options);
-    let route_request = tier
-        .filter(|tier| tier.provider == name && tier.model == model)
-        .and_then(|tier| tier.request.clone());
-    let settings_tier =
-        tier.filter(|tier| input.tier.is_some() || (tier.provider == name && tier.model == model));
-    let think = settings_tier.map(|tier| tier.think);
+    let route_request = model_config.and_then(|config| config.request.clone());
+    let think = model_config.map(|config| config.think);
     let native_reasoning = input
         .reasoning_effort
         .clone()
-        .or_else(|| settings_tier.and_then(|tier| tier.reasoning_effort.clone()));
+        .or_else(|| model_config.and_then(|config| config.reasoning_effort.clone()));
     let requested_service = input
         .service_tier
         .clone()
-        .or_else(|| settings_tier.and_then(|tier| tier.service_tier.clone()));
+        .or_else(|| model_config.and_then(|config| config.service_tier.clone()));
     let output = input
         .output
-        .or_else(|| settings_tier.map(|tier| tier.output))
+        .or_else(|| model_config.map(|config| config.output))
         .unwrap_or_default();
     if output == crate::config::RequestedOutput::Image
         && capabilities
@@ -116,19 +163,15 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
             "connection '{name}': routing options require an OpenRouter profile"
         )));
     }
-    let requires_output_limit = kind == ProviderKind::Anthropic
+    let requires_output_limit = require_output_limit
+        && kind == ProviderKind::Anthropic
         && !matches!(
             capabilities.profile,
             crate::config::ProviderProfile::DeepSeek | crate::config::ProviderProfile::OpenRouter
         );
-    let output_tier = if requires_output_limit {
-        tier
-    } else {
-        settings_tier
-    };
     let max_output_tokens = input
         .max_output_tokens
-        .or_else(|| output_tier.and_then(|tier| tier.max_output_tokens))
+        .or_else(|| model_config.and_then(|config| config.max_output_tokens))
         .into_iter()
         .chain(input.max_output_tokens_per_request)
         .min();
@@ -139,7 +182,7 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
     }
     if max_output_tokens.is_none() && requires_output_limit {
         return Err(Error::MissingProviderConfig(format!(
-            "connection '{name}': Anthropic Messages requires max_tokens. Set max_output_tokens for model '{model}' on the tier or request, or provide a host output limit."
+            "connection '{name}': Anthropic Messages requires max_tokens. Set max_output_tokens for model '{model}' or on the request, or provide a host output limit."
         )));
     }
     let resolved = ResolvedProvider {
@@ -148,7 +191,9 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         model,
         base_url,
         api_key,
-        max_context_tokens: tier.map(|tier| tier.context_window).unwrap_or(200_000),
+        max_context_tokens: model_config
+            .map(|config| config.context_window)
+            .unwrap_or(200_000),
         max_output_tokens,
         output,
         think_level: think.unwrap_or(ThinkLevel::Off),
@@ -162,65 +207,4 @@ pub(crate) fn resolve_config(input: ResolveConfigInput) -> Result<ResolvedProvid
         .validate_output_limit(max_output_tokens)
         .map_err(|message| Error::InvalidArgument(message.into()))?;
     Ok(resolved)
-}
-
-fn select_tier<'a>(cfg: Option<&'a Config>, name: Option<&str>) -> Result<Option<&'a TierConfig>> {
-    match name {
-        Some(name) => cfg.and_then(|cfg| cfg.tier(name)).map(Some).ok_or_else(|| {
-            Error::MissingProviderConfig(format!("tier '{name}' not found in config"))
-        }),
-        None => Ok(cfg.and_then(|cfg| cfg.tier(cfg.default_tier()))),
-    }
-}
-
-fn select_connection<'a>(
-    cfg: Option<&'a Config>,
-    tier: Option<&TierConfig>,
-    input: &ResolveConfigInput,
-) -> Result<(String, Option<&'a CfgProvider>)> {
-    if let Some(name) = &input.connection {
-        let connection = cfg.and_then(|cfg| cfg.provider(name)).ok_or_else(|| {
-            let message = if cfg.is_some_and(|cfg| cfg.tier(name).is_some()) {
-                format!(
-                    "connection '{name}' not found in config. '{name}' is a configured model tier. Set tier={name:?} and omit connection to use that tier's provider."
-                )
-            } else {
-                format!("connection '{name}' not found in config")
-            };
-            Error::MissingProviderConfig(message)
-        })?;
-        return Ok((name.clone(), Some(connection)));
-    }
-    if let Some(tier) = tier {
-        let connection = cfg.and_then(|cfg| cfg.provider(&tier.provider));
-        if input.provider.is_none()
-            || connection
-                .is_some_and(|connection| protocol_matches(input.provider, connection.format))
-        {
-            return Ok((tier.provider.clone(), connection));
-        }
-    }
-    if let Some(provider) = input.provider {
-        if input.base_url.is_some() && input.api_key.is_some() {
-            return Ok((ProviderKind::from(provider).as_str().into(), None));
-        }
-        return Err(Error::MissingProviderConfig(
-            "choose a named connection; a protocol does not identify a provider connection".into(),
-        ));
-    }
-    Err(Error::MissingProviderConfig(
-        "no connection configured; choose a named connection or tier".into(),
-    ))
-}
-
-fn protocol_matches(provider: Option<Provider>, format: ProviderFormat) -> bool {
-    matches!(
-        (provider, format),
-        (Some(Provider::Anthropic), ProviderFormat::Anthropic)
-            | (Some(Provider::OpenAiCompatible), ProviderFormat::OpenAiChat)
-            | (
-                Some(Provider::OpenAiResponses),
-                ProviderFormat::OpenAiResponses
-            )
-    )
 }

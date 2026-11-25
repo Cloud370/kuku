@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
 
 use kuku::ModelRecoveryInfo;
-use kuku_client::{AgentSnapshot, AgentStatus, HistoryEntry, HistoryKind};
+use kuku_client::{Acknowledgement, HistoryEntry, HistoryKind, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -10,7 +10,7 @@ use crate::cli_args::RunArgs;
 use crate::commands::CliResult;
 use crate::display::{Display, OutputLine};
 
-use super::permission_ask_line;
+use super::{RunOutcome, RunProgress, RunResult, permission_ask_line};
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -76,6 +76,10 @@ impl RunRenderer {
             in_thinking: false,
             thinking_start: None,
         }
+    }
+
+    pub(super) fn streaming(&self) -> bool {
+        self.stream_json
     }
 
     pub(super) fn needs_preview(&self) -> bool {
@@ -171,35 +175,63 @@ impl RunRenderer {
         Ok(())
     }
 
+    pub(super) fn acknowledged(
+        &self,
+        target: &Target,
+        acknowledgement: &Acknowledgement,
+    ) -> CliResult {
+        if self.json || self.stream_json {
+            write_json(&json!({
+                "type": "session", "event": "acknowledged", "status": "acknowledged",
+                "session_id": target.session_id, "agent": target.agent, "replayed": true,
+                "receipt": acknowledgement.receipt, "input_status": acknowledgement.status,
+            }))?;
+        } else {
+            let receipt = &acknowledgement.receipt;
+            eprintln!(
+                "command {} already committed at event {}. Session {} agent {}",
+                receipt.command_id, receipt.event_id, target.session_id, target.agent,
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn finish(
         &mut self,
-        session_id: &str,
-        agent: &AgentSnapshot,
+        progress: &RunProgress,
+        agent: &str,
+        report: &RunResult,
+        outcome: RunOutcome,
         elapsed: std::time::Duration,
     ) -> CliResult {
         self.close_thinking();
-        let event = match agent.status {
-            _ if agent.permission.is_some() => "waiting",
-            AgentStatus::Idle => "completed",
-            AgentStatus::Waiting => "waiting",
-            AgentStatus::Stopped | AgentStatus::Interrupted => "interrupted",
-            AgentStatus::Running => "running",
-        };
+        let response = report.response.as_deref();
         if self.json || self.stream_json {
-            if let Some(request) = &agent.permission {
+            if let Some(request) = &report.permission {
                 if self.stream_json {
                     write_json(&permission_ask_line(request))?;
                 }
             }
-            write_json(&json!({
-                "type": "session", "event": event, "session_id": session_id,
-                "agent": agent.address, "status": agent.status, "turns": agent.turn,
-                "response": agent.last_output, "error": agent.last_error,
-                "config": agent.config, "usage": agent.usage,
-                "permission": agent.permission, "question": agent.question, "duration_ms": elapsed.as_millis(),
-            }))?;
+            #[derive(Serialize)]
+            struct FinalRecord<'a> {
+                #[serde(flatten)]
+                session: Value,
+                #[serde(flatten)]
+                result: &'a RunResult,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                connection: Option<&'a str>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                model: Option<&'a str>,
+            }
+            let route = report.last_model_route.as_ref();
+            write_json(&FinalRecord {
+                session: terminal_record(progress, agent, outcome, elapsed),
+                result: report,
+                connection: route.map(|route| route.connection.as_str()),
+                model: route.map(|route| route.model.as_str()),
+            })?;
         } else {
-            if let Some(output) = &agent.last_output {
+            if let Some(output) = response {
                 if let Some(suffix) = output.strip_prefix(&self.rendered_text) {
                     print!("{suffix}");
                 } else if !self.rendered_text.ends_with(output) {
@@ -207,22 +239,48 @@ impl RunRenderer {
                 }
             }
             println!();
-            eprintln!("session {session_id} agent {}: {event}", agent.address);
-            if let Some(request) = &agent.permission {
+            let session_id = progress.session_id.as_deref().unwrap_or_default();
+            eprintln!("session {session_id} agent {agent}: {}", outcome.as_str());
+            if let Some(request) = &report.permission {
                 eprintln!("pending authorization {}: {}", request.id, request.summary);
             }
-            if let Some(request) = &agent.question {
+            if let Some(request) = &report.question {
                 eprintln!("pending question {}: {}", request.id, request.text);
             }
             if self.verbose {
                 eprintln!(
                     "{}",
-                    serde_json::to_string_pretty(agent).unwrap_or_default()
+                    serde_json::to_string_pretty(report).unwrap_or_default()
                 );
             }
         }
         Ok(())
     }
+
+    pub(super) fn finish_error(
+        &mut self,
+        progress: &RunProgress,
+        agent: &str,
+        error: &(dyn std::error::Error + 'static),
+        elapsed: std::time::Duration,
+    ) -> CliResult {
+        self.close_thinking();
+        if self.json || self.stream_json {
+            let outcome = error
+                .downcast_ref::<RunOutcome>()
+                .copied()
+                .unwrap_or(RunOutcome::Failed);
+            let mut result = terminal_record(progress, agent, outcome, elapsed);
+            if outcome == RunOutcome::InputWithdrawn {
+                result["input_status"] = json!("withdrawn");
+            } else if outcome == RunOutcome::Failed {
+                result["error"] = json!(error.to_string());
+            }
+            write_json(&result)?;
+        }
+        Ok(())
+    }
+
     fn close_thinking(&mut self) {
         if self.in_thinking {
             self.in_thinking = false;
@@ -247,6 +305,21 @@ impl RunRenderer {
         }
         Ok(())
     }
+}
+
+fn terminal_record(
+    progress: &RunProgress,
+    agent: &str,
+    outcome: RunOutcome,
+    elapsed: std::time::Duration,
+) -> Value {
+    let status = outcome.as_str();
+    json!({
+        "type": "session", "event": status, "status": status,
+        "session_id": progress.session_id, "agent": agent, "duration_ms": elapsed.as_millis(),
+        "receipt": progress.acknowledgement.as_ref().map(|ack| &ack.receipt),
+        "replayed": progress.acknowledgement.as_ref().is_some_and(|ack| ack.replayed),
+    })
 }
 
 pub(super) fn write_json(record: &impl Serialize) -> CliResult {

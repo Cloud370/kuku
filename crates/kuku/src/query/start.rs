@@ -9,6 +9,7 @@ use crate::log::{
 use crate::session::{
     current_workspace, kuku_home, new_session_id, session_events_path, validate_session_id,
 };
+use crate::skill::bundle;
 use crate::skill::session::{
     TurnSkillSnapshot, build_registry_snapshot, previous_snapshot_before_turn,
     restore_turn_snapshot,
@@ -60,9 +61,9 @@ fn has_builder_provider_config(query: &Query) -> bool {
 
 fn synthetic_builder_config() -> crate::config::Config {
     crate::config::Config {
-        tiers: BTreeMap::new(),
+        models: BTreeMap::new(),
         providers: BTreeMap::new(),
-        default_tier: String::new(),
+        default_model: crate::config::ModelRef::default(),
         discovery: crate::config::DiscoveryConfig::default(),
         handoff: crate::config::HandoffConfig::default(),
         logs: crate::config::LogsConfig::default(),
@@ -142,11 +143,9 @@ impl Query {
         validate_session_id(&session_id)?;
 
         let lock_path = crate::session::session_lock_path(&kuku_home, &workspace, &session_id);
-        let run_lock_path = if acquire_lock {
-            StartupLockGuard::acquire(lock_path.clone())?.into_path()
-        } else {
-            lock_path.with_extension("nested")
-        };
+        let startup_lock = acquire_lock
+            .then(|| StartupLockGuard::acquire(lock_path.clone()))
+            .transpose()?;
         let events_path = match &self.events_path_override {
             Some(path) => path.clone(),
             None => session_events_path(&kuku_home, &workspace, &session_id)?,
@@ -189,6 +188,13 @@ impl Query {
         } else {
             self.bootstrap_skill.take()
         };
+        if self.disable_skills
+            && bootstrap_skill
+                .as_ref()
+                .is_some_and(|skill| skill.name.as_deref() == Some(bundle::NAME))
+        {
+            bootstrap_skill = None;
+        }
         let turn = resumed_permission
             .map(|pending| pending.turn)
             .unwrap_or_else(|| {
@@ -204,6 +210,7 @@ impl Query {
                 session_id: session_id.clone(),
                 created_at,
                 kuku_version: env!("CARGO_PKG_VERSION").to_string(),
+                default_model: None,
             })?;
         }
         let prompts_dir = self.prompts_dir.take();
@@ -259,9 +266,31 @@ impl Query {
             previous_snapshot_before_turn(&existing_events, conversation.as_str(), turn);
         let (skill_registry, previous_skill_registry) = if self.disable_skills || compact_only {
             (None, None)
-        } else if let Some(snapshot) =
+        } else if let Some(mut snapshot) =
             restore_turn_snapshot(&existing_events, conversation.as_str(), turn)
         {
+            let version = snapshot.registry.docs_bundle();
+            let docs_loaded = version.is_some_and(|version| {
+                crate::skill::session::docs_loaded_in_turn(
+                    &existing_events,
+                    conversation.as_str(),
+                    turn,
+                    version,
+                )
+            });
+            if version != Some(bundle::CURRENT) && !docs_loaded {
+                snapshot.registry = snapshot.registry.with_current_docs();
+                snapshot
+                    .bootstrap_loaded
+                    .retain(|name| name != bundle::NAME);
+                store.append(EventPayload::ContextSkills {
+                    conversation: conversation.as_str().to_string(),
+                    turn,
+                    ts: now_timestamp()?,
+                    registry: serde_json::to_value(&snapshot.registry)?,
+                    bootstrap_loaded: snapshot.bootstrap_loaded.clone(),
+                })?;
+            }
             bootstrap_skill = restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
             (
                 Some(snapshot.registry),
@@ -276,13 +305,37 @@ impl Query {
                 plugin_registry_opt.as_ref(),
             ) {
                 Ok(registry) => {
-                    let (registry, bootstrap_loaded) =
-                        if let Some(snapshot) = previous_skill_snapshot.as_ref() {
-                            bootstrap_skill = restore_bootstrap_skill(snapshot).or(bootstrap_skill);
-                            (snapshot.registry.clone(), snapshot.bootstrap_loaded.clone())
+                    let loads_current_docs = bootstrap_skill
+                        .as_ref()
+                        .is_some_and(|skill| skill.name.as_deref() == Some(bundle::NAME));
+                    let (registry, mut bootstrap_loaded) =
+                        if let Some(mut snapshot) = previous_skill_snapshot.clone() {
+                            snapshot
+                                .bootstrap_loaded
+                                .retain(|name| name != bundle::NAME);
+                            if !loads_current_docs {
+                                bootstrap_skill =
+                                    restore_bootstrap_skill(&snapshot).or(bootstrap_skill);
+                            }
+                            (
+                                snapshot.registry.with_current_docs(),
+                                snapshot.bootstrap_loaded,
+                            )
                         } else {
                             (registry, bootstrap_loaded_names(bootstrap_skill.as_ref()))
                         };
+                    if loads_current_docs {
+                        bundle::retain(&kuku_home, bundle::CURRENT).await?;
+                        bootstrap_loaded.retain(|name| name != bundle::NAME);
+                        bootstrap_loaded.push(bundle::NAME.into());
+                        let definition = registry
+                            .get(bundle::NAME)
+                            .expect("current docs are in the registry");
+                        bootstrap_skill = Some(super::types::BootstrapSkill {
+                            name: Some(bundle::NAME.into()),
+                            body: definition.instructions.clone(),
+                        });
+                    }
                     store.append(EventPayload::ContextSkills {
                         conversation: conversation.as_str().to_string(),
                         turn,
@@ -436,6 +489,7 @@ impl Query {
             resolved: None,
             admitted_tool_call_ids,
             queued_tool_calls: resumed_state.queued_tool_calls,
+            skill_bundle_call: None,
             resumed_permission_requests: resumed_state.resumed_permission_requests,
             pending_events: std::collections::VecDeque::new(),
             pending_error: None,
@@ -486,7 +540,10 @@ impl Query {
             slot_event_tx,
             slot_event_rx,
             cancel_token,
-            lock_path: run_lock_path,
+            lock_path: startup_lock.map_or_else(
+                || lock_path.with_extension("nested"),
+                StartupLockGuard::into_path,
+            ),
             deferred_runtime_logs: std::collections::VecDeque::new(),
         })
     }
@@ -546,6 +603,10 @@ fn restore_bootstrap_skill(
     let mut restored = Vec::new();
     for skill_name in &snapshot.bootstrap_loaded {
         let definition = snapshot.registry.get(skill_name)?;
+        if definition.source == crate::skill::definition::SkillSource::Builtin {
+            restored.push(definition.instructions.clone());
+            continue;
+        }
         let skill_dir = definition.source_path.as_deref().unwrap_or("");
         restored.push(format!(
             "<!-- loaded: {skill_dir} -->\n\n{}",

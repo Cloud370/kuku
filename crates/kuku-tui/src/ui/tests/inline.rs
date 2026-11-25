@@ -596,8 +596,9 @@ fn help_overlay_is_inert_on_mouse_and_fits_narrow_terminals() {
     assert!(!draft_view.contains("/ actions") && !draft_view.contains("Ctrl+P help"));
     key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
     let regular = screen(&mut app, 90, 24);
-    assert!(regular.contains("Keyboard shortcuts") && regular.contains("Alt+Enter"));
+    assert!(regular.contains("Help and shortcuts") && regular.contains("Alt+Enter"));
     assert!(regular.contains("Close/back; stop active work"));
+    assert!(regular.contains("How do I use kuku?") && regular.contains("kuku-docs"));
     assert!(!regular.contains("/queue"));
     let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
     let buffer = terminal

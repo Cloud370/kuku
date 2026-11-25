@@ -22,10 +22,8 @@ const STREAM_CHUNKS: usize = 128;
 fn options(server: &MockServer, workspace: &Path, data: &Path) -> SessionOptions {
     let mut config = common::test_config();
     config.providers.get_mut("openai").unwrap().base_url = server.url("");
-    let tier = config.tiers.get_mut("balanced").unwrap();
-    tier.provider = "openai".into();
-    tier.model = "session-contract".into();
-    tier.think = kuku::config::ThinkLevel::Off;
+    let model_settings = common::set_test_model(&mut config, "openai", "session-contract");
+    model_settings.think = kuku::config::ThinkLevel::Off;
     config.handoff.enabled = false;
     config.plugin.enabled = false;
     SessionOptions::new(workspace, data, config)
@@ -408,10 +406,11 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             let context = body["messages"].to_string();
             tool_count(request) == 0
                 && schema["required"] == json!(["address"])
-                && properties["tier"]["description"]
+                && properties["connection"]["description"]
                     .as_str()
                     .is_some_and(|text| text.contains("<kuku_models>"))
-                && properties.as_object().unwrap().len() == 8
+                && properties.as_object().unwrap().len() == 9
+                && properties["model"]["type"] == "string"
                 && properties["reasoning_effort"]["type"] == "string"
                 && properties["service_tier"]["type"] == "string"
                 && properties["tools"]["description"].as_str().is_some_and(|text| {
@@ -419,8 +418,8 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                         && text.contains("empty array gives only the two messaging tools")
                 })
                 && context.contains("<kuku_models>")
-                && context.contains("balanced")
-                && context.contains("Omit tier to use the default model")
+                && context.contains(r#"connection=\"openai\", model=\"session-contract\""#)
+                && context.contains("Omit both connection and model to use the preset or Session default")
                 && context.contains("service provider default, service options flex, priority")
                 && context.contains(r#"input_modalities [\"text\",\"image\"], output_modalities [\"text\"], route input text"#)
                 && context.contains("Image input is unsupported by the model. The view_image tool is unavailable.")
@@ -435,14 +434,14 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             json!({"tool_calls":[
                 tool("default", "create_agent", json!({
                     "address":"reviewer","instructions":"Review code for defects.",
-                    "tier":"","preset":"","workspace":"","tools":[]
+                    "preset":"","workspace":"","tools":[]
                 })),
-                tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"balanced"})),
+                tool("wrong-route", "create_agent", json!({"address":"second-reviewer","connection":"invalid","model":"session-contract"})),
                 tool("conflicting-tools", "create_agent", json!({
                     "address":"blocked-reviewer","no_agents":true,"tools":["read_file","send_message"]
                 })),
-                tool("denied", "create_agent", json!({"address":"unauthorized-reviewer","tier":""})),
-                tool("invalid-address", "create_agent", json!({"address":"review/team","tier":""})),
+                tool("denied", "create_agent", json!({"address":"unauthorized-reviewer"})),
+                tool("invalid-address", "create_agent", json!({"address":"review/team"})),
                 tool("unknown-preset", "create_agent", json!({"address":"no-preset","preset":"unknown"}))
             ]}),
             "tool_calls",
@@ -472,14 +471,14 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
                 && created["model_selection"]["image_input"] == "unsupported_on_route"
                 && content("unknown-preset").contains("Available examples:")
                 && content("unknown-preset").contains("review")
-                && content("wrong-route").contains("unknown field `connection`")
+                && content("wrong-route").contains("is not configured")
                 && content("conflicting-tools").contains("unknown field `no_agents`")
                 && content("invalid-address").contains("must be flat")
                 && content("denied").contains("not dispatched")
         },
         response(
             json!({"tool_calls":[
-                tool("correct-route", "create_agent", json!({"address":"second-reviewer","tier":"balanced","reasoning_effort":"high","service_tier":"flex"})),
+                tool("correct-route", "create_agent", json!({"address":"second-reviewer","connection":"openai","model":"session-contract","reasoning_effort":"high","service_tier":"flex"})),
                 tool("review-preset", "create_agent", json!({"address":"preset-reviewer","preset":"review"}))
             ]}),
             "tool_calls",
@@ -541,6 +540,10 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
         .config
         .providers
         .insert("parent-route".into(), parent_provider);
+    options.config.models.insert(
+        kuku::ModelRef::new("parent-route", "parent-override"),
+        options.config.models[&options.config.default_model].clone(),
+    );
     let session = Session::open(options).await.unwrap();
     session
         .create_agent(
@@ -559,7 +562,6 @@ async fn create_agent_uses_default_routing_and_rejects_invalid_tool_configuratio
             "mistaken-reviewer",
             AgentConfig {
                 preset: Some("flex".into()),
-                tier: Some("balanced".into()),
                 instructions: Some("Reply with OK.".into()),
                 tools: Some(Vec::new()),
                 ..AgentConfig::default()

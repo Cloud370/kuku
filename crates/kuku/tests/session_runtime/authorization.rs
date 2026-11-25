@@ -244,6 +244,11 @@ async fn independent_same_protocol_agents_restore_permissions_in_reverse_order()
         .config
         .providers
         .insert("second".into(), connection);
+    let model = original.config.default_model.model.clone();
+    original.config.models.insert(
+        kuku::ModelRef::new("second", &model),
+        original.config.models[&original.config.default_model].clone(),
+    );
     original.authorizer = Arc::new(DeferCommands);
     original.limits.max_model_requests = 1;
     let session = Session::open(original.clone()).await.unwrap();
@@ -256,6 +261,7 @@ async fn independent_same_protocol_agents_restore_permissions_in_reverse_order()
             "reviewer",
             AgentConfig {
                 connection: Some("second".into()),
+                model: Some(model),
                 ..Default::default()
             },
         )

@@ -1,22 +1,23 @@
+use std::collections::BTreeSet;
+
 use serde_json::{Value, json};
 
 use crate::event::StoredEvent;
 
 use super::definition::SkillDefinition;
 use super::registry::SkillRegistry;
-use super::session::loaded_skill_names;
+use super::session::{docs_loaded_in_turn, loaded_skill_names};
 
 pub(crate) fn list_skills_result(
     registry: &SkillRegistry,
     events: &[StoredEvent],
     conversation: &str,
+    turn: u64,
     args: &Value,
 ) -> Value {
     let offset = pagination_offset(args);
     let limit = pagination_limit(args, 20, 50);
-    let loaded = loaded_skill_names(events, conversation)
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
+    let loaded = loaded_names(registry, events, conversation, turn);
     let definitions = registry.definitions();
     let total = definitions.len();
     let skills = definitions
@@ -38,6 +39,7 @@ pub(crate) fn search_skills_result(
     registry: &SkillRegistry,
     events: &[StoredEvent],
     conversation: &str,
+    turn: u64,
     args: &Value,
 ) -> Value {
     let query = args
@@ -47,9 +49,7 @@ pub(crate) fn search_skills_result(
         .trim();
     let offset = pagination_offset(args);
     let limit = pagination_limit(args, 10, 25);
-    let loaded = loaded_skill_names(events, conversation)
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
+    let loaded = loaded_names(registry, events, conversation, turn);
 
     let mut matches = registry
         .definitions()
@@ -79,6 +79,25 @@ pub(crate) fn search_skills_result(
         "total": total,
         "skills": skills,
     })
+}
+
+fn loaded_names(
+    registry: &SkillRegistry,
+    events: &[StoredEvent],
+    conversation: &str,
+    turn: u64,
+) -> BTreeSet<String> {
+    let mut loaded: BTreeSet<_> = loaded_skill_names(events, conversation)
+        .into_iter()
+        .collect();
+    if let Some(version) = registry.docs_bundle() {
+        if docs_loaded_in_turn(events, conversation, turn, version) {
+            loaded.insert(super::bundle::NAME.into());
+        } else {
+            loaded.remove(super::bundle::NAME);
+        }
+    }
+    loaded
 }
 
 fn skill_item(definition: &SkillDefinition, loaded: bool) -> Value {
@@ -312,6 +331,7 @@ mod tests {
             &registry(),
             &events(),
             "main",
+            1,
             &json!({ "offset": 1, "limit": 1 }),
         );
 
@@ -330,6 +350,7 @@ mod tests {
             &registry(),
             &events(),
             "main",
+            1,
             &json!({ "query": "ranking", "limit": 3 }),
         );
         let items = result["skills"].as_array().unwrap();
@@ -346,6 +367,7 @@ mod tests {
             &registry(),
             &events(),
             "main",
+            1,
             &json!({ "query": "alpha title", "limit": 10 }),
         );
         let items = result["skills"].as_array().unwrap();
@@ -356,9 +378,10 @@ mod tests {
 
     #[test]
     fn list_skills_applies_default_and_max_limit() {
-        let default_result = super::list_skills_result(&registry(), &events(), "main", &json!({}));
+        let default_result =
+            super::list_skills_result(&registry(), &events(), "main", 1, &json!({}));
         let capped_result =
-            super::list_skills_result(&registry(), &events(), "main", &json!({ "limit": 999 }));
+            super::list_skills_result(&registry(), &events(), "main", 1, &json!({ "limit": 999 }));
 
         assert_eq!(default_result["limit"], 20);
         assert_eq!(capped_result["limit"], 50);
@@ -370,12 +393,14 @@ mod tests {
             &registry(),
             &events(),
             "main",
+            1,
             &json!({ "query": "ranking" }),
         );
         let capped_result = super::search_skills_result(
             &registry(),
             &events(),
             "main",
+            1,
             &json!({ "query": "ranking", "limit": 999 }),
         );
 

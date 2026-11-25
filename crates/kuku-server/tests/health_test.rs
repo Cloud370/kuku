@@ -1,7 +1,7 @@
 mod common;
 
 use common::mock_provider;
-use kuku_server::service::MANAGEMENT_VERSION;
+use kuku_server::service::{MANAGEMENT_VERSION, SESSION_PROTOCOL_VERSION};
 
 #[tokio::test]
 async fn health_returns_ok_and_version() {
@@ -18,7 +18,7 @@ async fn health_returns_ok_and_version() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(true, body["ok"]);
     assert_eq!(kuku_server::BUILD_VERSION, body["version"]);
-    assert_eq!(1, body["protocol_version"]);
+    assert_eq!(SESSION_PROTOCOL_VERSION, body["protocol_version"]);
     assert_eq!(MANAGEMENT_VERSION, body["management_version"]);
     assert!(body.get("workspace").is_none());
 }

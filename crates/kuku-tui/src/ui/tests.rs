@@ -346,7 +346,8 @@ fn clicking_the_queue_focuses_its_inline_editor_and_saves_the_exact_replacement(
 #[test]
 fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
     let mut app = app();
-    app.pane_mut().initial_config.tier = Some("work".into());
+    app.pane_mut().initial_config.connection = Some("work".into());
+    app.pane_mut().initial_config.model = Some("fixture-model".into());
     app.startup_skills =
         crate::app::StartupSkills::Ready(vec!["review-workspace".into(), "format-code".into()]);
     for width in [64, 118] {
@@ -358,7 +359,7 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
         for (row, text) in [
             (1, "⢎⡱  kuku · New session"),
             (3, "Workspace  /workspace"),
-            (4, "Model      Tier work"),
+            (4, "Model      work/fixture-model"),
             (6, "Skills   /skill: Browse"),
             (7, "  review-workspace · format-code"),
         ] {
@@ -369,12 +370,13 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
                     .all(|cell| cell.bg == ratatui::style::Color::Reset)
             );
         }
+        assert!(rows[9].contains("How do I use kuku?"));
         assert!(
-            rows[9]
+            rows[10]
                 .trim_start()
                 .starts_with("Enter sends your first prompt")
         );
-        let shortcuts_row = 10 + usize::from(width == 64);
+        let shortcuts_row = 11 + usize::from(width == 64);
         assert!(rows[shortcuts_row - 1].contains("/resume opens a saved session"));
         assert_eq!(
             "/ Actions · Ctrl+L Model · Ctrl+T Think · Ctrl+P Help",
@@ -384,7 +386,7 @@ fn blank_welcome_scales_down_and_active_session_uses_one_branded_row() {
 
     let short = screen(&mut app, 29, 6);
     assert!(short.lines().next().unwrap().contains("kuku · New session"));
-    assert!(short.contains("Enter to send · /resume"));
+    assert!(short.contains("Ask “How do I use kuku?”"));
 
     app.select(app.active.clone(), true, "修复使用中文标题的会话".into());
     let active = screen(&mut app, 31, 8);
@@ -412,11 +414,11 @@ fn blank_welcome_shows_the_shortened_workspace_path() {
 fn blank_configuration_screen_keeps_pasted_draft_on_wide_and_narrow_terminals() {
     let mut app = App::new(PathBuf::from("/workspace"), None);
     app.update(Update::ConnectFailed(Error::Options(
-        "Run kuku init to configure a model".into(),
+        "Open /model to configure a model".into(),
     )));
     let first = screen(&mut app, 104, 24);
     assert!(first.contains("New session"));
-    assert!(first.contains("kuku init"));
+    assert!(first.contains("Open /model"));
     event(
         &mut app,
         Event::Paste("中文\r\nfirst\rlast e\u{301}".into()),
@@ -861,8 +863,8 @@ fn picker_drag_copies_and_click_switches_to_the_scrolled_model_row() {
     let mut app = app();
     let mut choices: Vec<_> = (0..14)
         .map(|index| {
-            let tier = format!("route-{index}");
-            Choice::new(&tier, "Configured tier", ChoiceKind::Close)
+            let model = format!("model-{index}");
+            Choice::new(&model, "Configured model", ChoiceKind::Close)
         })
         .collect();
     choices.push(Choice::new(
@@ -870,8 +872,7 @@ fn picker_drag_copies_and_click_switches_to_the_scrolled_model_row() {
         "XYZ",
         ChoiceKind::ModelRoute {
             current: false,
-            tier: Box::new(kuku_client::TierSummary {
-                name: "proxy".into(),
+            model: Box::new(kuku_client::ModelSummary {
                 connection: "gateway".into(),
                 model: "fixture".into(),
                 purpose: None,
@@ -908,7 +909,8 @@ fn picker_drag_copies_and_click_switches_to_the_scrolled_model_row() {
 
     click(&mut app, buffer, start);
     assert!(app.modal.is_none());
-    assert_eq!(Some("proxy"), app.pane().config().tier.as_deref());
+    assert_eq!(Some("gateway"), app.pane().config().connection.as_deref());
+    assert_eq!(Some("fixture"), app.pane().config().model.as_deref());
     assert!(matches!(
         app.effects.as_slice(),
         [Job::ClosePicker, Job::Model(..)]

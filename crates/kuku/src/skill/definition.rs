@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SkillSource {
+    #[serde(rename = "builtin")]
+    Builtin,
     #[serde(rename = "user")]
     User,
     #[serde(rename = "project")]
@@ -13,6 +15,7 @@ pub enum SkillSource {
 impl SkillSource {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Builtin => "builtin",
             Self::User => "user",
             Self::Project => "project",
         }

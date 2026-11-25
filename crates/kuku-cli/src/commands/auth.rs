@@ -127,7 +127,7 @@ async fn login(
     }
     println!("Model connection: {connection_name}");
     if login.info.status == SubscriptionStatus::SignedIn {
-        println!("Choose the connection in `kuku init` or `/model`.");
+        println!("Start `kuku` and use `/model` to select the connection.");
     }
     println!("Manage usage: {}", channel.usage_url());
     Ok(())

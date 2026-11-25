@@ -19,7 +19,6 @@ export interface SessionSummary {
 
 export interface AgentConfig {
   connection?: string | null;
-  tier?: string | null;
   model?: string | null;
   reasoning_effort?: string | null;
   service_tier?: string | null;
@@ -171,10 +170,12 @@ export interface HistoryPage {
   next_before: number | null;
 }
 
-export interface ModelTier {
-  name: string;
+export interface ModelRef {
   connection: string;
   model: string;
+}
+
+export interface ModelSummary extends ModelRef {
   error?: { code: string; message: string };
   purpose?: string | null;
   request_url?: string | null;
@@ -243,7 +244,7 @@ export function fetchWorkspaces(signal?: AbortSignal) {
 }
 
 export function fetchModels(signal?: AbortSignal) {
-  return get<{ ok: true; default_tier: string | null; tiers: ModelTier[] }>("/models", signal);
+  return get<{ ok: true; default_model: ModelRef; models: ModelSummary[] }>("/models", signal);
 }
 
 export function resolveWorkspace(workspace: string, signal?: AbortSignal) {

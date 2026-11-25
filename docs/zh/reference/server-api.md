@@ -1,12 +1,12 @@
 # HTTP 服务接口
 
-终端、脚本和浏览器客户端共用 HTTP Session 契约。服务负责执行，并在服务端机器上解析工作区、模型选择和模型凭据。观察客户端断开后，服务可以继续执行，客户端随后仍可重连。关于本地服务发现与显式启动方式，见[运行服务](../guides/run-the-server.md)。
+终端与脚本客户端共用 HTTP Session 契约。服务负责执行，并在服务端机器上解析工作区、模型选择和模型凭据。观察客户端断开后，服务可以继续执行，客户端随后仍可重连。[运行服务](../guides/run-the-server.md)
 
 ## 认证与版本
 
-客户端访问接口时发送 `Authorization: Bearer TOKEN`，回环连接也需要认证。`kuku web` 打开受管本地服务的内嵌界面时，通过 URL 片段传递短时一次性票据。页面清除片段，将票据交换成独立的浏览器令牌，并保存在该标签页的 `sessionStorage`。刷新同一标签页时可继续用该令牌连接同一服务实例。显式启动的服务使用其配置的访问令牌。服务的默认工具策略信任已认证的用户，允许文件和命令工具。
+客户端访问接口时发送 `Authorization: Bearer TOKEN`，回环连接也需要认证。显式启动的服务使用其配置的访问令牌。服务的默认工具策略信任已认证用户，允许文件和命令工具。
 
-公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。Session HTTP API 的首版是 v1，以 `protocol_version: 1` 报告。受管服务的状态和重启接口使用 `management_version`。缺少令牌或令牌无效时，返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求携带的浏览器来源。
+公开的 `GET /health` 返回 `version`、`protocol_version` 和 `management_version`。当前 Session HTTP API 报告 `protocol_version: 2`。受管服务的状态和重启接口使用 `management_version`。缺少令牌或令牌无效时返回 `401` 和 `auth_required`。受管服务还会检查回环主机和请求提供的来源。
 
 ## 接口一览
 
@@ -16,8 +16,6 @@
 | `GET` | `/service/status` | 生效的服务身份与活动 |
 | `GET` | `/service/model-default-plan` | 根据受管服务配置验证仅本地写入的模型默认计划 |
 | `POST` | `/service/restart` | 请求受管服务释放 Session 后退出，以便正常替换 |
-| `POST` | `/service/browser-ticket` | 认证后签发一次性浏览器接入票据 |
-| `POST` | `/service/browser-session` | 在受管浏览器来源交换票据 |
 | `GET` | `/sessions` | 列出保留的 Session，可按 `workspace` 或 `search` 过滤 |
 | `DELETE` | `/sessions/{id}` | 删除已关闭的 Session |
 | `POST` | `/sessions/{id}/commands` | 提交持久命令 |
@@ -43,9 +41,9 @@
 | `GET` | `/workspaces` | 列出工作区 |
 | `GET` | `/workspaces/resolve`、`/workspaces/files`、`/workspaces/skills` | 解析服务端路径，或查找工作区文件与 Skill |
 
-状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的工作，包括运行中的 Job。受管客户端会等旧进程释放服务租约后启动替代进程。
+状态响应包含构建和协议版本、`instance_id`、`pid`、生效的 `data_dir` 和 `config_path`、`draining` 以及 `busy`。使用配置文件时，`config_sha256` 标识服务已加载的文件版本，`config_default_model` 给出服务从该版本解析的默认连接与模型。受管服务重启返回 `202` 表示已释放 writer，进程正在停止。`409` 和 `service_busy` 在 `busy` 列出正在进行的工作，包括运行中的 Job。受管客户端会等旧进程释放服务租约后启动替代进程。
 
-`GET /service/model-default-plan` 仅适用于存在活动配置文件的受管服务。它要求常规 Bearer 认证，并执行相同的回环主机和来源检查，响应包含 `Cache-Control: no-store`，只接受 `connection`、`model` 和 `config_sha256` 查询字段。服务在自身进程环境中读取活动配置并验证请求路由；`config_sha256` 必须与客户端持有的原始字节一致。响应只包含 `tier`、`overwrite_user_default` 和 `config_sha256`，不会写入文件、解析凭据或发送模型请求。客户端仍负责本地且带并发保护的配置编辑。配置已变化、路由不可用、服务非受管或配置不可读时，会返回不泄露敏感信息的通用错误。
+`GET /service/model-default-plan` 适用于已加载配置文件的受管服务。它要求 Bearer 认证，接受 `connection`、`model` 和 `config_sha256` 查询字段。服务在自身环境中核对活动配置里的连接和精确模型 ID。响应含 `config_sha256`，需要显式保留原默认模型时也含 `register_previous_default`。客户端可依据响应执行带并发保护的本地配置编辑。这个接口只检查文件，返回 `Cache-Control: no-store`。
 
 两个权限接口都通过查询参数接收 `workspace`。工作区权限模式为 JSON 字符串（`"full"`、`"ask"` 或 `"read-only"`）。尚未保存时 GET 返回 `null`。PUT 接收模式字符串并更新该工作区已打开的 Session。Session 接口返回 `approvals`，每项有 `request` 和可选的 `job_id`。发送包含请求 Agent 和 ID 的 `reply_permission` 命令来回复。
 
@@ -67,7 +65,7 @@
 }
 ```
 
-`create: {}` 使用已配置的默认值。初次发送时在 `create` 中指定模型设置，已有 Agent 可使用显式 `configure` 命令。模型选择由 [SDK](sdk.md#操作) 解析。Agent 的上下文和设置会跨客户端保留。
+`create: {}` 使用 Session 默认值。要显式选择，在 `create` 中同时填写 `connection` 和精确 `model` ID，例如 `{"connection":"work","model":"your-model-id"}`。已有 Agent 可通过 `configure` 切换。Agent 的上下文和设置会跨客户端保留。[SDK 模型选择](sdk.md#操作)
 
 | 命令 `type` | 其他字段 | 行为 |
 |---|---|---|
@@ -123,7 +121,7 @@
 
 `GET /sessions/{id}/history/destinations/{event_id}/files` 接受 `workspace` 和 `agent`，返回 `changes`、`skipped` 和方案 `fingerprint`。每项改动包含 `path`、`remove` 和 `lines`（增加、删除的行数，或 null）。将确认过的指纹传给 `history_jump.file_restore` 即可应用预览，省略该字段则保留文件。
 
-已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。`message_rewind` 和 `history_jump` 帧带有 `rewind_command_id`，发起回退的客户端可在提交时恢复未发送的草稿。
+已提交帧可通过 `delivery` 将队列变化关联到命令标识。`accepted` 带有 `input_ids`，帧的 `turn` 指明接纳它们的轮次，包括运行中接纳的 steering 输入。`withdrawn` 带有 `input_id`，`replaced` 带有 `input_id` 和 `replacement_id`。`message_rewind` 和 `history_jump` 帧带有 `rewind_command_id`，发起回退的客户端可在提交时恢复未发送的草稿。
 
 带 `progress=true` 的快照可以包含所选 Agent 的 `reply_preview`，其中有 `execution_id`、`turn`、可选的 `turn_number`、`phase`、`text` 和 `truncated`。阶段为 `thinking`、`streaming` 或 `tool_arguments`。文本是活动请求的可见回复 UTF-8 前缀，最多 64 KiB。`truncated` 表示回复已经超过保留前缀的上限。所选 Agent 的可选字段 `reasoning_preview` 保存服务方公开的思考文字或摘要的有界前缀。Responses 可通过流或最终输出中带类型的思考和摘要文本提供这些内容。不透明思考状态仅用于报告活动，并留在 provider 重放记录中。实时 `reasoning_preview` 事件追加文本，已提交的助手条目也可包含此字段。
 
@@ -181,6 +179,6 @@ Job 路由均要求 `workspace` 和 `agent` 查询参数。`GET /sessions/{id}/j
 
 ## 查找模型和工作区
 
-`/models` 返回 `default_tier`、`connections` 和 `tiers`。订阅连接通过 `subscription_label` 提供可用的账号别名和打星后的邮箱。路由包含 `name`、`connection`、`model` 和 `purpose`，以及请求地址、生效设置、能力来源和请求的输出类型，或解析错误。`/models/resolve` 接收候选 Agent 的 `tier`、`connection`、`model`、`reasoning_effort`、`service_tier`、`output` 和 `max_output_tokens`；返回的 `selection` 分别提供模型声明和适配器媒体支持。
+`/models` 返回由连接和模型组成的 `default_model`，以及 `connections` 和 `models`。订阅连接通过 `subscription_label` 提供可用的账号别名和脱敏邮箱。模型包含 `connection`、`model`、`purpose` 以及解析出的请求 URL、设置、能力和输出，或解析错误。`/models/resolve` 可同时接收 `connection` 和 `model` 以显式选中模型，并支持覆盖 `reasoning_effort`、`service_tier`、`output` 和 `max_output_tokens`。返回的 `selection` 分别给出模型声明和适配器的媒体支持。
 
 `/workspaces` 返回 `workspaces`。向 `/workspaces/resolve` 将已有目录的绝对路径作为 `workspace` 传入，可取得规范路径。`/workspaces/files` 和 `/workspaces/skills` 还接受 `query` 过滤参数，分别返回 `paths` 和 `skills`。匹配的文件是工作区相对路径，匹配的 Skill 包含名称和描述。

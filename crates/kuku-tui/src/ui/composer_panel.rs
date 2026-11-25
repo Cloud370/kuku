@@ -100,7 +100,7 @@ pub(super) fn render(
                 render_confirmation(frame, inner, thinking, effort);
                 picker.set_rows(Rect::ZERO, 0..0, 1);
             } else {
-                let (page, width) = render_choices(frame, inner, picker);
+                let (page, width) = render_choices(frame, inner, picker, app.remote);
                 app.modal_page = page;
                 app.modal_editor_width = width;
             }
@@ -128,9 +128,21 @@ pub(super) fn render_alias_hint(
 }
 
 pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
-    let area = popup(area, 55, 20);
-    let inner = render_popup(frame, area, "Keyboard shortcuts");
+    let area = popup(area, 55, 22);
+    let inner = render_popup(frame, area, "Help and shortcuts");
+    let ask = if inner.width >= 24 {
+        "Ask “How do I use kuku?”"
+    } else {
+        "Ask about kuku"
+    };
+    let discover = if inner.width >= 48 {
+        "/ menu      Choose kuku-docs and type a question"
+    } else {
+        "kuku-docs in /"
+    };
     let mut lines = vec![
+        Line::raw(ask),
+        Line::raw(discover),
         Line::raw("Enter       Send or steer"),
         Line::raw("Alt+Enter   Send on the next turn"),
         Line::raw("Esc         Close/back; stop active work"),
@@ -148,12 +160,7 @@ pub(super) fn render_help(frame: &mut Frame<'_>, area: Rect) -> Rect {
         Line::raw("/           Search actions and Skills"),
         Line::default(),
     ];
-    let advertised: Vec<_> = CommandMenu::ALL
-        .iter()
-        .copied()
-        .filter(|command| command.advertised())
-        .collect();
-    lines.extend(advertised.chunks(4).map(|commands| {
+    lines.extend(CommandMenu::ALL.chunks(4).map(|commands| {
         let labels = commands
             .iter()
             .map(|command| format!("/{}", command.name()))
@@ -200,7 +207,12 @@ fn render_confirmation(frame: &mut Frame<'_>, area: Rect, thinking: &ThinkingPic
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (usize, usize) {
+fn render_choices(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    picker: &mut Picker,
+    remote: bool,
+) -> (usize, usize) {
     let commands = picker.kind == PickerKind::Commands;
     let rows = area.height;
     let header_rows = u16::from(rows >= 2);
@@ -316,8 +328,10 @@ fn render_choices(frame: &mut Frame<'_>, area: Rect, picker: &mut Picker) -> (us
     } else if picker.kind == PickerKind::Models {
         if picker.search_focused {
             "Enter Switch · Esc Back to list"
+        } else if remote {
+            "Enter Switch · / Search"
         } else {
-            "Enter Switch · d Default + switch · e Edit · / Search"
+            "Enter Switch · d Set default · e Edit · / Search"
         }
     } else {
         MODEL_HELP

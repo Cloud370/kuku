@@ -15,6 +15,7 @@ fi
 
 jq -r '
   def value(name; fallback): .[name] // fallback;
+  def usage(name): .usage[name] // "unreported";
   def fmt_duration:
     (value("duration_ms"; 0)) as $ms
     | if $ms >= 1000
@@ -25,13 +26,13 @@ jq -r '
     "### Run stats",
     "",
     "- Session: `" + (value("session_id"; "unknown") | tostring) + "`",
-    "- Tier: `" + (value("tier"; "unknown") | tostring) + "`",
+    "- Connection: `" + (value("connection"; "unknown") | tostring) + "`",
     "- Model: `" + (value("model"; "unknown") | tostring) + "`",
     "- Turns: `" + ((value("turns"; 0)) | tostring) + "`",
-    "- Input tokens: `" + ((value("input_tokens"; 0)) | tostring) + "`",
-    "- Output tokens: `" + ((value("output_tokens"; 0)) | tostring) + "`",
-    "- Cache read tokens: `" + ((value("cache_read_input_tokens"; 0)) | tostring) + "`",
-    "- Cache write tokens: `" + ((value("cache_creation_input_tokens"; 0)) | tostring) + "`",
+    "- Input tokens: `" + (usage("input_tokens") | tostring) + "`",
+    "- Output tokens: `" + (usage("output_tokens") | tostring) + "`",
+    "- Cache read tokens: `" + (usage("cache_read_input_tokens") | tostring) + "`",
+    "- Cache write tokens: `" + (usage("cache_creation_input_tokens") | tostring) + "`",
     "- Duration: `" + fmt_duration + "`"
   ]
   | .[]

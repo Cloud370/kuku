@@ -34,63 +34,63 @@ fn parse_definition(
     let (mapping, body) = split_yaml_frontmatter(content);
     let body = body.trim();
 
-    let (name, description, tools, max_turns, tier, tool_profile, metadata) = if let Some(ref m) =
-        mapping
-    {
-        let name = extract_str(m, "name")
-            .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from))
-            .unwrap_or_default();
-        let description = extract_str(m, "description").unwrap_or_default();
-        let model = extract_str(m, "model");
-        let tools = extract_str_list(m, "tools").or_else(|| extract_str_list(m, "allowedTools"));
-        let max_turns = extract_u32(m, "max_turns")
-            .or_else(|| extract_u32(m, "maxTurns"))
-            .unwrap_or(10);
-        let tier = extract_str(m, "tier")
-            .or_else(|| model.as_deref().map(map_model_to_tier))
-            .unwrap_or_else(|| "balanced".to_string());
-        let tool_profile =
-            extract_tool_profile(m).unwrap_or_else(|| infer_profile_from_tools(&tools));
-        let metadata = collect_unknown_metadata(
-            m,
-            &[
-                "name",
-                "description",
-                "model",
-                "tools",
-                "allowedTools",
-                "max_turns",
-                "maxTurns",
-                "tier",
-                "tool_profile",
-                "mode",
-            ],
-        );
-        (
-            name,
-            description,
-            tools,
-            max_turns,
-            tier,
-            tool_profile,
-            metadata,
-        )
-    } else {
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        (
-            name,
-            String::new(),
-            None,
-            10_u32,
-            "balanced".to_string(),
-            ToolProfile::Read,
-            serde_json::Value::Null,
-        )
-    };
+    let (name, description, tools, max_turns, connection, model, tool_profile, metadata) =
+        if let Some(ref m) = mapping {
+            let name = extract_str(m, "name")
+                .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from))
+                .unwrap_or_default();
+            let description = extract_str(m, "description").unwrap_or_default();
+            let connection = extract_str(m, "connection");
+            let model = extract_str(m, "model");
+            let tools =
+                extract_str_list(m, "tools").or_else(|| extract_str_list(m, "allowedTools"));
+            let max_turns = extract_u32(m, "max_turns")
+                .or_else(|| extract_u32(m, "maxTurns"))
+                .unwrap_or(10);
+            let tool_profile =
+                extract_tool_profile(m).unwrap_or_else(|| infer_profile_from_tools(&tools));
+            let metadata = collect_unknown_metadata(
+                m,
+                &[
+                    "name",
+                    "description",
+                    "connection",
+                    "model",
+                    "tools",
+                    "allowedTools",
+                    "max_turns",
+                    "maxTurns",
+                    "tool_profile",
+                    "mode",
+                ],
+            );
+            (
+                name,
+                description,
+                tools,
+                max_turns,
+                connection,
+                model,
+                tool_profile,
+                metadata,
+            )
+        } else {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            (
+                name,
+                String::new(),
+                None,
+                10_u32,
+                None,
+                None,
+                ToolProfile::Read,
+                serde_json::Value::Null,
+            )
+        };
 
     if name.is_empty() {
         return None;
@@ -103,7 +103,8 @@ fn parse_definition(
         name,
         description,
         instructions,
-        tier,
+        connection,
+        model,
         tool_profile,
         tools,
         max_turns,
@@ -181,24 +182,6 @@ fn infer_profile_from_tools(tools: &Option<Vec<String>>) -> ToolProfile {
     }
 }
 
-fn map_model_to_tier(model: &str) -> String {
-    let lower = model.to_lowercase();
-    if lower.contains("opus") || lower.contains("gpt-4o") {
-        "strong".to_string()
-    } else if lower.contains("sonnet") || lower.contains("gpt-4") {
-        "balanced".to_string()
-    } else if lower.contains("haiku") {
-        "light".to_string()
-    } else {
-        match lower.as_str() {
-            "strong" | "opus" => "strong".to_string(),
-            "balanced" | "sonnet" => "balanced".to_string(),
-            "light" | "haiku" => "light".to_string(),
-            _ => "balanced".to_string(),
-        }
-    }
-}
-
 fn collect_unknown_metadata(mapping: &serde_yaml::Mapping, known: &[&str]) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (k, v) in mapping {
@@ -247,11 +230,8 @@ pub fn parse_agent_frontmatter(name: &str, fm: &str, body: &str) -> Option<Agent
             .unwrap_or("")
             .to_string(),
         instructions: body.to_string(),
-        tier: map
-            .get("tier")
-            .and_then(|v| v.as_str())
-            .unwrap_or("balanced")
-            .to_string(),
+        connection: extract_str(map, "connection"),
+        model: extract_str(map, "model"),
         tool_profile: map
             .get("tool_profile")
             .and_then(|v| v.as_str())

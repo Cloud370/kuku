@@ -458,6 +458,41 @@ fn skill_named_like_an_action_remains_a_distinct_editable_choice() {
 }
 
 #[test]
+fn docs_skill_from_slash_menu_inserts_an_editable_question() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('/'));
+    app.paste("kuku-docs");
+    let Some(Modal::Picker(picker)) = &app.modal else {
+        panic!("slash menu must be open");
+    };
+    let ticket = picker.ticket;
+    app.update(Update::Found(
+        ticket,
+        Ok((
+            vec![Choice::new(
+                "/skill:kuku-docs",
+                "Get help using kuku",
+                ChoiceKind::Skill("kuku-docs".into()),
+            )],
+            String::new(),
+        )),
+    ));
+    app.effects.clear();
+    press(&mut app, KeyCode::Enter);
+    assert_eq!("/skill:kuku-docs ", app.pane().draft.text());
+    app.paste("How do I resume a Session?");
+    assert_eq!(
+        "/skill:kuku-docs How do I resume a Session?",
+        app.pane().draft.text()
+    );
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Save(_) | Job::Send(_)))
+    );
+}
+
+#[test]
 fn plain_arrows_preserve_the_draft_and_history_requires_an_explicit_shortcut() {
     let mut app = connected_app();
     app.pane_mut().draft.remember("Earlier prompt");

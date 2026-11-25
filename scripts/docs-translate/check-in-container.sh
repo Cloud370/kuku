@@ -5,13 +5,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_HOME="${KUKU_HOME:-/tmp/kuku-home}"
 CONFIG_SOURCE="${KUKU_CONFIG_SOURCE:-$SCRIPT_DIR/config.toml}"
 DO_RUN="${KUKU_CHECK_RUN:-1}"
-RUN_MODEL="${KUKU_CHECK_MODEL:-balanced}"
 OUTPUT_MODE="${KUKU_CHECK_OUTPUT_MODE:-raw}"
-CHECK_PROMPT="${KUKU_CHECK_PROMPT:-/docs-translate This is a runtime check for the docs translation workflow. Read docs/AGENTS.md and reply with READY only. Do not modify files. Do not use gh.}"
+CHECK_PROMPT="${KUKU_CHECK_PROMPT:-Read docs/AGENTS.md and reply with READY.}"
 SHOW_SESSION_ID="${KUKU_CHECK_SESSION_ID:-}"
 SHOW_SKILL_INFO="${KUKU_CHECK_SHOW_SKILL_INFO:-0}"
 WORKSPACE_ROOT="$(pwd)"
-BUILD_TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE_ROOT/target}"
+export CI_LLM_MODEL="${CI_LLM_MODEL:-deepseek-flash}"
+BIN=/usr/local/bin/kuku
+RUN_ARGS=(--no-agents --preset "${KUKU_CHECK_PRESET:-docs-translation}")
 
 mkdir -p "$RUNTIME_HOME"
 
@@ -23,13 +24,10 @@ case "$OUTPUT_MODE" in
     raw)
         OUTPUT_ARGS=(--raw)
         ;;
-    json)
-        OUTPUT_ARGS=(--json)
-        ;;
     stream-json)
         OUTPUT_ARGS=(--stream-json)
         ;;
-    session-id)
+    json|session-id|response)
         OUTPUT_ARGS=(--json)
         ;;
     *)
@@ -38,11 +36,7 @@ case "$OUTPUT_MODE" in
         ;;
 esac
 
-cargo build -p kuku-app >&2
-
-BIN="$BUILD_TARGET_DIR/debug/kuku"
-
-pushd "$WORKSPACE_ROOT" >/dev/null
+pushd "${KUKU_CHECK_WORKSPACE:-$WORKSPACE_ROOT}" >/dev/null
 
 if [[ "$SHOW_SKILL_INFO" == "1" && "$OUTPUT_MODE" == "raw" ]]; then
     echo "== skills list =="
@@ -58,13 +52,28 @@ elif [[ "$DO_RUN" == "1" ]]; then
     if [[ "$SHOW_SKILL_INFO" == "1" && "$OUTPUT_MODE" == "raw" ]]; then
         echo "== docs-translate run =="
     fi
-    if [[ "$OUTPUT_MODE" == "session-id" ]]; then
-        RUN_JSON="$($BIN run -y --no-agents --model "$RUN_MODEL" "${OUTPUT_ARGS[@]}" "$CHECK_PROMPT")"
-        printf '%s\n' "$RUN_JSON" > "$RUNTIME_HOME/session-run.json"
-        printf '%s\n' "$RUN_JSON" | jq -r '.session_id // empty'
-    else
-        "$BIN" run -y --no-agents --model "$RUN_MODEL" "${OUTPUT_ARGS[@]}" "$CHECK_PROMPT"
-    fi
+    case "$OUTPUT_MODE" in
+        session-id|response)
+            run_status=0
+            printf '%s' "$CHECK_PROMPT" | "$BIN" run "${RUN_ARGS[@]}" "${OUTPUT_ARGS[@]}" --prompt-file - \
+                > "$RUNTIME_HOME/session-run.json" || run_status=$?
+            if [[ "$run_status" != "0" ]]; then
+                printf 'kuku run exited with status %s\n' "$run_status" >&2
+                exit "$run_status"
+            fi
+            if [[ "$OUTPUT_MODE" == "session-id" ]]; then
+                jq -r '.session_id // empty' "$RUNTIME_HOME/session-run.json"
+            else
+                jq -r '.response // empty' "$RUNTIME_HOME/session-run.json"
+            fi
+            ;;
+        *)
+            printf '%s' "$CHECK_PROMPT" | "$BIN" run "${RUN_ARGS[@]}" "${OUTPUT_ARGS[@]}" --prompt-file -
+            ;;
+    esac
+else
+    CI_LLM_BASE_URL=https://example.invalid/v1 "$BIN" config validate |
+        jq -e 'select(.status == "valid")' >&2
 fi
 
 popd >/dev/null

@@ -132,15 +132,20 @@ async fn probe(args: &BTreeMap<String, String>) -> Result<Value, AnyError> {
         provider.base_url = server.url(format!("/{connection}"));
         config.providers.insert(connection.into(), provider);
     }
-    let tier = config
-        .tiers
-        .get_mut("balanced")
-        .ok_or("fixture tier missing")?;
-    tier.provider = "context".into();
-    tier.model = "resource-fixture".into();
-    tier.think = kuku::config::ThinkLevel::Off;
-    tier.context_window = 131_072;
-    tier.max_output_tokens = Some(32_768);
+    let default_settings = common::set_test_model(&mut config, "context", "resource-fixture");
+    default_settings.think = kuku::config::ThinkLevel::Off;
+    default_settings.context_window = 131_072;
+    default_settings.max_output_tokens = Some(32_768);
+    let settings = default_settings.clone();
+    for connection in ["output", "concurrent"]
+        .into_iter()
+        .chain(workspace_probe::CONNECTIONS)
+    {
+        config.models.insert(
+            kuku::ModelRef::new(connection, "resource-fixture"),
+            settings.clone(),
+        );
+    }
     config.plugin.enabled = false;
     config.handoff.enabled = false;
     let mut options = SessionOptions::new(workspace, data, config);
@@ -389,7 +394,7 @@ async fn measure(
 fn agent_config(connection: &str) -> AgentConfig {
     AgentConfig {
         connection: Some(connection.into()),
-        tier: Some("balanced".into()),
+        model: Some("resource-fixture".into()),
         no_agents: true,
         no_skills: true,
         max_output_tokens: Some(32_768),

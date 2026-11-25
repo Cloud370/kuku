@@ -196,6 +196,7 @@ pub(crate) async fn run(options: ConnectionOptions, build: &'static str) -> io::
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_default();
     let mut app = App::new(workspace, options.remote.clone());
+    app.remote |= options.token.is_some();
     let (settings, problem) = load_statusline(&options);
     app.statusline_settings = settings;
     if let Some(problem) = problem {

@@ -24,8 +24,8 @@ async fn a_large_request_with_token_headroom_only_obeys_an_explicit_byte_limit()
     config.config.handoff.enabled = true;
     config
         .config
-        .tiers
-        .get_mut("balanced")
+        .models
+        .get_mut(&config.config.default_model)
         .unwrap()
         .context_window = 1_048_576;
     config.limits.max_input_bytes = 256 * 1024;
@@ -93,9 +93,13 @@ async fn checkpoint_with_output_ceiling(context_window: u32) {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let (mut config, path) = options(&server, workspace.path(), data.path());
-    let tier = config.config.tiers.get_mut("balanced").unwrap();
-    tier.context_window = context_window;
-    tier.max_output_tokens = Some(32_768);
+    let settings = config
+        .config
+        .models
+        .get_mut(&config.config.default_model)
+        .unwrap();
+    settings.context_window = context_window;
+    settings.max_output_tokens = Some(32_768);
 
     let checkpoint = "# Completed work\nVerified facts and retained pointers.\n".repeat(330);
     assert!(checkpoint.len() > 16 * 1024);
@@ -167,8 +171,8 @@ async fn one_small_tool_result_does_not_retry_a_failed_pressure_checkpoint() {
     config.config.handoff.threshold = 0.25;
     config
         .config
-        .tiers
-        .get_mut("balanced")
+        .models
+        .get_mut(&config.config.default_model)
         .unwrap()
         .context_window = 60_000;
     std::fs::write(workspace.path().join("guide.txt"), "verified contents").unwrap();
@@ -286,8 +290,8 @@ async fn compaction_preserves_recent_batches_and_rewind_restores_the_predecessor
     config.config.handoff.enabled = true;
     config
         .config
-        .tiers
-        .get_mut("balanced")
+        .models
+        .get_mut(&config.config.default_model)
         .unwrap()
         .context_window = 11_000;
     config.limits.max_request_bytes = Some(WIRE_LIMIT);

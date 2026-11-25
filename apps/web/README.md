@@ -1,6 +1,6 @@
 # kuku WebUI
 
-The browser interface uses the same authenticated HTTP and NDJSON Session protocol as the terminal. The release binary serves the application from the same origin as the API. Run `kuku web` to open the managed service, or use `kuku web --session ID --agent ADDRESS` to open a particular conversation. The workspace defaults to the launch directory.
+The browser development client uses the same authenticated HTTP and NDJSON Session protocol as the terminal. A build with embedded Web assets serves the UI from the API origin.
 
 In a local browser handoff, a temporary ticket authorizes the tab and is removed from the address bar. Refresh the same tab to reuse that connection. To open the WebUI served by an explicit remote server, use its HTTPS address and enter its server access token. That token is held in page memory.
 
@@ -23,4 +23,4 @@ Enter the explicit server access token on the development page. Vite proxies API
 | `npm run build` | Build the production assets into `dist/` |
 | `npm run storybook` | Open the component explorer |
 
-After building the production assets, `cargo build -p kuku-app --features embedded-web-assets` embeds them in the unified binary. The installed browser handoff can be checked with `python3 scripts/acceptance/run.py interactive --browser` from the repository root.
+After building the assets, `cargo build -p kuku-app --features embedded-web-assets` embeds them in the unified binary. Run `python3 scripts/acceptance/run.py interactive --binary target/debug/kuku --browser` from the repository root to test browser handoff.

@@ -1,6 +1,50 @@
 # SDK
 
-`kuku::Session` 是嵌入入口。[`session_task.rs`](../../../crates/kuku/examples/session_task.rs) 是普通 Rust 调用程序。产品服务使用同一 SDK，并通过 [HTTP 服务接口](server-api.md) 为终端、脚本和浏览器客户端提供服务。
+`kuku::Session` 是嵌入入口。产品服务使用同一 SDK，为终端和脚本提供接口。[HTTP 服务接口](server-api.md)
+
+## 发送首个请求
+
+装好 Rust 和 Cargo 后，新建项目，并从与本指南对应的源码检出添加 SDK。把 `/path/to/kuku` 换成你的检出路径。
+
+```bash
+cargo new kuku-first-request
+cd kuku-first-request
+cargo add --path /path/to/kuku/crates/kuku
+cargo add tokio --features macros,rt-multi-thread
+```
+
+将[最小单模型配置](config.md#最小配置)保存为新项目里的 `config.toml`。填写连接的 URL 和模型 ID，再导出文件引用的密钥。将以下程序保存到 `src/main.rs`。
+
+```rust
+use std::{env, path::Path};
+
+use kuku::{AgentConfig, AgentStatus, Input, Session, SessionOptions};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = env::current_dir()?;
+    let data_dir = workspace.join(".kuku-sdk-data");
+    let config = kuku::config::load_config(Path::new("config.toml"))?.resolve()?;
+    let session = Session::open(SessionOptions::new(workspace, data_dir, config)).await?;
+
+    session.create_agent("create-main", "main", AgentConfig::default())?;
+    session.send(Input::new("first-input", "main", "Reply with a short greeting."))?;
+    let result = session.wait_for_agent("main").await;
+    session.close().await?;
+
+    let agent = result?;
+    if let Some(error) = agent.last_error {
+        return Err(error.into());
+    }
+    if agent.status != AgentStatus::Idle {
+        return Err(format!("Agent settled as {:?}", agent.status).into());
+    }
+    println!("{}", agent.last_output.ok_or("Agent returned no text")?);
+    Ok(())
+}
+```
+
+运行 `cargo run` 可打印模型回复。没有显式选择模型的 Agent 会用 Session 的默认连接和模型。宿主也可以在内存中构造 `kuku::config::Config`，传给同一个 `SessionOptions::new`。用 `ModelRef::new(connection, model)` 表示默认值和 `Config.models` 的键，并在 `Config.providers` 中提供凭据。`ApiKey::Plaintext` 接受直接传入的密钥值。[完整命令行嵌入示例](../../../crates/kuku/examples/session_task.rs)
 
 ## 操作
 
@@ -15,6 +59,7 @@
 | `agent(address)` / `agents()` | 不消耗输出的派生快照 |
 | `agent_view(address)` | 所选 Agent 快照、排队输入和对应的已提交游标 |
 | `agent_selection(address)` | 不执行的有效模型设置、能力和最终工具集合 |
+| `wait_for_agent(address).await` | 最多等待当前 Agent 执行 30 秒，返回结算后的快照 |
 | `receipt(command_id)` / `input_receipt(&Input)` | 查询和校验既有回执，不恢复执行 |
 | `input_status(address, input_command_id)` | 查询输入已排队、已接纳或已撤回 |
 | `withdraw_input(command_id, address, input_command_id)` | 撤回仍在排队的输入并返回其状态 |
@@ -32,7 +77,9 @@
 
 较低层的 `Query` `Run` 通过 non-exhaustive 的 `UiEvent` 和 `ToolEvent` 枚举提供宿主事件；两者匹配时都应保留兜底分支。`UiEvent` 包含 `ModelRequest` 和 `ModelRecovery` 变体；`ModelRequest` 携带请求 ID 和序号，`ModelRecovery` 携带失败／重试请求 ID 与有界重试信息。行为说明见 [Agent 执行循环](../how-it-works/agent-loop.md)。
 
-`SessionOptions::new(workspace, data_dir, config)` 接收具名 provider 配置；可增加 Prompt 资源、限额与宿主 `ToolAuthorizer`。`AgentConfig` 选择 Preset、Tier、具名连接、模型、思考、服务、输出 token、指令、目录和原生 Skill 默认值。连接选择独立于协议。显式 model 覆盖所选 Tier 的模型，保留其余默认值。`AgentConfig.tools` 覆盖 Preset 的最终工具选择；只读 Preset 不会自动增加协作工具。Preset 的指令、Tier 和工具默认值在创建或配置 Agent 时解析并保存；后续修改 Preset 文件不会改变这些已保留默认值。生命周期与回执语义见 [Sessions](../how-it-works/sessions.md)。
+`SessionOptions::new(workspace, data_dir, config)` 接收解析完成的配置，还可设置 Prompt 资源、限额与宿主 `ToolAuthorizer`。显式选模型时，同时填写 `AgentConfig.connection` 和 `AgentConfig.model`。两项都留空时，先用预设指定的模型，再用 Session 默认值。可用 `Session::default_model()` 查询保留的初始默认值。
+
+`AgentConfig` 还可设置预设、思考强度、服务档位、输出 token、指令、工作目录和 Skill 选项。`AgentConfig.tools` 覆盖预设的工具选择。创建或配置 Agent 时会解析并保存预设指令、连接与模型以及工具。重新应用预设时，文件上的修改才会生效。[Session 生命周期和回执](../how-it-works/sessions.md)
 
 `Input.timing` 区分默认的 `InputTiming::NextStep` 和 `InputTiming::NextTurn`。`AgentSnapshot.execution_id` 标识本次执行。`Observation::Live` 包含来源 Agent、执行标识、Turn 和发布该进度时最新的已提交游标。用 `agent_view` 取得与所选 Agent 状态对应的游标，从那里开始观察。
 
@@ -90,7 +137,7 @@
 cargo run -p kuku --example session_task -- \
   --workspace /path/to/work --prompt-file /path/to/task.txt \
   --config /path/to/config.toml --data-dir /path/to/session-data \
-  --connection deepseek --reasoning-effort low \
+  --connection work --model your-model-id \
   --output /path/to/result.json
 ```
 
@@ -114,7 +161,7 @@ cargo run -p kuku --example session_task -- \
 
 默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。宿主需要限制传输大小时，可通过 `RuntimeLimits::max_request_bytes` 设置序列化请求上限。预览至少 1 KiB，以保留完整引用和标志。
 
-`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于 tier 配置，宿主上限适用于每个 Agent。Rust 的 `TierConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。详见[模型配置](config.md#modelname)。
+`RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于模型配置，宿主上限适用于每个 Agent。Rust 的 `ModelConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。[模型设置](config.md#模型设置)
 
 `RuntimeLimits.retry_transient_provider_errors` 默认为 true。最多进行六次尝试（五次重试），所有可重试的 provider 故障共用 2/4/8/16/32 秒指数退避，并加 0–25% 抖动。有效且不超过 30 秒的 `Retry-After` 可延长等待；缺失、无效或更长的提示不会禁用重试，超过 30 秒的提示会被忽略。传输层将明确的认证、权限、额度、上下文、请求和无效响应错误视为终止条件。首个流内容前的错误可以重试；输出开始后发生的可重试错误会结束本次尝试，以免重复已发出或持久化的副作用。每次重试沿用已准备请求，只有实际派发的尝试计入调用方请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告五次允许的重试（禁用时为零）。
 
@@ -136,8 +183,8 @@ cargo run -p kuku --example session_orchestrate -- \
   --prompt-file /path/to/draft.txt \
   --review-prompt-file /path/to/review.txt \
   --continue-prompt-file /path/to/continue.txt \
-  --writer-connection direct --writer-tier balanced \
-  --reviewer-connection openrouter-openai-responses --reviewer-tier light \
+  --writer-connection direct --writer-model writer-model-id \
+  --reviewer-connection openrouter-openai-responses --reviewer-model reviewer-model-id \
   --max-requests 16 --timer-ms 250 \
   --max-output-tokens 32768 --max-context-tokens 131072 \
   --data-dir /path/to/session-data --output /path/to/result.json

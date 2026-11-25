@@ -13,7 +13,7 @@ kuku stays light enough that a 371 MiB RAM ARM64 board can open and continue a 1
 
 ## Install
 
-Copy the block for your platform to install [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4). [中文安装](docs/zh/start/install.md#安装已发布版本)
+Copy the block for your platform to install published release [`v0.1.0-alpha.4`](https://github.com/Cloud370/kuku/releases/tag/v0.1.0-alpha.4). Follow that release's guide after installing it. [Release guide](https://github.com/Cloud370/kuku/tree/v0.1.0-alpha.4#quick-start) · [中文安装](docs/zh/start/install.md#安装已发布版本)
 
 ### Linux and macOS
 
@@ -39,24 +39,21 @@ Open a new terminal after installation. [Build from source](docs/en/start/instal
 
 ## Quick Start
 
-For the default Anthropic route, export `ANTHROPIC_API_KEY` and run these commands from your project directory.
+The following guides use the binary built from this source tree. [Build from source](docs/en/start/install.md#build-from-source)
+
+Open a terminal in your project directory and run kuku.
 
 ```bash
-kuku init
 kuku
 ```
 
-Type `Inspect the files in this directory` and press Enter. For OpenAI or an existing config, see [Quickstart](docs/en/start/quickstart.md). To use `kuku web`, [build with embedded Web assets](docs/en/reference/cli.md#kuku-server-and-kuku-web).
+Choose a connection and a model. Type `Inspect the files in this directory` and press Enter. You can also ask `How do I use kuku?` once the model is configured. [Terminal quickstart](docs/en/start/quickstart.md)
 
 ## Documentation
 
-Recommended reading order ([中文文档](docs/zh/index.md)):
-
-1. [Install](docs/en/start/install.md)
-2. [Quickstart](docs/en/start/quickstart.md)
-3. [Configuration](docs/en/start/configuration.md)
-4. [Guides](docs/en/guides/index.md)
-5. [Reference](docs/en/reference/index.md)
+- [Start in the terminal](docs/en/start/quickstart.md) to set up a model and send a message.
+- [Run from a script](docs/en/guides/run-a-task.md) to configure and submit a headless task, then read its result.
+- [Embed the Rust SDK](docs/en/reference/sdk.md#first-request) to open a Session and make a first request.
 
 ## Repo Map
 
@@ -64,7 +61,6 @@ Recommended reading order ([中文文档](docs/zh/index.md)):
 - CLI: [`crates/kuku-cli/`](crates/kuku-cli/)
 - Server: [`crates/kuku-server/`](crates/kuku-server/)
 - HTTP client and terminal UI: [`crates/kuku-client/`](crates/kuku-client/), [`crates/kuku-tui/`](crates/kuku-tui/)
-- Web UI: [`apps/web/`](apps/web/)
 - Unified binary: [`apps/kuku/`](apps/kuku/)
 
 ## License

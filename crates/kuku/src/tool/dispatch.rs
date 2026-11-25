@@ -264,9 +264,7 @@ mod tests {
 
     fn test_config_and_catalog() -> (crate::config::Config, crate::prompt::PromptCatalog) {
         let catalog = crate::prompt::catalog::builtin_prompt_catalog();
-        let toml_str = crate::config::generate_default();
-        let file: crate::config::ConfigFile = toml::from_str(toml_str).unwrap();
-        let config = file.resolve().unwrap();
+        let config = crate::config::test_config();
         (config, catalog)
     }
 

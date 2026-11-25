@@ -10,14 +10,6 @@
 
 版本升级时的接管规则见[升级 kuku](upgrade-kuku.md)。
 
-## 在浏览器里使用 Web UI
-
-使用[内嵌 Web 资源的构建](../reference/cli.md#kuku-server-与-kuku-web)时，在工作区运行 `kuku web`（可带 `--session SESSION_ID --agent ADDRESS`），或者直接在 TUI 里对当前 Agent 输入 `/web`。浏览器和终端可以同时观察同一个 Session，并回复同一个待决请求。
-
-受管本地启动会用一次性票据自动登录；显式指向外部服务时，浏览器会打开登录页让你输入该服务的访问令牌。[CLI 参考](../reference/cli.md#kuku-server-与-kuku-web) · [HTTP 认证](../reference/server-api.md#认证与版本)
-
-浏览器快捷键与 TUI 一致：**Enter** 发送或插话，**Shift+Enter** 换行，**Alt+Enter** 排到下一轮。界面上可以切换接收 Agent，点 **Stop** 中断、**Continue** 继续、**Withdraw** 撤回排队输入；若请求回执丢失，页面支持重新查询或重发原命令。[Session 模型](../how-it-works/sessions.md)
-
 ## 显式启动服务
 
 在服务端机器上初始化 `KUKU_HOME`、配好模型凭据，设置 `KUKU_SERVER_PASSWORD` 作为访问令牌后保持服务运行：

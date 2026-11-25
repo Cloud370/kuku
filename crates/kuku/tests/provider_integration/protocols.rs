@@ -693,16 +693,18 @@ async fn openai_responses_length_recovery_keeps_original_input_and_optional_limi
         });
 
         let mut config = test_config();
-        let tier = config.tiers.get_mut("balanced").unwrap();
-        tier.max_output_tokens = None;
+        let provider = config.providers.get_mut("openai").unwrap();
+        provider.format = kuku::config::ProviderFormat::OpenAiResponses;
+        provider.base_url = server.url(prefix);
+        provider.api_key = ApiKey::Plaintext("responses-key".into());
+        let settings = common::set_test_model(&mut config, "openai", "test-responses");
+        settings.max_output_tokens = None;
         if limit.is_some() {
-            tier.context_window = 10_000;
+            settings.context_window = 10_000;
         }
         let mut request = query("finish the responses task")
-            .provider(Provider::OpenAiResponses)
+            .connection("openai")
             .model("test-responses")
-            .base_url(server.url(prefix))
-            .api_key("responses-key")
             .config(config);
         if let Some(limit) = limit {
             request = request.max_output_tokens(limit);
@@ -750,7 +752,7 @@ async fn http_error_writes_model_error_and_turn_end() {
     });
 
     let err = query("test")
-        .provider(Provider::Anthropic)
+        .connection("anthropic")
         .model("claude-sonnet-4-6")
         .base_url(server.base_url())
         .api_key("bad")
@@ -821,6 +823,7 @@ async fn api_key_is_not_written_to_events() {
     query("test")
         .provider(Provider::Anthropic)
         .model("m")
+        .max_output_tokens(48_000)
         .api_key("secret-123")
         .base_url(server.base_url())
         .session(sid)
