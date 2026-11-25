@@ -9,29 +9,14 @@ use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::{Error, Result};
 
 use super::controls::{command, commit_with_file_revert, rewind_blocked};
-use super::record::{AgentState, Record};
-use super::{AgentStatus, Receipt, Session, TurnIndex};
+use super::record::Record;
+use super::{Receipt, Session, TurnIndex};
 
 pub use crate::context::revert::{FileRewindChange, FileRewindPreview};
 pub use crate::event::store::{MessageRewind, UserMessagePreview};
 
 const USER_MESSAGE_SCAN_BYTES: usize = 16 * 1024 * 1024;
 const USER_MESSAGE_PAGE_LIMIT: usize = 256;
-
-impl AgentState {
-    pub(super) fn finish_history_change(&mut self) -> Option<u64> {
-        self.snapshot.last_error = None;
-        if self.snapshot.status == AgentStatus::Interrupted
-            && self.accepted.is_empty()
-            && self.inbox.is_empty()
-        {
-            self.snapshot.status = AgentStatus::Idle;
-            self.snapshot.turn
-        } else {
-            None
-        }
-    }
-}
 
 impl Session {
     /// Continue one Agent from a settled Turn on any retained branch of this Session.

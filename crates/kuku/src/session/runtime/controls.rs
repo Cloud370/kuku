@@ -96,6 +96,15 @@ impl Session {
                 "cannot rewind while this Agent is executing or has pending input".into(),
             ));
         }
+        let abandoned_turn = agent.snapshot.turn.filter(|_| {
+            agent.snapshot.status == AgentStatus::Interrupted
+                && !removed_input_ids.is_empty()
+                && agent.snapshot.permission.is_none()
+                && agent.permission_reply.is_none()
+                && agent.snapshot.question.is_none()
+                && agent.stopped_at.is_none()
+                && !state.cleanup_failures.contains_key(address)
+        });
         if restore_files
             && (state.jobs.has_active()
                 || state.agents.iter().any(|(candidate, agent)| {
@@ -148,6 +157,7 @@ impl Session {
                     target_turn: *turn,
                     restore_files,
                     removed_input_ids: removed_input_ids.into_iter().collect(),
+                    abandoned_turn,
                     warnings: warnings.clone(),
                 },
             )
@@ -842,6 +852,7 @@ mod rewind_guard_tests {
             target_turn: 1,
             restore_files: false,
             removed_input_ids: vec!["rewound".into()],
+            abandoned_turn: None,
             warnings: Vec::new(),
         };
         let rewind = Record::from_event(&StoredEvent {
