@@ -49,16 +49,22 @@ pub(super) fn select_turns(messages: &mut Vec<AdmittedMessage>, through: u64, ke
     messages.retain(|message| message.turn > through || retained.contains(&message.turn));
 }
 
+pub(super) fn input_admissions(
+    messages: &[AdmittedMessage],
+    turn: u64,
+    resume_input_turn: Option<u64>,
+) -> impl DoubleEndedIterator<Item = &AdmittedMessage> {
+    messages.iter().filter(move |entry| {
+        entry.origin == MessageOrigin::Input
+            && (entry.turn == turn || Some(entry.turn) == resume_input_turn)
+    })
+}
+
 pub(super) fn append_input_skills(
     pending: &PendingRun,
     messages: &mut Vec<AdmittedMessage>,
     prelude: &[CanonicalMessage],
 ) -> Result<Vec<String>> {
-    let admitted_at = messages
-        .iter()
-        .rev()
-        .find(|message| message.turn == pending.turn && message.origin == MessageOrigin::Input)
-        .map_or(0, |message| message.admitted_at);
     let mut names = pending.query.input_skills.clone();
     if names.is_empty() {
         return Ok(names);
@@ -68,6 +74,9 @@ pub(super) fn append_input_skills(
             "selected input skill cannot load while skills are disabled".into(),
         ));
     }
+    let admitted_at = input_admissions(messages, pending.turn, pending.query.resume_input_turn)
+        .next_back()
+        .map_or(pending.turn, |message| message.admitted_at);
     let mut seen = BTreeSet::new();
     names.retain(|name| seen.insert(name.clone()));
     let mut admitted = Vec::new();

@@ -2,7 +2,7 @@ use crate::Result;
 use crate::context::runtime::{AdmittedMessage, FrozenSegment, MessageOrigin};
 use crate::skill::model_catalog::{self, CatalogAnchor};
 
-use super::{PendingRun, insert_runtime_notice};
+use super::{PendingRun, admission::input_admissions, insert_runtime_notice};
 
 pub(super) fn append_notice(
     pending: &PendingRun,
@@ -51,10 +51,8 @@ pub(super) fn append_notice(
     };
     // A retried Turn may reuse its already-persisted input from the interrupted
     // Turn. Bind the notice to that original input so a rewind removes both.
-    let input_turn = pending.query.resume_input_turn.unwrap_or(pending.turn);
-    let admitted_at = messages
-        .iter()
-        .find(|entry| entry.turn == input_turn && entry.origin == MessageOrigin::Input)
+    let admitted_at = input_admissions(messages, pending.turn, pending.query.resume_input_turn)
+        .next()
         .map_or(pending.turn, |entry| entry.admitted_at);
     Ok(notice.as_ref().map(|notice| {
         insert_runtime_notice(messages, pending.turn, notice, frozen_head, admitted_at)

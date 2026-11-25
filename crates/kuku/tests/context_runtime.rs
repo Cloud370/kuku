@@ -643,6 +643,7 @@ async fn rendered_policy_boundary_survives_behavior_reconfiguration() {
 #[tokio::test]
 async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation() {
     const CATALOG_SKILL: &str = "retry-catalog-entry";
+    const SKILL_BODY: &str = "Instructions explicitly selected by the retried input.";
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -684,6 +685,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     idle(&session, "main").await;
     let mut pending = Input::new("candidate", "main", "retry-input");
     pending.activation = kuku::Activation::Enqueue;
+    pending.bootstrap_skill = Some(CATALOG_SKILL.into());
     session.send(pending).unwrap();
     original.session_id = Some(session.id().into());
     let events_path = session.events_path().to_path_buf();
@@ -700,7 +702,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     std::fs::create_dir_all(&skill).unwrap();
     std::fs::write(
         skill.join("SKILL.md"),
-        format!("---\nname: {CATALOG_SKILL}\ndescription: Retry fixture.\n---\nRetry catalog."),
+        format!("---\nname: {CATALOG_SKILL}\ndescription: Retry fixture.\n---\n{SKILL_BODY}"),
     )
     .unwrap();
     let unconfirmed_source_head = {
@@ -771,7 +773,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     let retried = &preparations[1];
     assert_eq!(segment, retried["segment"]);
     assert_eq!(head, retried["prefix_context_head"]);
-    assert_eq!(head + 3, retried["context_head"]);
+    assert_eq!(head + 4, retried["context_head"]);
     assert_eq!(head + 1, retried["current_input"]);
     let retried_source_head = retried["source_head"].as_u64().unwrap();
     assert!(retried_source_head > unconfirmed_source_head);
@@ -807,14 +809,14 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     assert_eq!(3, reopened_preparations.len());
     let reopened = &reopened_preparations[2];
     assert_eq!(segment, reopened["segment"]);
-    assert_eq!(head + 3, reopened["prefix_context_head"]);
-    assert_eq!(head + 5, reopened["context_head"]);
+    assert_eq!(head + 4, reopened["prefix_context_head"]);
+    assert_eq!(head + 6, reopened["context_head"]);
     let reopened_admissions = facts(&reopened_events, "runtime.context_admitted", "main");
     let replacement = reopened_admissions
         .iter()
         .find(|value| {
             value["segment"] == segment
-                && value["ordinal"] == head + 3
+                && value["ordinal"] == head + 4
                 && value["source_head"] == reopened["source_head"]
         })
         .unwrap();
@@ -844,7 +846,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
     model.assert_hits_async(4).await;
     let bodies = common::take_http_requests(&path);
     assert_eq!(
-        bodies[0]["messages"].as_array().unwrap().len() + 3,
+        bodies[0]["messages"].as_array().unwrap().len() + 4,
         bodies[1]["messages"].as_array().unwrap().len()
     );
     for body in &bodies[1..3] {
@@ -863,6 +865,7 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
                 .count(),
             1
         );
+        assert_eq!(body.to_string().matches(SKILL_BODY).count(), 1);
     }
     assert!(
         bodies[2]["messages"]
@@ -875,7 +878,9 @@ async fn unconfirmed_runtime_suffix_can_be_replaced_before_a_retried_preparation
             .iter()
             .any(|body| body.to_string().contains("UNCONFIRMED_DYNAMIC_NOTICE"))
     );
-    assert!(!bodies[3].to_string().contains(CATALOG_SKILL));
+    let rewound = bodies[3].to_string();
+    assert!(!rewound.contains(SKILL_BODY));
+    assert!(!rewound.contains(CATALOG_SKILL));
 }
 
 fn tool_count(request: &HttpMockRequest) -> usize {

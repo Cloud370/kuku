@@ -240,17 +240,6 @@ pub(super) async fn prepare(
             }
         }
     }
-    skill_catalog::append_notice(
-        pending,
-        &segment,
-        &mut messages,
-        if new_segment {
-            0
-        } else {
-            cursor.admitted.len()
-        },
-    )?;
-    let input_skills = append_input_skills(pending, &mut messages, &segment.prelude)?;
     append_dynamic(
         pending,
         &mut messages,
@@ -273,7 +262,7 @@ pub(super) async fn prepare(
             cursor.admitted.len()
         },
     )?;
-    let current_input = if compact_only {
+    let mut current_input = if compact_only {
         messages
             .iter()
             .rposition(|entry| entry.origin == MessageOrigin::Input)
@@ -345,6 +334,22 @@ pub(super) async fn prepare(
             Error::InvalidEventStream("prepared context has no admitted current input".into())
         }
     })?;
+    // A recovered input may only have been restored from the journal above. Its
+    // original event ID is the rewind boundary for both kinds of Skill admission.
+    let notice = skill_catalog::append_notice(
+        pending,
+        &segment,
+        &mut messages,
+        if new_segment {
+            0
+        } else {
+            cursor.admitted.len()
+        },
+    )?;
+    if notice.is_some_and(|index| index <= current_input) {
+        current_input += 1;
+    }
+    let input_skills = append_input_skills(pending, &mut messages, &segment.prelude)?;
     let assembly = ContextAssembly {
         system_prompt: segment.system_prompt.clone(),
         prelude_messages: segment.prelude.clone(),
