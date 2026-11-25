@@ -40,7 +40,7 @@ pub enum ProviderTraceMode {
     Off,
     /// Record protocol structure without request bodies or provider content.
     Diagnostic,
-    /// Record request bodies and raw SSE with credential headers redacted.
+    /// Record headers, request bodies, and SSE with credentials and inline image data redacted from requests.
     Full,
 }
 
@@ -228,11 +228,11 @@ impl ProviderTrace {
         self.record(&mut self.state.lock().unwrap(), "response", value, false);
     }
 
-    pub(crate) fn frame(&self, frame: &str) {
+    pub(crate) fn frame(&self, frame: &str, include_raw: bool) {
         let mut state = self.state.lock().unwrap();
         state.frame += 1;
         let (mut value, terminal) = state.frame_metadata(frame);
-        if self.full() {
+        if self.full() && include_raw {
             value["frame"] = json!(frame);
         }
         self.record(&mut state, "event", value, terminal);
@@ -365,7 +365,7 @@ mod tests {
             "model-fixture".into(),
         )
         .unwrap();
-        trace.frame(&format!("data: {}", "OVERSIZED".repeat(128 * 1024)));
+        trace.frame(&format!("data: {}", "OVERSIZED".repeat(128 * 1024)), true);
         trace.flush();
         let root = super::trace_root(home.path());
         let path = std::fs::read_dir(root)

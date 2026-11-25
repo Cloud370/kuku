@@ -22,7 +22,7 @@ Set the referenced variables in the process that loads the config. For provider 
 
 Prerelease and untagged development builds record lightweight protocol diagnostics by default; stable releases default to off. Diagnostic JSONL records capture Session/Turn/request correlation, model and route, HTTP status, SSE sequence and terminal markers, failure kind, and anonymized reasoning-entry metadata (omitting request/response bodies, headers, and opaque payloads).
 
-Setting `KUKU_PROVIDER_TRACE=1` captures full request bodies, headers, and raw SSE frames. Secret headers are redacted, but prompts, tool results, and replies remain in the body. SDK embedders can configure this explicitly via `SessionOptions::provider_trace` or `Query::provider_trace`.
+Setting `KUKU_PROVIDER_TRACE=1` captures request bodies, request and response headers, and raw SSE frames. Credential headers and inline image data are redacted from requests, but prompts, tool results, and replies can still appear in the trace. HTTP error response bodies are not written to the trace. For requests containing inline images, provider error details are also omitted from the session's error message and raw error frames are not traced. SDK embedders can configure the trace policy via `SessionOptions::provider_trace` or `Query::provider_trace`.
 
 Traces write to rotating JSONL segments under `$KUKU_HOME/logs/provider-trace/`. They obey [log retention](config.md#logs) and are capped at write time to `min(64 MiB, total log budget)`, with each segment capped at `min(8 MiB, trace budget)` (oldest segments evicted first).
 

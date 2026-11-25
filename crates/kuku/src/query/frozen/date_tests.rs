@@ -78,6 +78,7 @@ fn custom_policy_date_ignores_incidental_memory_dates_in_both_prelude_orders() {
             protocol: String::new(),
             model: String::new(),
             endpoint: String::new(),
+            last_request_url: None,
             capabilities: None,
             route_selectors: None,
             behavior: "shared behavior".into(),

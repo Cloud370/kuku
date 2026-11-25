@@ -3,6 +3,7 @@ use wreq::header::{HeaderMap, HeaderValue};
 use crate::config::ProviderAuth;
 
 use super::error::{classify_http_error, transport_error};
+use super::media::{self, ImageWire};
 use super::prepare::{authentication, invalid_request};
 use super::trace::{ProviderTrace, ProviderTraceMetadata};
 use super::types::{
@@ -14,6 +15,7 @@ const MAX_ERROR_BODY_BYTES: usize = 4096;
 pub(crate) struct TransportResponse {
     pub(crate) response: wreq::Response,
     pub(crate) trace: Option<ProviderTrace>,
+    pub(super) contains_images: bool,
 }
 
 pub(crate) async fn send_prepared(
@@ -73,6 +75,8 @@ async fn send(
         config.connection_name.clone(),
         prepared.model.clone(),
     );
+    let wire = ImageWire::for_kind(prepared.kind);
+    let contains_images = media::has_inline_images(wire, prepared.body.as_json());
     if let Some(trace) = &trace {
         let body = trace.full().then(|| {
             let mut body = prepared.body.as_json().clone();
@@ -81,8 +85,7 @@ async fn send(
                     *field = serde_json::json!("<redacted>");
                 }
             }
-            let wire = super::media::ImageWire::for_kind(prepared.kind);
-            super::media::redact_images(wire, &mut body);
+            media::redact_images(wire, &mut body);
             body
         });
         trace.request(&prepared.url, &headers, body);
@@ -147,6 +150,9 @@ async fn send(
             }
         }
         let mut failure = classify_http_error(status.as_u16(), &body);
+        if contains_images {
+            super::error::omit_image_request_error_details(&mut failure);
+        }
         failure.retry_after = retry_after;
         if let Some(delay) = retry_after {
             failure
@@ -162,7 +168,11 @@ async fn send(
         }
         return Err(failure);
     }
-    Ok(TransportResponse { response, trace })
+    Ok(TransportResponse {
+        response,
+        trace,
+        contains_images,
+    })
 }
 
 fn request_headers(

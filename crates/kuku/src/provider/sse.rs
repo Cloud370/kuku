@@ -2,8 +2,11 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::ProviderChunkStream;
 use super::chunk::ProviderChunk;
-use super::error::transport_error;
+use super::error::{
+    IMAGE_REQUEST_ERROR_DETAILS_OMITTED, omit_image_request_error_details, transport_error,
+};
 use super::trace::ProviderTrace;
+use super::transport::TransportResponse;
 use super::types::{ProviderFailure, ProviderFailureKind};
 
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
@@ -36,14 +39,26 @@ pub(crate) fn parse_sse_frame(frame: &str) -> Option<SseFrame> {
 }
 
 pub(crate) fn stream_sse_events(
-    response: wreq::Response,
-    trace: Option<ProviderTrace>,
+    transport: TransportResponse,
     mut on_frame: impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send + 'static,
     mut on_eof: impl FnMut() -> Result<Vec<ProviderChunk>, ProviderFailure> + Send + 'static,
 ) -> ProviderChunkStream {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<ProviderChunk, ProviderFailure>>(16);
     tokio::spawn(async move {
-        let outcome = run_sse_loop(response, trace.as_ref(), &mut on_frame, &mut on_eof, &tx).await;
+        let TransportResponse {
+            response,
+            trace,
+            contains_images,
+        } = transport;
+        let outcome = run_sse_loop(
+            response,
+            trace.as_ref(),
+            contains_images,
+            &mut on_frame,
+            &mut on_eof,
+            &tx,
+        )
+        .await;
         if let Some(trace) = &trace {
             if let Err(failure) = &outcome {
                 trace.failure(failure.kind);
@@ -61,6 +76,7 @@ pub(crate) fn stream_sse_events(
 async fn run_sse_loop(
     response: wreq::Response,
     trace: Option<&ProviderTrace>,
+    contains_images: bool,
     on_frame: &mut (impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
     on_eof: &mut (impl FnMut() -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
     tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
@@ -75,17 +91,21 @@ async fn run_sse_loop(
         };
         let Some(bytes) = next else { break };
         for frame in decoder.feed(&bytes.map_err(|error| transport_error(&error))?)? {
-            if !emit_frame(&frame, trace, on_frame, tx).await? {
+            if !emit_frame(&frame, trace, contains_images, on_frame, tx).await? {
                 return Ok(());
             }
         }
     }
     if let Some(frame) = decoder.finish()? {
-        if !emit_frame(&frame, trace, on_frame, tx).await? {
+        if !emit_frame(&frame, trace, contains_images, on_frame, tx).await? {
             return Ok(());
         }
     }
-    for chunk in on_eof()? {
+    let mut chunks = on_eof();
+    if contains_images {
+        redact_stream_errors(&mut chunks);
+    }
+    for chunk in chunks? {
         if tx.send(Ok(chunk)).await.is_err() {
             break;
         }
@@ -96,21 +116,44 @@ async fn run_sse_loop(
 async fn emit_frame(
     frame: &str,
     trace: Option<&ProviderTrace>,
+    contains_images: bool,
     on_frame: &mut (impl FnMut(&str) -> Result<Vec<ProviderChunk>, ProviderFailure> + Send),
     tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
 ) -> Result<bool, ProviderFailure> {
     if frame.trim().is_empty() {
         return Ok(true);
     }
+    let mut chunks = on_frame(frame);
+    // An error frame may quote an input image just like an HTTP error body.
+    let redacted = contains_images && redact_stream_errors(&mut chunks);
     if let Some(trace) = trace {
-        trace.frame(frame);
+        trace.frame(frame, !redacted);
     }
-    for chunk in on_frame(frame)? {
+    for chunk in chunks? {
         if tx.send(Ok(chunk)).await.is_err() {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn redact_stream_errors(chunks: &mut Result<Vec<ProviderChunk>, ProviderFailure>) -> bool {
+    let mut redacted = false;
+    match chunks {
+        Ok(chunks) => {
+            for chunk in chunks {
+                if let ProviderChunk::ServerError { message, .. } = chunk {
+                    *message = IMAGE_REQUEST_ERROR_DETAILS_OMITTED.into();
+                    redacted = true;
+                }
+            }
+        }
+        Err(failure) => {
+            omit_image_request_error_details(failure);
+            redacted = true;
+        }
+    }
+    redacted
 }
 
 #[derive(Default)]
@@ -263,7 +306,15 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-        let stream = stream_sse_events(response, None, |_| Ok(Vec::new()), || Ok(Vec::new()));
+        let stream = stream_sse_events(
+            super::TransportResponse {
+                response,
+                trace: None,
+                contains_images: false,
+            },
+            |_| Ok(Vec::new()),
+            || Ok(Vec::new()),
+        );
         drop(stream);
         tokio::time::timeout(std::time::Duration::from_secs(2), server)
             .await

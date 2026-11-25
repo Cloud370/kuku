@@ -20,6 +20,28 @@ const PNG: &str =
 const ENDPOINT: &str = "/workspace-media/responses";
 const CHAT_ENDPOINT: &str = "/workspace-media-chat/chat/completions";
 
+fn chat_fixture(server: &MockServer) -> kuku::config::Config {
+    let mut config = media_config(server, "/workspace-media-chat");
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.format = ProviderFormat::OpenAiChat;
+    provider.options.profile = ProviderProfile::Compatible;
+    config
+}
+
+fn tool_free_agent() -> AgentConfig {
+    AgentConfig {
+        no_agents: true,
+        tools: Some(vec![]),
+        ..Default::default()
+    }
+}
+
+fn chat_done() -> String {
+    common::openai_sse_response(json!({"choices": [{
+        "message": {"content": "image check complete"}, "finish_reason": "stop",
+    }]}))
+}
+
 #[derive(Debug)]
 struct Gate;
 
@@ -383,9 +405,7 @@ async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
     let tools = common::openai_sse_response(json!({"choices": [{
         "message": {"tool_calls": tool_calls}, "finish_reason": "tool_calls",
     }]}));
-    let done = common::openai_sse_response(json!({"choices": [{
-        "message": {"content": "image check complete"}, "finish_reason": "stop",
-    }]}));
+    let done = chat_done();
     let initial = server
         .mock_async(|when, then| {
             when.method(POST)
@@ -479,11 +499,14 @@ async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
                 .body(&done);
         })
         .await;
-    let mut config = media_config(&server, "/workspace-media-chat");
-    let provider = config.providers.get_mut("openai").unwrap();
-    provider.format = ProviderFormat::OpenAiChat;
-    provider.options.profile = ProviderProfile::Compatible;
-    let mut options = SessionOptions::new(work.path(), data.path(), config);
+    let prompts = tempfile::tempdir().unwrap();
+    std::fs::create_dir(prompts.path().join("runtime")).unwrap();
+    std::fs::write(
+        prompts.path().join("runtime/chat-tool-image-continuation.md"),
+        "{{ \"Continue the user's task.\" }} Keep the original attachments and the tool images distinct.",
+    ).unwrap();
+    let mut options = SessionOptions::new(work.path(), data.path(), chat_fixture(&server));
+    options.prompts_dir = Some(prompts.path().into());
     options.authorizer = Arc::new(Gate);
     options.limits.output_retention_secs = 0;
     let session = Session::open(options.clone()).await.unwrap();
@@ -529,6 +552,299 @@ async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
     initial.assert_hits_async(1).await;
     continuation.assert_hits_async(2).await;
     text_only.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "test_support")]
+async fn an_alpha5_session_can_keep_its_history_and_add_an_image_on_the_same_route() {
+    let first_text = "A retained instruction from the old Session";
+    for (format, path, adapter) in [
+        (
+            ProviderFormat::OpenAiChat,
+            CHAT_ENDPOINT,
+            "chat_completions_image_parts",
+        ),
+        (
+            ProviderFormat::Anthropic,
+            "/legacy-override/messages",
+            "anthropic_messages_image_blocks",
+        ),
+    ] {
+        let server = MockServer::start_async().await;
+        let work = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let done = match format {
+            ProviderFormat::Anthropic => common::anthropic_sse_response(json!({
+                "content":[{"type":"text","text":"image check complete"}],
+                "stop_reason":"end_turn",
+            })),
+            _ => chat_done(),
+        };
+        let initial = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path(path)
+                    .body_contains(first_text)
+                    .matches(|request| !body(request).to_string().contains(PNG));
+                then.status(200)
+                    .header("content-type", "text/event-stream")
+                    .body(&done);
+            })
+            .await;
+        let followup = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path(path)
+                    .body_contains(first_text)
+                    .body_contains("image check complete")
+                    .body_contains("New image in the same Session")
+                    .body_contains(PNG);
+                then.status(200)
+                    .header("content-type", "text/event-stream")
+                    .body(&done);
+            })
+            .await;
+        let mut config = chat_fixture(&server);
+        let provider = config.providers.get_mut("openai").unwrap();
+        provider.format = format;
+        provider.options.endpoint_url = Some(server.url(path));
+        let mut options = SessionOptions::new(work.path(), data.path(), config);
+        let session = Session::open(options.clone()).await.unwrap();
+        session
+            .create_agent("create", "main", tool_free_agent())
+            .unwrap();
+        run(&session, "before-upgrade", first_text).await;
+        options.session_id = Some(session.id().into());
+        session.close().await.unwrap();
+
+        // Simulate the facts in a pre-upgrade journal, not an Agent reconfiguration.
+        let events_path = session.events_path().to_owned();
+        drop(session);
+        let journal = std::fs::read_to_string(&events_path).unwrap();
+        let mut old_id = None;
+        let mut legacy = String::new();
+        for line in journal.lines() {
+            let mut event: Value = serde_json::from_str(line).unwrap();
+            if event["kind"] == "runtime.context_segment" {
+                assert_eq!(event["capabilities"]["media_adapter"], adapter);
+                old_id = event["id"].as_u64();
+                event["signature"] = json!("alpha5-segment");
+                event["capabilities"]["media_adapter"] = json!("text_only");
+                event["catalog"]["runtime"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("chat-tool-image-continuation");
+                legacy.push_str(&event.to_string());
+            } else {
+                legacy.push_str(line);
+            }
+            legacy.push('\n');
+        }
+        let old_id = old_id.unwrap();
+        std::fs::write(&events_path, legacy).unwrap();
+
+        let reopened = Session::open(options).await.unwrap();
+        let mut input = Input::new("after-upgrade", "main", "New image in the same Session");
+        input.images.push(
+            reopened
+                .save_input_image("main", &STANDARD.decode(PNG).unwrap())
+                .await
+                .unwrap(),
+        );
+        reopened.send(input).unwrap();
+        let state = reopened.wait_for_agent("main").await.unwrap();
+        assert_eq!(state.last_error, None, "{format:?}");
+        assert_eq!(state.last_output.as_deref(), Some("image check complete"));
+        assert!(reopened.events(old_id, 100).unwrap().iter().any(|event| {
+            matches!(&event.payload, EventPayload::Unknown(value)
+                if value["kind"] == "runtime.context_segment"
+                    && value["predecessor"] == old_id
+                    && value["capabilities"]["media_adapter"] == adapter)
+        }));
+        reopened.close().await.unwrap();
+        initial.assert_hits_async(1).await;
+        followup.assert_hits_async(1).await;
+    }
+}
+
+#[tokio::test]
+async fn image_only_chat_route_does_not_offer_view_image_but_sends_input_images() {
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let request = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(CHAT_ENDPOINT)
+                .body_contains(PNG)
+                .matches(|request| {
+                    let body = body(request);
+                    body["model"] == "gpt-6.2-sol" && body.get("tools").is_none()
+                });
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(chat_done());
+        })
+        .await;
+    let mut config = chat_fixture(&server);
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.options.profile = ProviderProfile::OpenAi;
+    let capabilities = provider.options.model_capabilities["vision-fixture"].clone();
+    provider
+        .options
+        .model_capabilities
+        .insert("gpt-6.2-sol".into(), capabilities);
+    common::set_test_model(&mut config, "openai", "gpt-6.2-sol").think =
+        kuku::config::ThinkLevel::Off;
+    let session = Session::open(SessionOptions::new(work.path(), data.path(), config))
+        .await
+        .unwrap();
+    let error = session
+        .create_agent(
+            "rejected",
+            "main",
+            AgentConfig {
+                tools: Some(vec!["view_image".into()]),
+                ..tool_free_agent()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("selected tool 'view_image' is not available")
+    );
+    session
+        .create_agent("create", "main", tool_free_agent())
+        .unwrap();
+    assert_eq!(
+        session.agent_selection("main").unwrap().image_input,
+        ImageInputSupport::Supported
+    );
+    let mut input = Input::new("input-only", "main", "Read the attachment");
+    input.images.push(
+        session
+            .save_input_image("main", &STANDARD.decode(PNG).unwrap())
+            .await
+            .unwrap(),
+    );
+    session.send(input).unwrap();
+    let state = session.wait_for_agent("main").await.unwrap();
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.last_output.as_deref(), Some("image check complete"));
+    session.close().await.unwrap();
+    request.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+async fn image_request_error_details_do_not_enter_the_journal_or_full_trace() {
+    const TEXT: &str = "Inspect a rejected attachment";
+    const DETAIL: &str = "fixture-specific diagnostic";
+    for (format, path) in [
+        (ProviderFormat::OpenAiChat, CHAT_ENDPOINT),
+        (ProviderFormat::Anthropic, "/media-errors/v1/messages"),
+    ] {
+        for stream in [false, true] {
+            let server = MockServer::start_async().await;
+            let work = tempfile::tempdir().unwrap();
+            let data = tempfile::tempdir().unwrap();
+            let error = json!({"type":"error", "error": {
+                "type":"invalid_request_error", "message":format!("{DETAIL}: {PNG}"),
+            }});
+            let rejected = server
+                .mock_async(|when, then| {
+                    when.method(POST)
+                        .path(path)
+                        .body_contains(TEXT)
+                        .body_contains(PNG);
+                    if stream {
+                        then.status(200)
+                            .header("content-type", "text/event-stream")
+                            .body(format!("event: error\ndata: {error}\n\n"));
+                    } else {
+                        then.status(400)
+                            .header("content-type", "application/json")
+                            .header("x-request-id", "media-rejected")
+                            .body(error.to_string());
+                    }
+                })
+                .await;
+            let text_only = server
+                .mock_async(|when, then| {
+                    when.method(POST)
+                        .path(path)
+                        .body_contains("Show a text diagnostic");
+                    then.status(400).body(DETAIL);
+                })
+                .await;
+            let mut config = chat_fixture(&server);
+            let provider = config.providers.get_mut("openai").unwrap();
+            provider.format = format;
+            provider.options.endpoint_url = Some(server.url(path));
+            let mut options = SessionOptions::new(work.path(), data.path(), config);
+            options.provider_trace = if stream {
+                kuku::ProviderTraceMode::Full
+            } else {
+                kuku::ProviderTraceMode::Off
+            };
+            let session = Session::open(options).await.unwrap();
+            session
+                .create_agent("create", "main", tool_free_agent())
+                .unwrap();
+            session
+                .create_agent("create-text", "plain", tool_free_agent())
+                .unwrap();
+            let mut input = Input::new("image-error", "main", TEXT);
+            input.images.push(
+                session
+                    .save_input_image("main", &STANDARD.decode(PNG).unwrap())
+                    .await
+                    .unwrap(),
+            );
+            session.send(input).unwrap();
+            let state = session.wait_for_agent("main").await.unwrap();
+            let message = state.last_error.unwrap();
+            assert!(
+                message.contains("provider error details omitted for a request containing images"),
+                "{message}"
+            );
+            assert_eq!(message.contains("HTTP 400"), !stream);
+            assert!(session.events(0, 100).unwrap().iter().any(|event| {
+                matches!(&event.payload, EventPayload::ModelError { kind, message, .. }
+                    if kind == "invalid_request" && message.contains("provider error details omitted") && !message.contains(DETAIL))
+            }));
+            assert!(
+                !std::fs::read_to_string(session.events_path())
+                    .unwrap()
+                    .contains(PNG)
+            );
+
+            session
+                .send(Input::new("text-error", "plain", "Show a text diagnostic"))
+                .unwrap();
+            let state = session.wait_for_agent("plain").await.unwrap();
+            assert!(state.last_error.unwrap().contains(DETAIL));
+            session.close().await.unwrap();
+
+            if stream {
+                let trace = data.path().join("logs/provider-trace");
+                let trace = std::fs::read_dir(trace)
+                    .unwrap()
+                    .filter_map(|entry| {
+                        let path = entry.unwrap().path();
+                        (path.extension().is_some_and(|ext| ext == "jsonl"))
+                            .then(|| std::fs::read_to_string(path).unwrap())
+                    })
+                    .collect::<String>();
+                assert!(trace.contains("\"headers\"") && trace.contains("\"content-type\""));
+                assert!(trace.contains("\"body\"") && trace.contains(TEXT));
+                assert!(trace.contains("<omitted image data"));
+                assert!(!trace.contains(PNG) && !trace.contains(DETAIL));
+            }
+            rejected.assert_hits_async(1).await;
+            text_only.assert_hits_async(1).await;
+        }
+    }
 }
 
 #[tokio::test]

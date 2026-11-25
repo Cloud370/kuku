@@ -9,7 +9,7 @@ use super::chunk::ProviderChunk;
 use super::replay::{MAX_REPLAY_ITEMS, ReplayBudget, validate_replay_size};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
-use super::transport::{TransportResponse, send_prepared};
+use super::transport::send_prepared;
 use super::types::{PreparedProviderRequest, ProviderFailure, ResolvedProvider};
 
 #[path = "openai_responses/reasoning.rs"]
@@ -29,14 +29,12 @@ pub(crate) async fn stream_prepared(
     prepared: &PreparedProviderRequest,
     trace_metadata: Option<super::trace::ProviderTraceMetadata>,
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
-    let TransportResponse { response, trace } =
-        send_prepared(config, prepared, trace_metadata).await?;
+    let transport = send_prepared(config, prepared, trace_metadata).await?;
     let parser = Arc::new(Mutex::new(OpenAiResponsesSseParser::new()));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     Ok(stream_sse_events(
-        response,
-        trace,
+        transport,
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))

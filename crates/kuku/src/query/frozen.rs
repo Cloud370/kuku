@@ -3,6 +3,7 @@ use std::time::Instant;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::config::MediaAdapterSupport;
 use crate::context::assembly::assemble_segment_context;
 use crate::context::runtime::{
     AdmittedMessage, CheckpointFileChanges, FrozenSegment, MessageOrigin, RouteSelectors,
@@ -12,7 +13,9 @@ use crate::context::{
 };
 use crate::event::{EventPayload, EventStore};
 use crate::prompt::PromptCatalog;
-use crate::provider::types::{PreparedProviderRequest, ResolvedProvider};
+use crate::provider::types::{
+    PreparedProviderRequest, ProviderCapabilities, ProviderKind, ResolvedProvider,
+};
 use crate::{Error, Result};
 
 use super::helpers::{
@@ -548,6 +551,7 @@ fn initial_segment(
         protocol: String::new(),
         model: String::new(),
         endpoint: String::new(),
+        last_request_url: None,
         capabilities: None,
         route_selectors: None,
         behavior: behavior.into(),
@@ -663,13 +667,45 @@ fn check_route_snapshot(
     let selectors_changed = recorded_selectors != selectors;
     let route_changed = effective_route_changed || selectors_changed;
     let capabilities_changed = capabilities != &resolved.capabilities;
+    let media_upgraded = !route_changed
+        && builtin_media_adapter_upgraded(capabilities, resolved)
+        && segment.last_request_url.as_ref().map_or_else(
+            || resolved.options.endpoint_url.is_none(),
+            |url| {
+                crate::provider::prepare::request_url(resolved).is_ok_and(|current| &current == url)
+            },
+        );
     let explicit_route_change = configured > segment.configuration && selectors_changed;
-    if (route_changed || capabilities_changed) && !explicit_route_change {
+    if (route_changed || (capabilities_changed && !media_upgraded)) && !explicit_route_change {
         return Err(Error::MissingProviderConfig(format!(
             "agent '{agent}' has a frozen provider route or capabilities that differ from the active configuration; restore the recorded route/profile, explicitly configure a different connection and model pair with configure_agent, or start a new Session"
         )));
     }
     Ok(route_changed)
+}
+
+fn builtin_media_adapter_upgraded(old: &ProviderCapabilities, resolved: &ResolvedProvider) -> bool {
+    let adapter = resolved.capabilities.media_adapter;
+    if old.media_adapter != MediaAdapterSupport::TextOnly
+        || !matches!(
+            (resolved.kind, adapter),
+            (
+                ProviderKind::OpenAiCompatible,
+                MediaAdapterSupport::ChatCompletionsImageParts
+            ) | (
+                ProviderKind::Anthropic,
+                MediaAdapterSupport::AnthropicMessagesImageBlocks
+            )
+        )
+    {
+        return false;
+    }
+    // The new request encoder is not a route change. All declared capabilities
+    // still have to match so the successor segment can retain this history.
+    ProviderCapabilities {
+        media_adapter: adapter,
+        ..old.clone()
+    } == resolved.capabilities
 }
 
 fn append_dynamic(
@@ -853,6 +889,7 @@ mod snapshot_tests {
             protocol: resolved.kind.format().as_str().into(),
             model: resolved.model.clone(),
             endpoint: resolved.base_url.clone(),
+            last_request_url: None,
             capabilities: Some(resolved.capabilities.clone()),
             route_selectors: Some(selectors.clone()),
             behavior: String::new(),
@@ -909,6 +946,49 @@ mod snapshot_tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("restore the recorded route/profile"));
+    }
+
+    #[test]
+    fn builtin_image_encoders_upgrade_without_a_route_change() {
+        for (kind, adapter) in [
+            (
+                ProviderKind::OpenAiCompatible,
+                MediaAdapterSupport::ChatCompletionsImageParts,
+            ),
+            (
+                ProviderKind::Anthropic,
+                MediaAdapterSupport::AnthropicMessagesImageBlocks,
+            ),
+        ] {
+            let (mut segment, mut route, selectors) = snapshot_fixture();
+            route.kind = kind;
+            route.options.endpoint_url = Some("https://example.test/v2/generate".into());
+            segment.protocol = kind.format().as_str().into();
+            segment
+                .last_request_url
+                .clone_from(&route.options.endpoint_url);
+            route.capabilities.media_adapter = adapter;
+            assert!(!check_route_snapshot("main", &segment, 5, &route, &selectors).unwrap());
+
+            route.capabilities.tool_calls = Some(false);
+            assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
+            route.capabilities.tool_calls = None;
+            route.options.endpoint_url = Some("https://example.test/v2/other".into());
+            assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
+            route.options.endpoint_url = None;
+            assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
+            route
+                .options
+                .endpoint_url
+                .clone_from(&segment.last_request_url);
+            route.base_url = "https://other.example.test".into();
+            assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
+            route.base_url.clone_from(&segment.endpoint);
+
+            segment.capabilities = Some(route.capabilities.clone());
+            route.capabilities.media_adapter = MediaAdapterSupport::TextOnly;
+            assert!(check_route_snapshot("main", &segment, 5, &route, &selectors).is_err());
+        }
     }
 
     #[test]

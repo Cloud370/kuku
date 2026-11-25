@@ -22,7 +22,7 @@ kuku 在加载配置时展开 URL 和模型 ID 引用。API 密钥与自定义�
 
 预发布版和未打标签的开发版默认记录轻量级协议诊断，稳定版默认关闭。诊断 JSONL 记录 Session/Turn/请求关联、模型与线路、HTTP 状态、SSE 序号与结束标记、失败类别以及脱敏后的思考条目元数据，不包含请求/响应正文、请求头或不透明载荷。
 
-设置 `KUKU_PROVIDER_TRACE=1` 会记录完整请求正文、请求头和原始 SSE 帧。含密钥的请求头会自动脱敏，但提示词、工具结果和回复仍在正文里。嵌入 SDK 时可通过 `SessionOptions::provider_trace` 或 `Query::provider_trace` 显式指定策略。
+设置 `KUKU_PROVIDER_TRACE=1` 会记录请求正文、请求与响应头，以及原始 SSE 帧。请求中的凭据头和内联图片数据会脱敏，但提示词、工具结果和回复仍可能出现在 trace 中。HTTP 错误响应正文不写入 trace。请求包含内联图片时，供应商返回的错误详情也不会写入 Session 的错误消息，原始错误帧也不会写入 trace。嵌入 SDK 时可通过 `SessionOptions::provider_trace` 或 `Query::provider_trace` 显式指定策略。
 
 Trace 以轮转 JSONL 分段存放在 `$KUKU_HOME/logs/provider-trace/`，遵循[日志保留规则](config.md#logs)，同时受写入上限约束：总大小不超过 `min(64 MiB, 日志总预算)`，单段不超过 `min(8 MiB, trace 预算)`，超出时优先淘汰旧分段。
 

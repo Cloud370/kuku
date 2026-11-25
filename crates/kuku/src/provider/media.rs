@@ -62,23 +62,44 @@ impl ImageWire {
         }
     }
 
-    fn image_data(self, part: &mut Value) -> Option<&mut Value> {
+    fn image_data_path(self, part: &Value) -> Option<&'static str> {
         match part["type"].as_str() {
-            Some("image_url") if matches!(self, Self::ChatCompletions) => {
-                part.get_mut("image_url")?.get_mut("url")
-            }
-            Some("input_image") if matches!(self, Self::Responses) => part.get_mut("image_url"),
+            Some("image_url") if matches!(self, Self::ChatCompletions) => Some("/image_url/url"),
+            Some("input_image") if matches!(self, Self::Responses) => Some("/image_url"),
             Some("image")
                 if matches!(self, Self::Messages) && part["source"]["type"] == "base64" =>
             {
-                part.get_mut("source")?.get_mut("data")
+                Some("/source/data")
             }
             _ => None,
         }
     }
 
+    fn inline_image_data(self, part: &Value) -> Option<(&'static str, &str)> {
+        let path = self.image_data_path(part)?;
+        let encoded = part.pointer(path)?.as_str()?;
+        (matches!(self, Self::Messages) || encoded.starts_with("data:")).then_some((path, encoded))
+    }
+
+    fn content_field(self, item: &Value) -> Option<&'static str> {
+        match (self, item["type"].as_str()) {
+            (Self::Responses, Some("function_call_output")) => Some("output"),
+            (Self::Responses, Some("message")) | (Self::ChatCompletions | Self::Messages, _) => {
+                Some("content")
+            }
+            _ => None,
+        }
+    }
+
+    fn has_nested_tool_content(self, part: &Value) -> bool {
+        matches!(self, Self::Messages) && part["type"] == "tool_result"
+    }
+
     fn encode(self, part: &mut Value, bytes: &[u8]) {
-        let data = self.image_data(part).expect("native inline image part");
+        let path = self
+            .image_data_path(part)
+            .expect("native inline image part");
+        let data = part.pointer_mut(path).expect("inline image data field");
         let mut encoded = data.as_str().expect("base64 data string").to_owned();
         STANDARD.encode_string(bytes, &mut encoded);
         *data = Value::String(encoded);
@@ -256,18 +277,34 @@ pub(super) fn attach_user_images(
     Ok(())
 }
 
+pub(super) fn has_inline_images(wire: ImageWire, body: &Value) -> bool {
+    fn has_inline_parts(wire: ImageWire, parts: &[Value]) -> bool {
+        parts.iter().any(|part| {
+            wire.inline_image_data(part).is_some()
+                || (wire.has_nested_tool_content(part)
+                    && part["content"]
+                        .as_array()
+                        .is_some_and(|parts| has_inline_parts(wire, parts)))
+        })
+    }
+
+    body[wire.items()].as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            wire.content_field(item)
+                .and_then(|field| item[field].as_array())
+                .is_some_and(|parts| has_inline_parts(wire, parts))
+        })
+    })
+}
+
 pub(super) fn redact_images(wire: ImageWire, body: &mut Value) {
     let Some(input) = body.get_mut(wire.items()).and_then(Value::as_array_mut) else {
         return;
     };
     for item in input {
-        let field = match (wire, item["type"].as_str()) {
-            (ImageWire::Responses, Some("function_call_output")) => "output",
-            (ImageWire::Responses, Some("message"))
-            | (ImageWire::ChatCompletions | ImageWire::Messages, _) => "content",
-            _ => continue,
-        };
-        if let Some(parts) = item[field].as_array_mut() {
+        if let Some(field) = wire.content_field(item)
+            && let Some(parts) = item.get_mut(field).and_then(Value::as_array_mut)
+        {
             redact_parts(wire, parts);
         }
     }
@@ -275,17 +312,15 @@ pub(super) fn redact_images(wire: ImageWire, body: &mut Value) {
 
 fn redact_parts(wire: ImageWire, parts: &mut [Value]) {
     for part in parts {
-        if matches!(wire, ImageWire::Messages)
-            && part["type"] == "tool_result"
+        if wire.has_nested_tool_content(part)
             && let Some(content) = part["content"].as_array_mut()
         {
             redact_parts(wire, content);
         }
-        if let Some(data) = wire.image_data(part)
-            && let Some(encoded) = data.as_str()
-            && (matches!(wire, ImageWire::Messages) || encoded.starts_with("data:"))
-        {
-            *data = json!(format!("<omitted image data, {} bytes>", encoded.len()));
+        if let Some((path, encoded)) = wire.inline_image_data(part) {
+            let bytes = encoded.len();
+            *part.pointer_mut(path).expect("inline image data field") =
+                json!(format!("<omitted image data, {bytes} bytes>"));
         }
     }
 }
@@ -301,8 +336,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ImageWire, ToolImageTarget, attach_tool_images, attach_user_images, json_bytes,
-        redact_images,
+        ImageWire, ToolImageTarget, attach_tool_images, attach_user_images, has_inline_images,
+        json_bytes, redact_images,
     };
     use crate::execution::{ImageMime, InputImage, ModelImage, OutputReference};
 
@@ -350,6 +385,7 @@ mod tests {
             None,
         );
         assert_eq!(limited, preview);
+        assert!(has_inline_images(ImageWire::Responses, &limited));
         redact_images(ImageWire::Responses, &mut limited);
         assert!(!limited.to_string().contains("data:image/png"));
         assert_eq!(limited["input"][1]["output"][1]["type"], "input_image");
@@ -393,6 +429,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fitted, expected);
+        assert!(has_inline_images(wire, &fitted));
         redact_images(wire, &mut fitted);
         assert!(!fitted.to_string().contains("data:image/"));
         assert_eq!(fitted["messages"][1]["content"][1]["type"], "image_url");
@@ -451,6 +488,7 @@ mod tests {
             None,
         );
         assert_eq!(fitted, expected);
+        assert!(has_inline_images(wire, &fitted));
         redact_images(wire, &mut fitted);
         assert!(!fitted.to_string().contains("AAAAAA=="));
         assert_eq!(

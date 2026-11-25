@@ -62,6 +62,18 @@ pub(crate) fn classify_http_error(status: u16, body_snippet: &str) -> ProviderFa
     }
 }
 
+/// Error bodies may quote inline image data in any format. Classify first,
+/// then keep only local text rather than publishing any free-form excerpt.
+pub(super) fn omit_image_request_error_details(failure: &mut ProviderFailure) {
+    failure.message = match failure.status {
+        Some(status) => format!("HTTP {status}: {IMAGE_REQUEST_ERROR_DETAILS_OMITTED}"),
+        None => IMAGE_REQUEST_ERROR_DETAILS_OMITTED.into(),
+    };
+}
+
+pub(super) const IMAGE_REQUEST_ERROR_DETAILS_OMITTED: &str =
+    "provider error details omitted for a request containing images";
+
 fn retryable_http_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 429 | 500..=599)
 }
