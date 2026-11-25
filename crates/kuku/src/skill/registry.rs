@@ -230,7 +230,7 @@ pub fn detect_skill_changes(old: &SkillRegistry, new: &SkillRegistry) -> Option<
         .intersection(&old_names)
         .filter(|name| {
             (**name == super::bundle::NAME && old.docs_bundle != new.docs_bundle)
-                || new.get(name).map(|d| d.hash.as_str()) != old.get(name).map(|d| d.hash.as_str())
+                || new.get(name) != old.get(name)
         })
         .map(|name| (*name).to_string())
         .collect();

@@ -148,16 +148,12 @@ pub(super) async fn prepare(
         });
     if route_changed || workspace_changed || tool_names_changed || missing_modalities {
         segment = initial_segment(pending, &catalog, &tools, &behavior, &resolved)?;
-        if segment
-            .prelude
-            .iter()
-            .any(|message| crate::skill::model_catalog::anchor(message).is_some())
-        {
-            messages.retain(|entry| {
-                entry.origin != MessageOrigin::Runtime
-                    || crate::skill::model_catalog::anchor(&entry.message).is_none()
-            });
-        }
+        // The new prelude either starts its own catalog or does not expose Skill tools.
+        // Notices tied to the previous prelude are no longer applicable in either case.
+        messages.retain(|entry| {
+            entry.origin != MessageOrigin::Runtime
+                || crate::skill::model_catalog::anchor(&entry.message).is_none()
+        });
         if let Some(summary) = previous.as_ref().and_then(|segment| {
             segment
                 .handoff_prelude

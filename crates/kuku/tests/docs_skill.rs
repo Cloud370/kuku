@@ -321,6 +321,48 @@ async fn configured_docs_skill_remains_loaded_while_the_body_is_in_context() {
 }
 
 #[tokio::test]
+async fn first_request_keeps_one_hundred_descriptions_that_fit() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".fixture");
+    let description = "短句帮助索引。".repeat(10);
+    for index in 0..100 {
+        let name = format!("entire-{index:03}");
+        let dir = root.join("skills").join(&name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nDo not preload these instructions.\n"),
+        )
+        .unwrap();
+    }
+    let model = Model::new(data.path(), [Reply::Text]);
+    let mut options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    options.config.discovery.extra_project_paths = vec![root];
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("first", "main", "First request."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    session.close().await.unwrap();
+    let wire = model.requests.lock().unwrap()[0].0.to_string();
+    assert!(wire.contains("Complete Skill catalog: 101 names."));
+    assert!(!wire.contains("descriptions were shortened"));
+    for index in 0..100 {
+        assert!(wire.contains(&format!("entire-{index:03} — {description}")));
+    }
+    assert!(!wire.contains("Do not preload these instructions."));
+}
+
+#[tokio::test]
 async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_survives() {
     const FILLER_SKILLS: usize = 1_200;
     const TARGET: &str = "zz-project-fixture";
@@ -372,6 +414,8 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
                 json!({"query": "catalogneedle-bbb"}),
             ),
             load("project-next"),
+            Reply::Text,
+            Reply::Call("sort-only", "list_skills", json!({})),
             Reply::Text,
         ],
     );
@@ -427,13 +471,40 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
     assert_eq!(next_hit["skills"][0]["name"], TARGET);
     assert_eq!(next_hit["skills"][0]["loaded"], false);
     assert_eq!(tool_result(&session, "project-next").2["reused"], false);
+    std::fs::File::open(root.join(TARGET).join("SKILL.md"))
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() + Duration::from_secs(86_400)),
+        )
+        .unwrap();
+    session
+        .send(Input::new("sort-only", "main", "List the latest Skills."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert_eq!(
+        tool_result(&session, "sort-only").2["skills"][0]["name"],
+        TARGET
+    );
     {
         let requests = model.requests.lock().unwrap();
-        assert_eq!(requests.len(), 7);
+        assert_eq!(requests.len(), 9);
+        for pair in requests.windows(2) {
+            let [previous, next] = pair else {
+                unreachable!()
+            };
+            assert!(
+                next.0["messages"]
+                    .as_array()
+                    .unwrap()
+                    .starts_with(previous.0["messages"].as_array().unwrap())
+            );
+        }
         let initial = requests[0].0.to_string();
         assert!(initial.contains("Complete Skill catalog: 1202 names."));
         assert!(initial.contains("descriptions were shortened"));
         assert!(initial.contains(TARGET));
+        assert!(initial.find("other-1199").unwrap() < initial.find(TARGET).unwrap());
         for index in 0..FILLER_SKILLS {
             assert!(initial.contains(&format!("other-{index:04} — ")));
         }
@@ -462,8 +533,132 @@ async fn thousand_plus_skills_are_discovered_on_demand_and_revision_reuse_surviv
             _ => None,
         })
         .collect();
-    assert_eq!(refs.len(), 2);
+    assert_eq!(refs.len(), 3);
     assert!(refs.iter().all(|value| value.to_string().len() < 128));
     assert_ne!(refs[0]["snapshot"], refs[1]["snapshot"]);
+    assert_ne!(refs[1]["snapshot"], refs[2]["snapshot"]);
     session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn catalog_announces_a_relocated_skill_without_changing_the_frozen_prefix() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let first_root = workspace.path().join(".first");
+    let second_root = workspace.path().join(".second");
+    let skill = first_root.join("skills/relocated");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::create_dir_all(second_root.join("skills")).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: relocated\ndescription: Relocation fixture.\n---\nUse the files beside this Skill.\n",
+    )
+    .unwrap();
+    let model = Model::new(data.path(), [Reply::Text, Reply::Text]);
+    let mut options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    options.config.discovery.extra_project_paths = vec![first_root, second_root.clone()];
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("first", "main", "First request."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+
+    std::fs::rename(skill, second_root.join("skills/relocated")).unwrap();
+    session
+        .send(Input::new("second", "main", "Second request."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    session.close().await.unwrap();
+
+    let requests = model.requests.lock().unwrap();
+    let first = requests[0].0["messages"].as_array().unwrap();
+    let second = requests[1].0["messages"].as_array().unwrap();
+    assert!(second.starts_with(first));
+    let wire = requests[1].0.to_string();
+    assert_eq!(wire.matches("<kuku_skill_catalog>").count(), 1);
+    assert_eq!(wire.matches("<kuku_skill_changes>").count(), 1);
+    assert!(wire.contains("Updated: relocated (new revision)"));
+    assert_eq!(wire.matches("Relocation fixture.").count(), 1);
+}
+
+#[tokio::test]
+async fn a_skill_disabled_successor_drops_catalog_notices_after_reopening() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = workspace.path().join(".fixture");
+    let model = Model::new(
+        data.path(),
+        [Reply::Text, Reply::Text, Reply::Text, Reply::Text],
+    );
+    let mut options = options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    );
+    options.config.discovery.extra_project_paths = vec![root.clone()];
+    let session = Session::open(options.clone()).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("first", "main", "Initial request."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    let skill = root.join("skills/late-skill");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: late-skill\ndescription: Late arrival.\n---\nA new Skill.\n",
+    )
+    .unwrap();
+    session
+        .send(Input::new("addition", "main", "Request after addition."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    options.session_id = Some(session.id().into());
+    session.close().await.unwrap();
+
+    let session = Session::open(options).await.unwrap();
+    session
+        .configure_agent(
+            "disable",
+            "main",
+            AgentConfig {
+                no_skills: true,
+                ..AgentConfig::default()
+            },
+        )
+        .unwrap();
+    session
+        .send(Input::new("disabled", "main", "Request without Skills."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    session
+        .configure_agent("enable", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new("enabled", "main", "Request with Skills again."))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    session.close().await.unwrap();
+
+    let requests = model.requests.lock().unwrap();
+    assert!(requests[1].0.to_string().contains("Added: late-skill"));
+    let disabled = requests[2].0.to_string();
+    assert!(disabled.contains("Initial request.") && disabled.contains("Request after addition."));
+    assert!(!disabled.contains("<kuku_skill_catalog>"));
+    assert!(!disabled.contains("<kuku_skill_changes>"));
+    let enabled = requests[3].0.to_string();
+    assert_eq!(enabled.matches("<kuku_skill_catalog>").count(), 1);
+    assert!(enabled.contains("late-skill — Late arrival."));
+    assert!(!enabled.contains("<kuku_skill_changes>"));
 }

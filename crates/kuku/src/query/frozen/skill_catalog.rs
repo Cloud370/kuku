@@ -49,11 +49,13 @@ pub(super) fn append_notice(
         }
         None => Some(model_catalog::full(registry, current)),
     };
+    // A retried Turn may reuse its already-persisted input from the interrupted
+    // Turn. Bind the notice to that original input so a rewind removes both.
+    let input_turn = pending.query.resume_input_turn.unwrap_or(pending.turn);
     let admitted_at = messages
         .iter()
-        .rev()
-        .find(|entry| entry.turn == pending.turn && entry.origin == MessageOrigin::Input)
-        .map_or(0, |entry| entry.admitted_at);
+        .find(|entry| entry.turn == input_turn && entry.origin == MessageOrigin::Input)
+        .map_or(pending.turn, |entry| entry.admitted_at);
     Ok(notice.as_ref().map(|notice| {
         insert_runtime_notice(messages, pending.turn, notice, frozen_head, admitted_at)
     }))

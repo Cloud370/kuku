@@ -49,6 +49,7 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
     const OLD: &str = "OLDER-INPUT-WITH-ORIGINAL-SKILL";
     const INPUT: &str = "Select the same skill again in this turn.";
     const SKILL: &str = "Unique selected skill instructions from disk.";
+    const CATALOG_CHANGE: &str = "Added: new-after-checkpoint";
     let server = MockServer::start_async().await;
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
@@ -70,11 +71,13 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
         format!("---\nname: keep-selected\ndescription: Compaction fixture.\n---\n{SKILL}\n"),
     )
     .unwrap();
-    let session = Session::open(config).await.unwrap();
+    let session = Session::open(config.clone()).await.unwrap();
     let mut configured = agent();
     configured.no_skills = false;
-    configured.tools = Some(Vec::new());
-    session.create_agent("create", "main", configured).unwrap();
+    configured.tools = Some(vec!["list_skills".into()]);
+    session
+        .create_agent("create", "main", configured.clone())
+        .unwrap();
 
     let prior = server
         .mock_async(|when, then| {
@@ -100,6 +103,16 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
     idle(&session, "main").await;
     prior.assert_hits_async(1).await;
 
+    let added = workspace
+        .path()
+        .join(".fixture/skills/new-after-checkpoint");
+    std::fs::create_dir_all(&added).unwrap();
+    std::fs::write(
+        added.join("SKILL.md"),
+        "---\nname: new-after-checkpoint\ndescription: Fresh catalog entry.\n---\nSkill body stays on demand.\n",
+    )
+    .unwrap();
+
     let checkpoint = server
         .mock_async(|when, then| {
             when.method(POST).path(&path).matches(|request| {
@@ -114,7 +127,10 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
         .mock_async(|when, then| {
             when.method(POST).path(&path).matches(|request| {
                 let wire = request_body(request).to_string();
-                !wire.contains(OLD) && wire.contains(INPUT) && wire.matches(SKILL).count() == 1
+                !wire.contains(OLD)
+                    && wire.contains(INPUT)
+                    && wire.matches(SKILL).count() == 1
+                    && wire.matches(CATALOG_CHANGE).count() == 1
             });
             then.status(200).body(response(
                 json!({"content":"Kept the selected skill."}),
@@ -137,7 +153,38 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
         Some("Kept the selected skill."),
         session.agent("main").unwrap().last_output.as_deref()
     );
+    config.session_id = Some(session.id().into());
     session.close().await.unwrap();
+
+    let disabled = server
+        .mock_async(|when, then| {
+            when.method(POST).path(&path).matches(|request| {
+                let wire = request_body(request).to_string();
+                wire.contains("Without the Skill catalog.")
+                    && wire.contains(INPUT)
+                    && !wire.contains("<kuku_skill_catalog>")
+                    && !wire.contains("<kuku_skill_changes>")
+            });
+            then.status(200)
+                .body(response(json!({"content":"Catalog disabled."}), "stop"));
+        })
+        .await;
+    let reopened = Session::open(config).await.unwrap();
+    configured.no_skills = true;
+    configured.tools = Some(Vec::new());
+    reopened
+        .configure_agent("disable", "main", configured)
+        .unwrap();
+    reopened
+        .send(Input::new(
+            "no-catalog",
+            "main",
+            "Without the Skill catalog.",
+        ))
+        .unwrap();
+    idle(&reopened, "main").await;
+    disabled.assert_hits_async(1).await;
+    reopened.close().await.unwrap();
 }
 
 #[derive(Clone, Copy)]
