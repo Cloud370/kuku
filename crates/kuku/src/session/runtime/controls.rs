@@ -910,7 +910,7 @@ mod rewind_guard_tests {
                     turn: 2,
                     text: "new text, earlier input is already in the journal".into(),
                     from: None,
-                    via_tool_call_id: None,
+                    images: Vec::new(),
                     job_delivery: false,
                 },
             },
