@@ -70,6 +70,8 @@ Before writing any code:
 
 只有对应版本的正文实际在 Agent 的上下文中时，才算已加载。`use_skill` 遇到已经可见的同一版本，只报告复用，不重复返回正文。如果文件更新或正文已经不在上下文中，Agent 可以重新加载适用的版本。
 
+输入显式选择 Skill 时，压缩会保留该版本的完整正文供本轮后续步骤使用，不会自动重载此前 Turn 选中的 Skill。
+
 ## 路径解析
 
 加载 Skill 时，运行时会在正文前插入目录标记：
@@ -83,5 +85,7 @@ Before writing any code:
 ## Skill 资料
 
 kuku 将内置 Skill 安装为服务数据目录中的真实目录。版本包含 `SKILL.md` 和 `references/docs/` 下的内置文档。正在执行或恢复的 Turn 沿用原目录，新 Turn 可发现新版本。
+
+每个 Turn 首次加载内置 Skill 时都会校验资料文件，并从同一版本的归档恢复缺失或损坏的文件。普通文件工具仍遵循原有路径和授权规则；浏览 Skill 目录不会扫描内置资料。
 
 通过 `use_skill` 取得指引和真实目录；用 `read_file` 读取资料，或用 `find_files` 和 `search_text` 找文件。已知绝对路径时也可以直接读。相对脚本和资源路径以 Skill 目录为基准，命令仍默认在 Agent 工作区执行。内置文件对文件编辑工具只读。

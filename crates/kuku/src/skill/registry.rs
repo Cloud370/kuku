@@ -1,7 +1,7 @@
 //! Skill registry with multi-source builder and change detection.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
@@ -73,11 +73,43 @@ impl SkillRegistry {
         home: &Path,
         stop: Option<&tokio::sync::watch::Receiver<bool>>,
     ) -> Result<bool> {
-        let Some(version) = self.docs_bundle.as_deref() else {
+        let Some(path) = self
+            .install_docs(home, super::bundle::Verify::Entry, stop)
+            .await?
+        else {
             return Ok(false);
         };
-        let Some(definition) = self.definitions.get_mut(super::bundle::NAME) else {
+        let path = path.to_str().ok_or_else(|| {
+            crate::Error::InvalidArgument("built-in Skill directory must be valid Unicode".into())
+        })?;
+        let definition = self
+            .definitions
+            .get_mut(super::bundle::NAME)
+            .expect("bundled Skill exists");
+        if definition.source_path.as_deref() == Some(path) {
             return Ok(false);
+        }
+        definition.source_path = Some(path.into());
+        Ok(true)
+    }
+
+    pub(crate) async fn verify_docs_references(&self, home: &Path) -> Result<()> {
+        self.install_docs(home, super::bundle::Verify::References, None)
+            .await?;
+        Ok(())
+    }
+
+    async fn install_docs(
+        &self,
+        home: &Path,
+        verify: super::bundle::Verify,
+        stop: Option<&tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<Option<PathBuf>> {
+        let Some(version) = self.docs_bundle.as_deref() else {
+            return Ok(None);
+        };
+        let Some(definition) = self.get(super::bundle::NAME) else {
+            return Ok(None);
         };
         // Older retained archives did not carry the instruction file. Reconstruct it from
         // the original pinned definition, not from the current build's source.
@@ -87,15 +119,9 @@ impl SkillRegistry {
             serde_json::json!(&definition.description),
             definition.instructions,
         );
-        let path = super::bundle::materialize(home, version, fallback, stop).await?;
-        let path = path.to_str().ok_or_else(|| {
-            crate::Error::InvalidArgument("built-in Skill directory must be valid Unicode".into())
-        })?;
-        if definition.source_path.as_deref() == Some(path) {
-            return Ok(false);
-        }
-        definition.source_path = Some(path.into());
-        Ok(true)
+        Ok(Some(
+            super::bundle::materialize(home, version, fallback, verify, stop).await?,
+        ))
     }
 
     pub(crate) fn docs_bundle(&self) -> Option<&str> {

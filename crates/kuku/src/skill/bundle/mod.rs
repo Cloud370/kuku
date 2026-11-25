@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,12 @@ const MANIFEST: &str = "manifest.json";
 const RESOURCE_ROOT: &str = "references/docs";
 const MAX_ARCHIVE_BYTES: usize = MAX_CONTENT_BYTES + MAX_MANIFEST_BYTES + (1 << 20);
 
+#[derive(Clone, Copy)]
+pub(super) enum Verify {
+    Entry,
+    References,
+}
+
 pub(super) fn definition() -> SkillDefinition {
     let mut definition =
         super::loader::parse_skill(INSTRUCTIONS, Path::new(NAME), &SkillSource::Builtin)
@@ -32,10 +39,11 @@ pub(super) fn definition() -> SkillDefinition {
 }
 
 /// Publish the actual Skill directory before returning a path to the model.
-pub(crate) async fn materialize(
+pub(super) async fn materialize(
     home: &Path,
     version: &str,
     fallback: String,
+    verify: Verify,
     stop: Option<&tokio::sync::watch::Receiver<bool>>,
 ) -> io::Result<PathBuf> {
     let home = home.to_path_buf();
@@ -43,7 +51,7 @@ pub(crate) async fn materialize(
     let stop = stop.cloned();
     let (cancel, waiting) = tokio::sync::oneshot::channel::<()>();
     let result = tokio::task::spawn_blocking(move || {
-        materialize_cancellable(&home, &version, &fallback, &|| {
+        materialize_cancellable(&home, &version, &fallback, verify, &|| {
             cancel.is_closed() || stop.as_ref().is_some_and(|stop| *stop.borrow())
         })
     })
@@ -70,33 +78,61 @@ fn materialize_cancellable(
     home: &Path,
     version: &str,
     fallback: &str,
+    verify: Verify,
     cancelled: &impl Fn() -> bool,
 ) -> io::Result<PathBuf> {
     ensure_active(cancelled)?;
     let path = version_path(home, version)?;
-    if installed(&path, version, fallback)? {
+    if installed(&path, version, fallback, verify, cancelled)? {
         return path.canonicalize();
     }
     // Retain the verified compressed input as a repair source before taking the directory lock.
     retain_archive(home, version, cancelled)?;
     let _lock = lock(&path, cancelled)?;
-    if !installed(&path, version, fallback)? {
+    if !installed(&path, version, fallback, verify, cancelled)? {
         publish(&path, version, fallback, cancelled)?;
     }
     path.canonicalize()
 }
 
-fn installed(path: &Path, version: &str, fallback: &str) -> io::Result<bool> {
+fn installed(
+    path: &Path,
+    version: &str,
+    fallback: &str,
+    verify: Verify,
+    cancelled: &impl Fn() -> bool,
+) -> io::Result<bool> {
     let result: io::Result<bool> = (|| {
         require_directory(path)?;
         require_directory(&path.join("references"))?;
-        require_directory(&path.join(RESOURCE_ROOT))?;
+        let docs = path.join(RESOURCE_ROOT);
+        require_directory(&docs)?;
         let manifest = parse_manifest(
             &read_regular(&path.join(MANIFEST), MAX_MANIFEST_BYTES)?,
             version,
         )?;
         let contents = manifest.skill_md.as_deref().unwrap_or(fallback);
-        Ok(read_regular(&path.join("SKILL.md"), contents.len())? == contents.as_bytes())
+        if read_regular(&path.join("SKILL.md"), contents.len())? != contents.as_bytes() {
+            return Ok(false);
+        }
+        if matches!(verify, Verify::References) {
+            let mut directories = HashSet::new();
+            for (relative, entry) in &manifest.files {
+                ensure_active(cancelled)?;
+                let relative = Path::new(relative);
+                for parent in relative.ancestors().skip(1) {
+                    if parent.as_os_str().is_empty() || !directories.insert(parent) {
+                        break;
+                    }
+                    require_directory(&docs.join(parent))?;
+                }
+                let contents = read_regular(&docs.join(relative), entry.bytes)?;
+                if contents.len() != entry.bytes || fingerprint(&contents) != entry.sha256 {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     })();
     match result {
         Err(error)

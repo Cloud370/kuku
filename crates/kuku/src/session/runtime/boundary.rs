@@ -331,11 +331,7 @@ impl Session {
             skip_user_message,
             resume_input_turn,
             source,
-            skills: if reply.is_some() {
-                Vec::new()
-            } else {
-                input_skills(&inputs)
-            },
+            skills: input_skills(&inputs),
             reply,
             execution,
             turn,

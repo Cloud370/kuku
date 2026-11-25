@@ -46,6 +46,15 @@ async fn cancelling_overflow_compaction_settles_its_card_before_the_agent_stops(
 
 #[tokio::test]
 async fn a_selected_skill_survives_compaction_before_dispatch() {
+    selected_skill_survives_compaction(false).await;
+}
+
+#[tokio::test]
+async fn a_selected_skill_survives_compaction_after_a_tool_result() {
+    selected_skill_survives_compaction(true).await;
+}
+
+async fn selected_skill_survives_compaction(after_dispatch: bool) {
     const OLD: &str = "OLDER-INPUT-WITH-ORIGINAL-SKILL";
     const INPUT: &str = "Select the same skill again in this turn.";
     const SKILL: &str = "Unique selected skill instructions from disk.";
@@ -56,7 +65,7 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
     let (mut config, path) = options(&server, workspace.path(), data.path());
     config.config.handoff.enabled = true;
     config.config.handoff.threshold = 0.98;
-    config.limits.max_request_bytes = Some(48 * 1024);
+    config.limits.max_request_bytes = Some(if after_dispatch { 96 } else { 48 } * 1024);
     config
         .config
         .models
@@ -68,9 +77,58 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
     std::fs::create_dir_all(&skill).unwrap();
     std::fs::write(
         skill.join("SKILL.md"),
-        format!("---\nname: keep-selected\ndescription: Compaction fixture.\n---\n{SKILL}\n"),
+        format!(
+            "---\nname: keep-selected\ndescription: Compaction fixture.\n---\n{SKILL}\n{}",
+            if after_dispatch {
+                "Selected instruction details. ".repeat(480)
+            } else {
+                String::new()
+            }
+        ),
     )
     .unwrap();
+
+    let tool = if after_dispatch {
+        let first_step = server
+            .mock_async(|when, then| {
+                when.method(POST).path(&path).matches(|request| {
+                    let body = request_body(request);
+                    let wire = body.to_string();
+                    wire.contains(OLD)
+                        && wire.contains(INPUT)
+                        && wire.matches(SKILL).count() == 1
+                        && !contains_tool_reply(&body, "selected-list")
+                        && !last_user(&body)
+                            .is_some_and(|text| text.starts_with("Write a checkpoint"))
+                });
+                then.status(200).body(response(
+                    json!({"tool_calls":[{"id":"selected-list","type":"function",
+                "function":{"name":"list_skills","arguments":"{}"}}]}),
+                    "tool_calls",
+                ));
+            })
+            .await;
+        let overflow = server
+            .mock_async(|when, then| {
+                when.method(POST).path(&path).matches(|request| {
+                    let body = request_body(request);
+                    let wire = body.to_string();
+                    wire.contains(OLD)
+                        && wire.contains(INPUT)
+                        && wire.matches(SKILL).count() == 1
+                        && contains_tool_reply(&body, "selected-list")
+                        && !last_user(&body)
+                            .is_some_and(|text| text.starts_with("Write a checkpoint"))
+                });
+                then.status(400).json_body(
+                    json!({"error":{"code":"context_length_exceeded","message":"test overflow"}}),
+                );
+            })
+            .await;
+        Some((first_step, overflow))
+    } else {
+        None
+    };
     let session = Session::open(config.clone()).await.unwrap();
     let mut configured = agent();
     configured.no_skills = false;
@@ -125,7 +183,13 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
         .await;
     let replacement = server
         .mock_async(|when, then| {
-            when.method(POST).path(&path).matches(|request| {
+            let when = when.method(POST).path(&path);
+            let when = if after_dispatch {
+                when.matches(|request| contains_tool_reply(&request_body(request), "selected-list"))
+            } else {
+                when
+            };
+            when.matches(|request| {
                 let wire = request_body(request).to_string();
                 !wire.contains(OLD)
                     && wire.contains(INPUT)
@@ -147,6 +211,10 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
     next.bootstrap_skill = Some("keep-selected".into());
     session.send(next).unwrap();
     idle(&session, "main").await;
+    if let Some((first_step, overflow)) = tool {
+        first_step.assert_hits_async(1).await;
+        overflow.assert_hits_async(1).await;
+    }
     checkpoint.assert_hits_async(1).await;
     replacement.assert_hits_async(1).await;
     assert_eq!(
@@ -185,6 +253,14 @@ async fn a_selected_skill_survives_compaction_before_dispatch() {
     idle(&reopened, "main").await;
     disabled.assert_hits_async(1).await;
     reopened.close().await.unwrap();
+}
+
+fn contains_tool_reply(body: &Value, id: &str) -> bool {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["role"] == "tool" && entry["tool_call_id"] == id)
 }
 
 #[derive(Clone, Copy)]

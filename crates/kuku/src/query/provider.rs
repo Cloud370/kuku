@@ -37,6 +37,20 @@ pub(super) async fn call_provider_step(mut pending: PendingRun) -> Result<Pendin
 
     apply_runtime_boundary(&mut pending)?;
     ensure_resolved(&mut pending)?;
+    let bundled = crate::skill::bundle::NAME;
+    if pending
+        .query
+        .input_skills
+        .iter()
+        .any(|name| name == bundled)
+        || pending
+            .bootstrap_skill
+            .as_ref()
+            .and_then(|skill| skill.name.as_deref())
+            == Some(bundled)
+    {
+        pending.verify_bundled_skill().await?;
+    }
     let resolved = pending.resolved.as_ref().expect("resolved runtime exists");
     let resolved_config = resolved.config.clone();
     let registry = resolved.registry.clone();
@@ -510,7 +524,11 @@ fn apply_runtime_boundary(pending: &mut PendingRun) -> Result<()> {
         pending.request_num == 1,
         pending.skill_registry.as_ref(),
     )?;
-    pending.query.input_skills.extend(boundary.skills);
+    for name in boundary.skills {
+        if !pending.query.input_skills.contains(&name) {
+            pending.query.input_skills.push(name);
+        }
+    }
     if let Some(source) = boundary.source {
         pending.query.input_source = source;
     }

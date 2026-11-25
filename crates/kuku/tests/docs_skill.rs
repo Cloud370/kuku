@@ -193,6 +193,77 @@ fn tool_result(session: &Session, id: &str) -> (String, String, Value) {
 }
 
 #[tokio::test]
+async fn loading_bundled_skill_repairs_references_but_browsing_does_not_scan_them() {
+    let workspace = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let model = Model::new(
+        data.path(),
+        [
+            Reply::Text,
+            Reply::Call("browse", "list_skills", json!({})),
+            Reply::Text,
+            Reply::Text,
+            Reply::Call("load", "use_skill", json!({"skill_name": NAME})),
+            Reply::Text,
+        ],
+    );
+    let session = Session::open(options(
+        workspace.path(),
+        data.path(),
+        model.clone(),
+        Arc::new(Gate::default()),
+    ))
+    .await
+    .unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    session
+        .send(Input::new(
+            "publish",
+            "main",
+            "Publish the initial catalog.",
+        ))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    let index = model.skill_dir().join(INDEX);
+    let original = std::fs::read(&index).unwrap();
+    let mut damaged = original.clone();
+    damaged[0] ^= 1;
+    std::fs::write(&index, &damaged).unwrap();
+
+    session
+        .send(Input::new(
+            "browse",
+            "main",
+            "Browse Skills without loading one.",
+        ))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert_eq!(tool_result(&session, "browse").0, "ok");
+    assert_eq!(std::fs::read(&index).unwrap(), damaged);
+
+    let mut selected = Input::new("explicit", "main", "Load these docs.");
+    selected.bootstrap_skill = Some(NAME.into());
+    session.send(selected).unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert_eq!(std::fs::read(&index).unwrap(), original);
+
+    std::fs::remove_file(&index).unwrap();
+    session
+        .send(Input::new(
+            "use-tool",
+            "main",
+            "Read the bundled references.",
+        ))
+        .unwrap();
+    settled(&session, AgentStatus::Idle).await;
+    assert_eq!(tool_result(&session, "load").0, "ok");
+    assert_eq!(std::fs::read(&index).unwrap(), original);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn explicit_skill_admission_survives_reopening_a_waiting_turn() {
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();

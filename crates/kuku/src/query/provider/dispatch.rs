@@ -220,7 +220,6 @@ pub(super) async fn dispatch_provider_step(
             started,
             provider_attempt,
         }) => {
-            pending.query.input_skills.clear();
             let conversation = pending.conversation.clone();
             Ok(PendingStep::Streaming(Box::new(StreamingChunkState {
                 pending,

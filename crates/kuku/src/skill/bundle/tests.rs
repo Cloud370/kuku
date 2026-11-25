@@ -13,7 +13,14 @@ fn concurrent_publishers_share_one_complete_real_directory() {
             .map(|_| {
                 scope.spawn(|| {
                     barrier.wait();
-                    materialize_cancellable(home.path(), CURRENT, INSTRUCTIONS, &|| false).unwrap()
+                    materialize_cancellable(
+                        home.path(),
+                        CURRENT,
+                        INSTRUCTIONS,
+                        Verify::Entry,
+                        &|| false,
+                    )
+                    .unwrap()
                 })
             })
             .collect::<Vec<_>>();
@@ -83,12 +90,42 @@ fn interrupted_publication_restores_the_retained_version_not_the_current_build()
     let archive = contents.finish().unwrap();
     let archive_path = path.with_extension("bundle");
     fs::write(&archive_path, &archive[..archive.len() - 3]).unwrap();
-    assert!(materialize_cancellable(home.path(), &version, previous_skill, &|| false).is_err());
+    assert!(
+        materialize_cancellable(
+            home.path(),
+            &version,
+            previous_skill,
+            Verify::References,
+            &|| false
+        )
+        .is_err()
+    );
     assert!(!path.exists());
     fs::write(&archive_path, archive).unwrap();
-    let old = materialize_cancellable(home.path(), &version, previous_skill, &|| false).unwrap();
+    let old = materialize_cancellable(
+        home.path(),
+        &version,
+        previous_skill,
+        Verify::References,
+        &|| false,
+    )
+    .unwrap();
     assert!(!orphan.exists());
-    let current = materialize_cancellable(home.path(), CURRENT, INSTRUCTIONS, &|| false).unwrap();
+    let old_page = old.join(RESOURCE_ROOT).join("en/index.md");
+    fs::write(&old_page, vec![b'x'; note.len()]).unwrap();
+    let repaired = materialize_cancellable(
+        home.path(),
+        &version,
+        previous_skill,
+        Verify::References,
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(repaired, old);
+    assert_eq!(fs::read(&old_page).unwrap(), note);
+    let current =
+        materialize_cancellable(home.path(), CURRENT, INSTRUCTIONS, Verify::Entry, &|| false)
+            .unwrap();
     assert_ne!(old, current);
     assert_eq!(
         fs::read(old.join(RESOURCE_ROOT).join("en/index.md")).unwrap(),
@@ -111,11 +148,13 @@ fn a_symlink_cannot_replace_the_published_skill_entry() {
     let home = tempfile::tempdir().unwrap();
     let outside = tempfile::NamedTempFile::new().unwrap();
     fs::write(outside.path(), "outside docs scope").unwrap();
-    let root = materialize_cancellable(home.path(), CURRENT, INSTRUCTIONS, &|| false).unwrap();
+    let root =
+        materialize_cancellable(home.path(), CURRENT, INSTRUCTIONS, Verify::Entry, &|| false)
+            .unwrap();
     let target = root.join("SKILL.md");
     fs::remove_file(&target).unwrap();
     std::os::unix::fs::symlink(outside.path(), &target).unwrap();
-    materialize_cancellable(home.path(), CURRENT, INSTRUCTIONS, &|| false).unwrap();
+    materialize_cancellable(home.path(), CURRENT, INSTRUCTIONS, Verify::Entry, &|| false).unwrap();
     assert!(!fs::symlink_metadata(&target).unwrap().is_symlink());
     assert!(
         !fs::read_to_string(target)

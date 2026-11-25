@@ -70,6 +70,8 @@ A steering input is checked against the active Turn’s catalog before delivery.
 
 A Skill is loaded only when its exact instructions are present in the Agent’s context. If that revision is already present, `use_skill` reports reuse instead of repeating the instructions. If the file changes or those instructions leave context, the Agent can load the applicable revision again.
 
+When an input explicitly selects a Skill, compaction keeps that exact revision available for the rest of the active Turn. It does not automatically reload selections from earlier Turns.
+
 ## Path resolution
 
 When a Skill is loaded, kuku prepends a location marker:
@@ -83,5 +85,7 @@ Use the location marker to find a user or project Skill's supporting files. Rela
 ## Skill resources
 
 Kuku installs the built-in Skill as a local directory in the service data directory. Its version includes both `SKILL.md` and the embedded docs under `references/docs/`. An active or resumed Turn keeps the same directory; a new Turn can discover the updated version.
+
+Loading the built-in Skill verifies its reference files on first use in that Turn. Missing or damaged references are restored from the archive of the same version. Regular file tools still use their normal path and authorization rules; browsing the Skill catalog does not scan the bundled references.
 
 Start with `use_skill` to obtain the instructions and the real directory. Read reference files with `read_file`, or use `find_files` and `search_text` to locate them. You can read a known absolute path directly. Use the Skill directory to resolve relative scripts and resources; commands default to the Agent workspace. Bundled files are read-only for file-editing tools.

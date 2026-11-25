@@ -548,6 +548,7 @@ impl Query {
             bootstrap_skill,
             skill_registry,
             skill_catalog_id,
+            bundled_skill_verified: false,
             previous_skill_registry,
             frozen_turn_prefix: super::types::TurnPrefixFreeze::default(),
             tool_registry_override,

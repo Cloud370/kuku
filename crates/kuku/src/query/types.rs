@@ -353,6 +353,7 @@ pub(super) struct PendingRun {
     pub(super) prompts_dir: Option<PathBuf>,
     pub(super) skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) skill_catalog_id: Option<String>,
+    pub(super) bundled_skill_verified: bool,
     pub(super) previous_skill_registry: Option<crate::skill::registry::SkillRegistry>,
     pub(super) bootstrap_skill: Option<BootstrapSkill>,
     pub(super) frozen_turn_prefix: TurnPrefixFreeze,
@@ -414,6 +415,17 @@ impl TurnPrefixFreeze {
 }
 
 impl PendingRun {
+    pub(super) async fn verify_bundled_skill(&mut self) -> Result<()> {
+        if !self.bundled_skill_verified
+            && let Some(registry) = self.skill_registry.as_ref()
+            && registry.docs_bundle().is_some()
+        {
+            registry.verify_docs_references(&self.kuku_home).await?;
+            self.bundled_skill_verified = true;
+        }
+        Ok(())
+    }
+
     pub(super) fn flush_runtime_logs(&mut self) {
         let _ = self.runtime_log_writer.flush();
     }

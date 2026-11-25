@@ -213,18 +213,26 @@ fn skill_definition<'a>(
     pending.skill_registry.as_ref()?.get(skill_name(tool_call))
 }
 
-fn handle_use_skill(
-    pending: &PendingRun,
+async fn handle_use_skill(
+    pending: &mut PendingRun,
     tool_call: &ProviderToolCall,
-) -> Result<ToolResultEnvelope> {
+) -> ToolResultEnvelope {
+    if skill_definition(pending, tool_call).is_some_and(|def| def.source == SkillSource::Builtin)
+        && let Err(error) = pending.verify_bundled_skill().await
+    {
+        return ToolResultEnvelope::error(
+            "built-in Skill references unavailable",
+            error.to_string(),
+        );
+    }
     let Some(def) = skill_definition(pending, tool_call) else {
         let name = skill_name(tool_call);
-        return Ok(ToolResultEnvelope::error(
+        return ToolResultEnvelope::error(
             format!("skill '{name}' not found"),
             format!("no skill named '{name}' in the registry"),
-        ));
+        );
     };
-    Ok(skill_load_result(pending, def))
+    skill_load_result(pending, def)
 }
 
 fn handle_list_skills(
@@ -290,7 +298,7 @@ pub(super) async fn execute_tool_call(
     }
     if is_skill_tool(&tool_call.name) {
         let result = match tool_call.name.as_str() {
-            "use_skill" => handle_use_skill(pending, tool_call)?,
+            "use_skill" => handle_use_skill(pending, tool_call).await,
             "list_skills" => handle_list_skills(pending, tool_call)?,
             "search_skills" => handle_search_skills(pending, tool_call)?,
             _ => unreachable!(),
@@ -550,6 +558,7 @@ mod tests {
             prompts_dir: None,
             skill_registry: Some(skill_registry()),
             skill_catalog_id: None,
+            bundled_skill_verified: false,
             previous_skill_registry: None,
             bootstrap_skill: None,
             frozen_turn_prefix: crate::query::types::TurnPrefixFreeze::default(),
