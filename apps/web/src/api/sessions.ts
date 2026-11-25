@@ -74,7 +74,18 @@ export interface AgentSummary {
 }
 
 type RequestedOutput = "text" | "image";
-type CapabilitySource = "model_list" | "protocol_model_list" | "manual" | "protocol_manual" | "adapter_profile";
+type CapabilitySource =
+  | "model_list"
+  | "protocol_model_list"
+  | "manual"
+  | "protocol_manual"
+  | "adapter_profile"
+  | "image_probe";
+type ImageInputSupport =
+  | "supported"
+  | "unsupported_by_model"
+  | "unconfirmed"
+  | "unsupported_on_route";
 
 interface Declaration<T> {
   value: T;
@@ -89,7 +100,12 @@ interface ModelCapabilities {
   output_modalities?: Declaration<string[]> | null;
   interfaces?: Declaration<string[]> | null;
   system_prompt_update?: Declaration<string> | null;
-  media_adapter: "text_only" | "responses_image_tool_results";
+  media_adapter:
+    | "text_only"
+    | "responses_image_tool_results"
+    | "responses_image_input"
+    | "chat_completions_image_parts"
+    | "anthropic_messages_image_blocks";
 }
 
 interface ModelSelection {
@@ -98,6 +114,7 @@ interface ModelSelection {
   request_url?: string;
   settings: { reasoning_effort?: string | null };
   capabilities?: ModelCapabilities;
+  image_input?: ImageInputSupport;
   output?: RequestedOutput;
 }
 

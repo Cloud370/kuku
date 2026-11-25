@@ -33,7 +33,7 @@ kuku events SESSION_ID --kind runtime.model_usage --json |
 
 ## Capture raw provider requests
 
-Check protocol diagnostics in preview builds first. If you need full request bodies and SSE frames, enable provider tracing while the managed local service is idle:
+Full provider traces are enabled by default. To re-enable them on a service started with `KUKU_PROVIDER_TRACE=0`, wait until it is idle, then restart and reproduce the problem:
 
 ```bash
 KUKU_PROVIDER_TRACE=1 kuku server restart

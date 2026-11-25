@@ -2,9 +2,10 @@ use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::config::ProviderAuth;
 
-use super::error::{classify_http_error, transport_error};
+use super::error::{classify_http_error, image_error_summary, transport_error};
+use super::media::{self, ImageWire};
 use super::prepare::{authentication, invalid_request};
-use super::trace::{ProviderTrace, ProviderTraceMetadata};
+use super::trace::{ProviderTrace, ProviderTraceMetadata, redact_secret};
 use super::types::{
     PreparedProviderRequest, ProviderFailure, ProviderFailureKind, ProviderKind, ResolvedProvider,
 };
@@ -14,6 +15,7 @@ const MAX_ERROR_BODY_BYTES: usize = 4096;
 pub(crate) struct TransportResponse {
     pub(crate) response: wreq::Response,
     pub(crate) trace: Option<ProviderTrace>,
+    pub(super) contains_images: bool,
 }
 
 pub(crate) async fn send_prepared(
@@ -68,30 +70,26 @@ async fn send(
         retryable: false,
     })?;
     let headers = request_headers(config, prepared, &api_key)?;
-    let trace = ProviderTrace::from_request(
-        trace_metadata.filter(|_| subscription.is_none()),
+    let mut trace = ProviderTrace::from_request(
+        trace_metadata,
         config.connection_name.clone(),
         prepared.model.clone(),
     );
-    if let Some(trace) = &trace {
-        let body = trace.full().then(|| {
-            let mut body = prepared.body.as_json().clone();
-            for key in &prepared.fields.private_body_keys {
-                if let Some(field) = body.get_mut(key) {
-                    *field = serde_json::json!("<redacted>");
-                }
-            }
-            if prepared.kind == ProviderKind::OpenAiResponses {
-                super::openai_responses::redact_images(&mut body);
-            }
-            body
-        });
-        trace.request(&prepared.url, &headers, body);
+    let wire = ImageWire::for_kind(prepared.kind);
+    let contains_images = media::has_inline_images(wire, prepared.body.as_json());
+    if let Some(trace) = &mut trace {
+        trace.request(
+            &prepared.url,
+            &headers,
+            prepared.body.as_json(),
+            &prepared.fields.private_body_keys,
+            &api_key,
+        );
     }
     let client = super::http_client::api_client(&config.options.proxy).map_err(|error| {
         let failure = invalid_request(&error.to_string());
         if let Some(trace) = &trace {
-            trace.failure(failure.kind);
+            trace.failure(failure.kind, None);
         }
         failure
     })?;
@@ -109,7 +107,7 @@ async fn send(
     let response = request.send().await.map_err(|error| {
         let failure = transport_error(&error);
         if let Some(trace) = &trace {
-            trace.failure(failure.kind);
+            trace.failure(failure.kind, None);
         }
         failure
     })?;
@@ -129,25 +127,26 @@ async fn send(
             .or_else(|| response.headers().get("request-id"))
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        let body = read_error_body(response).await;
-        let mut body = if api_key.is_empty() {
-            body
-        } else {
-            body.replace(&api_key, "<redacted>")
-        };
+        let (mut body, truncated) = read_error_body(response).await;
+        redact_secret(&mut body, &api_key, truncated);
         for value in prepared
             .fields
             .headers
             .values()
             .filter(|value| value.is_sensitive())
         {
-            if let Ok(value) = value.to_str() {
-                if !value.is_empty() {
-                    body = body.replace(value, "<redacted>");
-                }
+            if let Ok(value) = std::str::from_utf8(value.as_bytes()) {
+                redact_secret(&mut body, value, truncated);
             }
         }
         let mut failure = classify_http_error(status.as_u16(), &body);
+        if contains_images {
+            failure.message = image_error_summary(
+                failure.kind,
+                failure.status,
+                trace.as_ref().is_some_and(ProviderTrace::full),
+            );
+        }
         failure.retry_after = retry_after;
         if let Some(delay) = retry_after {
             failure
@@ -156,14 +155,18 @@ async fn send(
         }
         failure.provider_request_id = request_id;
         if let Some(trace) = &trace {
-            trace.failure(failure.kind);
+            trace.failure(failure.kind, Some((&body, truncated)));
         }
         if let Some(capture) = trial_error_body {
             *capture = body;
         }
         return Err(failure);
     }
-    Ok(TransportResponse { response, trace })
+    Ok(TransportResponse {
+        response,
+        trace,
+        contains_images,
+    })
 }
 
 fn request_headers(
@@ -195,24 +198,27 @@ fn request_headers(
     Ok(headers)
 }
 
-async fn read_error_body(response: wreq::Response) -> String {
+async fn read_error_body(response: wreq::Response) -> (String, bool) {
     use tokio_stream::StreamExt;
 
-    let read = async move {
+    let mut body = Vec::new();
+    let read = async {
         let mut stream = response.bytes_stream();
-        let mut body = Vec::new();
-        while let Some(Ok(bytes)) = stream.next().await {
-            let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(body.len());
+        while let Some(chunk) = stream.next().await {
+            let Ok(bytes) = chunk else { return true };
+            let remaining = MAX_ERROR_BODY_BYTES + 1 - body.len();
             body.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
-            if body.len() == MAX_ERROR_BODY_BYTES {
-                break;
+            if body.len() > MAX_ERROR_BODY_BYTES {
+                return true;
             }
         }
-        String::from_utf8_lossy(&body).into_owned()
+        false
     };
-    tokio::time::timeout(std::time::Duration::from_secs(5), read)
+    let truncated = tokio::time::timeout(std::time::Duration::from_secs(5), read)
         .await
-        .unwrap_or_default()
+        .unwrap_or(true);
+    body.truncate(MAX_ERROR_BODY_BYTES);
+    (String::from_utf8_lossy(&body).into_owned(), truncated)
 }
 
 #[cfg(test)]

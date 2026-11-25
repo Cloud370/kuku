@@ -126,7 +126,7 @@ async fn openai_adapters_write_redacted_provider_traces() {
             .header("authorization", "Bearer HEADER_SECRET")
             .body_contains("REQUEST_SECRET");
         then.status(200)
-            .header("x-fixture", "RESPONSE_HEADER_SECRET")
+            .header("x-fixture", "RESPONSE_HEADER_VALUE")
             .body(concat!(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"REPLY_SECRET\"}}]}\n\n",
                 "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.encrypted\",\"index\":0,\"id\":\"ID_SECRET\",\"format\":\"google-gemini-v1\",\"data\":\"CIPHER_SECRET\"}]}}]}\n\n",
@@ -135,7 +135,7 @@ async fn openai_adapters_write_redacted_provider_traces() {
             ));
     });
     for (session, mode) in [
-        ("s_preview_trace", kuku::ProviderTraceMode::Auto),
+        ("s_default_trace", kuku::ProviderTraceMode::Auto),
         ("s_trace_diagnostic", kuku::ProviderTraceMode::Diagnostic),
     ] {
         assert!(
@@ -154,8 +154,10 @@ async fn openai_adapters_write_redacted_provider_traces() {
     }
     request.assert_hits(2);
     let raw = trace_contents(env.home.as_path(), "s_trace_diagnostic");
-    let auto = trace_contents(env.home.as_path(), "s_preview_trace");
-    assert_eq!(!auto.is_empty(), env!("KUKU_BUILD_IS_PREVIEW") == "true");
+    let auto = trace_contents(env.home.as_path(), "s_default_trace");
+    assert!(auto.contains("REQUEST_SECRET") && auto.contains("RESPONSE_HEADER_VALUE"));
+    assert!(auto.contains("REPLY_SECRET"));
+    assert!(auto.contains("<redacted>") && !auto.contains("Bearer HEADER_SECRET"));
     assert!(
         query("REQUEST_SECRET")
             .session("s_trace_disabled")
@@ -170,7 +172,10 @@ async fn openai_adapters_write_redacted_provider_traces() {
             .is_err()
     );
     assert!(trace_contents(env.home.as_path(), "s_trace_disabled").is_empty());
-    assert!(!raw.contains("SECRET"), "{raw}");
+    assert!(
+        !raw.contains("SECRET") && !raw.contains("RESPONSE_HEADER_VALUE"),
+        "{raw}"
+    );
     let records = raw
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -190,4 +195,80 @@ async fn openai_adapters_write_redacted_provider_traces() {
     );
     assert_eq!(records[6]["failure_kind"], "invalid_response");
     assert_eq!(records[6]["after_sequence"], 4);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_failure_trace_keeps_a_bounded_redacted_body_only_in_full_mode() {
+    let Some(env) = TestEnv::enter(
+        module_path!(),
+        stringify!(http_failure_trace_keeps_a_bounded_redacted_body_only_in_full_mode),
+    ) else {
+        return;
+    };
+    const API_KEY: &str = "only-local-credential-12345";
+    const DETAIL: &str = "Request path cannot be relayed";
+    const RESPONSE_REQUEST_ID: &str = "fixture-400";
+    const AFTER_CUTOFF: &str = "beyond-sample-limit";
+    let first = format!("{DETAIL}; credential={API_KEY}; ");
+    let partial = "only-local-credential";
+    let padding = "x".repeat(4096 - first.len() - partial.len());
+    let error_body = format!("{first}{padding}{API_KEY} {AFTER_CUTOFF}");
+    let server = MockServer::start();
+    let request = server.mock(|when, then| {
+        when.method(POST).path("/chat/completions");
+        then.status(400)
+            .header("x-request-id", RESPONSE_REQUEST_ID)
+            .body(error_body);
+    });
+    for (session, mode) in [
+        ("s_http_full", kuku::ProviderTraceMode::Full),
+        ("s_http_diagnostic", kuku::ProviderTraceMode::Diagnostic),
+    ] {
+        assert!(
+            query("A normal request body")
+                .session(session)
+                .provider(Provider::OpenAiCompatible)
+                .model("test-chat")
+                .base_url(server.base_url())
+                .api_key(API_KEY)
+                .config(test_config())
+                .provider_trace(mode)
+                .run()
+                .await
+                .is_err()
+        );
+    }
+    request.assert_hits(2);
+
+    let raw = trace_contents(env.home.as_path(), "s_http_full");
+    let records = raw
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let [request, response, error] = records.as_slice() else {
+        panic!("expected request, response, and error");
+    };
+    assert_eq!(request["headers"]["authorization"], "<redacted>");
+    assert!(
+        request["body"]
+            .to_string()
+            .contains("A normal request body")
+    );
+    assert_eq!(response["headers"]["x-request-id"], RESPONSE_REQUEST_ID);
+    assert_eq!(response["status"], 400);
+    assert_eq!(request["request_id"], response["request_id"]);
+    assert_eq!(request["request_id"], error["request_id"]);
+    assert_eq!(error["failure_kind"], "invalid_request");
+    assert_eq!(error["body_truncated"], true);
+    assert!(
+        error["body"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{DETAIL}; credential=<redacted>;"))
+    );
+    assert!(error["body"].as_str().unwrap().ends_with("<redacted>"));
+    assert!(!raw.contains(partial) && !raw.contains(AFTER_CUTOFF));
+    let diagnostic = trace_contents(env.home.as_path(), "s_http_diagnostic");
+    assert!(!diagnostic.contains(DETAIL) && !diagnostic.contains(RESPONSE_REQUEST_ID));
+    assert!(diagnostic.contains("invalid_request"));
 }

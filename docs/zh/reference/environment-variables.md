@@ -8,7 +8,7 @@
 | `KUKU_TUI_STATUSLINE` | 本次 TUI 启动的状态栏字段列表，逗号分隔（`none` 隐藏）。[终端偏好](config.md#终端偏好) |
 | `KUKU_TOKEN` | 连接显式 `--remote` 服务时使用的 Bearer Token |
 | `KUKU_SERVER_PASSWORD` | 通过 `kuku server` 启动独立服务时设置的访问令牌 |
-| `KUKU_PROVIDER_TRACE` | `1` 开启完整请求 trace；`0` 关闭 |
+| `KUKU_PROVIDER_TRACE` | 默认开启完整 Provider Trace（`1`）；设为 `0` 可关闭 |
 
 ## 配置中的引用
 
@@ -20,9 +20,11 @@ kuku 在加载配置时展开 URL 和模型 ID 引用。API 密钥与自定义�
 
 ## Provider Trace 日志
 
-预发布版和未打标签的开发版默认记录轻量级协议诊断，稳定版默认关闭。诊断 JSONL 记录 Session/Turn/请求关联、模型与线路、HTTP 状态、SSE 序号与结束标记、失败类别以及脱敏后的思考条目元数据，不包含请求/响应正文、请求头或不透明载荷。
+所有构建都默认记录完整 Provider Trace。每条记录带有 Session、Turn 和请求标识，可把发出的请求与 HTTP 响应、流式事件或错误关联起来。
 
-设置 `KUKU_PROVIDER_TRACE=1` 会记录完整请求正文、请求头和原始 SSE 帧。含密钥的请求头会自动脱敏，但提示词、工具结果和回复仍在正文里。嵌入 SDK 时可通过 `SessionOptions::provider_trace` 或 `Query::provider_trace` 显式指定策略。
+完整档记录请求正文、请求与响应头、原始 SSE 帧，以及非成功 HTTP 响应正文的前 4 KiB。能识别的凭据字段和已知的请求凭据会脱敏，供应商回显这些凭据时也一样。普通自定义字段、提示词、图片、工具结果和回复等非凭据内容会保留。调试 trace 与 Session 日志分开。请求包含内联图片时，Session 的 HTTP 和流式错误使用 kuku 生成的消息，不复制可能回显图片数据的供应商正文。通用错误摘要采用 kuku 的错误分类，启用完整追踪时会指向 Provider Trace。
+
+用 `KUKU_PROVIDER_TRACE=0` 关闭追踪。嵌入 SDK 时也可通过 `SessionOptions::provider_trace` 或 `Query::provider_trace` 选择轻量诊断，只记录协议元数据，不含头信息或正文。追踪记录模型推理请求，不记录订阅账户的登录或令牌刷新请求。
 
 Trace 以轮转 JSONL 分段存放在 `$KUKU_HOME/logs/provider-trace/`，遵循[日志保留规则](config.md#logs)，同时受写入上限约束：总大小不超过 `min(64 MiB, 日志总预算)`，单段不超过 `min(8 MiB, trace 预算)`，超出时优先淘汰旧分段。
 

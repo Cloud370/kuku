@@ -6,24 +6,35 @@ use serde_json::{Value, json};
 use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
+use crate::execution::ModelImage;
 
 use super::chunk::ProviderChunk;
+use super::media::{ImageTargets, ToolImageTarget};
 use super::replay::{MAX_REPLAY_ITEMS, ReplayBudget, native_replay, validate_replay_size};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
-use super::transport::{TransportResponse, send_prepared};
+use super::transport::send_prepared;
 use super::types::{PreparedProviderRequest, ProviderFailure, ProviderRequest, ResolvedProvider};
 
 const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before [DONE]";
 
+#[cfg(test)]
 pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result<Value> {
+    render_body_with_images(request, None)
+}
+
+pub(super) fn render_body_with_images(
+    request: &ProviderRequest<'_>,
+    mut images: Option<&mut ImageTargets>,
+) -> crate::error::Result<Value> {
     let has_tools = !request.assembly.tools.is_empty();
     let mut messages = vec![json!({
         "role": "system",
         "content": request.assembly.system_prompt,
     })];
     for message in &request.assembly.prelude_messages {
-        messages.extend(convert_user_message(message));
+        let offset = messages.len();
+        messages.extend(convert_user_message(message, offset, images.as_deref_mut()));
     }
     if let Some(content) = request.render_handoff()? {
         messages.push(json!({
@@ -31,9 +42,17 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result
             "content": content,
         }));
     }
-    for message in &request.assembly.history {
+    for (index, message) in request.assembly.history.iter().enumerate() {
+        let offset = messages.len();
+        if let Some(images) = images.as_deref_mut()
+            && images.current_user_index == Some(index)
+        {
+            images.current_input_offset = Some(offset);
+        }
         match message.role {
-            Role::User => messages.extend(convert_user_message(message)),
+            Role::User => {
+                messages.extend(convert_user_message(message, offset, images.as_deref_mut()))
+            }
             Role::Assistant => messages.push(convert_assistant_message(message, has_tools)),
         }
     }
@@ -97,17 +116,39 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result
     Ok(body)
 }
 
-fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
+fn convert_user_message(
+    message: &CanonicalMessage,
+    offset: usize,
+    mut images: Option<&mut ImageTargets>,
+) -> Vec<Value> {
     let mut messages = Vec::new();
     let mut text_parts = Vec::new();
 
     for block in &message.blocks {
         match block {
             MessageBlock::Text(text) => text_parts.push(text.clone()),
+            MessageBlock::InputImage(image) => {
+                if let Some(images) = images.as_deref_mut() {
+                    images.user.push((offset + messages.len(), image.clone()));
+                    if text_parts.is_empty() {
+                        text_parts.push(String::new());
+                    }
+                }
+            }
             MessageBlock::ToolResult(result) => {
                 if !text_parts.is_empty() {
                     messages.push(json!({"role": "user", "content": text_parts.join("\n\n")}));
                     text_parts.clear();
+                }
+                if let Some(images) = images.as_deref_mut()
+                    && let Some(image) = result
+                        .structured
+                        .as_ref()
+                        .and_then(ModelImage::from_tool_result)
+                {
+                    images
+                        .tools
+                        .push((ToolImageTarget::Item(offset + messages.len()), image));
                 }
                 messages.push(json!({
                     "role": "tool",
@@ -117,7 +158,6 @@ fn convert_user_message(message: &CanonicalMessage) -> Vec<Value> {
             }
             MessageBlock::ToolUse(_)
             | MessageBlock::Thinking(_)
-            | MessageBlock::InputImage(_)
             | MessageBlock::ProviderReplay { .. } => {}
         }
     }
@@ -191,16 +231,14 @@ pub(crate) async fn stream_prepared(
     prepared: &PreparedProviderRequest,
     trace_metadata: Option<super::trace::ProviderTraceMetadata>,
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
-    let TransportResponse { response, trace } =
-        send_prepared(config, prepared, trace_metadata).await?;
+    let transport = send_prepared(config, prepared, trace_metadata).await?;
     let parser = Arc::new(Mutex::new(OpenAiCompatSseParser::new(
         config.capabilities.profile == ProviderProfile::DeepSeek,
     )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
     Ok(stream_sse_events(
-        response,
-        trace,
+        transport,
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))

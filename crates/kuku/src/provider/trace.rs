@@ -34,34 +34,30 @@ pub(crate) struct ProviderTraceMetadata {
 /// Policy for recording built-in provider HTTP and streaming diagnostics.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderTraceMode {
-    /// Follow the process environment and the binary's build provenance.
+    /// Record full traces unless the process explicitly disables them.
     #[default]
     Auto,
     Off,
     /// Record protocol structure without request bodies or provider content.
     Diagnostic,
-    /// Record request bodies and raw SSE with credential headers redacted.
+    /// Record redacted headers, request bodies, bounded HTTP error bodies, and SSE.
     Full,
 }
 
 impl ProviderTraceMode {
     fn resolve(self) -> Self {
         if self == Self::Auto {
-            Self::from_build_and_env(
-                env!("KUKU_BUILD_IS_PREVIEW") == "true",
-                std::env::var(PROVIDER_TRACE_ENV).ok().as_deref(),
-            )
+            Self::from_env(std::env::var(PROVIDER_TRACE_ENV).ok().as_deref())
         } else {
             self
         }
     }
 
-    fn from_build_and_env(preview: bool, setting: Option<&str>) -> Self {
-        match setting {
-            Some("1") => Self::Full,
-            Some("0") => Self::Off,
-            _ if preview => Self::Diagnostic,
-            _ => Self::Off,
+    fn from_env(setting: Option<&str>) -> Self {
+        if setting == Some("0") {
+            Self::Off
+        } else {
+            Self::Full
         }
     }
 }
@@ -71,6 +67,7 @@ pub(crate) struct ProviderTrace {
     metadata: ProviderTraceMetadata,
     provider: String,
     model: String,
+    credentials: Vec<String>,
     state: Mutex<TraceState>,
 }
 
@@ -202,6 +199,7 @@ impl ProviderTrace {
             metadata,
             provider,
             model,
+            credentials: Vec::new(),
             state: Mutex::new(TraceState::default()),
         })
     }
@@ -210,9 +208,39 @@ impl ProviderTrace {
         self.metadata.mode == ProviderTraceMode::Full
     }
 
-    pub(crate) fn request(&self, url: &str, headers: &HeaderMap, body: Option<Value>) {
+    pub(super) fn request(
+        &mut self,
+        url: &str,
+        headers: &HeaderMap,
+        body: &Value,
+        custom_fields: &[String],
+        api_key: &str,
+    ) {
         let value = if self.full() {
-            json!({"url":url,"headers":redact_headers(headers),"body":body})
+            remember_credential(&mut self.credentials, api_key);
+            for (name, value) in headers {
+                if (value.is_sensitive() || is_credential_field(name.as_str()))
+                    && let Ok(value) = std::str::from_utf8(value.as_bytes())
+                {
+                    remember_credential(&mut self.credentials, value);
+                    if let Some((_, token)) = value.split_once(' ')
+                        && name.as_str() == "authorization"
+                    {
+                        remember_credential(&mut self.credentials, token);
+                    }
+                }
+            }
+            let url = redact_url_credentials(url, |credential| {
+                remember_credential(&mut self.credentials, credential)
+            });
+            let mut body = body.clone();
+            for name in custom_fields {
+                if let Some(value) = body.get_mut(name) {
+                    redact_credential_field(name, value, &mut self.credentials);
+                }
+            }
+            redact_known_values(&mut body, &self.credentials);
+            json!({"url":self.credential_redacted(&url, false),"headers":self.headers(headers),"body":body})
         } else {
             json!({})
         };
@@ -221,7 +249,8 @@ impl ProviderTrace {
 
     pub(crate) fn response(&self, url: &str, status: u16, headers: &HeaderMap) {
         let value = if self.full() {
-            json!({"url":url,"status":status,"headers":redact_headers(headers)})
+            let url = redact_url_credentials(url, |_| {});
+            json!({"url":self.credential_redacted(&url, false),"status":status,"headers":self.headers(headers)})
         } else {
             json!({"status":status})
         };
@@ -233,27 +262,44 @@ impl ProviderTrace {
         state.frame += 1;
         let (mut value, terminal) = state.frame_metadata(frame);
         if self.full() {
-            value["frame"] = json!(frame);
+            value["frame"] = json!(self.credential_redacted(frame, false));
         }
         self.record(&mut state, "event", value, terminal);
     }
 
-    pub(crate) fn failure(&self, kind: ProviderFailureKind) {
+    pub(crate) fn failure(&self, kind: ProviderFailureKind, http_body: Option<(&str, bool)>) {
         let mut state = self.state.lock().unwrap();
-        let last_frame = state.frame;
-        self.record(
-            &mut state,
-            "error",
-            json!({
-                "failure_kind": kind.as_event_kind(),
-                "after_sequence": last_frame,
-            }),
-            true,
-        );
+        let mut value = json!({
+            "failure_kind": kind.as_event_kind(),
+            "after_sequence": state.frame,
+        });
+        if self.full()
+            && let Some((body, truncated)) = http_body
+        {
+            value["body"] = json!(self.credential_redacted(body, truncated));
+            value["body_truncated"] = json!(truncated);
+        }
+        self.record(&mut state, "error", value, true);
     }
 
     pub(crate) fn flush(&self) {
         self.flush_batch(&mut self.state.lock().unwrap(), OffsetDateTime::now_utc());
+    }
+
+    fn credential_redacted(&self, text: &str, truncated: bool) -> String {
+        let mut text = text.to_owned();
+        for credential in &self.credentials {
+            redact_secret(&mut text, credential, truncated);
+        }
+        text
+    }
+
+    fn headers(&self, headers: &HeaderMap) -> serde_json::Map<String, Value> {
+        let mut headers = redact_headers(headers);
+        for value in headers.values_mut() {
+            redact_known_values(value, &self.credentials);
+        }
+        headers
     }
 
     fn record(&self, state: &mut TraceState, direction: &str, value: Value, flush: bool) {
@@ -312,36 +358,159 @@ impl ProviderTrace {
     }
 }
 
-pub(crate) fn redact_headers(headers: &HeaderMap) -> serde_json::Map<String, Value> {
-    headers
-        .iter()
-        .map(|(name, value)| {
-            let name = name.as_str().to_ascii_lowercase();
-            let value = if value.is_sensitive() || is_secret_header(&name) {
-                REDACTED.to_string()
-            } else {
-                value.to_str().unwrap_or("<non-utf8>").to_string()
-            };
-            (name, json!(value))
-        })
-        .collect()
+fn redact_headers(headers: &HeaderMap) -> serde_json::Map<String, Value> {
+    let mut redacted = serde_json::Map::new();
+    for (name, raw) in headers {
+        let name = name.as_str();
+        let value = if raw.is_sensitive() || is_credential_field(name) {
+            json!(REDACTED)
+        } else {
+            json!(String::from_utf8_lossy(raw.as_bytes()))
+        };
+        match redacted.entry(name) {
+            serde_json::map::Entry::Vacant(entry) => {
+                entry.insert(value);
+            }
+            serde_json::map::Entry::Occupied(mut entry) => match entry.get_mut() {
+                Value::Array(values) => values.push(value),
+                first => *first = Value::Array(vec![std::mem::take(first), value]),
+            },
+        }
+    }
+    redacted
 }
 
-fn is_secret_header(name: &str) -> bool {
+pub(super) fn is_credential_field(name: &str) -> bool {
+    let name = name.to_ascii_lowercase().replace('_', "-");
     matches!(
-        name,
+        name.as_str(),
         "authorization"
-            | "x-api-key"
-            | "api-key"
             | "proxy-authorization"
             | "cookie"
             | "set-cookie"
-            | "anthropic-api-key"
-    )
+            | "key"
+            | "api-key"
+            | "apikey"
+            | "token"
+            | "secret"
+            | "password"
+            | "credential"
+            | "credentials"
+    ) || [
+        "-api-key",
+        "-token",
+        "-secret",
+        "-password",
+        "-credential",
+        "-credentials",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
+}
+
+fn remember_credential(credentials: &mut Vec<String>, credential: &str) {
+    if !credential.is_empty() && !credentials.iter().any(|known| known == credential) {
+        credentials.push(credential.to_owned());
+    }
+}
+
+fn redact_credential_field(name: &str, value: &mut Value, credentials: &mut Vec<String>) {
+    fn remember_values(value: &Value, credentials: &mut Vec<String>) {
+        match value {
+            Value::String(secret) => remember_credential(credentials, secret),
+            Value::Object(fields) => fields
+                .values()
+                .for_each(|value| remember_values(value, credentials)),
+            Value::Array(values) => values
+                .iter()
+                .for_each(|value| remember_values(value, credentials)),
+            _ => {}
+        }
+    }
+    if is_credential_field(name) {
+        remember_values(value, credentials);
+        *value = json!(REDACTED);
+    } else {
+        match value {
+            Value::Object(fields) => fields
+                .iter_mut()
+                .for_each(|(name, value)| redact_credential_field(name, value, credentials)),
+            Value::Array(values) => values
+                .iter_mut()
+                .for_each(|value| redact_credential_field("", value, credentials)),
+            _ => {}
+        }
+    }
+}
+
+fn redact_known_values(value: &mut Value, credentials: &[String]) {
+    match value {
+        Value::String(text) => {
+            for credential in credentials {
+                redact_secret(text, credential, false);
+            }
+        }
+        Value::Object(fields) => fields
+            .values_mut()
+            .for_each(|value| redact_known_values(value, credentials)),
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| redact_known_values(value, credentials)),
+        _ => {}
+    }
+}
+
+fn redact_url_credentials(url: &str, mut on_secret: impl FnMut(&str)) -> String {
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return url.to_owned();
+    };
+    let mut replaced = false;
+    let parameters = parsed
+        .query_pairs()
+        .map(|(name, value)| {
+            if is_credential_field(&name)
+                || matches!(name.as_ref(), "sig" | "signature" | "x-amz-signature")
+            {
+                on_secret(&value);
+                replaced = true;
+                (name.into_owned(), REDACTED.to_owned())
+            } else {
+                (name.into_owned(), value.into_owned())
+            }
+        })
+        .collect::<Vec<_>>();
+    if !replaced {
+        return url.to_owned();
+    }
+    parsed.query_pairs_mut().clear().extend_pairs(parameters);
+    parsed.into()
+}
+
+pub(super) fn redact_secret(body: &mut String, secret: &str, truncated: bool) {
+    if secret.is_empty() {
+        return;
+    }
+    if body.contains(secret) {
+        *body = body.replace(secret, REDACTED);
+    }
+    // A bounded read can end halfway through a credential returned by the upstream.
+    if truncated
+        && let Some((offset, _)) = body
+            .char_indices()
+            .rev()
+            .take_while(|&(offset, _)| body.len() - offset < secret.len())
+            .filter(|&(offset, _)| secret.starts_with(&body[offset..]))
+            .last()
+    {
+        body.replace_range(offset.., REDACTED);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+    use wreq::header::{HeaderMap, HeaderValue};
+
     use crate::config::LogsConfig;
 
     use super::{ProviderTrace, ProviderTraceMetadata, ProviderTraceMode};
@@ -383,21 +552,102 @@ mod tests {
     }
 
     #[test]
-    fn mode_follows_build_and_explicit_overrides() {
-        use ProviderTraceMode::{Diagnostic, Full, Off};
-        for (preview, default) in [(true, Diagnostic), (false, Off)] {
-            assert_eq!(
-                default,
-                ProviderTraceMode::from_build_and_env(preview, None)
-            );
-            assert_eq!(
-                Off,
-                ProviderTraceMode::from_build_and_env(preview, Some("0"))
-            );
-            assert_eq!(
-                Full,
-                ProviderTraceMode::from_build_and_env(preview, Some("1"))
-            );
+    fn auto_mode_is_full_unless_explicitly_disabled() {
+        use ProviderTraceMode::{Full, Off};
+        assert_eq!(ProviderTraceMode::from_env(None), Full);
+        assert_eq!(ProviderTraceMode::from_env(Some("1")), Full);
+        assert_eq!(ProviderTraceMode::from_env(Some("0")), Off);
+    }
+
+    #[test]
+    fn full_trace_redacts_credentials_but_keeps_wire_data() {
+        let home = tempfile::tempdir().unwrap();
+        let mut trace = ProviderTrace::from_request(
+            Some(ProviderTraceMetadata {
+                kuku_home: home.path().into(),
+                session_id: "wire".into(),
+                turn: 1,
+                request_id: "req-wire".into(),
+                logs: LogsConfig::default(),
+                mode: ProviderTraceMode::Full,
+            }),
+            "wire-test".into(),
+            "test-model".into(),
+        )
+        .unwrap();
+        let mut request = HeaderMap::new();
+        request.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer example-bearer-value"),
+        );
+        request.insert("x-debug-region", HeaderValue::from_static("region-one"));
+        request.append("x-debug-region", HeaderValue::from_static("region-two"));
+        let url = "https://example.test/generate?key=example-url-secret&region=region-one";
+        trace.request(
+            url,
+            &request,
+            &json!({
+                "config": {"client_secret":"example-body-secret", "color":"blue"},
+                "messages":[{"role":"user","content":"retained prompt"}],
+            }),
+            &["config".into()],
+            "example-bearer-value",
+        );
+        let mut response = HeaderMap::new();
+        response.insert("set-cookie", HeaderValue::from_static("sid=example-cookie"));
+        response.insert(
+            "x-debug-echo",
+            HeaderValue::from_static("echo example-bearer-value"),
+        );
+        trace.response(url, 200, &response);
+        trace.frame("data: {\"type\":\"error\",\"detail\":\"retained detail: example-bearer-value example-body-secret example-url-secret\"}");
+        trace.flush();
+
+        let records: String = std::fs::read_dir(home.path().join("logs/provider-trace"))
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                path.extension()
+                    .is_some_and(|ext| ext == "jsonl")
+                    .then(|| std::fs::read_to_string(path).unwrap())
+            })
+            .collect();
+        for secret in [
+            "example-bearer-value",
+            "example-body-secret",
+            "example-url-secret",
+            "example-cookie",
+        ] {
+            assert!(!records.contains(secret));
         }
+        let records: Vec<Value> = records
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let [request, response, frame] = records.as_slice() else {
+            panic!("expected request, response, and frame");
+        };
+        assert_eq!(
+            request["headers"]["x-debug-region"],
+            json!(["region-one", "region-two"])
+        );
+        assert_eq!(
+            request["body"]["config"],
+            json!({"client_secret":"<redacted>", "color":"blue"})
+        );
+        assert_eq!(request["body"]["messages"][0]["content"], "retained prompt");
+        assert!(
+            request["url"]
+                .as_str()
+                .unwrap()
+                .contains("region=region-one")
+        );
+        assert_eq!(response["headers"]["x-debug-echo"], "echo <redacted>");
+        assert!(
+            frame["frame"]
+                .as_str()
+                .unwrap()
+                .contains("retained detail: <redacted> <redacted> <redacted>")
+        );
     }
 }

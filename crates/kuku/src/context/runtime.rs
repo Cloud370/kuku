@@ -40,6 +40,9 @@ pub(crate) struct FrozenSegment {
     pub(crate) model: String,
     #[serde(default)]
     pub(crate) endpoint: String,
+    /// Exact URL from the latest confirmed request in this segment, when recorded.
+    #[serde(skip)]
+    pub(crate) last_request_url: Option<String>,
     #[serde(default)]
     pub(crate) capabilities: Option<ProviderCapabilities>,
     #[serde(default)]
@@ -367,6 +370,11 @@ impl ContextCursor {
                         && value["segment"] == self.approved_segment =>
                     {
                         self.confirm_admissions(value)?;
+                        if let (Some(segment), Some(url)) =
+                            (&mut self.segment, value["url"].as_str())
+                        {
+                            segment.last_request_url = Some(url.to_owned());
+                        }
                         let source_head = value["source_head"].as_u64().unwrap_or(event.id);
                         self.drop_consumed_tail(source_head)?;
                         return Ok(());

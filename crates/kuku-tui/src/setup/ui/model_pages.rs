@@ -540,5 +540,6 @@ fn source_label(source: kuku::CapabilitySource) -> &'static str {
         kuku::CapabilitySource::Manual => "manual",
         kuku::CapabilitySource::ProtocolManual => "protocol manual",
         kuku::CapabilitySource::AdapterProfile => "adapter profile",
+        kuku::CapabilitySource::ImageProbe => "image test",
     }
 }

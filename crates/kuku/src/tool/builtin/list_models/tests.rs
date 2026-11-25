@@ -47,19 +47,35 @@ fn catalog_exposes_configured_modalities_separately_from_runtime_support() {
             .model_content
             .contains("[\"text\",\"image\"] → [\"text\",\"image\"]")
     );
-    assert!(
-        result
-            .model_content
-            .contains("unsupported on this route | \"text\"")
-    );
+    assert!(result.model_content.contains(" | supported | \"text\""));
     assert!(!result.model_content.contains("test-credential"));
     let payload = result.structured.unwrap();
+    assert_eq!(payload["models"][0]["image_input"], "supported");
+    assert_eq!(
+        payload["models"][0]["input_modalities"],
+        json!(["text", "image"])
+    );
     assert_eq!(
         payload["models"][0]["output_modalities"],
         json!(["text", "image"])
     );
     assert_eq!(payload["models"][0]["output"], "text");
     assert_eq!(payload["omitted_routes"], 0);
+    let custom_adapter = list_models(&json!({}), &config, false, None);
+    assert!(
+        custom_adapter
+            .model_content
+            .contains("unsupported on this route | \"text\"")
+    );
+    let custom_payload = custom_adapter.structured.unwrap();
+    assert_eq!(
+        custom_payload["models"][0]["input_modalities"],
+        json!(["text", "image"])
+    );
+    assert_eq!(
+        custom_payload["models"][0]["image_input"],
+        "unsupported_on_route"
+    );
     assert_eq!(
         list_models(&json!({"query":"fixture"}), &config, true, None).status,
         "error"

@@ -119,7 +119,7 @@ pub(crate) fn resolve_capabilities(
     }
     let thinking_test = declaration
         .and_then(|entry| entry.thinking_test.as_ref())
-        .filter(|test| test.scope == thinking_scope(base_url, kind.format(), options))
+        .filter(|test| test.scope == probe_scope(base_url, kind.format(), options))
         .cloned();
     if let Some(test) = &thinking_test {
         for level in &test.accepted {
@@ -168,13 +168,47 @@ pub(crate) fn resolve_capabilities(
         |entry| entry.input_modalities.as_ref(),
         |entry| entry.input_modalities.as_ref(),
     );
-    let media_adapter = if kind == ProviderKind::OpenAiResponses
-        && profile == ProviderProfile::DeepSeek
-        && input_modalities
-            .as_ref()
-            .is_some_and(|input| input.value.iter().any(|modality| modality == "image"))
+    let image_verified = declaration
+        .and_then(|entry| entry.image_test_scope.as_ref())
+        .is_some_and(|scope| *scope == probe_scope(base_url, kind.format(), options));
+    let input_modalities = if image_verified
+        && !input_modalities.as_ref().is_some_and(|modalities| {
+            matches!(
+                modalities.source,
+                CapabilitySource::Manual | CapabilitySource::ProtocolManual
+            ) || modalities.value.iter().any(|value| value == "image")
+        }) {
+        let mut value = input_modalities
+            .map(|modalities| modalities.value)
+            .unwrap_or_else(|| vec!["text".into()]);
+        value.push("image".into());
+        Some(DeclaredCapability {
+            value,
+            source: CapabilitySource::ImageProbe,
+        })
+    } else {
+        input_modalities
+    };
+    let media_adapter = if input_modalities
+        .as_ref()
+        .is_some_and(|input| input.value.iter().any(|modality| modality == "image"))
     {
-        MediaAdapterSupport::ResponsesImageToolResults
+        match kind {
+            ProviderKind::Anthropic => MediaAdapterSupport::AnthropicMessagesImageBlocks,
+            ProviderKind::OpenAiCompatible => MediaAdapterSupport::ChatCompletionsImageParts,
+            ProviderKind::OpenAiResponses if profile == ProviderProfile::DeepSeek => {
+                MediaAdapterSupport::ResponsesImageToolResults
+            }
+            ProviderKind::OpenAiResponses
+                if image_verified
+                    || input_modalities
+                        .as_ref()
+                        .is_some_and(|input| input.source == CapabilitySource::ProtocolManual) =>
+            {
+                MediaAdapterSupport::ResponsesImageInput
+            }
+            _ => MediaAdapterSupport::TextOnly,
+        }
     } else {
         MediaAdapterSupport::TextOnly
     };
@@ -208,7 +242,7 @@ pub(crate) fn resolve_capabilities(
     }
 }
 
-pub(super) fn thinking_scope(
+pub(super) fn probe_scope(
     endpoint: &str,
     format: ProviderFormat,
     options: &ProviderOptions,

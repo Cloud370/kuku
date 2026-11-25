@@ -307,6 +307,8 @@ struct List {
 #[derive(Deserialize)]
 struct ListModel {
     id: String,
+    #[serde(rename = "type")]
+    model_type: Option<serde_json::Value>,
     #[serde(alias = "display_name")]
     name: Option<String>,
     effort: Option<Effort>,
@@ -316,6 +318,7 @@ struct ListModel {
     input_modalities: Option<Vec<String>>,
     output_modalities: Option<Vec<String>>,
     architecture: Option<Architecture>,
+    model_spec: Option<serde_json::Value>,
     endpoints: Option<Vec<String>>,
     supported_endpoint_types: Option<Vec<String>>,
     api_capabilities: Option<BTreeMap<String, ProtocolCapabilityDeclaration>>,
@@ -352,6 +355,21 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
             continue;
         }
         let architecture = model.architecture.unwrap_or_default();
+        let vision_modalities = || {
+            if model.model_type.as_ref()?.as_str()? != "text" {
+                return None;
+            }
+            let vision = model
+                .model_spec
+                .as_ref()?
+                .pointer("/capabilities/supportsVision")?
+                .as_bool()?;
+            let mut modalities = vec!["text".into()];
+            if vision {
+                modalities.push("image".into());
+            }
+            Some(modalities)
+        };
         let reasoning = model.reasoning.unwrap_or(Reasoning {
             supported_efforts: None,
             default_effort: None,
@@ -376,7 +394,10 @@ fn parse_model_list(bytes: &[u8]) -> Result<Vec<DiscoveredModel>> {
                     .or(model.reasoning_efforts),
                 reasoning_default: effort.default_level.or(reasoning.default_effort),
                 service_tiers: model.service_tiers,
-                input_modalities: model.input_modalities.or(architecture.input_modalities),
+                input_modalities: model
+                    .input_modalities
+                    .or(architecture.input_modalities)
+                    .or_else(vision_modalities),
                 output_modalities: model.output_modalities.or(architecture.output_modalities),
                 interfaces: (!interfaces.is_empty()).then_some(interfaces),
                 protocols: model.api_capabilities.unwrap_or_default(),
@@ -444,6 +465,31 @@ mod tests {
             models[0].capabilities.reasoning_default.as_deref()
         );
         assert_eq!(None, models[1].capabilities.reasoning_efforts);
+    }
+
+    #[test]
+    fn catalog_vision_flags_are_a_fallback_for_text_models() {
+        let models = parse_model_list(br#"{"data":[
+            {"id":"vision","type":"text","model_spec":{"capabilities":{"supportsVision":true}}},
+            {"id":"text","type":"text","model_spec":{"capabilities":{"supportsVision":false}}},
+            {"id":"explicit","type":"text","input_modalities":["text","audio"],"model_spec":{"capabilities":{"supportsVision":true}}},
+            {"id":"unrelated","type":12,"model_spec":22},
+            {"id":"unknown","type":"text","model_spec":{"capabilities":{}}}
+        ]}"#).unwrap();
+        assert_eq!(
+            models[0].capabilities.input_modalities,
+            Some(vec!["text".into(), "image".into()])
+        );
+        assert_eq!(
+            models[1].capabilities.input_modalities,
+            Some(vec!["text".into()])
+        );
+        assert_eq!(
+            models[2].capabilities.input_modalities,
+            Some(vec!["text".into(), "audio".into()])
+        );
+        assert_eq!(models[3].capabilities.input_modalities, None);
+        assert_eq!(models[4].capabilities.input_modalities, None);
     }
 
     #[test]

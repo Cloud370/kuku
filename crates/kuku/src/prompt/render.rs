@@ -15,6 +15,15 @@ use crate::prompt::PromptCatalog;
 pub(crate) struct PromptRenderer(Arc<Environment<'static>>);
 
 impl PromptCatalog {
+    /// Render the note accompanying images returned by a tool over Chat Completions.
+    #[doc(hidden)]
+    pub fn render_chat_tool_image_continuation(&self) -> Result<String> {
+        self.render(
+            "runtime/chat-tool-image-continuation.md",
+            minijinja::context! {},
+        )
+    }
+
     /// Render a handoff with the retained summary and the tools available to its recipient.
     pub fn render_handoff(
         &self,
@@ -207,6 +216,36 @@ mod tests {
         let mut catalog = crate::prompt::builtin_prompt_catalog();
         catalog.blocks.get_mut("project-policy").unwrap().text = template.to_owned();
         catalog.renderer().render("blocks/project-policy.md", facts)
+    }
+
+    #[test]
+    fn chat_tool_image_continuation_renders_templates_and_falls_back_for_old_catalogs() {
+        let name = "chat-tool-image-continuation";
+        let mut catalog = crate::prompt::builtin_prompt_catalog();
+        let original = catalog.runtime.remove(name).unwrap();
+        assert_eq!(
+            catalog.render_chat_tool_image_continuation().unwrap(),
+            original.text
+        );
+
+        let mut fragment = original.clone();
+        fragment.text = "{{ ['continue', 'now'] | join(' ') }}".into();
+        catalog
+            .runtime
+            .insert("fixture-image-note".into(), fragment);
+        let mut template = original;
+        template.text = "{% include 'runtime/fixture-image-note.md' %}".into();
+        catalog.runtime.insert(name.into(), template);
+        assert_eq!(
+            catalog.render_chat_tool_image_continuation().unwrap(),
+            "continue now"
+        );
+
+        catalog.runtime.get_mut(name).unwrap().text = "{% if %}".into();
+        assert!(matches!(
+            catalog.render_chat_tool_image_continuation(),
+            Err(Error::PromptRender(_))
+        ));
     }
 
     #[test]

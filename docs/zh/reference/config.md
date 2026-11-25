@@ -119,6 +119,8 @@ cache_read = 0.1
 
 ### 模型能力、Profile 与路由
 
+保存模型配置时，成功的图像输入测试只对测试时使用的端点、协议和精确模型有效。显式手工声明仍然优先。Responses 路由通过图像输入验证，或在 `manual.protocols.responses.input_modalities` 中显式声明支持图像后，可接收用户附件，但这不会启用工具结果中的图像。CLI 的 `config test` 只报告探测证据，不改动配置。
+
 每个模型能力条目也可以包含 `custom_service_tiers` 表。键为原生档位名，值为 `unverified`（由用户声明）或 `confirmed`（探测回报了请求的档位）。这些值会补充模型目录或手动覆盖中的档位列表。例如 `provider.gateway.model_capabilities."example/model".custom_service_tiers.turbo = "unverified"` 为该连接和指定模型添加 `turbo`。
 
 - **能力声明**：`model_capabilities.<model>` 区分 `discovered` 与 `manual`（支持 `reasoning_efforts`、`reasoning_default`、`input_modalities`、`output_modalities`、`interfaces` 及协议级扩展如 `protocols.anthropic_messages.system_prompt_update`）。刷新发现时保留手工覆盖，未填字段保持未知。声明图像输入的路由可启用[图像检查工具](tools.md)；内置文本适配器会在派发前拒绝图像输出请求。[DeepSeek 模型列表](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter 模型列表](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)

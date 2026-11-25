@@ -75,6 +75,9 @@ pub(super) fn commit_context(
     confirmation: serde_json::Value,
     optional: bool,
 ) -> Result<Option<u64>> {
+    if let Some(url) = confirmation["url"].as_str() {
+        context.segment.last_request_url = Some(url.to_owned());
+    }
     let execution = pending
         .query
         .runtime_execution

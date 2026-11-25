@@ -142,6 +142,14 @@ impl SetupState {
     pub(in crate::setup) fn update_capabilities(&self, connection: &mut ProviderConfig) {
         self.update_model_declarations(connection);
         for model in self.model_ids().into_iter().flatten() {
+            if let Some(scope) = self.trials.image_test_scope(connection, &model) {
+                connection
+                    .options
+                    .model_capabilities
+                    .entry(model.clone())
+                    .or_default()
+                    .image_test_scope = Some(scope);
+            }
             if let Some(tiers) = self.trials.advertised_service_tiers(connection, &model) {
                 connection
                     .options

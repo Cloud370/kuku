@@ -22,6 +22,24 @@ pub enum MediaAdapterSupport {
     TextOnly,
     /// Send Responses user images and tool-result images for a declared image-capable model.
     ResponsesImageToolResults,
+    /// Send Chat Completions image content parts for a declared image-capable model.
+    ChatCompletionsImageParts,
+    /// Send Messages image blocks, including inside tool results.
+    AnthropicMessagesImageBlocks,
+    /// Send user image attachments on a verified Responses route.
+    ResponsesImageInput,
+}
+
+impl MediaAdapterSupport {
+    /// Whether this adapter can send images returned by tools, rather than just user attachments.
+    pub fn supports_tool_images(self) -> bool {
+        matches!(
+            self,
+            Self::ResponsesImageToolResults
+                | Self::ChatCompletionsImageParts
+                | Self::AnthropicMessagesImageBlocks
+        )
+    }
 }
 
 /// Whether this runtime can attach images to requests on a selected route.
@@ -124,6 +142,9 @@ pub struct ModelCapabilityEntry {
     /// Thinking values tested through the configured generation endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_test: Option<ModelThinkingTest>,
+    /// Scope of a successful image-input probe; never inferred from a failed probe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_test_scope: Option<String>,
 }
 
 /// An endpoint-scoped record of values the generation API accepted or rejected.

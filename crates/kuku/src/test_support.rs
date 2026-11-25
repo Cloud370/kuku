@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+pub use crate::provider::completed_image_probe;
 pub use crate::test_process::isolate_test;
 
 const TOOL_OUTPUT: &str = "fixture-tool-output-42";

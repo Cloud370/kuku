@@ -249,6 +249,8 @@ pub enum CapabilitySource {
     ProtocolManual,
     /// Defined by a built-in provider profile.
     AdapterProfile,
+    /// Verified by an image-input probe on the configured route.
+    ImageProbe,
 }
 
 /// A capability with the provenance of its effective value.

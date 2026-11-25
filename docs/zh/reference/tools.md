@@ -31,7 +31,7 @@
 
 工具指引按 Agent 实际可用的能力组装。只回复的 Agent 不加载工具流程。委派和记忆写入指引只发给具备相应工具的 Agent。编辑和写入中的 `brief` 是可选的显示标签。
 
-Session 在内置 DeepSeek Responses 路由上为声明支持图像输入的模型提供 `view_image`。它读取工作区中最大 1 MiB 的 PNG 或 JPEG，沿用文件读取的路径授权。模型请求按时间从近到远附带最多四张不同图像，以剩余请求字节预算为限。任务需要判断视觉细节时，优先直接查看已有图像。省略图像时，工具结果仍保留快照的文件信息。纯文本 Agent 会被明确告知自己看不到任何图像，不能猜测画面内容。每个 Agent 的提示会说明当前输入和输出模态，以及能否使用 `view_image`。无法发送图像的路线只发送文本，并明确说明是模型不支持、图像能力尚未确认，还是当前路线缺少图像适配。 [DeepSeek Responses 图像输入](https://api-docs.deepseek.com/zh-cn/guides/responses_api/#image-input)
+内置 Chat Completions、Messages 和 DeepSeek Responses 路由在所选模型声明支持图像输入时，提供 `view_image` 和用户图片附件。该工具读取工作区中最大 1 MiB 的 PNG 或 JPEG，沿用文件读取的路径授权。模型请求优先发送用户附件，再按时间从近到远附带最多四张不同的工具图像，以剩余请求字节预算为限。Chat Completions 的工具结果仍是文本，图片标注对应的工具调用后紧跟在该批工具结果之后。Messages 把工具图片作为图像块放进对应的工具结果。任务需要判断视觉细节时，优先直接查看已有图像。省略图像时，工具结果仍保留快照的文件信息。每个 Agent 的提示会说明当前输入和输出模态，以及能否使用 `view_image`。无法发送图像的路由只发送文本并说明原因，Agent 不得猜测画面内容。 [Chat Completions 图像输入](https://api-docs.deepseek.com/zh-cn/guides/vision/) · [DeepSeek Responses 图像输入](https://api-docs.deepseek.com/zh-cn/guides/responses_api/#image-input)
 
 条件 Skill 工具：
 

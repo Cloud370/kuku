@@ -78,7 +78,8 @@ impl App {
                 }
                 CapabilitySource::Manual
                 | CapabilitySource::ProtocolManual
-                | CapabilitySource::AdapterProfile => "Declared default",
+                | CapabilitySource::AdapterProfile
+                | CapabilitySource::ImageProbe => "Declared default",
             };
             format!("{source} · {}", effort_label(Some(&default.value)))
         });

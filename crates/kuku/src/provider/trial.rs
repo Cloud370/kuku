@@ -174,7 +174,7 @@ async fn trial_request(
         } => (effort, service_tier),
         ModelTrial::Tools { service_tier } => (None, service_tier),
         ModelTrial::ImageInput { service_tier } => {
-            let colors = std::array::from_fn(|_| fastrand::usize(..COLORS.len()));
+            let colors = challenge_colors();
             challenge = Some((colors, color_grid(colors)?));
             (
                 capabilities
@@ -356,7 +356,7 @@ fn subscription_trial_receipt(frame: &str) -> Result<Option<Value>> {
 
 fn trial_body(config: &ResolvedProvider, image: Option<&str>) -> Value {
     let prompt = if image.is_some() {
-        "What are the colors at the top left, top right, bottom left, and bottom right? Give one English color per position, in that order."
+        "Look at the four colored squares separated by gray lines. Give exactly four English color names in this order: top left, top right, bottom left, bottom right."
     } else {
         "What is 17 times 23 minus 14? Reply with the number only."
     };
@@ -532,12 +532,24 @@ fn trial_error(error: super::types::ProviderFailure) -> Error {
     }
 }
 
+fn challenge_colors() -> [usize; 4] {
+    let mut palette = std::array::from_fn::<_, { COLORS.len() }, _>(|index| index);
+    fastrand::shuffle(&mut palette);
+    [palette[0], palette[1], palette[2], palette[3]]
+}
+
 fn color_grid(colors: [usize; 4]) -> Result<String> {
-    const SIDE: usize = 64;
+    const SIDE: usize = 256;
+    const GAP: usize = 8;
+    let separator = |axis| (SIDE / 2 - GAP..SIDE / 2 + GAP).contains(&axis);
     let mut raw = Vec::with_capacity(SIDE * (SIDE * 3 + 1));
     for y in 0..SIDE {
         raw.push(0);
         for x in 0..SIDE {
+            if separator(x) || separator(y) {
+                raw.extend_from_slice(&[128, 128, 128]);
+                continue;
+            }
             let index = usize::from(y >= SIDE / 2) * 2 + usize::from(x >= SIDE / 2);
             raw.extend_from_slice(&COLORS[colors[index]].1);
         }
@@ -632,6 +644,35 @@ data: {"type":"response.completed","response":{"status":"completed","output":[{"
         assert_eq!(Some(ModelStopReason::EndTurn), result.stop_reason);
         assert!(result.text_returned);
         assert_eq!(Some(true), result.image_match);
+    }
+
+    #[test]
+    fn image_probe_has_four_distinct_tiles_with_visible_separators() {
+        for _ in 0..8 {
+            let colors = super::challenge_colors();
+            assert_eq!(
+                colors
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                4
+            );
+            let bytes = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                super::color_grid(colors).unwrap(),
+            )
+            .unwrap();
+            let grid = image::load_from_memory(&bytes).unwrap().into_rgb8();
+            assert_eq!(grid.dimensions(), (256, 256));
+            for ((x, y), color) in [(64, 64), (192, 64), (64, 192), (192, 192)]
+                .into_iter()
+                .zip(colors)
+            {
+                assert_eq!(grid.get_pixel(x, y).0, super::COLORS[color].1);
+            }
+            assert_eq!(grid.get_pixel(128, 60).0, [128; 3]);
+            assert_eq!(grid.get_pixel(60, 128).0, [128; 3]);
+        }
     }
 
     #[test]

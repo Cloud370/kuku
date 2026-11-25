@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use kuku::config::ImageInputSupport;
 use kuku_client::{ImageAttachment, ImageMarker, MAX_INPUT_IMAGES, Timing};
 
 use crate::clipboard::{ClipboardImage, PasteSource, Pasted};
@@ -344,22 +345,31 @@ impl App {
         if !pane.encoded_images.is_empty() || pane.attached_images().next().is_none() {
             return false;
         }
-        let known_capabilities = if let Some(snapshot) = &pane.snapshot {
+        let image_input = if let Some(snapshot) = &pane.snapshot {
             snapshot
                 .pending_selection
                 .as_ref()
                 .or(snapshot.selection.as_ref())
-                .map(|selection| &selection.capabilities)
+                .map(|selection| selection.image_input)
         } else {
-            pane.initial_model.as_ref().map(|model| &model.capabilities)
+            pane.initial_model
+                .as_ref()
+                .map(|model| model.capabilities.image_input_support(true))
         };
-        if known_capabilities.is_some_and(|capabilities| {
-            capabilities.media_adapter
-                != kuku::config::MediaAdapterSupport::ResponsesImageToolResults
-        }) {
-            self.problem(
-                "This model cannot receive images · switch models or remove image markers",
-            );
+        let problem = match image_input {
+            Some(ImageInputSupport::UnsupportedByModel) => {
+                Some("This model does not accept images · switch models or remove image markers")
+            }
+            Some(ImageInputSupport::Unconfirmed) => Some(
+                "Image input is unverified · test and save in Model setup or remove image markers",
+            ),
+            Some(ImageInputSupport::UnsupportedOnRoute) => Some(
+                "This model supports images, but this connection cannot send them · switch routes or remove image markers",
+            ),
+            Some(ImageInputSupport::Supported) | None => None,
+        };
+        if let Some(problem) = problem {
+            self.problem(problem);
             return true;
         }
         self.open_image_options(timing, route);

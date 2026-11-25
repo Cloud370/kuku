@@ -119,6 +119,8 @@ cache_read = 0.1
 
 ### Capabilities, profiles, and routing
 
+Saving model setup retains a successful image-input test for the tested endpoint, protocol, and exact model. An explicit manual modality declaration still takes precedence. A verified Responses route, or one with images explicitly declared in `manual.protocols.responses.input_modalities`, can receive user attachments without enabling images in tool results. The CLI's `config test` reports evidence without changing the configuration.
+
 Each model capability entry may also contain a `custom_service_tiers` table. Its keys are native tier names and its values are `unverified` for user declarations and `confirmed` when a probe reported the requested tier. These names extend the discovered or manually overridden service tier list. For example, `provider.gateway.model_capabilities."example/model".custom_service_tiers.turbo = "unverified"` adds `turbo` to that connection and exact model.
 
 - **Capabilities**: Each `model_capabilities.<model>` entry separates `discovered` and `manual` blocks (`reasoning_efforts`, `reasoning_default`, `input_modalities`, `output_modalities`, `interfaces`, plus protocol-specific tables such as `protocols.anthropic_messages.system_prompt_update`). Manual overrides persist across refreshes; omitted fields remain unknown. Image-input routes may offer [image inspection](tools.md); built-in text adapters reject image-output requests before dispatch. [DeepSeek model list](https://api-docs.deepseek.com/api/list-models/) · [OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)

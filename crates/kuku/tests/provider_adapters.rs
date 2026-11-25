@@ -224,6 +224,17 @@ mod provider {
         dead_code,
         reason = "this target includes the production modules and exercises a subset of their APIs"
     )]
+    mod media {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/provider/media.rs"
+        ));
+    }
+
+    #[allow(
+        dead_code,
+        reason = "this target includes the production modules and exercises a subset of their APIs"
+    )]
     pub mod openai_compat {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),

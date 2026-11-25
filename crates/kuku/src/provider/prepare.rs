@@ -1,10 +1,13 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::config::{PromptCacheScope, ProviderAuth, ProviderFormat, ProviderProfile};
+use crate::config::{
+    MediaAdapterSupport, PromptCacheScope, ProviderAuth, ProviderFormat, ProviderProfile,
+};
 use crate::context::MessageBlock;
 use crate::execution::ModelImage;
 
+use super::media::{self, ImageTargets, ImageWire};
 use super::request_fields::RequestPurpose;
 use super::types::{
     PreparedBody, PreparedProviderRequest, ProviderCorrelation, ProviderFailure,
@@ -96,17 +99,20 @@ fn prepare(
     }
     validate_replay(config, request)?;
     let url = request_url(config)?;
-    let mut images = super::openai_responses::ImageTargets {
+    let mut images = ImageTargets {
         current_user_index: media.as_ref().map(|media| media.current_user_index),
         ..Default::default()
     };
-    let media = media.filter(|_| {
-        config.capabilities.media_adapter
-            == crate::config::MediaAdapterSupport::ResponsesImageToolResults
-    });
+    let media =
+        media.filter(|_| config.capabilities.media_adapter != MediaAdapterSupport::TextOnly);
     let mut body = match config.kind {
-        ProviderKind::Anthropic => super::anthropic::render_body(request),
-        ProviderKind::OpenAiCompatible => super::openai_compat::render_body(request),
+        ProviderKind::Anthropic => {
+            super::anthropic::render_body_with_images(request, media.as_ref().map(|_| &mut images))
+        }
+        ProviderKind::OpenAiCompatible => super::openai_compat::render_body_with_images(
+            request,
+            media.as_ref().map(|_| &mut images),
+        ),
         ProviderKind::OpenAiResponses => super::openai_responses::render_body_with_images(
             request,
             media.as_ref().map(|_| &mut images),
@@ -127,19 +133,42 @@ fn prepare(
         super::subscription::apply_request_shape(account.channel(), &mut body);
     }
     if let Some(media) = media {
-        super::openai_responses::attach_user_images(
+        let wire = ImageWire::for_kind(config.kind);
+        media::attach_user_images(
+            wire,
             &mut body,
             images.user,
             images.current_input_offset,
             media.limit,
             media.load_user,
         )?;
-        super::openai_responses::attach_tool_images(
-            &mut body,
-            images.tools,
-            media.limit,
-            media.load,
-        );
+        if config.capabilities.media_adapter.supports_tool_images() {
+            let chat_continuation = (matches!(wire, ImageWire::ChatCompletions)
+                && !images.tools.is_empty())
+            .then(|| request.catalog.render_chat_tool_image_continuation())
+            .transpose()
+            .map_err(|error| invalid_request(&error.to_string()))?;
+            media::attach_tool_images(
+                wire,
+                &mut body,
+                images.tools,
+                media.limit,
+                media.load,
+                chat_continuation.as_deref().map(str::trim),
+            );
+        }
+    }
+    if config.kind == ProviderKind::Anthropic
+        && let Some(messages) = body["messages"].as_array_mut()
+    {
+        // A prior image-only input can lose its image to retention or the
+        // request budget. Do not send an empty Messages content array.
+        messages.retain(|message| {
+            message["role"] != "user"
+                || message["content"]
+                    .as_array()
+                    .is_none_or(|parts| !parts.is_empty())
+        });
     }
     Ok(PreparedProviderRequest {
         kind: config.kind,

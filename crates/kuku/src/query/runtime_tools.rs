@@ -588,8 +588,10 @@ pub(crate) fn supported(
     name: &str,
 ) -> bool {
     name != "view_image"
-        || config.capabilities.image_input_support(builtin_adapter)
-            == crate::config::ImageInputSupport::Supported
+        || (config.capabilities.tool_calls != Some(false)
+            && config.capabilities.media_adapter.supports_tool_images()
+            && config.capabilities.image_input_support(builtin_adapter)
+                == crate::config::ImageInputSupport::Supported)
 }
 
 pub(crate) fn definitions() -> Vec<ToolDefinition> {

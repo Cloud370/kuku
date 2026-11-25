@@ -636,6 +636,111 @@ async fn new_configuration_saves_only_the_selected_connection_and_model() {
 }
 
 #[tokio::test]
+async fn saved_image_probe_allows_the_tui_to_submit_an_attachment() {
+    use crate::app::{App, Modal};
+    use crate::clipboard::{Pasted, decode_image};
+    use crate::jobs::{Job, Update};
+    use crate::menu::PickerKind;
+    use kuku::config::{ImageInputSupport, MediaAdapterSupport, ProviderFormat};
+    use kuku_client::{Action, AgentConfig, Timing};
+
+    let directory = tempfile::tempdir().unwrap();
+    let settings = Settings::load(options(directory.path(), None))
+        .await
+        .unwrap();
+    let mut state = SetupState::new(&settings);
+    select_environment(&mut state);
+    state.environment.set_text("MY_GATEWAY_KEY".into());
+    state.address.set_text("https://provider.invalid/v1".into());
+    state.model.set_text("vision-model".into());
+    state.protocol = ProviderFormat::OpenAiResponses;
+    let connection = state.connection(&settings).unwrap();
+    let probe = kuku::test_support::completed_image_probe;
+    assert!(
+        probe(connection.clone(), "vision-model", false)
+            .image_test_scope(&connection, "vision-model")
+            .is_none()
+    );
+    state.trials = probe(connection.clone(), "vision-model", true);
+    assert!(
+        state
+            .trials
+            .image_test_scope(&connection, "other-model")
+            .is_none()
+    );
+    let mut changed_route = connection;
+    changed_route.base_url = "https://other.invalid/v1".into();
+    assert!(
+        state
+            .trials
+            .image_test_scope(&changed_route, "vision-model")
+            .is_none()
+    );
+    save(&settings, &state).unwrap();
+
+    let saved = load_config(&settings.config_path)
+        .unwrap()
+        .resolve()
+        .unwrap();
+    let model = kuku::adapter::inspect_model(&saved, &AgentConfig::default()).unwrap();
+    assert_eq!(
+        model.capabilities.image_input_support(true),
+        ImageInputSupport::Supported
+    );
+    assert_eq!(
+        model.capabilities.media_adapter,
+        MediaAdapterSupport::ResponsesImageInput
+    );
+
+    let workspace = directory.path().join("workspace");
+    let mut app = App::new(workspace.clone(), None);
+    app.update(Update::Connected {
+        endpoint: "http://127.0.0.1:6789".into(),
+        workspace,
+    });
+    app.complete_test_permissions();
+    let version = app
+        .effects
+        .iter()
+        .find_map(|job| match job {
+            Job::Model(_, version) => Some(*version),
+            _ => None,
+        })
+        .unwrap();
+    app.update(Update::DefaultModel(version, Ok(model)));
+    app.effects.clear();
+    app.paste_transfer(String::new());
+    let Some(Job::PasteClipboard(target, ticket, _)) = app.effects.pop() else {
+        panic!("clipboard request missing");
+    };
+    let mut png = io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    app.update(Update::ClipboardPasted(
+        target,
+        ticket,
+        Ok(Pasted::Image(decode_image(png.into_inner()).unwrap())),
+    ));
+    app.send(Timing::Steer);
+    let Some(Modal::Picker(picker)) = app.modal.as_ref() else {
+        panic!("verified Responses attachment did not reach the image picker");
+    };
+    assert_eq!(picker.kind, PickerKind::Images);
+    let choice = picker.selected_choice().unwrap();
+    let ticket = picker.ticket.id;
+    app.choose(PickerKind::Images, choice, ticket);
+    let Some(Job::EncodeImages(target, preparation)) = app.effects.pop() else {
+        panic!("image encoding missing");
+    };
+    let ticket = preparation.ticket;
+    app.update(Update::ImagesEncoded(target, ticket, preparation.encode()));
+    assert!(app.effects.iter().any(|job| {
+        matches!(job, Job::Save(command) if matches!(&command.action, Action::Send { images, .. } if images.len() == 1))
+    }));
+}
+
+#[tokio::test]
 async fn all_provider_presets_generate_parseable_configs() {
     for preset in crate::setup::ProviderPreset::ALL {
         let directory = tempfile::tempdir().unwrap();
