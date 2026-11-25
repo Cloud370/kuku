@@ -343,6 +343,9 @@ pub(crate) fn render_at(
     if let Some(draft) = draft {
         let pane = app.pane();
         let placeholder = pane.draft.text().is_empty().then(|| {
+            if app.setup_required {
+                return shorten("Ctrl+L or /model to set up a model", content_width);
+            }
             let send = if pane.value_attachments.is_empty() {
                 "Enter steer"
             } else {

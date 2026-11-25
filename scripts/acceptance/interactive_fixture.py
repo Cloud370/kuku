@@ -683,7 +683,8 @@ class Terminal:
             raise AssertionError(f"{error}\nLast terminal screen:\n{viewport.get('screen', '')}") from error
 
     def open_first_model_settings(self):
-        self.expect("New session", also=("/model", "Set up a model"))
+        self.expect("New session", also=("/model", "Set up a model"),
+                    absent=("kuku service offline", "F2 Reconnect", "Enter steer"))
         self.submit("/model")
         self.expect("Find and test models")
 

@@ -192,6 +192,7 @@ impl App {
             );
         picker.problem = match (service, has_snapshot) {
             (ServiceStatus::Connected, _) => None,
+            (ServiceStatus::SetupRequired, _) => Some("Use /model to set up a model".into()),
             (_, true) => Some(format!("{} · last observed state", service.label())),
             (_, false) if !picker.loading => Some(format!("{} · Ctrl+R", service.label())),
             _ => None,

@@ -12,6 +12,7 @@ use super::{App, Pane, PendingStage, SnapshotRefresh};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ServiceStatus {
     Connecting,
+    SetupRequired,
     Connected,
     Reconnecting,
     Restarting,
@@ -23,6 +24,7 @@ impl ServiceStatus {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Connecting => "Connecting",
+            Self::SetupRequired => "Model setup required",
             Self::Connected => "Connected",
             Self::Reconnecting => "Reconnecting",
             Self::Restarting => "Restarting",
@@ -619,7 +621,10 @@ impl App {
                 ServiceStatus::Connecting
             };
         }
-        if self.setup_required || self.connection_problem.is_some() {
+        if self.setup_required {
+            return ServiceStatus::SetupRequired;
+        }
+        if self.connection_problem.is_some() {
             return ServiceStatus::Offline;
         }
         match self.pane().watch {

@@ -228,7 +228,7 @@ pub(super) fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App, show_
     }
     lines.extend(help);
     lines.extend(actions);
-    if spacious && lines.len() < height {
+    if !app.setup_required && spacious && lines.len() < height {
         let shortcuts = welcome_shortcuts();
         if shortcuts.width() <= width {
             lines.push(shortcuts);
@@ -346,6 +346,7 @@ pub(super) fn empty_notice(app: &App, width: usize, show_problem: bool) -> Vec<L
             ServiceStatus::Reconnecting => ("Reconnecting to the kuku service…", MUTED),
             ServiceStatus::Restarting => ("Restarting the kuku service…", MUTED),
             ServiceStatus::Connected
+            | ServiceStatus::SetupRequired
             | ServiceStatus::Offline
             | ServiceStatus::UpdatesUnavailable => return Vec::new(),
         }
