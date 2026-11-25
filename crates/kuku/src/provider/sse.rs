@@ -2,9 +2,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::ProviderChunkStream;
 use super::chunk::ProviderChunk;
-use super::error::{
-    IMAGE_REQUEST_ERROR_DETAILS_OMITTED, omit_image_request_error_details, transport_error,
-};
+use super::error::{image_error_summary, stream_error_kind, transport_error};
 use super::trace::ProviderTrace;
 use super::transport::TransportResponse;
 use super::types::{ProviderFailure, ProviderFailureKind};
@@ -101,15 +99,7 @@ async fn run_sse_loop(
             return Ok(());
         }
     }
-    let mut chunks = on_eof();
-    if contains_images {
-        redact_stream_errors(&mut chunks);
-    }
-    for chunk in chunks? {
-        if tx.send(Ok(chunk)).await.is_err() {
-            break;
-        }
-    }
+    forward_chunks(on_eof(), trace, contains_images, tx).await?;
     Ok(())
 }
 
@@ -127,29 +117,32 @@ async fn emit_frame(
     if let Some(trace) = trace {
         trace.frame(frame);
     }
-    let mut chunks = on_frame(frame);
-    if contains_images {
-        redact_stream_errors(&mut chunks);
-    }
-    for chunk in chunks? {
+    forward_chunks(on_frame(frame), trace, contains_images, tx).await
+}
+
+async fn forward_chunks(
+    chunks: Result<Vec<ProviderChunk>, ProviderFailure>,
+    trace: Option<&ProviderTrace>,
+    contains_images: bool,
+    tx: &tokio::sync::mpsc::Sender<Result<ProviderChunk, ProviderFailure>>,
+) -> Result<bool, ProviderFailure> {
+    let full_trace = trace.is_some_and(ProviderTrace::full);
+    let chunks = chunks.map_err(|mut failure| {
+        if contains_images {
+            failure.message = image_error_summary(failure.kind, failure.status, full_trace);
+        }
+        failure
+    })?;
+    for mut chunk in chunks {
+        if contains_images && let ProviderChunk::ServerError { code, message } = &mut chunk {
+            // Keep an ordered protocol event: the caller validates it against StreamEnd.
+            *message = image_error_summary(stream_error_kind(code), None, full_trace);
+        }
         if tx.send(Ok(chunk)).await.is_err() {
             return Ok(false);
         }
     }
     Ok(true)
-}
-
-fn redact_stream_errors(chunks: &mut Result<Vec<ProviderChunk>, ProviderFailure>) {
-    match chunks {
-        Ok(chunks) => {
-            for chunk in chunks {
-                if let ProviderChunk::ServerError { message, .. } = chunk {
-                    *message = IMAGE_REQUEST_ERROR_DETAILS_OMITTED.into();
-                }
-            }
-        }
-        Err(failure) => omit_image_request_error_details(failure),
-    }
 }
 
 #[derive(Default)]

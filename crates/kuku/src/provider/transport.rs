@@ -2,7 +2,7 @@ use wreq::header::{HeaderMap, HeaderValue};
 
 use crate::config::ProviderAuth;
 
-use super::error::{classify_http_error, transport_error};
+use super::error::{classify_http_error, image_error_summary, transport_error};
 use super::media::{self, ImageWire};
 use super::prepare::{authentication, invalid_request};
 use super::trace::{ProviderTrace, ProviderTraceMetadata, redact_secret};
@@ -141,7 +141,11 @@ async fn send(
         }
         let mut failure = classify_http_error(status.as_u16(), &body);
         if contains_images {
-            super::error::omit_image_request_error_details(&mut failure);
+            failure.message = image_error_summary(
+                failure.kind,
+                failure.status,
+                trace.as_ref().is_some_and(ProviderTrace::full),
+            );
         }
         failure.retry_after = retry_after;
         if let Some(delay) = retry_after {

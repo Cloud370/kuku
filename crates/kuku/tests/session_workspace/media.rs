@@ -743,31 +743,65 @@ async fn image_request_error_details_stay_in_full_trace_and_out_of_the_journal()
     const TEXT_DETAIL: &str = "plain text diagnostic";
     for (format, path) in [
         (ProviderFormat::OpenAiChat, CHAT_ENDPOINT),
+        (ProviderFormat::OpenAiResponses, ENDPOINT),
         (ProviderFormat::Anthropic, "/media-errors/v1/messages"),
     ] {
-        for (stream, mode) in [
-            (false, kuku::ProviderTraceMode::Off),
-            (false, kuku::ProviderTraceMode::Full),
-            (true, kuku::ProviderTraceMode::Full),
+        use kuku::ProviderTraceMode::{Diagnostic, Full, Off};
+        for (status, mode, code, kind, expected_error) in [
+            (
+                422,
+                Off,
+                PNG,
+                "invalid_request",
+                "HTTP 422: provider rejected the request",
+            ),
+            (
+                422,
+                Full,
+                PNG,
+                "invalid_request",
+                "HTTP 422: provider rejected the request",
+            ),
+            (
+                400,
+                Full,
+                "context_length_exceeded",
+                "context_too_large",
+                "HTTP 400: provider context limit exceeded",
+            ),
+            (
+                200,
+                Diagnostic,
+                "insufficient_quota",
+                "quota_exhausted",
+                "provider quota exhausted",
+            ),
+            (200, Full, PNG, "unknown", "unknown provider error"),
         ] {
             let server = MockServer::start_async().await;
             let work = tempfile::tempdir().unwrap();
             let data = tempfile::tempdir().unwrap();
-            let error = json!({"type":"error", "error": {
-                "type":"invalid_request_error", "message":format!("{DETAIL}: {PNG}"),
-            }});
+            let detail = json!({"code":code, "param":PNG, "message":format!("{DETAIL}: {PNG}")});
+            let (event, error) = if format == ProviderFormat::OpenAiResponses && status == 200 {
+                (
+                    "response.failed",
+                    json!({"type":"response.failed", "response":{"error":detail}}),
+                )
+            } else {
+                ("error", json!({"type":"error", "error":detail}))
+            };
             let rejected = server
                 .mock_async(|when, then| {
                     when.method(POST)
                         .path(path)
                         .body_contains(TEXT)
                         .body_contains(PNG);
-                    if stream {
+                    if status == 200 {
                         then.status(200)
                             .header("content-type", "text/event-stream")
-                            .body(format!("event: error\ndata: {error}\n\n"));
+                            .body(format!("event: {event}\ndata: {error}\n\n"));
                     } else {
-                        then.status(400)
+                        then.status(status)
                             .header("content-type", "application/json")
                             .header("x-request-id", "media-rejected")
                             .body(error.to_string());
@@ -782,7 +816,11 @@ async fn image_request_error_details_stay_in_full_trace_and_out_of_the_journal()
                     then.status(400).body(TEXT_DETAIL);
                 })
                 .await;
-            let mut config = chat_fixture(&server);
+            let mut config = if format == ProviderFormat::OpenAiResponses {
+                media_config(&server, "/workspace-media")
+            } else {
+                chat_fixture(&server)
+            };
             let provider = config.providers.get_mut("openai").unwrap();
             provider.format = format;
             provider.options.endpoint_url = Some(server.url(path));
@@ -805,20 +843,22 @@ async fn image_request_error_details_stay_in_full_trace_and_out_of_the_journal()
             session.send(input).unwrap();
             let state = session.wait_for_agent("main").await.unwrap();
             let message = state.last_error.unwrap();
-            assert!(
-                message.contains("provider error details omitted for a request containing images"),
+            assert!(message.contains(expected_error), "{format:?}: {message}");
+            assert_eq!(
+                message.contains("Provider Trace"),
+                mode == Full,
                 "{message}"
             );
-            assert_eq!(message.contains("HTTP 400"), !stream);
-            assert!(session.events(0, 100).unwrap().iter().any(|event| {
-                matches!(&event.payload, EventPayload::ModelError { kind, message, .. }
-                    if kind == "invalid_request" && message.contains("provider error details omitted") && !message.contains(DETAIL))
-            }));
+            let events = session.events(0, 100).unwrap();
             assert!(
-                !std::fs::read_to_string(session.events_path())
-                    .unwrap()
-                    .contains(PNG)
+                events.iter().any(|event| {
+                    matches!(&event.payload, EventPayload::ModelError { kind: actual, message, .. }
+                    if actual == kind && message.contains(expected_error))
+                }),
+                "{format:?}: {events:?}"
             );
+            let journal = std::fs::read_to_string(session.events_path()).unwrap();
+            assert!(!journal.contains(PNG) && !journal.contains(DETAIL));
 
             session
                 .send(Input::new("text-error", "plain", "Show a text diagnostic"))
@@ -827,9 +867,11 @@ async fn image_request_error_details_stay_in_full_trace_and_out_of_the_journal()
             assert!(state.last_error.unwrap().contains(TEXT_DETAIL));
             session.close().await.unwrap();
 
-            if mode == kuku::ProviderTraceMode::Full {
-                let trace = data.path().join("logs/provider-trace");
-                let trace = std::fs::read_dir(trace)
+            let trace_dir = data.path().join("logs/provider-trace");
+            if mode == Off {
+                assert!(!trace_dir.exists());
+            } else {
+                let trace = std::fs::read_dir(trace_dir)
                     .unwrap()
                     .filter_map(|entry| {
                         let path = entry.unwrap().path();
@@ -837,15 +879,75 @@ async fn image_request_error_details_stay_in_full_trace_and_out_of_the_journal()
                             .then(|| std::fs::read_to_string(path).unwrap())
                     })
                     .collect::<String>();
-                assert!(trace.contains("\"headers\"") && trace.contains("\"content-type\""));
-                assert!(trace.contains("\"body\"") && trace.contains(TEXT));
-                assert!(trace.contains(PNG) && trace.contains(DETAIL));
-                assert!(trace.contains(TEXT_DETAIL));
+                if mode == Full {
+                    assert!(trace.contains("\"headers\"") && trace.contains("\"content-type\""));
+                    assert!(trace.contains("\"body\"") && trace.contains(TEXT));
+                    assert!(trace.contains(PNG) && trace.contains(DETAIL));
+                    assert!(trace.contains(TEXT_DETAIL));
+                } else {
+                    assert!(trace.contains("\"direction\":\"event\""));
+                    assert!(!trace.contains(PNG) && !trace.contains(DETAIL));
+                }
             }
             rejected.assert_hits_async(1).await;
             text_only.assert_hits_async(1).await;
         }
     }
+}
+
+#[tokio::test]
+async fn image_error_after_stream_end_does_not_override_terminal_validation() {
+    const TEXT: &str = "Inspect attachment with a malformed stream";
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let error = json!({"error":{"code":"invalid_request_error","message":PNG}});
+    let rejected = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path(CHAT_ENDPOINT)
+                .body_contains(TEXT)
+                .body_contains(PNG);
+            let response = format!("{}data: {error}\n\n", chat_done());
+            then.status(200)
+                .header("content-type", "text/event-stream")
+                .body(response);
+        })
+        .await;
+    let mut options = SessionOptions::new(work.path(), data.path(), chat_fixture(&server));
+    options.provider_trace = kuku::ProviderTraceMode::Off;
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", tool_free_agent())
+        .unwrap();
+    let mut input = Input::new("image-error", "main", TEXT);
+    input.images.push(
+        session
+            .save_input_image("main", &STANDARD.decode(PNG).unwrap())
+            .await
+            .unwrap(),
+    );
+    session.send(input).unwrap();
+    let state = session.wait_for_agent("main").await.unwrap();
+    assert!(state.last_error.is_some(), "{state:?}");
+    assert!(
+        session.events(0, 100).unwrap().iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ModelResponse {
+                stop_reason: Some(kuku::event::ModelStopReason::InvalidResponse),
+                ..
+            }
+        )),
+        "late error bypassed terminal validation: {:?}",
+        state.last_error
+    );
+    assert!(
+        !std::fs::read_to_string(session.events_path())
+            .unwrap()
+            .contains(PNG)
+    );
+    session.close().await.unwrap();
+    rejected.assert_hits_async(1).await;
 }
 
 #[tokio::test]

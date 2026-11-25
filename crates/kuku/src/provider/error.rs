@@ -62,17 +62,24 @@ pub(crate) fn classify_http_error(status: u16, body_snippet: &str) -> ProviderFa
     }
 }
 
-/// Error bodies may quote inline image data in any format. Classify first,
-/// then keep only local text rather than publishing any free-form excerpt.
-pub(super) fn omit_image_request_error_details(failure: &mut ProviderFailure) {
-    failure.message = match failure.status {
-        Some(status) => format!("HTTP {status}: {IMAGE_REQUEST_ERROR_DETAILS_OMITTED}"),
-        None => IMAGE_REQUEST_ERROR_DETAILS_OMITTED.into(),
+/// Error bodies may echo image data, even in structured fields. Use only local
+/// text and direct the reader to the separate trace if it captures the response.
+pub(super) fn image_error_summary(
+    kind: ProviderFailureKind,
+    status: Option<u16>,
+    full_trace: bool,
+) -> String {
+    let reason = kind.safe_retry_message();
+    let hint = if full_trace {
+        "see Provider Trace (logs/provider-trace/) for details"
+    } else {
+        "response details hidden for image requests"
     };
+    match status {
+        Some(status) => format!("HTTP {status}: {reason}; {hint}"),
+        None => format!("{reason}; {hint}"),
+    }
 }
-
-pub(super) const IMAGE_REQUEST_ERROR_DETAILS_OMITTED: &str =
-    "provider error details omitted for a request containing images";
 
 fn retryable_http_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 429 | 500..=599)
@@ -110,8 +117,12 @@ pub(crate) fn select_provider_error_code<'a>(
     code.or(error_type)
 }
 
+pub(super) fn stream_error_kind(code: &str) -> ProviderFailureKind {
+    provider_error_code_kind(code).unwrap_or(ProviderFailureKind::Unknown)
+}
+
 pub(crate) fn classify_stream_error(code: &str, message: &str) -> ProviderFailure {
-    let kind = provider_error_code_kind(code).unwrap_or(ProviderFailureKind::Unknown);
+    let kind = stream_error_kind(code);
     ProviderFailure {
         kind,
         message: if code == CHATGPT_QUOTA_CODE {
