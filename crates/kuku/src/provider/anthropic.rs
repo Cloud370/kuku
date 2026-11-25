@@ -5,8 +5,10 @@ use std::sync::{Arc, Mutex};
 use crate::config::{ProviderFormat, ProviderProfile};
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::event::ModelStopReason;
+use crate::execution::ModelImage;
 
 use super::chunk::ProviderChunk;
+use super::media::{ImageTargets, ToolImageTarget};
 use super::replay::{MAX_REPLAY_ITEMS, ReplayBudget, native_replay, validate_replay_size};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
@@ -19,26 +21,42 @@ const TRUNCATED_STREAM_MESSAGE: &str = "provider stream ended before message_sto
 #[path = "anthropic_thinking_tests.rs"]
 mod thinking_tests;
 
+#[cfg(test)]
 pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result<Value> {
-    let mut messages = request
-        .assembly
-        .prelude_messages
-        .iter()
-        .map(convert_canonical_message)
-        .collect::<Vec<_>>();
+    render_body_with_images(request, None)
+}
+
+pub(super) fn render_body_with_images(
+    request: &ProviderRequest<'_>,
+    mut images: Option<&mut ImageTargets>,
+) -> crate::error::Result<Value> {
+    let mut messages = Vec::new();
+    for message in &request.assembly.prelude_messages {
+        messages.push(convert_canonical_message(
+            message,
+            messages.len(),
+            images.as_deref_mut(),
+        ));
+    }
     if let Some(content) = request.render_handoff()? {
         messages.push(json!({
             "role": "user",
             "content": content,
         }));
     }
-    messages.extend(
-        request
-            .assembly
-            .history
-            .iter()
-            .map(convert_canonical_message),
-    );
+    for (index, message) in request.assembly.history.iter().enumerate() {
+        let offset = messages.len();
+        if let Some(images) = images.as_deref_mut()
+            && images.current_user_index == Some(index)
+        {
+            images.current_input_offset = Some(offset);
+        }
+        messages.push(convert_canonical_message(
+            message,
+            offset,
+            images.as_deref_mut(),
+        ));
+    }
 
     let mut body = json!({
         "model": request.model,
@@ -88,7 +106,11 @@ pub(crate) fn render_body(request: &ProviderRequest<'_>) -> crate::error::Result
     Ok(body)
 }
 
-fn convert_canonical_message(message: &CanonicalMessage) -> Value {
+fn convert_canonical_message(
+    message: &CanonicalMessage,
+    index: usize,
+    mut images: Option<&mut ImageTargets>,
+) -> Value {
     if message.role == Role::Assistant {
         if let Some(native) = native_replay(message, ProviderFormat::Anthropic) {
             if native.get("role").and_then(Value::as_str) == Some("assistant")
@@ -100,23 +122,42 @@ fn convert_canonical_message(message: &CanonicalMessage) -> Value {
     }
     match message.role {
         Role::User => {
-            let content = message
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    MessageBlock::Text(text) => Some(json!({"type": "text", "text": text})),
-                    MessageBlock::ToolResult(result) => Some(json!({
-                        "type": "tool_result",
-                        "tool_use_id": result.tool_call_id,
-                        "content": result.model_content,
-                        "is_error": result.status != "ok",
-                    })),
+            let mut content = Vec::new();
+            for block in &message.blocks {
+                match block {
+                    MessageBlock::Text(text) => content.push(json!({"type": "text", "text": text})),
+                    MessageBlock::ToolResult(result) => {
+                        if let Some(images) = images.as_deref_mut()
+                            && let Some(image) = result
+                                .structured
+                                .as_ref()
+                                .and_then(ModelImage::from_tool_result)
+                        {
+                            images.tools.push((
+                                ToolImageTarget::MessageBlock {
+                                    message: index,
+                                    block: content.len(),
+                                },
+                                image,
+                            ));
+                        }
+                        content.push(json!({
+                            "type": "tool_result",
+                            "tool_use_id": result.tool_call_id,
+                            "content": result.model_content,
+                            "is_error": result.status != "ok",
+                        }));
+                    }
+                    MessageBlock::InputImage(image) => {
+                        if let Some(images) = images.as_deref_mut() {
+                            images.user.push((index, image.clone()));
+                        }
+                    }
                     MessageBlock::ToolUse(_)
                     | MessageBlock::Thinking(_)
-                    | MessageBlock::InputImage(_)
-                    | MessageBlock::ProviderReplay { .. } => None,
-                })
-                .collect::<Vec<_>>();
+                    | MessageBlock::ProviderReplay { .. } => {}
+                }
+            }
 
             json!({"role": "user", "content": content})
         }

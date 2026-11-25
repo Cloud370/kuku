@@ -103,11 +103,12 @@ fn prepare(
         current_user_index: media.as_ref().map(|media| media.current_user_index),
         ..Default::default()
     };
-    let media = media
-        .filter(|_| config.capabilities.media_adapter != MediaAdapterSupport::TextOnly)
-        .zip(ImageWire::for_kind(config.kind));
+    let media =
+        media.filter(|_| config.capabilities.media_adapter != MediaAdapterSupport::TextOnly);
     let mut body = match config.kind {
-        ProviderKind::Anthropic => super::anthropic::render_body(request),
+        ProviderKind::Anthropic => {
+            super::anthropic::render_body_with_images(request, media.as_ref().map(|_| &mut images))
+        }
         ProviderKind::OpenAiCompatible => super::openai_compat::render_body_with_images(
             request,
             media.as_ref().map(|_| &mut images),
@@ -131,7 +132,8 @@ fn prepare(
     if let Some(account) = &config.options.subscription {
         super::subscription::apply_request_shape(account.channel(), &mut body);
     }
-    if let Some((media, wire)) = media {
+    if let Some(media) = media {
+        let wire = ImageWire::for_kind(config.kind);
         media::attach_user_images(
             wire,
             &mut body,
@@ -141,6 +143,18 @@ fn prepare(
             media.load_user,
         )?;
         media::attach_tool_images(wire, &mut body, images.tools, media.limit, media.load);
+    }
+    if config.kind == ProviderKind::Anthropic
+        && let Some(messages) = body["messages"].as_array_mut()
+    {
+        // A prior image-only input can lose its image to retention or the
+        // request budget. Do not send an empty Messages content array.
+        messages.retain(|message| {
+            message["role"] != "user"
+                || message["content"]
+                    .as_array()
+                    .is_none_or(|parts| !parts.is_empty())
+        });
     }
     Ok(PreparedProviderRequest {
         kind: config.kind,

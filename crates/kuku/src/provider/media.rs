@@ -12,56 +12,83 @@ const MAX_IMAGES_PER_REQUEST: usize = 4;
 
 #[derive(Default)]
 pub(crate) struct ImageTargets {
-    pub(crate) tools: Vec<(usize, ModelImage)>,
+    pub(crate) tools: Vec<(ToolImageTarget, ModelImage)>,
     pub(crate) user: Vec<(usize, InputImage)>,
     pub(crate) current_user_index: Option<usize>,
     pub(crate) current_input_offset: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum ToolImageTarget {
+    Item(usize),
+    MessageBlock { message: usize, block: usize },
+}
+
+#[derive(Clone, Copy)]
 pub(super) enum ImageWire {
     ChatCompletions,
     Responses,
+    Messages,
 }
 
 impl ImageWire {
-    pub(super) fn for_kind(kind: ProviderKind) -> Option<Self> {
+    pub(super) fn for_kind(kind: ProviderKind) -> Self {
         match kind {
-            ProviderKind::OpenAiCompatible => Some(Self::ChatCompletions),
-            ProviderKind::OpenAiResponses => Some(Self::Responses),
-            ProviderKind::Anthropic => None,
+            ProviderKind::OpenAiCompatible => Self::ChatCompletions,
+            ProviderKind::OpenAiResponses => Self::Responses,
+            ProviderKind::Anthropic => Self::Messages,
         }
     }
 
     fn items(self) -> &'static str {
         match self {
-            Self::ChatCompletions => "messages",
+            Self::ChatCompletions | Self::Messages => "messages",
             Self::Responses => "input",
         }
     }
 
-    fn image_part(self, url: &str) -> Value {
+    fn image_part(self, mime: &str) -> Value {
         match self {
-            Self::ChatCompletions => json!({"type": "image_url", "image_url": {"url": url}}),
-            Self::Responses => json!({"type": "input_image", "image_url": url}),
+            Self::ChatCompletions => json!({
+                "type": "image_url", "image_url": {"url": format!("data:{mime};base64,")}
+            }),
+            Self::Responses => json!({
+                "type": "input_image", "image_url": format!("data:{mime};base64,")
+            }),
+            Self::Messages => json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": ""}
+            }),
         }
     }
 
-    fn image_url(self, part: &mut Value) -> Option<&mut Value> {
+    fn image_data(self, part: &mut Value) -> Option<&mut Value> {
         match part["type"].as_str() {
             Some("image_url") if matches!(self, Self::ChatCompletions) => {
                 part.get_mut("image_url")?.get_mut("url")
             }
             Some("input_image") if matches!(self, Self::Responses) => part.get_mut("image_url"),
+            Some("image")
+                if matches!(self, Self::Messages) && part["source"]["type"] == "base64" =>
+            {
+                part.get_mut("source")?.get_mut("data")
+            }
             _ => None,
         }
+    }
+
+    fn encode(self, part: &mut Value, bytes: &[u8]) {
+        let data = self.image_data(part).expect("native inline image part");
+        let mut encoded = data.as_str().expect("base64 data string").to_owned();
+        STANDARD.encode_string(bytes, &mut encoded);
+        *data = Value::String(encoded);
     }
 }
 
 pub(super) fn attach_tool_images(
     wire: ImageWire,
     body: &mut Value,
-    images: Vec<(usize, ModelImage)>,
+    images: Vec<(ToolImageTarget, ModelImage)>,
     limit: usize,
     load: &mut dyn FnMut(&ModelImage) -> crate::Result<Vec<u8>>,
 ) {
@@ -71,7 +98,7 @@ pub(super) fn attach_tool_images(
     let mut available = limit.saturating_sub(json_bytes(body));
     let mut attached = HashSet::new();
     let mut chat_insertions = Vec::new();
-    for (index, image) in images.into_iter().rev() {
+    for (target, image) in images.into_iter().rev() {
         if attached.len() == MAX_IMAGES_PER_REQUEST {
             break;
         }
@@ -79,13 +106,22 @@ pub(super) fn attach_tool_images(
         {
             continue;
         }
-        let mut url = format!("data:{};base64,", image.mime.as_str());
-        let item = &mut body[wire.items()][index];
-        let part = wire.image_part(&url);
+        let (index, item) = match target {
+            ToolImageTarget::Item(i) => (i, &mut body[wire.items()][i]),
+            ToolImageTarget::MessageBlock { message, block } => {
+                (message, &mut body["messages"][message]["content"][block])
+            }
+        };
+        let part = wire.image_part(image.mime.as_str());
         let (mut value, additional) = match wire {
             ImageWire::Responses => {
                 let parts = json!([{"type": "input_text", "text": item["output"]}, part]);
                 let delta = json_bytes(&parts) - json_bytes(&item["output"]);
+                (parts, delta)
+            }
+            ImageWire::Messages => {
+                let parts = json!([{"type": "text", "text": item["content"]}, part]);
+                let delta = json_bytes(&parts) - json_bytes(&item["content"]);
                 (parts, delta)
             }
             ImageWire::ChatCompletions => {
@@ -111,16 +147,17 @@ pub(super) fn attach_tool_images(
         if bytes.len() as u64 != image.output.bytes {
             continue;
         }
-        STANDARD.encode_string(bytes, &mut url);
         match wire {
             ImageWire::Responses => {
-                *wire.image_url(&mut value[1]).expect("Responses image part") = Value::String(url);
+                wire.encode(&mut value[1], &bytes);
                 item["output"] = value;
             }
+            ImageWire::Messages => {
+                wire.encode(&mut value[1], &bytes);
+                item["content"] = value;
+            }
             ImageWire::ChatCompletions => {
-                *wire
-                    .image_url(&mut value["content"][1])
-                    .expect("Chat image part") = Value::String(url);
+                wire.encode(&mut value["content"][1], &bytes);
                 // Chat requires every tool result to follow its assistant call. Its
                 // tool role accepts text only, so put images after the whole batch.
                 let items = body["messages"].as_array().expect("Chat messages array");
@@ -162,7 +199,9 @@ pub(super) fn attach_user_images(
         let required = current_offset.is_some_and(|offset| index >= offset);
         let content = &mut body[wire.items()][index]["content"];
         let mut parts = match wire {
-            ImageWire::Responses => content.as_array().expect("Responses content array").clone(),
+            ImageWire::Responses | ImageWire::Messages => {
+                content.as_array().expect("native content array").clone()
+            }
             ImageWire::ChatCompletions => {
                 let text = content.as_str().expect("Chat user content string");
                 if text.is_empty() {
@@ -174,8 +213,7 @@ pub(super) fn attach_user_images(
         };
         let first_image = parts.len();
         for (_, image) in batch {
-            let url = format!("data:{};base64,", image.media_type());
-            parts.push(wire.image_part(&url));
+            parts.push(wire.image_part(image.media_type()));
         }
         let mut new_content = Value::Array(parts);
         let encoded: usize = batch
@@ -197,12 +235,7 @@ pub(super) fn attach_user_images(
             .enumerate()
             .try_for_each(|(index, (_, image))| {
                 let bytes = load(image)?;
-                let part = wire
-                    .image_url(&mut new_content[first_image + index])
-                    .expect("user image part");
-                let mut url = part.as_str().expect("image URL string").to_owned();
-                STANDARD.encode_string(bytes, &mut url);
-                *part = Value::String(url);
+                wire.encode(&mut new_content[first_image + index], &bytes);
                 Ok::<_, crate::Error>(())
             });
         match loaded {
@@ -225,20 +258,29 @@ pub(super) fn redact_images(wire: ImageWire, body: &mut Value) {
     for item in input {
         let field = match (wire, item["type"].as_str()) {
             (ImageWire::Responses, Some("function_call_output")) => "output",
-            (ImageWire::Responses, Some("message")) | (ImageWire::ChatCompletions, _) => "content",
+            (ImageWire::Responses, Some("message"))
+            | (ImageWire::ChatCompletions | ImageWire::Messages, _) => "content",
             _ => continue,
         };
         if let Some(parts) = item[field].as_array_mut() {
-            for part in parts {
-                if let Some(url) = wire.image_url(part)
-                    && let Some(size) = url
-                        .as_str()
-                        .filter(|url| url.starts_with("data:"))
-                        .map(str::len)
-                {
-                    *url = json!(format!("<omitted image data, {size} bytes>"));
-                }
-            }
+            redact_parts(wire, parts);
+        }
+    }
+}
+
+fn redact_parts(wire: ImageWire, parts: &mut [Value]) {
+    for part in parts {
+        if matches!(wire, ImageWire::Messages)
+            && part["type"] == "tool_result"
+            && let Some(content) = part["content"].as_array_mut()
+        {
+            redact_parts(wire, content);
+        }
+        if let Some(data) = wire.image_data(part)
+            && let Some(encoded) = data.as_str()
+            && (matches!(wire, ImageWire::Messages) || encoded.starts_with("data:"))
+        {
+            *data = json!(format!("<omitted image data, {} bytes>", encoded.len()));
         }
     }
 }
@@ -253,7 +295,10 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use serde_json::json;
 
-    use super::{ImageWire, attach_tool_images, attach_user_images, json_bytes, redact_images};
+    use super::{
+        ImageWire, ToolImageTarget, attach_tool_images, attach_user_images, json_bytes,
+        redact_images,
+    };
     use crate::execution::{ImageMime, InputImage, ModelImage, OutputReference};
 
     #[test]
@@ -270,7 +315,10 @@ mod tests {
             {"type":"function_call_output", "call_id":"older", "output":"first"},
             {"type":"function_call_output", "call_id":"newer", "output":"newer \"quoted\""},
         ]});
-        let candidates = vec![(0, image.clone()), (1, image)];
+        let candidates = vec![
+            (ToolImageTarget::Item(0), image.clone()),
+            (ToolImageTarget::Item(1), image),
+        ];
         let mut preview = body.clone();
         attach_tool_images(
             ImageWire::Responses,
@@ -353,6 +401,60 @@ mod tests {
         assert_eq!(
             fail.kind,
             crate::provider::types::ProviderFailureKind::ContextTooLarge
+        );
+        assert_eq!(unfitted, body);
+    }
+
+    #[test]
+    fn messages_tool_image_uses_nested_budget_and_redacts_base64() {
+        let wire = ImageWire::Messages;
+        let body = json!({"messages": [{
+            "role": "user",
+            "content": [
+                {"type":"tool_result","tool_use_id":"unrelated","content":"plain","is_error":false},
+                {"type":"tool_result","tool_use_id":"image-tool","content":"image metadata","is_error":false},
+            ],
+        }]});
+        let image = ModelImage {
+            mime: ImageMime::Jpeg,
+            output: OutputReference {
+                id: "fixture".into(),
+                offset: 0,
+                bytes: 4,
+            },
+        };
+        let target = ToolImageTarget::MessageBlock {
+            message: 0,
+            block: 1,
+        };
+        let mut expected = body.clone();
+        expected["messages"][0]["content"][1]["content"] = json!([
+            {"type":"text","text":"image metadata"},
+            {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"AAAAAA=="}},
+        ]);
+        let exact = json_bytes(&expected);
+        let mut fitted = body.clone();
+        attach_tool_images(
+            wire,
+            &mut fitted,
+            vec![(target, image.clone())],
+            exact,
+            &mut |_| Ok(vec![0; 4]),
+        );
+        assert_eq!(fitted, expected);
+        redact_images(wire, &mut fitted);
+        assert!(!fitted.to_string().contains("AAAAAA=="));
+        assert_eq!(
+            fitted["messages"][0]["content"][1]["tool_use_id"],
+            "image-tool"
+        );
+        let mut unfitted = body.clone();
+        attach_tool_images(
+            wire,
+            &mut unfitted,
+            vec![(target, image)],
+            exact - 1,
+            &mut |_| panic!("over-budget tool image must not load"),
         );
         assert_eq!(unfitted, body);
     }

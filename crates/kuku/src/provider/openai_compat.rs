@@ -9,7 +9,7 @@ use crate::event::ModelStopReason;
 use crate::execution::ModelImage;
 
 use super::chunk::ProviderChunk;
-use super::media::ImageTargets;
+use super::media::{ImageTargets, ToolImageTarget};
 use super::replay::{MAX_REPLAY_ITEMS, ReplayBudget, native_replay, validate_replay_size};
 use super::report::ReportAccumulator;
 use super::sse::{parse_sse_frame, stream_sse_events};
@@ -146,7 +146,9 @@ fn convert_user_message(
                         .as_ref()
                         .and_then(ModelImage::from_tool_result)
                 {
-                    images.tools.push((offset + messages.len(), image));
+                    images
+                        .tools
+                        .push((ToolImageTarget::Item(offset + messages.len()), image));
                 }
                 messages.push(json!({
                     "role": "tool",

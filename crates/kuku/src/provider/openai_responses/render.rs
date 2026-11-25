@@ -4,7 +4,7 @@ use crate::config::ProviderFormat;
 use crate::context::{CanonicalMessage, MessageBlock, Role};
 use crate::execution::ModelImage;
 
-use super::super::media::ImageTargets;
+use super::super::media::{ImageTargets, ToolImageTarget};
 use super::super::replay::native_replay;
 use super::super::types::ProviderRequest;
 
@@ -54,7 +54,10 @@ fn convert_to_input_items(
                                 .as_ref()
                                 .and_then(ModelImage::from_tool_result)
                             {
-                                images.tools.push((input_offset + items.len(), image));
+                                images.tools.push((
+                                    ToolImageTarget::Item(input_offset + items.len()),
+                                    image,
+                                ));
                             }
                         }
                         items.push(json!({

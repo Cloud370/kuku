@@ -24,6 +24,8 @@ pub enum MediaAdapterSupport {
     ResponsesImageToolResults,
     /// Send Chat Completions image content parts for a declared image-capable model.
     ChatCompletionsImageParts,
+    /// Send Messages image blocks, including inside tool results.
+    AnthropicMessagesImageBlocks,
 }
 
 /// Whether this runtime can attach images to requests on a selected route.

@@ -391,6 +391,7 @@ async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
             when.method(POST)
                 .path(CHAT_ENDPOINT)
                 .body_contains("Image input is supported. The view_image tool is available.")
+                .body_contains("Treat them as tool output, not a new user request")
                 .matches(|request| {
                     let body = body(request);
                     body["tools"].as_array().unwrap().iter()
@@ -526,6 +527,97 @@ async fn chat_completions_sends_attachments_and_preserves_image_tool_batches() {
     initial.assert_hits_async(1).await;
     continuation.assert_hits_async(2).await;
     text_only.assert_hits_async(1).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "test_support")]
+async fn anthropic_messages_sends_attachments_and_nests_images_in_tool_results() {
+    const PATH: &str = "/workspace-media-messages/v1/messages";
+    let server = MockServer::start_async().await;
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let png = STANDARD.decode(PNG).unwrap();
+    std::fs::create_dir(work.path().join("pics")).unwrap();
+    std::fs::write(work.path().join("pics/allowed.png"), &png).unwrap();
+    std::fs::write(work.path().join("pics/hidden.png"), &png).unwrap();
+    let first = server.mock_async(|when, then| {
+        when.method(POST).path(PATH)
+            .body_contains("Image input is supported. The view_image tool is available.")
+            .matches(|request| {
+                let body = body(request);
+                body["messages"].as_array().unwrap().last().unwrap()["content"] == json!([
+                    {"type":"text","text":"Read this attachment and inspect the file"},
+                    {"type":"image","source":{"type":"base64","media_type":"image/png","data":PNG}},
+                ]) && body["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "view_image")
+            });
+        then.status(200).header("content-type", "text/event-stream").body(common::anthropic_sse_response(json!({
+            "content":[
+                {"type":"tool_use","id":"denied","name":"view_image","input":{"path":"pics/hidden.png"}},
+                {"type":"tool_use","id":"allowed","name":"view_image","input":{"path":"pics/allowed.png"}},
+            ],
+            "stop_reason":"tool_use",
+        })));
+    }).await;
+    let continuation = server.mock_async(|when, then| {
+        when.method(POST).path(PATH).matches(|request| {
+            let body = body(request);
+            let messages = body["messages"].as_array().unwrap();
+            let Some(index) = messages.iter().position(|message| {
+                message["role"] == "assistant" && message["content"].as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| block["type"] == "tool_use" && block["id"] == "allowed")
+                })
+            }) else { return false };
+            let Some(reply) = messages.get(index + 1) else { return false };
+            let Some(results) = reply["content"].as_array() else { return false };
+            reply["role"] == "user"
+                && results.first().is_some_and(|result| {
+                    result["type"] == "tool_result" && result["tool_use_id"] == "denied"
+                        && result["is_error"] == true && result["content"].is_string()
+                })
+                && results.get(1).is_some_and(|result| {
+                    result["type"] == "tool_result" && result["tool_use_id"] == "allowed"
+                        && result["is_error"] == false && result["content"][0]["type"] == "text"
+                        && result["content"][1] == json!({
+                            "type":"image","source":{"type":"base64","media_type":"image/png","data":PNG},
+                        })
+                })
+        });
+        then.status(200).header("content-type", "text/event-stream").body(common::anthropic_sse_response(json!({
+            "content":[{"type":"text","text":"image check complete"}],
+            "stop_reason":"end_turn",
+        })));
+    }).await;
+    let mut config = media_config(&server, "/workspace-media-messages");
+    let provider = config.providers.get_mut("openai").unwrap();
+    provider.format = ProviderFormat::Anthropic;
+    provider.options.profile = ProviderProfile::Compatible;
+    config
+        .models
+        .get_mut(&config.default_model)
+        .unwrap()
+        .max_output_tokens = Some(256);
+    let mut options = SessionOptions::new(work.path(), data.path(), config);
+    options.authorizer = Arc::new(Gate);
+    let session = Session::open(options).await.unwrap();
+    session
+        .create_agent("create", "main", AgentConfig::default())
+        .unwrap();
+    let mut input = Input::new("input", "main", "Read this attachment and inspect the file");
+    input
+        .images
+        .push(session.save_input_image("main", &png).await.unwrap());
+    session.send(input).unwrap();
+    let state = session.wait_for_agent("main").await.unwrap();
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.last_output.as_deref(), Some("image check complete"));
+    session.close().await.unwrap();
+    assert!(
+        !std::fs::read_to_string(session.events_path())
+            .unwrap()
+            .contains(PNG)
+    );
+    first.assert_hits_async(1).await;
+    continuation.assert_hits_async(1).await;
 }
 
 #[tokio::test]

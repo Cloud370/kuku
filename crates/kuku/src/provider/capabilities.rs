@@ -173,6 +173,7 @@ pub(crate) fn resolve_capabilities(
         .is_some_and(|input| input.value.iter().any(|modality| modality == "image"))
     {
         match kind {
+            ProviderKind::Anthropic => MediaAdapterSupport::AnthropicMessagesImageBlocks,
             ProviderKind::OpenAiCompatible => MediaAdapterSupport::ChatCompletionsImageParts,
             ProviderKind::OpenAiResponses if profile == ProviderProfile::DeepSeek => {
                 MediaAdapterSupport::ResponsesImageToolResults

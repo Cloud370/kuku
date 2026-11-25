@@ -173,6 +173,8 @@ pub(crate) fn agent_prompt_facts(
         image_input => minijinja::context! {
             supported => image_input == ImageInputSupport::Supported,
             status => minijinja::value::Serde(image_input),
+            tool_images_as_user => image_input == ImageInputSupport::Supported
+                && resolved.is_some_and(|route| route.kind == crate::provider::types::ProviderKind::OpenAiCompatible),
         },
         effective_input_modalities => minijinja::value::Serde(image_input.modalities()),
         output => minijinja::value::Serde(resolved.map(|route| route.output).unwrap_or_default()),
