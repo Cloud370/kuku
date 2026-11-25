@@ -8,7 +8,7 @@ Check the running service's config path with `kuku server status`. To switch a m
 
 ## Interactive setup
 
-Run `kuku` from your project directory to set up your first connection and model. Press `F1` during setup to open the configuration guide for your build. If kuku reports a malformed config, correct the indicated file or use another file with `--config PATH`.
+Run `kuku` from your project directory. When model setup is required on startup, kuku opens the setup page automatically. If you exit setup, press `Ctrl+L` or use `/model` to reopen it. Press `F1` during setup to open the configuration guide for your build. If kuku reports a malformed config, correct the indicated file or use another file with `--config PATH`.
 
 From setup, choose either:
 

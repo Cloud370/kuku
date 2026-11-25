@@ -182,6 +182,12 @@ fn short_status_line_fits_complete_graphemes_and_keeps_urgent_segments() {
 fn first_run_prompts_for_model_setup_instead_of_service_recovery() {
     let mut app = App::new(PathBuf::from("/workspace"), None);
     app.update(Update::SetupRequired);
+    assert!(app.effects.iter().any(|job| matches!(
+        job,
+        Job::OpenModelEditor(_, crate::setup::SetupIntent::Default)
+    )));
+    // The welcome screen is shown again after leaving model setup.
+    app.modal = None;
     for (width, height) in [(140, 32), (60, 20), (29, 10)] {
         let rows = screen(&mut app, &StatusLine::default(), width, height);
         let rendered = rows.join("\n");
