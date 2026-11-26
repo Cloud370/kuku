@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 use kuku::event::{EventPayload, ModelStopReason};
 use kuku::execution::{WorkspaceActionReceipt, WorkspaceActionState};
@@ -683,13 +684,28 @@ async fn reusing_a_tool_call_id_in_the_next_model_step_cannot_redispatch_the_old
 type FileCall = (&'static str, &'static str, Value);
 
 #[derive(Debug)]
-struct FileToolModel(Mutex<VecDeque<Vec<FileCall>>>);
+struct FileToolModel {
+    steps: Mutex<VecDeque<Vec<FileCall>>>,
+    requests: Option<mpsc::UnboundedSender<ModelRequest>>,
+}
+
+impl FileToolModel {
+    fn new(steps: impl Into<VecDeque<Vec<FileCall>>>) -> Self {
+        Self {
+            steps: Mutex::new(steps.into()),
+            requests: None,
+        }
+    }
+}
 
 impl ModelAdapter for FileToolModel {
-    fn stream(&self, _request: ModelRequest) -> AdapterFuture<'_, ModelStream> {
+    fn stream(&self, request: ModelRequest) -> AdapterFuture<'_, ModelStream> {
         Box::pin(async move {
+            if let Some(requests) = &self.requests {
+                requests.send(request).unwrap();
+            }
             let step = self
-                .0
+                .steps
                 .lock()
                 .unwrap()
                 .pop_front()
@@ -738,7 +754,7 @@ fn file_tool_options(
     steps: Vec<Vec<FileCall>>,
 ) -> SessionOptions {
     let mut options = SessionOptions::new(work.path(), data.path(), common::test_config());
-    options.model_adapter = Some(Arc::new(FileToolModel(Mutex::new(steps.into()))));
+    options.model_adapter = Some(Arc::new(FileToolModel::new(steps)));
     options
 }
 
@@ -787,6 +803,68 @@ fn result_for(session: &Session, id: &str) -> (String, Value) {
             _ => None,
         })
         .expect("tool result")
+}
+
+#[tokio::test]
+async fn direct_file_read_uses_a_larger_model_page_without_expanding_search() {
+    let work = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let text = "x".repeat(80);
+    let mut source = String::new();
+    for n in 1..=400 {
+        use std::fmt::Write;
+        writeln!(source, "needle-{n:03}: {text}").unwrap();
+    }
+    std::fs::write(work.path().join("fixture.txt"), source).unwrap();
+
+    let (requests, mut received) = mpsc::unbounded_channel();
+    let mut options = SessionOptions::new(work.path(), data.path(), common::test_config());
+    options.model_adapter = Some(Arc::new(FileToolModel {
+        requests: Some(requests),
+        ..FileToolModel::new([
+            vec![
+                (
+                    "read",
+                    "read_file",
+                    json!({"path":"fixture.txt","limit":300}),
+                ),
+                (
+                    "search",
+                    "search_text",
+                    json!({"path":"fixture.txt","pattern":"needle","limit":400}),
+                ),
+            ],
+            vec![],
+        ])
+    }));
+    let session = start(options).await;
+    completed_turns(&session, 1).await;
+    let _first = received.try_recv().unwrap();
+    let next = received.try_recv().unwrap();
+    let output = |id: &str| {
+        next.body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .find(|block| block["type"] == "tool_result" && block["tool_use_id"] == id)
+            .map(|block| {
+                assert_eq!(false, block["is_error"]);
+                block["content"].as_str().unwrap()
+            })
+            .expect("tool output sent to the model")
+    };
+    let read = output("read");
+    assert!((8 * 1024 + 1..=32 * 1024).contains(&read.len()));
+    assert_eq!(300, read.lines().count());
+    assert!(read.ends_with(&format!("300\tneedle-300: {text}")));
+    assert_eq!(301, result_for(&session, "read").1["next_offset"]);
+
+    let search = output("search");
+    assert!(!search.is_empty() && search.len() <= 8 * 1024);
+    assert!(!search.contains("needle-400"));
+    session.close().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -933,7 +1011,7 @@ async fn native_disjoint_edits_preserve_unrelated_changes_without_rereading() {
     let path = work.path().join("owned.txt");
     std::fs::write(&path, "header\nalpha\nbeta\ngamma\ndelta\n").unwrap();
 
-    let model = Arc::new(FileToolModel(Mutex::new(VecDeque::from([
+    let model = Arc::new(FileToolModel::new([
         vec![
             edit_owned("batch-first", "alpha", "one"),
             edit_owned("batch-second", "beta", "two"),
@@ -941,7 +1019,7 @@ async fn native_disjoint_edits_preserve_unrelated_changes_without_rereading() {
         vec![edit_owned("later-first", "gamma", "three")],
         vec![edit_owned("later-second", "delta", "four")],
         vec![],
-    ]))));
+    ]));
     let mut options = SessionOptions::new(work.path(), data.path(), common::test_config());
     options.model_adapter = Some(model.clone());
     let session = start(options).await;
@@ -959,7 +1037,7 @@ async fn native_disjoint_edits_preserve_unrelated_changes_without_rereading() {
     let mut pinned = edit_owned("pinned", "two", "rejected");
     pinned.2["expected_version"] = result_for(&session, "later-second").1["content_hash"].clone();
     std::fs::write(&path, "updated header\none\ntwo\nthree\nfour\n").unwrap();
-    model.0.lock().unwrap().extend([
+    model.steps.lock().unwrap().extend([
         vec![pinned],
         vec![edit_owned("unpinned", "two", "second")],
         vec![],

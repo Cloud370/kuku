@@ -2,7 +2,8 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use kuku_client::{
-    Acknowledgement, Action, AgentProgress, Error, HistoryPage, Observation, Receipt,
+    Acknowledgement, Action, AgentProgress, Error, HistoryPage, Input, InputSource, Observation,
+    QueuedInput, Receipt,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
@@ -545,12 +546,29 @@ fn stopped_execution_notice_is_rendered_above_the_composer() {
 }
 
 #[test]
-fn stopped_retry_footer_does_not_repeat_transcript_details() {
+fn interrupted_retry_explains_the_pause_and_the_composer_only_queues() {
     let mut app = app();
     app.select(app.active.clone(), true, "Stopped retry".into());
     let selection = app.selection();
     let mut current = snapshot(&app, "interrupted", json!(null), json!(null));
-    current.agent.last_error = Some("Fixture connection closed".into());
+    current.agent.execution_id = None;
+    current.agent.last_error = Some("provider error: SAFETY".into());
+    current.agent.pending_inputs = 1;
+    current.pending.push(QueuedInput {
+        input: Input {
+            source: InputSource::Host("http".into()),
+            ..Input::new(
+                "queued-command",
+                app.active.agent.clone(),
+                "Waiting to send",
+            )
+        },
+        receipt: Receipt {
+            command_id: "queued-command".into(),
+            event_id: 51,
+            agent: app.active.agent.clone(),
+        },
+    });
     current.progress = Some(
         serde_json::from_value(json!({
             "phase":"retrying_model",
@@ -560,11 +578,10 @@ fn stopped_retry_footer_does_not_repeat_transcript_details() {
                 "attempt":2,
                 "max_attempts":3,
                 "request_id":"req_1",
-                "failed_kind":"transport",
-                "status":502,
+                "failed_kind":"provider_unavailable",
                 "will_retry":false,
                 "stop_reason":"stream_started",
-                "message":"Fixture connection closed"
+                "message":"provider unavailable"
             }
         }))
         .unwrap(),
@@ -580,14 +597,25 @@ fn stopped_retry_footer_does_not_repeat_transcript_details() {
     ));
     app.update(Update::WatchConnected(selection));
 
-    let lines = banner(&app, 80, 3);
-    assert_eq!(1, lines.len());
-    let footer = lines[0].to_string();
-    assert_eq!(
-        "Automatic retry stopped; see transcript for details.",
-        footer
-    );
-    assert!(!footer.contains("Fixture connection closed"));
+    let rendered = screen(&mut app, 80, 24);
+    assert!(rendered.contains("Paused · F2 Continue"), "{rendered}");
+    assert!(rendered.contains("provider error: SAFETY"), "{rendered}");
+    assert!(rendered.contains("1 queued"), "{rendered}");
+    assert!(rendered.contains("Waiting to send"), "{rendered}");
+    assert!(rendered.contains("Enter queue only"), "{rendered}");
+    assert!(!rendered.contains("Enter steer"), "{rendered}");
+    let narrow = banner(&app, 28, 3);
+    assert!(narrow[0].to_string().contains("Paused · F2 Continue"));
+
+    let advancing = |app: &App| {
+        app.effects.iter().any(
+            |job| matches!(job, Job::Save(command) if matches!(command.action, Action::Advance)),
+        )
+    };
+    assert!(!advancing(&app));
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(advancing(&app));
 }
 
 #[test]

@@ -100,8 +100,9 @@ def rewind_failed_input(client):
 
             terminal.submit(failed)
             client.provider.next(failed).fail()
-            retry_banner = "Automatic retry stopped; see transcript for details."
-            terminal.expect(retry_banner, state="Model request failed", also=("Reply interrupted", "HTTP 400"))
+            retry_banner = "Paused · F2 Continue"
+            terminal.expect(retry_banner, state="Model request failed",
+                            also=("Reply interrupted", "HTTP 400", "Enter queue only"))
             terminal.press("\x07")
             terminal.expect("Conversation history", also=("Preview  ·  Turn 2", failed))
             terminal.press("\r")

@@ -262,7 +262,10 @@ pub struct RuntimeLimits {
     /// Maximum number of active named bindings across the session's agents.
     #[serde(default = "default_named_values")]
     pub max_named_values: usize,
-    /// Maximum bytes in a direct file read or search page, or first retained-output preview.
+    /// Maximum bytes in a model-facing direct `read_file` page.
+    #[serde(default = "default_read_file_bytes")]
+    pub max_read_file_bytes: usize,
+    /// Maximum bytes in a search page or first retained-output preview.
     pub max_preview_bytes: usize,
     /// Maximum transient observations retained for slow subscribers.
     pub observation_capacity: usize,
@@ -296,6 +299,11 @@ impl RuntimeLimits {
             || self.max_preview_bytes < 1024
         {
             return Err(Error::InvalidArgument("model request byte limit must be 4096..=16777216 and output preview must retain at least 1024 bytes".into()));
+        }
+        if !(1024..=65_536).contains(&self.max_read_file_bytes) {
+            return Err(Error::InvalidArgument(
+                "direct file read byte limit must be 1024..=65536".into(),
+            ));
         }
         if self.max_agents == 0
             || self.max_agents > 4096
@@ -349,10 +357,15 @@ impl Default for RuntimeLimits {
             max_retained_output_bytes: default_retained_output_bytes(),
             output_retention_secs: default_output_retention_secs(),
             max_named_values: default_named_values(),
+            max_read_file_bytes: default_read_file_bytes(),
             max_preview_bytes: 8 * 1024,
             observation_capacity: 128,
         }
     }
+}
+
+fn default_read_file_bytes() -> usize {
+    32 * 1024
 }
 
 fn default_provider_retry() -> bool {
