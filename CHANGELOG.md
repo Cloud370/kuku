@@ -16,6 +16,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Version injection at build time (`kuku --version`)
 - Makefile with build-web, build, build-all targets
 
+## [0.1.0-alpha.8]
+
+这版修复了打断后会话卡住、已排队消息不知道该如何继续的问题，也改善了 OpenRouter 的思考显示和大文件阅读。
+
+### 体验改进
+
+- **待发消息的状态和操作放在一起。** 输入框上方显示保存在后台的消息及处理时机（下一步或下一轮）。暂停且可恢复时直接显示「继续会话／Agent」；工具结果未确认时只提供查看，不误导用户继续。重连或重开终端仍按后台的真实队列显示，不重复发送。
+- **少为文件和工具输出翻页。** 模型直接调用 `read_file` 的默认单页从 8 KiB 提高到 32 KiB，仍按完整行续读。主动读取保留输出时，`read_output` 默认 8 KiB，可显式请求最多 32 KiB 的原始数据；返回 JSON 另有 64 KiB 上限。搜索、命令首屏和脚本内部读取的预算不变。
+
+### Bug 修复
+
+- **打断等待子 Agent 不再卡住主会话。** 取消 `list_agents` 的只读等待时会记录取消结果，不停止子 Agent，也不会重跑旧工具。运行命令、写文件等操作若没有确认结果，仍会阻止正常恢复。服务确认中断之后，即使清理失败，也不会把中断命令显示成回执未确认。
+- **OpenRouter 能显示更多模型提供的可读思考。** Chat Completions 可显示 Gemini 4 Neon 等模型返回的可读思考，避免流式内容重复；Anthropic Messages 会为支持的 Claude 路线请求并显示思考摘要。仅有签名或加密块的内容不显示，也不会回填旧会话。
+
+### 安装与升级
+
+- 安装包提供 Linux x86-64／ARM64、Apple Silicon macOS 和 Windows x86-64 版本。安装后用 `kuku --version` 核对版本；使用独立或远程服务时，建议客户端与服务端同步升级。参阅[升级指南](https://github.com/Cloud370/kuku/blob/v0.1.0-alpha.8/docs/zh/guides/upgrade-kuku.md)。
+
 ## [0.1.0-alpha.7]
 
 这版扩展了普通会话的图片输入，同时改进终端里的打断、消息排队、Agent 切换和工具结果阅读。alpha.6 候选未通过 Windows 完整验收、没有发布；本版接续 alpha.5，并修正完整验收的总时限及失败诊断。
