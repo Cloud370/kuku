@@ -274,7 +274,10 @@ pub(super) fn apply_settings(config: &ResolvedProvider, body: &mut Value, stream
                     json!({"type": "disabled"})
                 } else if config.capabilities.profile == ProviderProfile::DeepSeek {
                     json!({"type": "enabled"})
-                } else if config.capabilities.profile == ProviderProfile::Anthropic {
+                } else if super::anthropic::supports_summarized_thinking(
+                    config.capabilities.profile,
+                    &config.model,
+                ) {
                     json!({"type": "adaptive", "display": "summarized"})
                 } else {
                     json!({"type": "adaptive"})
@@ -506,6 +509,43 @@ mod tests {
             thinking: Default::default(),
         };
         prepare_provider_request(config, &request, correlation).unwrap()
+    }
+
+    #[test]
+    fn routed_claude_messages_request_summarized_thinking_only_when_enabled() {
+        for (profile, model, expected) in [
+            (
+                ProviderProfile::OpenRouter,
+                "anthropic/claude-haiku-5.5",
+                json!({"type":"adaptive","display":"summarized"}),
+            ),
+            (
+                ProviderProfile::OpenRouter,
+                "google/gemini-4-neon",
+                json!({"type":"adaptive"}),
+            ),
+            (
+                ProviderProfile::Compatible,
+                "anthropic/claude-haiku-5.5",
+                json!({"type":"adaptive"}),
+            ),
+            (
+                ProviderProfile::DeepSeek,
+                "deepseek-flash",
+                json!({"type":"enabled"}),
+            ),
+        ] {
+            let mut config = provider_config(ProviderKind::Anthropic, profile, model);
+            config.settings.reasoning_effort = Some("high".into());
+            let body = prepared_request(&config, None).body;
+            assert_eq!(expected, body.as_json()["thinking"]);
+            assert_eq!("high", body.as_json()["output_config"]["effort"]);
+
+            config.settings.reasoning_effort = Some("none".into());
+            let body = prepared_request(&config, None).body;
+            assert_eq!(json!({"type":"disabled"}), body.as_json()["thinking"]);
+            assert!(body.as_json().get("output_config").is_none());
+        }
     }
 
     #[test]
