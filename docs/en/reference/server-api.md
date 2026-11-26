@@ -146,6 +146,8 @@ A settled Turn can have a `turn_summary` entry. When a Turn is explicitly interr
 
 Agent snapshots and summaries can include `admitted_task` and `queued_task`. These nullable strings are bounded excerpts of the latest admitted task input and the latest task input still queued, respectively. Replies to questions are excluded from task excerpts. Use `pending_inputs`, `question` and `permission` for queue and decision state.
 
+A selected Agent with `resume_blocked:true` has an unconfirmed tool result that prevents normal advancement. Inspect `last_error` for the reason. A committed `interrupt` or `cancel` returns its command receipt even if later cleanup fails; the snapshot reports that failure separately.
+
 To answer `ask_user` or a deferred tool authorization, use the request ID from the snapshot. Competing replies are checked against the exact pending request. Reopening a Session preserves pending requests and queued inputs. A dispatch without a confirmed result may have changed files or triggered a side effect. Inspect the workspace before continuing interrupted work. [Sessions](../how-it-works/sessions.md)
 
 ## Raw events and retained tool output

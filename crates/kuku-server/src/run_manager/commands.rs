@@ -51,6 +51,7 @@ impl RunManager {
             let permit = self.acquire_permit()?;
             open.permits.insert(address.to_owned(), permit);
         }
+        let stops_execution = matches!(command, Command::Cancel { .. } | Command::Interrupt { .. });
         let result = match command {
             Command::Send {
                 create,
@@ -144,7 +145,21 @@ impl RunManager {
             }
         };
         open.release_idle_permits();
-        let receipt = result?;
+        let receipt = match result {
+            // The stop command can commit before cleanup fails. Report its
+            // receipt, not an ambiguous submission failure. The agent snapshot
+            // reports cleanup separately. Never use a receipt from a command
+            // that existed before this attempt (e.g. a conflicting replay).
+            Err(kuku::Error::InvalidEventStream(_) | kuku::Error::InterruptedOpenTool(_))
+                if stops_execution && !replayed =>
+            {
+                match open.session.receipt(command_id)? {
+                    Some(receipt) => receipt,
+                    None => result?,
+                }
+            }
+            _ => result?,
+        };
         let status = input_status(&open.session, &receipt);
         Ok(CommandResult::new(receipt, replayed, status))
     }

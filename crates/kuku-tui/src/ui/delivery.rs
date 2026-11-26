@@ -18,7 +18,7 @@ const MAX_MESSAGE_ROWS: usize = 3;
 pub(super) struct DeliveryView {
     pub(super) lines: Vec<Line<'static>>,
     pub(super) hits: Vec<(Range<u16>, String)>,
-    pub(super) recovery_range: Option<Range<u16>>,
+    pub(super) action: Option<(Range<u16>, ContextControl)>,
 }
 
 pub(super) struct RequestView {
@@ -40,31 +40,91 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
         return DeliveryView {
             lines: Vec::new(),
             hits: Vec::new(),
-            recovery_range: None,
+            action: None,
         };
     }
-    let recovery = app
-        .contextual_controls()
-        .into_iter()
-        .find(|control| matches!(control, ContextControl::PendingRecovery { .. }));
-    if rows.is_empty() {
+    let controls = app.contextual_controls();
+    let run = controls.iter().find(|control| {
+        matches!(
+            control,
+            ContextControl::ReviewBlocked { .. } | ContextControl::Continue { .. }
+        )
+    });
+    let target = app.selection().target;
+    let recovery = controls
+        .iter()
+        .find(|control| control.recovers_target(&target));
+    let online = app.service_status() == crate::app::ServiceStatus::Connected;
+    // Review remains locally available. Never offer Advance ahead of an
+    // unresolved receipt, or when the service cannot accept the command.
+    let action_control = run
+        .filter(|control| matches!(control, ContextControl::ReviewBlocked { .. }))
+        .or(recovery.filter(|control| control.is_interrupt_recovery()))
+        .or(run.filter(|_| online && !rows.is_empty()))
+        .or(recovery);
+    if rows.is_empty() && action_control.is_none() {
         let stale = selected_id.is_some_and(|id| !app.queue_input_available(id));
-        let (line, recovery_range) = if let Some(control) = recovery.as_ref() {
-            recovery_title("Unconfirmed send", width, app, control)
-        } else {
-            (
-                Line::styled("Selected input is no longer queued", emphasis(ERROR)),
-                None,
-            )
-        };
         return DeliveryView {
-            lines: if recovery.is_some() || stale {
-                vec![line]
+            lines: if stale {
+                vec![Line::styled(
+                    "Selected input is no longer queued",
+                    emphasis(ERROR),
+                )]
             } else {
-                Vec::new()
+                vec![]
             },
             hits: Vec::new(),
-            recovery_range,
+            action: None,
+        };
+    }
+    if rows.is_empty() {
+        let control = action_control.expect("an empty delivery view needs a recovery action");
+        let (line, action) = action_title("", "", width, app, control);
+        return DeliveryView {
+            lines: vec![line],
+            hits: Vec::new(),
+            action,
+        };
+    }
+
+    let saved = rows
+        .iter()
+        .filter(|row| row.status == SubmissionStatus::Queued)
+        .count();
+    let state = if matches!(run, Some(ContextControl::ReviewBlocked { .. })) {
+        "Tool result unknown"
+    } else if !online {
+        "Offline"
+    } else if app
+        .pane()
+        .snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.cleaning_up)
+    {
+        "Stopping"
+    } else if matches!(run, Some(ContextControl::Continue { .. })) {
+        "Paused"
+    } else {
+        ""
+    };
+    let compact_title = match (saved, state) {
+        (0, state) => state.to_owned(),
+        (count, "") => format!("{count} saved"),
+        (count, state) => format!("{count} saved · {state}"),
+    };
+    let full_title = if compact_title.is_empty() {
+        "Pending inputs".to_owned()
+    } else {
+        format!("Pending inputs · {compact_title}")
+    };
+    if limit == 1
+        && let Some(control) = action_control
+    {
+        let (line, action) = action_title(&full_title, &compact_title, width, app, control);
+        return DeliveryView {
+            lines: vec![line],
+            hits: Vec::new(),
+            action,
         };
     }
     let stale_without_row = selected_id
@@ -77,7 +137,7 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
                     emphasis(ERROR),
                 )],
                 hits: Vec::new(),
-                recovery_range: None,
+                action: None,
             };
         }
         let index = selected_id
@@ -93,19 +153,21 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
         return DeliveryView {
             lines: message(&rows[index], width, 1, selected, stale),
             hits,
-            recovery_range: None,
+            action: None,
         };
     }
-    let visible = rows.len().min(limit - 1);
+    let separate_hints = action_control.is_some() && limit >= 3 && app.has_queued_input();
+    let message_rows = limit - 1 - usize::from(separate_hints);
+    let visible = rows.len().min(message_rows);
     let selected = selected_id.and_then(|id| rows.iter().position(|row| row.id == id));
     let start = selected.map_or(rows.len() - visible, |index| {
         index.saturating_sub(visible / 2).min(rows.len() - visible)
     });
     let shown = &rows[start..start + visible];
     let mut title = if stale_without_row {
-        "Selected input is no longer queued · Pending inputs".to_owned()
+        format!("Selected input is no longer queued · {full_title}")
     } else {
-        "Pending inputs".to_owned()
+        full_title
     };
     if rows.len() > visible {
         title.push_str(&format!(
@@ -115,8 +177,9 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             rows.len()
         ));
     }
+    let mut hints = String::new();
     if app.has_queued_input() {
-        title.push_str(&format!(" · {} select", Shortcut::UP.label));
+        hints.push_str(&format!("{} select", Shortcut::UP.label));
         if selected_id.map_or_else(
             || {
                 rows.iter().any(|row| {
@@ -127,17 +190,21 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             },
             |id| app.queue_input_editable(id),
         ) {
-            title.push_str(" · Enter edit");
+            hints.push_str(" · Enter edit");
         }
-        title.push_str(" · Del remove");
+        hints.push_str(" · Del remove");
+        if action_control.is_none() {
+            title.push_str(" · ");
+            title.push_str(&hints);
+        }
     }
-    let (title, recovery_range) = recovery.as_ref().map_or_else(
+    let (title, action) = action_control.map_or_else(
         || (Line::styled(shorten(&title, width), emphasis(MUTED)), None),
-        |control| recovery_title(&title, width, app, control),
+        |control| action_title(&title, &compact_title, width, app, control),
     );
     let mut lines = vec![title];
     let mut hits = Vec::new();
-    let per_message = ((limit - 1) / visible).min(MAX_MESSAGE_ROWS);
+    let per_message = (message_rows / visible).min(MAX_MESSAGE_ROWS);
     for row in shown {
         let selected = Some(row.id.as_str()) == selected_id;
         let stale = selected && !app.queue_input_available(&row.id);
@@ -147,42 +214,69 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
             hits.push((first as u16..lines.len() as u16, row.id.clone()));
         }
     }
+    if separate_hints {
+        lines.push(Line::styled(shorten(&hints, width), emphasis(MUTED)));
+    }
     DeliveryView {
         lines,
         hits,
-        recovery_range,
+        action,
     }
 }
 
-fn recovery_title(
+fn action_title(
     title: &str,
+    compact: &str,
     width: usize,
     app: &App,
     control: &ContextControl,
-) -> (Line<'static>, Option<Range<u16>>) {
-    let title = super::contextual::recovery_title(control).unwrap_or(title);
-    let action = super::contextual::label(control);
-    let action = shorten(&action, width);
-    let action_width = action.width().min(width);
-    let separator = if action_width < width { " · " } else { "" };
-    let prefix_width = width.saturating_sub(action_width + separator.width());
-    let prefix = shorten(title, prefix_width);
-    let start = prefix.width() + separator.width();
+) -> (Line<'static>, Option<(Range<u16>, ContextControl)>) {
+    let name = match control {
+        ContextControl::Continue { .. } if app.is_subagent() => "Continue agent",
+        ContextControl::Continue { .. } => "Continue session",
+        ContextControl::ReviewBlocked { .. } if width < 42 => "Review tool result",
+        other => super::contextual::action_label(other),
+    };
+    let separator = " · ";
     let focused = app.pane().contextual_focus.active
         && app.pane().contextual_focus.cursor.as_ref() == Some(control);
+    let key = if focused { " · Enter" } else { " · F2" };
+    let fits = |prefix: &str, action: &str| {
+        prefix.width() + usize::from(!prefix.is_empty()) * separator.width() + action.width()
+            <= width
+    };
+    let (prefix, action) = if fits(title, name) {
+        (title.to_owned(), name.to_owned())
+    } else if !compact.is_empty() && fits(compact, name) {
+        (compact.to_owned(), name.to_owned())
+    } else if let Some((count, _)) = compact.split_once(separator)
+        && fits(count, name)
+    {
+        (count.to_owned(), name.to_owned())
+    } else {
+        // Keep the action readable even when the state cannot also fit.
+        (String::new(), shorten(name, width))
+    };
     let style = if focused {
         focused_row()
     } else {
         emphasis(ACCENT)
     };
+    let has_prefix = !prefix.is_empty();
     let mut line = Line::styled(prefix, emphasis(MUTED));
-    line.push_span(separator);
+    if has_prefix {
+        line.push_span(separator);
+    }
+    let start = line.width();
+    let end = start + action.width();
     line.push_span(Span::styled(action, style));
-    let range = (action_width > 0).then(|| {
-        let start = u16::try_from(start).unwrap_or(u16::MAX);
-        start..start.saturating_add(u16::try_from(action_width).unwrap_or(u16::MAX))
-    });
-    (line, range)
+    if end + key.width() <= width {
+        line.push_span(Span::styled(key, emphasis(MUTED)));
+    }
+    (
+        line,
+        (end > start).then(|| (start as u16..end as u16, control.clone())),
+    )
 }
 
 fn message(

@@ -168,6 +168,8 @@ pub(super) enum Record {
         status: AgentStatus,
         output: Option<String>,
         error: Option<String>,
+        #[serde(default)]
+        resume_blocked: bool,
         turn: Option<u64>,
         usage: UsageTotals,
     },
@@ -448,6 +450,7 @@ impl State {
                             execution_id: None,
                             last_output: None,
                             last_error: None,
+                            resume_blocked: false,
                             permission: None,
                             question: None,
                             usage: UsageTotals::default(),
@@ -591,6 +594,7 @@ impl State {
                         agent.snapshot.status = AgentStatus::Idle;
                         agent.snapshot.execution_id = None;
                         agent.snapshot.last_error = None;
+                        agent.snapshot.resume_blocked = false;
                         agent.reply_preview = None;
                         agent.set_active_config(None);
                         agent.model_usage.settle(abandoned_turn);
@@ -644,6 +648,7 @@ impl State {
                 snapshot.turn = Some(target_turn);
                 snapshot.last_output = None;
                 snapshot.last_error = None;
+                snapshot.resume_blocked = false;
                 snapshot.admitted_task = None;
                 self.remember_command(command, event_id, address);
             }
@@ -657,6 +662,7 @@ impl State {
                 snapshot.execution_id = Some(event_id);
                 snapshot.status = AgentStatus::Running;
                 snapshot.last_error = None;
+                snapshot.resume_blocked = false;
             }
             Record::CompactionRequested {
                 command, address, ..
@@ -758,6 +764,7 @@ impl State {
                 status,
                 output,
                 error,
+                resume_blocked,
                 turn,
                 usage: _,
             } => {
@@ -784,6 +791,7 @@ impl State {
                     agent.snapshot.last_output = output;
                 }
                 agent.snapshot.last_error = error;
+                agent.snapshot.resume_blocked = resume_blocked;
                 if turn.is_some() {
                     agent.snapshot.turn = turn;
                 }
@@ -847,6 +855,7 @@ impl State {
                 if restore {
                     agent.snapshot.status = AgentStatus::Idle;
                     agent.snapshot.execution_id = None;
+                    agent.snapshot.resume_blocked = false;
                     agent.stopped_at = None;
                     agent.continue_queued = false;
                     agent.discard_cancelled_turn = false;

@@ -2,7 +2,7 @@ use kuku_client::{Action, AgentStatus};
 
 use crate::contextual::{ContextControl, PendingCommandIdentity, PendingCommandKind};
 
-use super::{App, ServiceStatus};
+use super::{App, PendingStage, ServiceStatus};
 
 impl App {
     pub(crate) fn cache_warning(&self) -> Option<&kuku::session::runtime::CacheWarning> {
@@ -22,11 +22,17 @@ impl App {
         if let Some(request) = self.credential_failure() {
             controls.push(ContextControl::RepairCredentials { request });
         }
-        if let Some(control) = self.run_control() {
-            controls.push(control);
-        }
-        if let Some(control) = self.pending_recovery_control() {
-            controls.push(control);
+        let recovery = self.pending_recovery_control();
+        let interrupt_recovery = recovery.as_ref().is_some_and(|control| {
+            control.is_interrupt_recovery() && control.recovers_target(&self.selection().target)
+        });
+        let run = self.run_control();
+        if interrupt_recovery && !matches!(run, Some(ContextControl::ReviewBlocked { .. })) {
+            controls.extend(recovery);
+            controls.extend(run);
+        } else {
+            controls.extend(run);
+            controls.extend(recovery);
         }
         if let Some(target) = self.previous_agent().cloned() {
             controls.push(ContextControl::PreviousAgent { target });
@@ -53,7 +59,7 @@ impl App {
         controls
     }
 
-    fn run_control(&self) -> Option<ContextControl> {
+    pub(crate) fn run_control(&self) -> Option<ContextControl> {
         let pane = self.pane();
         let target = self.selection().target;
         if let Some(execution_id) = pane.running_execution() {
@@ -66,6 +72,15 @@ impl App {
             return None;
         }
         let snapshot = pane.snapshot.as_ref()?;
+        if snapshot.cleaning_up {
+            return None;
+        }
+        if snapshot.agent.resume_blocked {
+            return Some(ContextControl::ReviewBlocked {
+                target,
+                turn: snapshot.agent.turn,
+            });
+        }
         let can_continue = match snapshot.agent.status {
             AgentStatus::Interrupted => true,
             AgentStatus::Idle | AgentStatus::Stopped => {
@@ -73,7 +88,7 @@ impl App {
             }
             AgentStatus::Running | AgentStatus::Waiting => false,
         };
-        if snapshot.cleaning_up || !can_continue {
+        if !can_continue {
             return None;
         }
         Some(ContextControl::Continue {
@@ -95,10 +110,17 @@ impl App {
             .map(|item| PendingCommandIdentity {
                 target: item.command.target.clone(),
                 command_id: item.command.command_id.clone(),
-                kind: if matches!(item.command.action, Action::Send { .. }) {
-                    PendingCommandKind::Send
-                } else {
-                    PendingCommandKind::Action
+                kind: match item.command.action {
+                    Action::Send { .. } => PendingCommandKind::Send,
+                    Action::Interrupt { .. } | Action::Cancel { .. }
+                        if matches!(
+                            item.stage,
+                            PendingStage::Unknown(_) | PendingStage::Checking
+                        ) =>
+                    {
+                        PendingCommandKind::Interrupt
+                    }
+                    _ => PendingCommandKind::Action,
                 },
             })
             .collect::<Vec<_>>();

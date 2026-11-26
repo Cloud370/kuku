@@ -8,7 +8,6 @@ use kuku_client::{
 use ratatui::{Terminal, backend::TestBackend};
 use serde_json::json;
 
-use super::super::banner;
 use super::{activity_screen, app, key, screen, snapshot};
 use crate::app::{Address, App};
 use crate::config::StatusLineSettings;
@@ -598,14 +597,23 @@ fn interrupted_retry_explains_the_pause_and_the_composer_only_queues() {
     app.update(Update::WatchConnected(selection));
 
     let rendered = screen(&mut app, 80, 24);
-    assert!(rendered.contains("Paused · F2 Continue"), "{rendered}");
+    assert!(
+        rendered.contains("1 saved · Paused · Continue session"),
+        "{rendered}"
+    );
     assert!(rendered.contains("provider error: SAFETY"), "{rendered}");
-    assert!(rendered.contains("1 queued"), "{rendered}");
+    assert!(!rendered.contains("1 queued"), "{rendered}");
+    assert_eq!(
+        rendered.matches("Continue session").count(),
+        1,
+        "{rendered}"
+    );
     assert!(rendered.contains("Waiting to send"), "{rendered}");
     assert!(rendered.contains("Enter queue only"), "{rendered}");
     assert!(!rendered.contains("Enter steer"), "{rendered}");
-    let narrow = banner(&app, 28, 3);
-    assert!(narrow[0].to_string().contains("Paused · F2 Continue"));
+    let narrow = screen(&mut app, 34, 20);
+    assert!(narrow.contains("Continue session"), "{narrow}");
+    assert!(narrow.contains("1 saved"), "{narrow}");
 
     let advancing = |app: &App| {
         app.effects.iter().any(
@@ -645,7 +653,7 @@ fn activity_uses_dispatched_call_identity_and_clears_targets_on_attention_and_co
     let heading = |app: &App, clock: &mut ActivityClock, ms, width| {
         let duration = Duration::from_millis(ms);
         let frame = clock.sample(app, start + duration, wall + duration);
-        let line = render_heading(app, width, frame, false).0;
+        let line = render_heading(app, width, frame, false, false).0;
         assert!(line.width() <= width);
         line.to_string()
     };
@@ -856,7 +864,7 @@ fn terminal_heading_reports_confirmed_failure_and_an_available_next_step() {
         app.update(Update::WatchConnected(selection));
         for width in [32, 100] {
             let frame = ActivityFrame::test_frame(&app, None);
-            let line = render_heading(&app, width, frame, false).0;
+            let line = render_heading(&app, width, frame, false, false).0;
             assert!(line.width() <= width);
             let line = line.to_string();
             let action = if status == "stopped" {
@@ -874,7 +882,6 @@ fn terminal_heading_reports_confirmed_failure_and_an_available_next_step() {
 
 #[test]
 fn stopped_queue_guidance_uses_the_existing_receipt_and_preserves_continue_on_narrow_width() {
-    use super::super::activity::{ActivityFrame, render_heading};
     use kuku_client::{Input, QueuedInput};
 
     let mut app = app();
@@ -883,7 +890,10 @@ fn stopped_queue_guidance_uses_the_existing_receipt_and_preserves_continue_on_na
     state.agent.execution_id = None;
     state.agent.pending_inputs = 1;
     state.pending.push(QueuedInput {
-        input: Input::new("original-receipt", app.active.agent.clone(), "Follow-up"),
+        input: Input {
+            source: InputSource::Host("http".into()),
+            ..Input::new("original-receipt", app.active.agent.clone(), "Follow-up")
+        },
         receipt: Receipt {
             command_id: "original-receipt".into(),
             event_id: 50,
@@ -900,19 +910,19 @@ fn stopped_queue_guidance_uses_the_existing_receipt_and_preserves_continue_on_na
         },
     ));
     app.update(Update::WatchConnected(app.selection()));
-    let wide = render_heading(&app, 90, ActivityFrame::test_frame(&app, None), false)
-        .0
-        .to_string();
+    let wide = screen(&mut app, 90, 24);
     assert!(
-        wide.contains("Turn stopped") && wide.contains("1 queued") && wide.contains("F2 Continue"),
+        wide.contains("Turn stopped")
+            && wide.contains("1 saved")
+            && wide.contains("Continue session"),
         "{wide}"
     );
-    let narrow = render_heading(&app, 32, ActivityFrame::test_frame(&app, None), false)
-        .0
-        .to_string();
+    assert!(!wide.contains("1 queued"), "{wide}");
+    let narrow = screen(&mut app, 34, 20);
     assert!(
-        narrow.contains("Stopped") && narrow.contains("F2 Continue"),
+        narrow.contains("1 saved") && narrow.contains("Continue session"),
         "{narrow}"
     );
     assert!(!narrow.contains("Send message"));
+    assert!(app.queue_input_available("original-receipt"));
 }

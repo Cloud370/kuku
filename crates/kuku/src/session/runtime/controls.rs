@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::context::revert::RewindVisibility;
 use crate::event::{EventPayload, EventStore, StoredEvent};
@@ -10,6 +11,51 @@ use super::record::{
     AgentState, Command, InterruptedExecution, Record, State, fingerprint, timestamp,
 };
 use super::{AgentStatus, InputStatus, Receipt, Session, Withdrawal, ensure_open};
+
+struct CancelledTurn {
+    cancellable: Vec<(String, bool)>,
+    blocked: Option<String>,
+    started: bool,
+    terminal: bool,
+    stop_event_id: Option<u64>,
+}
+
+impl CancelledTurn {
+    fn check_blocked(&self, address: &str, turn: u64) -> Result<()> {
+        if let Some(id) = &self.blocked {
+            return Err(Error::InterruptedOpenTool(format!(
+                "agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation"
+            )));
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn refresh_cancelled_turn_blocker(
+    events_path: &Path,
+    address: &str,
+    agent: &mut AgentState,
+    through: u64,
+) -> Result<()> {
+    if agent.snapshot.status == AgentStatus::Interrupted
+        && agent.discard_on_resume()
+        && !agent.accepted.is_empty()
+        && let Some(turn) = agent.snapshot.turn
+    {
+        let blocker = Session::cancelled_turn(events_path, address, turn, through)?
+            .check_blocked(address, turn)
+            .err();
+        if let Some(error) = blocker {
+            agent.snapshot.resume_blocked = true;
+            agent.snapshot.last_error = Some(error.to_string());
+        } else if agent.snapshot.resume_blocked {
+            // A confirmed result supersedes a recorded blocker on reattach.
+            agent.snapshot.resume_blocked = false;
+            agent.snapshot.last_error = None;
+        }
+    }
+    Ok(())
+}
 
 impl Session {
     /// Hide a committed user message and the following visible history for one Agent.
@@ -394,7 +440,7 @@ impl Session {
             && let Some(turn) = agent.snapshot.turn
         {
             // A crash or cleanup failure may leave the cancelled Turn's
-            // permission requests and undispatched calls open in the log.
+            // permission requests and tool calls open in the log.
             // Close them before admitting another input. An unresolved
             // dispatched effect must block recovery without consuming the queue.
             self.settle_cancelled_turn(address, turn)?;
@@ -413,18 +459,51 @@ impl Session {
     }
 
     pub(super) fn settle_cancelled_turn(&self, address: &str, turn: u64) -> Result<()> {
+        let cancellation = Self::cancelled_turn(self.events_path(), address, turn, u64::MAX)?;
+        let mut writer = EventStore::open(self.events_path())?;
+        for (id, dispatched) in &cancellation.cancellable {
+            let reason = if *dispatched {
+                "read-only agent wait cancelled after dispatch"
+            } else {
+                "pending action cancelled before dispatch"
+            };
+            let result = crate::tool::ToolResultEnvelope::cancelled(reason);
+            writer.append(cancelled_tool_result(address, turn, id, result)?)?;
+        }
+        cancellation.check_blocked(address, turn)?;
+        if cancellation.started && !cancellation.terminal {
+            writer.append(EventPayload::TurnCancelled {
+                turn,
+                ts: timestamp()?,
+                conversation: address.into(),
+                reason: "user_cancelled".into(),
+                stop_event_id: cancellation.stop_event_id,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn cancelled_turn(
+        events_path: &Path,
+        address: &str,
+        turn: u64,
+        through: u64,
+    ) -> Result<CancelledTurn> {
         let mut cursor = turn;
-        let mut open = BTreeSet::new();
-        let mut dispatched = BTreeSet::new();
+        let mut open = BTreeMap::new();
+        let mut dispatched = BTreeMap::new();
         let mut started = false;
         let mut terminal = false;
         let mut stop_event_id = None;
-        loop {
-            let page = EventStore::read_page(self.events_path(), cursor, 128)?;
+        'scan: loop {
+            let page = EventStore::read_page(events_path, cursor, 128)?;
             if page.is_empty() {
                 break;
             }
             for event in page {
+                if event.id > through {
+                    break 'scan;
+                }
                 cursor = event.id;
                 if event.payload.is_explicit_stop(address, turn) {
                     stop_event_id = Some(event.id);
@@ -434,11 +513,16 @@ impl Session {
                         turn: target,
                         conversation,
                         tool_call_id,
+                        tool,
+                        args,
                         ..
                     } if target == turn
                         && conversation.as_deref().is_none_or(|agent| agent == address) =>
                     {
-                        open.insert(tool_call_id);
+                        open.insert(
+                            tool_call_id,
+                            tool == "list_agents" && args.get("wait_for").is_some(),
+                        );
                     }
                     EventPayload::ToolResult {
                         turn: target,
@@ -456,7 +540,11 @@ impl Session {
                             && value["agent"] == address =>
                     {
                         if let Some(id) = value["tool_call_id"].as_str() {
-                            dispatched.insert(id.to_owned());
+                            let native_wait = value["tool"] == "list_agents";
+                            dispatched
+                                .entry(id.to_owned())
+                                .and_modify(|known| *known &= native_wait)
+                                .or_insert(native_wait);
                         }
                     }
                     EventPayload::TurnStarted {
@@ -483,28 +571,26 @@ impl Session {
                 }
             }
         }
-        let mut writer = EventStore::open(self.events_path())?;
-        for id in open.difference(&dispatched) {
-            let result = crate::tool::ToolResultEnvelope::cancelled(
-                "pending action cancelled before dispatch",
-            );
-            writer.append(cancelled_tool_result(address, turn, id, result)?)?;
+        let mut cancellable = Vec::new();
+        let mut blocked = None;
+        for (id, native_wait) in open {
+            match dispatched.get(&id) {
+                None => cancellable.push((id, false)),
+                // This built-in is dispatched inline before adapters. Its wait
+                // only observes another agent; cancelling it cannot stop that agent.
+                Some(true) if native_wait => cancellable.push((id, true)),
+                Some(_) => {
+                    blocked.get_or_insert(id);
+                }
+            }
         }
-        if let Some(id) = open.intersection(&dispatched).next() {
-            return Err(Error::InterruptedOpenTool(format!(
-                "agent '{address}' tool call '{id}' from turn {turn} has no confirmed result after cancellation"
-            )));
-        }
-        if started && !terminal {
-            writer.append(EventPayload::TurnCancelled {
-                turn,
-                ts: timestamp()?,
-                conversation: address.into(),
-                reason: "user_cancelled".into(),
-                stop_event_id,
-            })?;
-        }
-        Ok(())
+        Ok(CancelledTurn {
+            cancellable,
+            blocked,
+            started,
+            terminal,
+            stop_event_id,
+        })
     }
 
     fn advance_with_command(

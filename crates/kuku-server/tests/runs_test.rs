@@ -811,6 +811,81 @@ async fn interrupt_wakes_the_queued_input_under_its_original_receipt_and_replays
 }
 
 #[tokio::test]
+async fn interrupt_receipt_stays_acknowledged_when_a_dispatched_tool_blocks_cleanup() {
+    let mut provider = ControlledProvider::start().await;
+    let server = TestServer::start(mock_provider::make_test_config(provider.port())).await;
+    let id = "interrupt-commits-before-cleanup";
+    server
+        .submit(
+            id,
+            json!({"type":"send","command_id":"first","text":"first","create":{}}),
+        )
+        .await;
+    let request = provider.next().await;
+    let agent = server.snapshot(id, "main").await["agent"].clone();
+    let turn = agent["turn"].as_u64().unwrap();
+    let execution = agent["execution_id"].as_u64().unwrap();
+    let queued =
+        json!({"type":"send","command_id":"queued","text":"saved follow-up","timing":"next_turn"});
+    let original = server.submit(id, queued.clone()).await;
+    assert_eq!("queued", original["status"]);
+
+    // Inject the durable prefix of a dispatched side-effecting call with no
+    // result. Do not execute a real command or rely on its cancellation race.
+    let ts = "2026-11-25T00:00:00Z";
+    let mut writer = EventStore::open(server.events_path(id)).unwrap();
+    writer
+        .append(EventPayload::ToolCall {
+            ts: ts.into(),
+            conversation: Some("main".into()),
+            turn,
+            tool_call_id: "unresolved".into(),
+            request_id: "held".into(),
+            index: 0,
+            tool: "run_command".into(),
+            args: json!({}),
+        })
+        .unwrap();
+    writer
+        .append(EventPayload::Unknown(json!({
+            "kind":"runtime.tool_dispatched","ts":ts,"agent":"main",
+            "turn":turn,"tool_call_id":"unresolved","tool":"run_command",
+        })))
+        .unwrap();
+    drop(writer);
+
+    let interrupt = json!({"type":"interrupt","command_id":"escape","execution_id":execution});
+    let acknowledged = server.submit(id, interrupt.clone()).await;
+    assert_eq!("escape", acknowledged["receipt"]["command_id"]);
+    assert_eq!(false, acknowledged["replayed"]);
+    drop(request);
+    let stopped = server.snapshot(id, "main").await;
+    assert_eq!("interrupted", stopped["agent"]["status"]);
+    assert_eq!(true, stopped["agent"]["resume_blocked"]);
+    assert!(
+        stopped["agent"]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("unresolved")
+    );
+    assert_eq!(1, stopped["agent"]["pending_inputs"]);
+    assert_eq!(
+        original["receipt"],
+        server.submit(id, queued).await["receipt"]
+    );
+    assert_eq!(
+        acknowledged["receipt"],
+        server.submit(id, interrupt).await["receipt"]
+    );
+    let (status, _) = server
+        .command(id, json!({"type":"advance","command_id":"continue"}))
+        .await;
+    assert!(status >= 400, "the unresolved command must block advance");
+    assert_eq!(1, operations(&server, id, "agent_stopped"));
+    provider.assert_idle();
+}
+
+#[tokio::test]
 async fn server_rejects_relative_workspaces_and_missing_sessions() {
     let mock = mock_provider::start_mock_provider().await;
     let server = TestServer::start(mock_provider::make_test_config(mock.port())).await;

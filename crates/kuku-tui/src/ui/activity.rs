@@ -367,6 +367,7 @@ pub(super) fn render_heading(
     width: usize,
     frame: ActivityFrame,
     run_control_visible: bool,
+    delivery_visible: bool,
 ) -> (Line<'static>, Option<Range<usize>>) {
     let muted = Style::default().fg(MUTED);
     let gap = FIELD_GAP.len();
@@ -375,33 +376,27 @@ pub(super) fn render_heading(
         ObservedActivity::ModelFailed
             | ObservedActivity::Agent(Activity::Stopped | Activity::Interrupted | Activity::Failed)
     );
-    let next_action = if terminal_status {
-        let continue_available = app
-            .contextual_controls()
-            .iter()
-            .any(|control| matches!(control, crate::contextual::ContextControl::Continue { .. }));
-        let queued = app.input_status().queued;
-        if continue_available {
-            let queue = (queued > 0).then(|| format!("{queued} queued"));
-            match (queue, run_control_visible) {
-                (Some(queue), true) => Some(queue),
-                (Some(queue), false) => Some(format!("{queue} · F2 Continue")),
-                (None, false) => Some("F2 Continue".to_owned()),
-                (None, true) => None,
+    let next_action =
+        if terminal_status && !delivery_visible && !run_control_visible && app.available() {
+            match app.run_control() {
+                Some(crate::contextual::ContextControl::Continue { .. }) => {
+                    Some("F2 Continue".to_owned())
+                }
+                Some(crate::contextual::ContextControl::ReviewBlocked { .. }) => {
+                    Some("Review unconfirmed tool".to_owned())
+                }
+                _ if matches!(
+                    app.pane().activity(),
+                    Activity::Stopped | Activity::Interrupted | Activity::Failed
+                ) =>
+                {
+                    Some("Send a new message".to_owned())
+                }
+                _ => None,
             }
-        } else if app.available()
-            && matches!(
-                app.pane().activity(),
-                Activity::Stopped | Activity::Interrupted | Activity::Failed
-            )
-        {
-            Some("Send a new message".to_owned())
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
     let phase_desired = frame
         .tool
         .as_ref()
@@ -452,9 +447,9 @@ pub(super) fn render_heading(
         .saturating_sub(core_width + 1)
         .min((width / 3).max(send_feedback_width))
         .min(FEEDBACK_LIMIT);
-    let feedback = app
-        .displayed_statusline()
-        .composer_feedback(app, feedback_limit);
+    let feedback =
+        app.displayed_statusline()
+            .composer_feedback(app, feedback_limit, delivery_visible);
     let left_width = width - feedback.as_ref().map_or(0, |feedback| feedback.width() + 1);
 
     let key = Shortcut::CYCLE_THINKING.label;

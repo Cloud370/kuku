@@ -4,7 +4,7 @@ use kuku_client::Action;
 use crate::app::{App, KeyboardFocus};
 use crate::contextual::ContextControl;
 use crate::keys::Shortcut;
-use crate::menu::PickerKind;
+use crate::menu::{Choice, ChoiceKind, PickerKind};
 
 impl App {
     pub(super) fn contextual_key(&mut self, key: KeyEvent) -> bool {
@@ -114,6 +114,39 @@ impl App {
                 self.issue(self.active.clone(), Action::Advance);
             }
             ContextControl::Interrupt { .. } => self.interrupt(),
+            ContextControl::ReviewBlocked { .. } => {
+                let reason = self
+                    .pane()
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.agent.last_error.clone())
+                    .unwrap_or_else(|| "A tool has no confirmed result.".into());
+                self.picker(
+                    PickerKind::ResumeBlocked,
+                    vec![Choice::new(
+                        "Close",
+                        "Leave queued messages unchanged",
+                        ChoiceKind::Close,
+                    )],
+                )
+                .header = format!(
+                    "{reason}\nCheck the tool's effects before resuming. Reviewing does not send or change queued messages."
+                );
+            }
+            ContextControl::PendingRecovery { ref commands }
+                if control.is_interrupt_recovery() && commands.len() == 1 =>
+            {
+                let id = &commands[0].command_id;
+                if self
+                    .pending
+                    .get(id)
+                    .is_some_and(|item| matches!(item.stage, crate::app::PendingStage::Unknown(_)))
+                {
+                    self.pending_check(id);
+                } else {
+                    self.open_pending_item(id);
+                }
+            }
             ContextControl::PendingRecovery { .. } => {
                 self.picker(PickerKind::Pending, self.pending_choices());
             }

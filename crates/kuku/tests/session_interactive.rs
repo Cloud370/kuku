@@ -32,6 +32,7 @@ struct Call {
 #[derive(Debug)]
 enum Reply {
     Tools(Vec<String>),
+    AgentWait(u64),
     Text(&'static str),
     TemporaryFailure(ProviderFailureKind),
 }
@@ -64,6 +65,24 @@ impl ModelAdapter for Model {
                     events.push(ModelEvent::StopReason {
                         reason: ModelStopReason::ToolUse,
                     });
+                }
+                Reply::AgentWait(receipt) => {
+                    events.extend([
+                        ModelEvent::ToolCallStart {
+                            index: 0,
+                            id: "wait-for-worker".into(),
+                            name: "list_agents".into(),
+                        },
+                        ModelEvent::ToolCallArgDelta {
+                            index: 0,
+                            fragment: serde_json::json!({"wait_for":"worker","receipt":receipt})
+                                .to_string(),
+                        },
+                        ModelEvent::ToolCallStop { index: 0 },
+                        ModelEvent::StopReason {
+                            reason: ModelStopReason::ToolUse,
+                        },
+                    ]);
                 }
                 Reply::Text(text) => {
                     events.extend([
@@ -1032,7 +1051,8 @@ enum StopRecords {
 }
 
 async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
-    for dispatched in [false, true] {
+    for dispatch in [None, Some("run_command"), Some("list_agents")] {
+        let tool = dispatch.unwrap_or("run_command");
         let root = tempfile::tempdir().unwrap();
         let (model, mut calls) = mpsc::unbounded_channel();
         let mut options =
@@ -1109,8 +1129,12 @@ async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
                 tool_call_id: "old-tool".into(),
                 request_id: "old-request".into(),
                 index: 0,
-                tool: "run_command".into(),
-                args: serde_json::json!({}),
+                tool: tool.into(),
+                args: if tool == "list_agents" {
+                    serde_json::json!({"wait_for":"worker","receipt":1})
+                } else {
+                    serde_json::json!({})
+                },
             })
             .unwrap();
         writer
@@ -1118,7 +1142,7 @@ async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
                 turn,
                 ts: ts.into(),
                 tool_call_id: "old-tool".into(),
-                tool: "run_command".into(),
+                tool: tool.into(),
                 risk: "modifies_files".into(),
                 summary: "obsolete approval".into(),
                 candidate: "{}".into(),
@@ -1126,11 +1150,11 @@ async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
                 workspace: None,
             })
             .unwrap();
-        if dispatched {
+        if let Some(tool) = dispatch {
             writer
                 .append(EventPayload::Unknown(serde_json::json!({
                     "kind":"runtime.tool_dispatched","ts":ts,"agent":"main",
-                    "turn":turn,"tool_call_id":"old-tool","tool":"run_command",
+                    "turn":turn,"tool_call_id":"old-tool","tool":tool,
                 })))
                 .unwrap();
         }
@@ -1155,6 +1179,9 @@ async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
         }
         drop(writer);
 
+        let blocked = dispatch == Some("run_command");
+        let closed_view = Session::read_view(&path, "main").unwrap();
+        assert_eq!(closed_view.snapshot.resume_blocked, blocked);
         let reopened = Session::open(options).await.unwrap();
         assert_eq!(
             AgentStatus::Interrupted,
@@ -1173,8 +1200,9 @@ async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
             pending_receipts(&reopened)
         );
         assert!(calls.try_recv().is_err());
+        assert_eq!(reopened.agent("main").unwrap().resume_blocked, blocked);
         let advance = reopened.advance_command("recover", "main");
-        if dispatched {
+        if blocked {
             assert!(matches!(advance, Err(Error::InterruptedOpenTool(_))));
             assert_eq!(None, reopened.receipt("recover").unwrap());
             if retain_queue {
@@ -1239,6 +1267,111 @@ async fn interrupted_cleanup_recovery(stops: StopRecords, retain_queue: bool) {
         }
         reopened.close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn interrupting_a_dispatched_agent_wait_cancels_only_the_wait_and_continues_the_queue() {
+    let root = tempfile::tempdir().unwrap();
+    let (model, mut calls) = mpsc::unbounded_channel();
+    let mut options =
+        SessionOptions::new(root.path(), root.path().join("data"), common::test_config());
+    options.session_id = Some("live-agent-wait".into());
+    options.model_adapter = Some(Arc::new(Model(model)));
+    let session = Session::open(options.clone()).await.unwrap();
+    for address in ["main", "worker"] {
+        session
+            .create_agent(
+                &format!("create-{address}"),
+                address,
+                AgentConfig::default(),
+            )
+            .unwrap();
+    }
+    let handoff = session
+        .send(Input {
+            source: InputSource::Agent("main".into()),
+            activation: Activation::Wake,
+            ..Input::new("handoff", "worker", "keep working")
+        })
+        .unwrap();
+    let child = next_call(&mut calls).await;
+    session
+        .send(Input::new("start", "main", "wait for worker"))
+        .unwrap();
+    let parent = next_call(&mut calls).await;
+    parent
+        .response
+        .send(Reply::AgentWait(handoff.event_id))
+        .unwrap();
+
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let journal = session.events(parent.request.turn, 128).unwrap();
+            if journal.iter().any(|event| matches!(&event.payload,
+                EventPayload::Unknown(value) if value["kind"] == "runtime.tool_dispatched"
+                    && value["tool_call_id"] == "wait-for-worker")) {
+                assert!(!journal.iter().any(|event| matches!(&event.payload,
+                    EventPayload::ToolResult { tool_call_id, .. } if tool_call_id == "wait-for-worker")));
+                break;
+            }
+            assert!(calls.try_recv().is_err(), "wait unexpectedly ended");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }).await.unwrap();
+
+    let execution = session.agent("main").unwrap().execution_id.unwrap();
+    let follow_up = next_turn("after", "queued work after the cancelled wait");
+    let queued = session.send(follow_up.clone()).unwrap();
+    session
+        .interrupt_execution("escape", "main", execution)
+        .await
+        .unwrap();
+    assert_eq!(
+        AgentStatus::Running,
+        session.agent("worker").unwrap().status
+    );
+    assert!(!session.agent("main").unwrap().resume_blocked);
+    let resumed = next_call(&mut calls).await;
+    assert!(resumed.request.turn > parent.request.turn);
+    assert!(
+        resumed
+            .request
+            .body
+            .to_string()
+            .contains("queued work after the cancelled wait")
+    );
+    resumed
+        .response
+        .send(Reply::Text("parent continued"))
+        .unwrap();
+    child.response.send(Reply::Text("child completed")).unwrap();
+    ready(&session, AgentStatus::Idle).await;
+    let journal = session.events(parent.request.turn, 256).unwrap();
+    let results = journal
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolResult {
+                tool_call_id,
+                status,
+                ..
+            } if tool_call_id == "wait-for-worker" => Some(status.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results, ["cancelled"]);
+    assert!(journal.iter().any(|event| matches!(&event.payload,
+        EventPayload::TurnCancelled { turn, .. } if *turn == parent.request.turn)));
+    session.close().await.unwrap();
+    drop(session);
+
+    let reopened = Session::open(options).await.unwrap();
+    assert_eq!(queued, reopened.send(follow_up).unwrap());
+    assert_eq!(
+        InputStatus::Accepted,
+        reopened.input_status("main", "after").unwrap()
+    );
+    assert!(calls.try_recv().is_err());
+    reopened.close().await.unwrap();
 }
 
 #[tokio::test]

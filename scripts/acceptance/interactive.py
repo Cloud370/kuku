@@ -488,7 +488,7 @@ def interrupt_with_queue(client, *, explicit_stop):
                 focus_action(terminal, "Stop")
                 terminal.press("\r")
                 terminal.expect(draft, state="Turn stopped",
-                                also=("F2 Continue", "Queued · next Turn", queued), absent=(late,))
+                                also=("Continue session", "1 saved", "Queued · next Turn", queued), absent=(late, "1 queued"))
                 assert_delivery(client, workspace, session, receipt, "queued")
                 assert client.snapshot(workspace, session)["pending_inputs"] == 1
                 client.provider.assert_idle(duration=0.2)
@@ -652,6 +652,14 @@ def recover_from_provider_failure(client):
                 f"{error}\nSession status: {agent['status']}; queued inputs: {agent['pending_inputs']}"
                 f"\nLast terminal screen:\n{screen}"
             ) from error
+        terminal.expect("Continue session", also=("1 saved", recovery),
+                        absent=("1 queued", "Unconfirmed action"))
+        client.provider.assert_idle(duration=0.2)
+        terminal.exit_cleanly()
+    with client.terminal(workspace) as terminal:
+        terminal.resume(prompt)
+        terminal.expect("Continue session", also=("1 saved", recovery),
+                        absent=("1 queued", "Unconfirmed action"))
         client.provider.assert_idle(duration=0.2)
         terminal.press("\x1bOQ\r")
         client.provider.next(recovery).text("provider recovered")

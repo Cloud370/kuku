@@ -13,6 +13,7 @@ pub(crate) struct PendingCommandIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PendingCommandKind {
     Send,
+    Interrupt,
     Action,
 }
 
@@ -34,6 +35,10 @@ pub(crate) enum ContextControl {
         target: Target,
         execution_id: u64,
     },
+    ReviewBlocked {
+        target: Target,
+        turn: Option<u64>,
+    },
     PendingRecovery {
         commands: Vec<PendingCommandIdentity>,
     },
@@ -53,6 +58,16 @@ impl ContextControl {
     pub(crate) fn is_send_recovery(&self) -> bool {
         matches!(self, Self::PendingRecovery { commands }
             if !commands.is_empty() && commands.iter().all(|command| command.kind == PendingCommandKind::Send))
+    }
+
+    pub(crate) fn is_interrupt_recovery(&self) -> bool {
+        matches!(self, Self::PendingRecovery { commands }
+            if !commands.is_empty() && commands.iter().all(|command| command.kind == PendingCommandKind::Interrupt))
+    }
+
+    pub(crate) fn recovers_target(&self, target: &Target) -> bool {
+        matches!(self, Self::PendingRecovery { commands }
+            if commands.iter().any(|command| &command.target == target))
     }
 
     pub(crate) fn is_service(&self) -> bool {
