@@ -343,13 +343,23 @@ pub(crate) fn render_at(
             if app.setup_required {
                 return shorten("Ctrl+L or /model to set up a model", content_width);
             }
-            let send = if pane.value_attachments.is_empty() {
-                "Enter steer"
-            } else {
-                "Enter send with values"
+            let paused = pane
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.agent.status == AgentStatus::Interrupted);
+            let send = match (paused, pane.value_attachments.is_empty()) {
+                (true, true) => "Enter queue only",
+                (true, false) => "Enter queue with values",
+                (false, true) => "Enter steer",
+                (false, false) => "Enter send with values",
             };
             let mut hint = format!("{send} · / actions · {} help", Shortcut::ACTIONS.label);
-            let next = format!(" · {} next Turn", Shortcut::NEXT_TURN.label);
+            let next = if paused {
+                "queue next Turn"
+            } else {
+                "next Turn"
+            };
+            let next = format!(" · {} {next}", Shortcut::NEXT_TURN.label);
             if hint.width() + next.width() <= content_width {
                 hint.push_str(&next);
             }
@@ -525,13 +535,31 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
             Some(true) | None => WARNING,
         };
         if stopped_retry {
-            lines.push(Line::styled(
-                shorten(
-                    "Automatic retry stopped; see transcript for details.",
-                    width,
-                ),
-                emphasis(color),
-            ));
+            let notice = if let Some(snapshot) = pane
+                .snapshot
+                .as_ref()
+                .filter(|snapshot| snapshot.agent.status == AgentStatus::Interrupted)
+            {
+                let action = if app.service_status() == crate::app::ServiceStatus::Connected
+                    && app.contextual_controls().iter().any(|control| {
+                        matches!(control, crate::contextual::ContextControl::Continue { .. })
+                    }) {
+                    format!(" · {} Continue", Shortcut::REPLY.label)
+                } else {
+                    String::new()
+                };
+                let reason = snapshot
+                    .agent
+                    .last_error
+                    .as_deref()
+                    .filter(|error| !error.trim().is_empty())
+                    .map(single_line)
+                    .unwrap_or_else(|| crate::retry_notice::detail(retry));
+                format!("Paused{action} · {reason}")
+            } else {
+                "Automatic retry stopped; see transcript for details.".into()
+            };
+            lines.push(Line::styled(shorten(&notice, width), emphasis(color)));
         } else {
             lines.push(Line::styled(
                 crate::text::shorten_middle(
