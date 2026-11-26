@@ -115,13 +115,8 @@ pub(super) fn label(control: &ContextControl) -> String {
         ContextControl::RepairCredentials { .. } => "F2 Repair credentials · Enter".into(),
         ContextControl::Continue { .. } => "F2 Continue · Enter".into(),
         ContextControl::Interrupt { .. } => "F2 Stop · Enter".into(),
-        control @ ContextControl::PendingRecovery { .. } => {
-            let title = if control.is_send_recovery() {
-                "Unconfirmed send"
-            } else {
-                "Unconfirmed action"
-            };
-            format!("F2 {title} · Enter")
+        ContextControl::ReviewBlocked { .. } | ContextControl::PendingRecovery { .. } => {
+            format!("{} · F2", action_label(control))
         }
         ContextControl::PreviousAgent { .. } => "F2 Back · Enter".into(),
         ContextControl::Reconnect { .. } => {
@@ -132,19 +127,18 @@ pub(super) fn label(control: &ContextControl) -> String {
     }
 }
 
-fn action_label(control: &ContextControl) -> &'static str {
+pub(super) fn action_label(control: &ContextControl) -> &'static str {
     match control {
         ContextControl::Request { .. } => "Request",
         ContextControl::RepairCredentials { .. } => "Repair credentials",
         ContextControl::Continue { .. } => "Continue",
         ContextControl::Interrupt { .. } => "Stop",
-        control @ ContextControl::PendingRecovery { .. } => {
-            if control.is_send_recovery() {
-                "Unconfirmed send"
-            } else {
-                "Unconfirmed action"
-            }
+        ContextControl::ReviewBlocked { .. } => "Review unconfirmed tool",
+        ContextControl::PendingRecovery { .. } if control.is_send_recovery() => "Unconfirmed send",
+        ContextControl::PendingRecovery { .. } if control.is_interrupt_recovery() => {
+            "Check interrupt receipt"
         }
+        ContextControl::PendingRecovery { .. } => "Review saved commands",
         ContextControl::PreviousAgent { .. } => "Previous Agent",
         ContextControl::Reconnect { .. } => "Reconnect",
         ContextControl::CacheWarning { .. } => "Cache warning",
@@ -255,16 +249,6 @@ pub(super) fn cache_warning_hit(app: &mut App, status: Rect, rows: &[Line<'_>], 
             }
             column += width;
         }
-    }
-}
-
-pub(super) fn recovery_title(control: &ContextControl) -> Option<&'static str> {
-    match control {
-        ContextControl::PendingRecovery { .. } if control.is_send_recovery() => {
-            Some("Unconfirmed send")
-        }
-        ContextControl::PendingRecovery { .. } => Some("Unconfirmed action"),
-        _ => None,
     }
 }
 

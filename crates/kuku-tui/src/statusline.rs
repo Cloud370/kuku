@@ -186,13 +186,18 @@ impl StatusLine {
         }
     }
 
-    pub(crate) fn composer_feedback(&self, app: &App, width: usize) -> Option<Span<'static>> {
+    pub(crate) fn composer_feedback(
+        &self,
+        app: &App,
+        width: usize,
+        delivery_visible: bool,
+    ) -> Option<Span<'static>> {
         if width == 0 {
             return None;
         }
         let notice = app.notice.as_ref().filter(|notice| notice.transient());
         let input = (!self.input_in_footer())
-            .then(|| input_with_submission(app, notice.is_none(), true))
+            .then(|| input_with_submission(app, notice.is_none(), true, !delivery_visible))
             .flatten();
         if let Some(input) = input
             .as_ref()
@@ -793,10 +798,15 @@ fn execution(app: &App, activity: Activity) -> Option<Segment> {
 }
 
 fn input(app: &App, show_settled: bool) -> Option<Segment> {
-    input_with_submission(app, show_settled, false)
+    input_with_submission(app, show_settled, false, true)
 }
 
-fn input_with_submission(app: &App, show_settled: bool, heading: bool) -> Option<Segment> {
+fn input_with_submission(
+    app: &App,
+    show_settled: bool,
+    heading: bool,
+    show_queued: bool,
+) -> Option<Segment> {
     let input = app.input_status();
     let in_flight = input.submission.is_some_and(SubmissionStatus::is_sending);
     let heading_reports_send =
@@ -838,7 +848,7 @@ fn input_with_submission(app: &App, show_settled: bool, heading: bool) -> Option
             .to_owned(),
         );
     }
-    if input.queued > 0 {
+    if input.queued > 0 && show_queued {
         facts.push(format!("{} queued", input.queued));
     }
     if input.draft {

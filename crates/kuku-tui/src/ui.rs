@@ -244,15 +244,7 @@ pub(crate) fn render_at(
     }
     frame.render_widget(Paragraph::new(request.lines), request_area);
     frame.render_widget(Paragraph::new(deliveries.lines), delivery_area);
-    if let (Some(range), Some(control)) = (
-        deliveries.recovery_range,
-        app.contextual_controls().into_iter().find(|control| {
-            matches!(
-                control,
-                crate::contextual::ContextControl::PendingRecovery { .. }
-            )
-        }),
-    ) {
+    if let Some((range, control)) = deliveries.action {
         app.contextual_hits.push(crate::contextual::ContextHit {
             area: Rect::new(
                 delivery_area.x.saturating_add(range.start),
@@ -299,13 +291,15 @@ pub(crate) fn render_at(
         } else {
             activity_frame.still()
         };
-        let run_control = app.contextual_controls().into_iter().find(|control| {
+        let run_control = app.run_control().filter(|control| {
             app.service_status() == crate::app::ServiceStatus::Connected
-                && matches!(
-                    control,
-                    crate::contextual::ContextControl::Continue { .. }
-                        | crate::contextual::ContextControl::Interrupt { .. }
-                )
+                && (matches!(control, crate::contextual::ContextControl::Interrupt { .. })
+                    || delivery_height == 0
+                        && matches!(
+                            control,
+                            crate::contextual::ContextControl::Continue { .. }
+                                | crate::contextual::ContextControl::ReviewBlocked { .. }
+                        ))
         });
         let (area, control) = if let Some(control) = run_control.filter(|_| heading.width >= 48) {
             let chip_width = u16::try_from(contextual::label(&control).width())
@@ -326,8 +320,13 @@ pub(crate) fn render_at(
         } else {
             (heading, None)
         };
-        let (line, recipient) =
-            activity::render_heading(app, usize::from(area.width), state, control.is_some());
+        let (line, recipient) = activity::render_heading(
+            app,
+            usize::from(area.width),
+            state,
+            control.is_some(),
+            delivery_height > 0,
+        );
         frame.render_widget(Paragraph::new(line), area);
         if let Some(range) = recipient.filter(|_| unobstructed) {
             app.recipient_area =
@@ -555,7 +554,12 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
                     .filter(|error| !error.trim().is_empty())
                     .map(single_line)
                     .unwrap_or_else(|| crate::retry_notice::detail(retry));
-                format!("Paused{action} · {reason}")
+                if app.has_queued_input() {
+                    // The delivery panel owns the state and next action.
+                    reason
+                } else {
+                    format!("Paused{action} · {reason}")
+                }
             } else {
                 "Automatic retry stopped; see transcript for details.".into()
             };
@@ -621,7 +625,9 @@ fn banner(app: &App, width: usize, height: usize) -> Vec<Line<'static>> {
     }
     if !stopped_retry {
         if let Some(snapshot) = &pane.snapshot {
-            if let Some(error) = &snapshot.agent.last_error {
+            if let Some(error) = &snapshot.agent.last_error
+                && !snapshot.agent.resume_blocked
+            {
                 let recovery = if snapshot.agent.status == AgentStatus::Interrupted {
                     format!("Interrupted · review tool effects · {}", single_line(error))
                 } else {

@@ -838,6 +838,83 @@ fn idle_focused_escape_returns_to_composer_without_side_effects() {
 }
 
 #[test]
+fn blocked_queue_shows_read_only_review_instead_of_continue() {
+    let mut app = app();
+    load_snapshot(&mut app, "interrupted", true);
+    {
+        let snapshot = app.pane_mut().snapshot.as_mut().unwrap();
+        snapshot.agent.resume_blocked = true;
+        snapshot.agent.last_error =
+            Some("Tool call call_held from turn 49 has no confirmed result".into());
+    }
+    let wide = screen(&mut app, 86, 24);
+    assert!(
+        wide.contains("1 saved · Tool result unknown · Review unconfirmed tool"),
+        "{wide}"
+    );
+    assert!(!wide.contains("Continue session"), "{wide}");
+    let compact = screen(&mut app, 34, 20);
+    assert!(compact.contains("Review tool result"), "{compact}");
+    assert!(compact.contains("1 saved"), "{compact}");
+
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(&app.modal, Some(Modal::Picker(picker))
+        if picker.kind == PickerKind::ResumeBlocked && picker.header.contains("call_held")));
+    assert!(app.effects.is_empty());
+    assert_eq!(1, app.pane().deliveries.rows().len());
+}
+
+#[test]
+fn interrupt_with_unknown_receipt_checks_once_without_resubmitting_the_command() {
+    use kuku_client::{Acknowledgement, Receipt};
+
+    let mut app = app();
+    load_snapshot(&mut app, "running", true);
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    let Some(Job::Save(command)) = app.effects.pop() else {
+        panic!("interrupt should be saved")
+    };
+    app.update(Update::Saved(command.clone(), Ok(())));
+    app.update(Update::Sent(
+        command.command_id.clone(),
+        Err(Error::ObservationEnded),
+    ));
+    load_snapshot(&mut app, "interrupted", true);
+    let pending = screen(&mut app, 86, 24);
+    assert!(pending.contains("Check interrupt receipt"), "{pending}");
+    assert!(!pending.contains("Continue session"), "{pending}");
+    app.effects.clear();
+    app.pane_mut().contextual_focus.cursor = None;
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(app.effects.as_slice(), [Job::Check(checked)] if checked == &command));
+
+    app.update(Update::Checked(
+        command.command_id.clone(),
+        Ok(Some(Acknowledgement {
+            receipt: Receipt {
+                command_id: command.command_id.clone(),
+                event_id: 53,
+                agent: "main".into(),
+            },
+            replayed: true,
+            status: None,
+            warnings: vec![],
+        })),
+    ));
+    let settled = screen(&mut app, 86, 24);
+    assert!(settled.contains("Continue session"), "{settled}");
+    assert!(!settled.contains("Check interrupt receipt"), "{settled}");
+    assert_eq!(1, app.pane().deliveries.rows().len());
+    assert!(
+        !app.effects
+            .iter()
+            .any(|job| matches!(job, Job::Save(_) | Job::Send(_)))
+    );
+}
+
+#[test]
 fn pending_recovery_requires_the_same_saved_command_identity() {
     let mut current = app();
     let command = pending_send(&mut current);
@@ -920,7 +997,7 @@ fn failed_configure_and_other_saved_action_open_recovery_without_a_send() {
     );
     assert!(app.focus_context_control(control));
     let focused = screen(&mut app, 82, 20);
-    assert!(focused.contains("Unconfirmed action"));
+    assert!(focused.contains("Review saved commands"));
     assert!(focused.contains("Enter act"));
     assert!(focused.contains("Esc back"));
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
