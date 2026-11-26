@@ -326,7 +326,7 @@ async fn fetch_body_is_model_readable_and_agent_scoped_after_reopen() {
     assert_ne!(text_id, binary_id);
     assert!(second.request.body.to_string().contains(&text_id));
     assert!(!second.request.body.to_string().contains(TEXT_MARKER));
-    second.tools(&[("first", "read_output", json!({"id":text_id,"limit":32_768}))]);
+    second.tools(&[("first", "read_output", json!({"id":text_id,"limit":8192}))]);
     let third = next_call(&mut calls).await;
     let (status, _, first) = tool_result(&session, "first");
     assert_eq!("ok", status);
