@@ -193,11 +193,10 @@ pub(crate) async fn stream_prepared(
     trace_metadata: Option<super::trace::ProviderTraceMetadata>,
 ) -> Result<super::ProviderChunkStream, ProviderFailure> {
     let transport = send_prepared(config, prepared, trace_metadata).await?;
-    let parser = Arc::new(Mutex::new(AnthropicSseParser::new(
-        config.capabilities.profile == ProviderProfile::Anthropic,
-        config.capabilities.profile == ProviderProfile::DeepSeek
-            || (prepared.body.as_json()["thinking"]["display"] == "summarized"
-                && config.capabilities.profile == ProviderProfile::Anthropic),
+    let parser = Arc::new(Mutex::new(AnthropicSseParser::for_request(
+        config.capabilities.profile,
+        &config.model,
+        prepared.body.as_json(),
     )));
     let frame_parser = Arc::clone(&parser);
     let eof_parser = Arc::clone(&parser);
@@ -206,6 +205,14 @@ pub(crate) async fn stream_prepared(
         move |frame| frame_parser.lock().unwrap().feed(frame),
         move || eof_parser.lock().unwrap().finish(),
     ))
+}
+
+pub(super) fn supports_summarized_thinking(profile: ProviderProfile, model: &str) -> bool {
+    profile == ProviderProfile::Anthropic
+        || (profile == ProviderProfile::OpenRouter
+            && model
+                .trim_start_matches('~')
+                .starts_with("anthropic/claude-"))
 }
 
 struct AnthropicSseParser {
@@ -224,6 +231,15 @@ struct AnthropicSseParser {
 }
 
 impl AnthropicSseParser {
+    fn for_request(profile: ProviderProfile, model: &str, body: &Value) -> Self {
+        Self::new(
+            profile == ProviderProfile::Anthropic,
+            profile == ProviderProfile::DeepSeek
+                || (supports_summarized_thinking(profile, model)
+                    && body["thinking"]["display"] == "summarized"),
+        )
+    }
+
     fn new(thinking_signature_required_for_replay: bool, public_reasoning_text: bool) -> Self {
         Self {
             chunks: Vec::new(),

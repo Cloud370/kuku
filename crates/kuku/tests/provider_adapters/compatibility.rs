@@ -125,6 +125,7 @@ async fn three_protocols_preserve_tool_batches_native_replay_and_multiturn_prefi
             (ProviderFormat::OpenAiChat, ProviderProfile::DeepSeek) => {
                 "fixture reasoning, continued"
             }
+            (ProviderFormat::OpenAiChat, ProviderProfile::OpenRouter) => "Checking",
             _ => "",
         };
         assert_eq!(expected, public);

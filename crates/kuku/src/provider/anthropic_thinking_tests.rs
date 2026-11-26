@@ -1,7 +1,52 @@
 use super::super::chunk::ProviderChunk;
 use super::AnthropicSseParser;
+use crate::config::ProviderProfile;
 use crate::event::ModelStopReason;
 use serde_json::json;
+
+#[test]
+fn routed_claude_messages_preview_only_requested_summary_and_keep_signed_replay() {
+    for (profile, display, public) in [
+        (ProviderProfile::OpenRouter, "summarized", true),
+        (ProviderProfile::OpenRouter, "omitted", false),
+        (ProviderProfile::Compatible, "summarized", false),
+    ] {
+        let mut parser = AnthropicSseParser::for_request(
+            profile,
+            "anthropic/claude-haiku-5.5",
+            &json!({"thinking":{"type":"adaptive","display":display}}),
+        );
+        let chunks: Vec<_> = [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Readable summary"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque-block"}}"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ]
+        .into_iter()
+        .flat_map(|frame| parser.feed(frame).unwrap())
+        .collect();
+        let visible: Vec<_> = chunks
+            .iter()
+            .filter_map(|chunk| match chunk {
+                ProviderChunk::ThinkingDelta { text } | ProviderChunk::TextDelta { text } => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        let expected: &[&str] = if public { &["Readable summary"] } else { &[] };
+        assert_eq!(expected, visible);
+        assert!(chunks.iter().any(|chunk| matches!(chunk, ProviderChunk::Replay { value, .. }
+            if value["content"] == json!([
+                {"type":"thinking","thinking":"Readable summary","signature":"opaque-signature"},
+                {"type":"redacted_thinking","data":"opaque-block"}
+            ]))));
+    }
+}
 
 #[test]
 fn unsigned_thinking_does_not_prevent_tool_dispatch() {
