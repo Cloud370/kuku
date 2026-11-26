@@ -8,10 +8,11 @@ use crate::tool::builtin::run_command::output::validate_output_id;
 use crate::tool::{ToolDefinition, ToolResultEnvelope};
 use crate::{Error, MAX_VALUE_NAME_BYTES, OutputRead, OutputStream, Result, Session};
 
-const DEFAULT_READ_BYTES: usize = 4096;
-const MAX_READ_BYTES: usize = 8192;
+const DEFAULT_READ_BYTES: usize = 8 * 1024;
+const MAX_READ_BYTES: usize = 32 * 1024;
+const MAX_READ_RESULT_BYTES: usize = 64 * 1024;
 const MAX_SEARCH_BYTES: usize = 4096;
-const MAX_RESULT_BYTES: usize = 16_384;
+const MAX_SEARCH_RESULT_BYTES: usize = 16 * 1024;
 const DEFAULT_LOCAL_READ_BYTES: usize = 65_536;
 const MAX_LOCAL_READ_BYTES: usize = 80_000;
 const DEFAULT_LOCAL_RESULT_BYTES: usize = 256 * 1024;
@@ -26,7 +27,7 @@ struct PageBounds {
 const MODEL_BOUNDS: PageBounds = PageBounds {
     default: DEFAULT_READ_BYTES,
     scan: MAX_READ_BYTES,
-    result: MAX_RESULT_BYTES,
+    result: MAX_READ_RESULT_BYTES,
 };
 
 const LOCAL_BOUNDS: PageBounds = PageBounds {
@@ -81,7 +82,7 @@ pub(super) async fn execute_tool(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         if search {
-            execute_search(&session, &agent, &args, MAX_RESULT_BYTES, || false)
+            execute_search(&session, &agent, &args, MAX_SEARCH_RESULT_BYTES, || false)
         } else {
             execute(&session, &agent, &args)
         }
@@ -351,7 +352,7 @@ mod tests {
 
     use super::{
         DEFAULT_LOCAL_READ_BYTES, DEFAULT_READ_BYTES, LOCAL_BOUNDS, MAX_LOCAL_READ_BYTES,
-        MAX_READ_BYTES, MAX_RESULT_BYTES, MODEL_BOUNDS, definition, definition_local, request,
+        MAX_READ_BYTES, MAX_READ_RESULT_BYTES, MODEL_BOUNDS, definition, definition_local, request,
     };
     use crate::session::runtime::OutputSelector;
 
@@ -361,7 +362,7 @@ mod tests {
         assert_eq!("read_output", definition.name);
         assert!(definition.read_only);
         assert_eq!("read", definition.risk);
-        assert_eq!(MAX_RESULT_BYTES, definition.max_result_chars);
+        assert_eq!(MAX_READ_RESULT_BYTES, definition.max_result_chars);
         assert_eq!(
             json!([{"required":["id"]},{"required":["name"]}]),
             definition.input_schema["oneOf"]
@@ -370,7 +371,7 @@ mod tests {
         assert_eq!(1, limit["minimum"]);
         assert_eq!(DEFAULT_READ_BYTES, limit["default"]);
         assert!(limit.get("maximum").is_none());
-        assert!(limit["description"].as_str().unwrap().contains("8192"));
+        assert!(limit["description"].as_str().unwrap().contains("32768"));
     }
 
     #[test]

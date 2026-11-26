@@ -171,10 +171,10 @@ Retained outputs use Session-local IDs such as `out_42`. The number comes from t
 | `id` | Exact output ID from a tool result, such as `out_42`. Use exactly one of `id` and `name`. |
 | `name` | Exact name of a saved value owned by the Agent |
 | `offset` | Nonnegative raw byte offset across stdout and stderr in capture order; defaults to `0` |
-| `limit` | Positive raw byte budget. Defaults to `4096` and is capped at `8192`. |
+| `limit` | Positive raw byte budget. Defaults to 8 KiB (`8192`) and is capped at 32 KiB (`32768`). |
 | `search` | Optional literal filter: `1`–`4096` UTF-8 bytes, no longer than `limit` |
 
-The result is complete JSON in `model_content`, at most 16,384 UTF-8 bytes; `structured` contains the same value. Encoding overhead or replacement of invalid UTF-8 can reduce the returned page below the requested scan limit. The tool keeps the reader's raw byte offsets and never cuts the JSON text. A search that cannot fit the result bound even at its minimum scan window returns an error asking for a shorter literal.
+The result is complete JSON in `model_content`, at most 64 KiB; `structured` contains the same value. Encoding overhead or replacement of invalid UTF-8 can reduce the returned page below the requested scan limit. The tool keeps the reader's raw byte offsets and never cuts the JSON text. A search that cannot fit the result bound even at its minimum scan window returns an error asking for a shorter literal.
 
 `segments` preserve stream identity, capture order, raw offsets and byte lengths. `next_offset` and `has_more` control continuation; always pass `next_offset` to the next read instead of adding `limit`. Literal search can retain overlap between scan windows. An empty matching page with `has_more: true` still requires continuation. `filtered` identifies search results and `lossy_utf8` reports replacement of invalid or split UTF-8 bytes.
 

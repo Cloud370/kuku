@@ -16,7 +16,7 @@ use kuku::{
 };
 
 const MARKER: &str = "OUTPUT_TARGET_标记";
-const RESULT_BYTES: usize = 16_384;
+const RESULT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Default)]
 struct ReadPolicy {
@@ -276,9 +276,9 @@ fn final_pages(request: &HttpMockRequest) -> bool {
     pages[0].as_ref().is_some_and(|page| {
         page["offset"] == 0 && page["next_offset"] == 8192 && page["has_more"] == true
     }) && pages[1].as_ref().is_some_and(|page| {
-        page["offset"] == 8192 && page["next_offset"] == 16384 && page["has_more"] == true
+        page["offset"] == 8192 && page["next_offset"] == 40_960 && page["has_more"] == true
     }) && pages[2].as_ref().is_some_and(|page| {
-        page["offset"] == 16384
+        page["offset"] == 40_960
             && page["filtered"] == true
             && page["has_more"] == false
             && page["segments"]
@@ -295,7 +295,12 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let policy = Arc::new(ReadPolicy::default());
-    let payload = format!("{}\n{MARKER}\n{}", "p".repeat(20_000), "q".repeat(4096));
+    let payload = format!(
+        "{}{}\n{MARKER}\n{}",
+        "p".repeat(2048),
+        r#" "key":"path\\dir""#.repeat(2300),
+        "q".repeat(4096)
+    );
     let (session, id) = captured(
         &server,
         workspace.path(),
@@ -321,7 +326,7 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
             .contains(&"p".repeat(80))
     );
     let first = chunk(&session, &id, 0, 8192, None);
-    let second = chunk(&session, &id, first.next_offset, 8192, None);
+    let second = chunk(&session, &id, first.next_offset, 32 * 1024, None);
     let searched = chunk(&session, &id, second.next_offset, 8192, Some(MARKER));
     for _ in 0..2 {
         assert_eq!(first, chunk(&session, &id, 0, 8192, None));
@@ -333,7 +338,7 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
     let page_1 = fixture(
         &server,
         |request| !producing(request) && results(request).len() == 1,
-        json!({"tool_calls":[tool("page-1", "read_output", json!({"id":id,"limit":9000}))]}),
+        json!({"tool_calls":[tool("page-1", "read_output", json!({"id":id}))]}),
         "tool_calls",
     )
     .await;
@@ -378,11 +383,11 @@ async fn model_reads_and_searches_retained_command_output_without_consuming_ui_r
         .filter(|action| action.tool.name == "read_output")
         .collect::<Vec<_>>();
     assert_eq!(3, actions.len());
-    for (action, requested_limit) in actions.into_iter().zip([9000, u64::MAX, 8192]) {
+    for (action, requested_limit) in actions.into_iter().zip([None, Some(u64::MAX), Some(8192)]) {
         assert_eq!("main", action.agent);
         assert_eq!(InputSource::Host("local".into()), action.source);
         assert_eq!(id, action.args["id"]);
-        assert_eq!(requested_limit, action.args["limit"]);
+        assert_eq!(requested_limit, action.args["limit"].as_u64());
         assert_eq!(
             json!([{"required":["id"]},{"required":["name"]}]),
             action.tool.input_schema["oneOf"]
@@ -559,7 +564,9 @@ async fn direct_and_script_search_share_the_read_output_permission() {
         ))
         .unwrap();
     idle(&session).await;
-    let found = json_page(&stored_result(&session, "direct-search"));
+    let search_result = stored_result(&session, "direct-search");
+    assert!(search_result.1.len() <= 16 * 1024);
+    let found = json_page(&search_result);
     let matches = json!([
         {"stream":"stdout","offset":FIRST,"end_offset":FIRST + 6},
         {"stream":"stdout","offset":SECOND,"end_offset":SECOND + 6}
@@ -650,7 +657,7 @@ async fn escaped_and_invalid_utf8_output_keeps_json_bounded_and_the_authorized_l
     let workspace = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let policy = Arc::new(ReadPolicy::default());
-    let payload = [0xff, 0, 1, b'\n'].repeat(2048);
+    let payload = [0xff, 0, 1, b'\n'].repeat(10_000);
     let (session, id) = captured(
         &server,
         workspace.path(),
@@ -662,7 +669,7 @@ async fn escaped_and_invalid_utf8_output_keeps_json_bounded_and_the_authorized_l
     let read = fixture(
         &server,
         |request| !producing(request) && results(request).len() == 1,
-        json!({"tool_calls":[tool("escaped", "read_output", json!({"id":id,"limit":8192}))]}),
+        json!({"tool_calls":[tool("escaped", "read_output", json!({"id":id,"limit":32_768}))]}),
         "tool_calls",
     )
     .await;
@@ -685,14 +692,14 @@ async fn escaped_and_invalid_utf8_output_keeps_json_bounded_and_the_authorized_l
     assert_eq!(true, page["lossy_utf8"]);
     assert_eq!(true, page["has_more"]);
     let next = page["next_offset"].as_u64().unwrap();
-    assert!((1..8192).contains(&next));
+    assert!((1..32_768).contains(&next));
     assert_eq!(
         serde_json::to_value(chunk(&session, &id, 0, next as usize, None)).unwrap(),
         page
     );
     let actions = policy.actions.lock().unwrap().clone();
     assert_eq!(
-        Some(json!({"id":id,"limit":8192})),
+        Some(json!({"id":id,"limit":32_768})),
         actions
             .iter()
             .find(|action| action.tool_call_id == "escaped")
