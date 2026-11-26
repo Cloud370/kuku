@@ -63,6 +63,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
         execution_id: Some(12),
         last_output: None,
         last_error: None,
+        resume_blocked: false,
         permission: None,
         question: None,
         usage: UsageTotals::default(),

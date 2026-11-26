@@ -855,6 +855,9 @@ pub struct AgentSnapshot {
     pub last_output: Option<String>,
     /// Last execution failure, if any.
     pub last_error: Option<String>,
+    /// An unresolved tool call prevents normal advance until its outcome is reconciled.
+    #[serde(default)]
+    pub resume_blocked: bool,
     /// Pending authorization requiring a matching reply.
     pub permission: Option<crate::query::PermissionRequest>,
     /// Pending question requiring a matching host reply.

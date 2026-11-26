@@ -245,6 +245,7 @@ impl Session {
                                 },
                                 output: Some(output.text.clone()),
                                 error: None,
+                                resume_blocked: false,
                                 turn: Some(output.turn),
                                 usage,
                             },
@@ -431,11 +432,16 @@ impl Session {
                 .turn
                 .and_then(|turn| self.settle_cancelled_turn(address, turn).err())
         };
-        let cleanup = state
-            .cleanup_failures
-            .get(address)
-            .cloned()
-            .or_else(|| cancellation_error.as_ref().map(ToString::to_string));
+        let resume_blocked = matches!(cancellation_error, Some(Error::InterruptedOpenTool(_)));
+        let cleanup = if resume_blocked {
+            cancellation_error.as_ref().map(ToString::to_string)
+        } else {
+            state
+                .cleanup_failures
+                .get(address)
+                .cloned()
+                .or_else(|| cancellation_error.as_ref().map(ToString::to_string))
+        };
         let usage = agent.pending_usage();
         let turn = agent.snapshot.turn.filter(|_| !agent.accepted.is_empty());
         self.commit(
@@ -449,6 +455,7 @@ impl Session {
                 },
                 output: None,
                 error: cleanup,
+                resume_blocked,
                 turn,
                 usage,
             },
@@ -508,6 +515,7 @@ impl Session {
                 status: AgentStatus::Interrupted,
                 output: None,
                 error: Some(error.to_string()),
+                resume_blocked: matches!(error, Error::InterruptedOpenTool(_)),
                 turn,
                 usage,
             },
@@ -785,6 +793,7 @@ mod tests {
                         status: AgentStatus::Idle,
                         output: Some(output.into()),
                         error: None,
+                        resume_blocked: false,
                         turn: Some(turn),
                         usage: Default::default(),
                     },
@@ -940,6 +949,7 @@ mod tests {
                         status: AgentStatus::Interrupted,
                         output: None,
                         error: Some("worker cleanup failure".into()),
+                        resume_blocked: false,
                         turn: None,
                         usage: Default::default(),
                     },
@@ -997,6 +1007,7 @@ mod tests {
                         status: AgentStatus::Idle,
                         output: None,
                         error: None,
+                        resume_blocked: false,
                         turn: None,
                         usage: Default::default(),
                     },

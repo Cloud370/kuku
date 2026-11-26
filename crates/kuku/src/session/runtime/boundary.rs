@@ -229,6 +229,7 @@ impl Session {
                     status: AgentStatus::Idle,
                     output: None,
                     error: None,
+                    resume_blocked: false,
                     turn: None,
                     usage: UsageTotals::default(),
                 },

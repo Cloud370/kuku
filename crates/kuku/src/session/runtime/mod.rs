@@ -201,6 +201,9 @@ impl Session {
         }
         usage::recover_compaction(&mut writer, &mut state)?;
         state.mark_interrupted();
+        for (address, agent) in &mut state.agents {
+            controls::refresh_cancelled_turn_blocker(&events_path, address, agent, u64::MAX)?;
+        }
         state.outputs.collect(
             &output_dir,
             options.limits.output_retention_secs,

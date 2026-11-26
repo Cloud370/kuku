@@ -539,6 +539,7 @@ mod retry_progress_tests {
             execution_id: None,
             last_output: None,
             last_error: Some("connection failed".into()),
+            resume_blocked: false,
             permission: None,
             question: None,
             usage: UsageTotals::default(),

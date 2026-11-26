@@ -280,7 +280,13 @@ impl Session {
 
     /// Read a closed session's selected snapshot and pending inputs without opening runtime resources.
     pub fn read_view(events_path: &Path, address: &str) -> Result<AgentView> {
-        let (state, cursor) = load_state(events_path)?;
+        let (mut state, cursor) = load_state(events_path)?;
+        super::controls::refresh_cancelled_turn_blocker(
+            events_path,
+            address,
+            state.agent_mut(address)?,
+            cursor,
+        )?;
         state.view(address, cursor)
     }
 

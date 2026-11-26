@@ -514,6 +514,7 @@ mod tests {
                 turn: Some(turn),
                 output: Some("complete".into()),
                 error: None,
+                resume_blocked: false,
                 usage,
             },
         )
