@@ -42,7 +42,7 @@ pub(crate) fn read_file(
         args,
         scope,
         ReadBy::Model,
-        limits.max_preview_bytes - PAGE_NOTICE_BYTES,
+        limits.max_read_file_bytes - PAGE_NOTICE_BYTES,
         limits.workspace_io.scan_bytes,
         Some((prior_events, conversation, read_event_id)),
         cancelled,
@@ -267,9 +267,52 @@ mod tests {
 
     fn test_limits() -> crate::RuntimeLimits {
         crate::RuntimeLimits {
-            max_preview_bytes: TEST_PREVIEW_BYTES,
+            max_read_file_bytes: TEST_PREVIEW_BYTES,
             ..crate::RuntimeLimits::default()
         }
+    }
+
+    #[test]
+    fn default_read_page_is_bounded_by_utf8_bytes_and_resumes_at_a_whole_line() {
+        let dir = workspace();
+        let line = "界".repeat(35);
+        let source = format!("{line}\n").repeat(400);
+        std::fs::write(dir.path().join("large.txt"), &source).unwrap();
+        let read = |offset| {
+            super::read_file(
+                &serde_json::json!({"path":"large.txt", "offset":offset}),
+                FileScope::Unprepared(dir.path()),
+                &ConversationAddress::MAIN,
+                &[],
+                17,
+                &crate::RuntimeLimits::default(),
+                &|| false,
+            )
+        };
+
+        let first = read(1);
+        assert_eq!("ok", first.status);
+        assert!(first.truncated);
+        assert!((32 * 1024 - 256..=32 * 1024).contains(&first.model_content.len()));
+        let first = first.structured.unwrap();
+        let next = first["next_offset"].as_u64().unwrap();
+        assert_eq!(next - 1, first["line_count"]);
+
+        let last = read(next);
+        assert_eq!("ok", last.status);
+        assert!(!last.truncated);
+        assert!(last.model_content.starts_with(&format!("{next}\t{line}\n")));
+        let last = last.structured.unwrap();
+        assert!(last["next_offset"].is_null());
+        assert_eq!(first["end_byte"], last["start_byte"]);
+        assert_eq!(
+            format!(
+                "{}{}",
+                first["raw_text"].as_str().unwrap(),
+                last["raw_text"].as_str().unwrap()
+            ),
+            source
+        );
     }
 
     #[test]

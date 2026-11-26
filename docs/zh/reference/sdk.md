@@ -162,6 +162,8 @@ cargo run -p kuku --example session_task -- \
 
 默认限额允许 64 个 Agent、每 Agent 128 条待处理输入、65,536 输入字节、四个模型流、每 Agent 八个工具、每份保留输出 8 MiB、首次预览 8 KiB 和 128 条临时观察。宿主需要限制传输大小时，可通过 `RuntimeLimits::max_request_bytes` 设置序列化请求上限。预览至少 1 KiB，以保留完整引用和标志。
 
+`RuntimeLimits.max_read_file_bytes` 设置[模型直读文件](tools.md#notes-by-tool)的字节预算，独立于仍用于搜索分页和保留输出预览的 `max_preview_bytes`。
+
 `RuntimeLimits.max_requests_per_open` 可限制所有 Agent Turn 的总尝试数，重开后重置。`RuntimeLimits.max_output_tokens_per_request` 可为宿主上的每次响应设置生成上限。两者默认都是 `None`。Agent 显式设置的输出上限优先于模型配置，宿主上限适用于每个 Agent。Rust 的 `ModelConfig.max_output_tokens`、`AgentSelection.max_output_tokens` 和 `ModelSelection.max_output_tokens` 类型均为 `Option<u32>`。协议允许时，省略有效值就由供应商选择默认行为。请求准备记录给出本次请求采用的值。`session_task --max-output-tokens N` 同时设置宿主和主 Agent 的上限。[模型设置](config.md#模型设置)
 
 `RuntimeLimits.retry_transient_provider_errors` 默认为 true。最多进行六次尝试（五次重试），所有可重试的 provider 故障共用 2/4/8/16/32 秒指数退避，并加 0–25% 抖动。有效且不超过 30 秒的 `Retry-After` 可延长等待；缺失、无效或更长的提示不会禁用重试，超过 30 秒的提示会被忽略。传输层将明确的认证、权限、额度、上下文、请求和无效响应错误视为终止条件。首个流内容前的错误可以重试；输出开始后发生的可重试错误会结束本次尝试，以免重复已发出或持久化的副作用。每次重试沿用已准备请求，只有实际派发的尝试计入调用方请求预算。可将此选项设为 false 或使用 `session_task --no-provider-retry` 关闭重试。示例在 `limits.automatic_retries` 中报告五次允许的重试（禁用时为零）。
