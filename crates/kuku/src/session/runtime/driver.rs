@@ -30,6 +30,7 @@ impl From<Error> for DriveFailure {
 impl Session {
     pub(super) fn schedule_locked(&self, state: &mut State, address: &str) -> Result<()> {
         ensure_open(state)?;
+        self.ensure_journal_healthy()?;
         let agent = state.agent(address)?;
         if matches!(
             agent.snapshot.status,
@@ -40,7 +41,9 @@ impl Session {
         if agent.active_epoch.is_some() {
             return Ok(());
         }
-        if agent.inbox.is_empty() && agent.permission_reply.is_none() {
+        if agent.snapshot.job_needing_review().is_some()
+            || agent.inbox.is_empty() && agent.permission_reply.is_none()
+        {
             return Ok(());
         }
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
@@ -194,7 +197,7 @@ impl Session {
                 }
                 let output_failure = faults
                     .output_persistence_failed
-                    .then(|| self.remember_output_failure(address));
+                    .then(|| self.remember_foreground_output_failure(address));
                 if faults.cleanup_incomplete {
                     let message = format!(
                         "agent '{address}' tool cleanup did not finish; owned resources may remain"
@@ -263,6 +266,10 @@ impl Session {
                         );
                         let pending = &state.agents[address].inbox;
                         if waiting
+                            || state.agents[address]
+                                .snapshot
+                                .job_needing_review()
+                                .is_some()
                             || !pending
                                 .iter()
                                 .any(|entry| entry.input.activation == Activation::Wake)
@@ -319,11 +326,10 @@ impl Session {
         epoch: u64,
         failure: DriveFailure,
     ) -> Result<()> {
-        self.settle_failure(address, epoch, &failure)
-            .map_err(|error| self.remember_settlement_failure(error))?;
+        self.settle_failure(address, epoch, &failure)?;
         match failure {
             DriveFailure::Execution(_) => Ok(()),
-            DriveFailure::Cleanup(error) => Err(self.remember_settlement_failure(error)),
+            DriveFailure::Cleanup(error) => Err(error),
         }
     }
 
@@ -571,10 +577,16 @@ impl Session {
         Ok(())
     }
 
-    fn remember_output_failure(&self, address: &str) -> Error {
-        self.remember_settlement_failure(Error::InvalidEventStream(format!(
+    fn remember_foreground_output_failure(&self, address: &str) -> Error {
+        let message = format!(
             "agent '{address}': tool output could not be durably captured; execution stopped before the next model request"
-        )))
+        );
+        self.inner
+            .foreground_output_failures
+            .lock()
+            .unwrap()
+            .insert(address.into(), message.clone());
+        Error::InvalidEventStream(message)
     }
 
     async fn cleanup_failed_run(
@@ -590,7 +602,8 @@ impl Session {
             match run.next_with_tool_faults().await {
                 Ok(Some((event, faults))) => {
                     if faults.output_persistence_failed {
-                        failure.get_or_insert_with(|| self.remember_output_failure(address));
+                        let error = self.remember_foreground_output_failure(address);
+                        failure.get_or_insert(error);
                     }
                     if faults.cleanup_incomplete {
                         let message = format!(

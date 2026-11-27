@@ -175,6 +175,7 @@ impl Session {
         turn: u64,
         tool_call_id: &str,
         tool: &str,
+        can_run_during_review: bool,
     ) -> Result<()> {
         let mut state = self.inner.state.lock().unwrap();
         if self
@@ -184,6 +185,11 @@ impl Session {
             != Some(turn)
         {
             return Err(Error::ExecutionNotActive(execution));
+        }
+        if !can_run_during_review
+            && let Some(job_id) = state.agent(address)?.snapshot.job_needing_review()
+        {
+            return Err(Error::JobCleanupReviewRequired(job_id.to_owned()));
         }
         let event = EventStore::open(self.events_path())?.append(EventPayload::Unknown(
             serde_json::json!({
@@ -202,6 +208,16 @@ impl Session {
             || agent.snapshot.status != AgentStatus::Running
             || state.closing
         {
+            return Ok(None);
+        }
+        if agent.snapshot.job_needing_review().is_some() {
+            self.commit(
+                &mut state,
+                Record::ExecutionDeferred {
+                    address: address.into(),
+                },
+            )?;
+            state.agent_mut(address)?.active_epoch = None;
             return Ok(None);
         }
         let execution = agent
@@ -345,8 +361,10 @@ impl Session {
         skill_names: &[String],
     ) -> Result<bool> {
         let state = self.inner.state.lock().unwrap();
-        Ok(state.agent(address)?.inbox.iter().any(|entry| {
+        let agent = state.agent(address)?;
+        Ok(agent.inbox.iter().any(|entry| {
             entry.input.timing == InputTiming::NextStep
+                && agent.can_admit(&entry.input)
                 && skill_is_eligible(&entry.input, skill_names)
         }))
     }
@@ -361,7 +379,7 @@ impl Session {
             .inbox
             .iter()
             .filter(|entry| timing.is_none_or(|timing| entry.input.timing == timing))
-            .filter(|entry| eligible_input(&entry.input))
+            .filter(|entry| agent.can_admit(&entry.input) && eligible_input(&entry.input))
             .peekable();
         let first = eligible.peek().copied();
         let mut bytes = 0;
@@ -409,6 +427,7 @@ impl Session {
         address: &str,
         execution: u64,
     ) -> Result<&'a AgentState> {
+        self.ensure_journal_healthy()?;
         let agent = state.agent(address)?;
         if state.closing
             || agent.snapshot.status != AgentStatus::Running

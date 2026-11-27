@@ -41,7 +41,7 @@ CASE_RULES = (
     (("crates/kuku-tui/src/jobs*", "crates/kuku-tui/src/app/background_jobs.rs",
       "crates/kuku-tui/src/transcript/job.rs", "crates/kuku/src/session/runtime/jobs*",
       "crates/kuku-server/src/routes/jobs.rs", "scripts/acceptance/interactive_lifecycle.py"),
-     ("background-job",)),
+     ("background-job", "job-cleanup")),
     (("crates/kuku-server/*", "crates/kuku-client/*", "crates/kuku/src/event/store*",
       "crates/kuku/src/session/runtime/mod.rs", "crates/kuku/src/session/runtime/driver.rs",
       "crates/kuku/src/session/runtime/controls*", "crates/kuku/src/session/runtime/creation.rs",

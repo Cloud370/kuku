@@ -263,11 +263,9 @@ async fn sync_failure_does_not_publish_or_allow_later_commits() {
     assert!(error.to_string().contains("cannot commit event 1"));
     assert_eq!(0, store.last_id());
     assert!(shared.read_after(0, 1).is_err());
-    assert!(
-        tokio::time::timeout(Duration::from_millis(20), notification)
-            .await
-            .is_err()
-    );
+    tokio::time::timeout(Duration::from_secs(1), notification)
+        .await
+        .expect("journal failure should wake waiters without publishing an event");
     replace_writer_file(
         &store,
         OpenOptions::new()

@@ -35,6 +35,10 @@ pub(crate) enum ContextControl {
         target: Target,
         execution_id: u64,
     },
+    ReviewJobCleanup {
+        target: Target,
+        job_id: String,
+    },
     ReviewBlocked {
         target: Target,
         turn: Option<u64>,

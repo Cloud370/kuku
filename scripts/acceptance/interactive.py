@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import threading
 import time
@@ -416,6 +417,80 @@ def preserve_draft_after_interrupt(client):
     for explicit_stop in (False, True):
         interrupt_with_queue(client, explicit_stop=explicit_stop)
 
+
+
+def isolated_job_cleanup(client):
+    # Linux process groups can leave a pipe holder outside the original Job.
+    setsid = shutil.which("setsid") if sys.platform.startswith("linux") else None
+    if setsid is None:
+        print("Skipped the Linux inherited-pipe fixture.")
+        return
+    workspace = client.workspace("work-job-cleanup")
+    prompt = "Start two independent background jobs"
+    follow_up = "Continue once the interrupted job is reviewed"
+    release = workspace / "release-pipe"
+    # A bounded escape from the fixture process group simulates a pipe held
+    # elsewhere even after the direct command process has been reaped.
+    script = (
+        '"$1" sh -c \'printf "saved before cancel\\n"; touch pipe-ready; '
+        'for i in $(seq 1 400); do [ -f release-pipe ] && exit 0; sleep 0.05; done\' & '
+        'while [ ! -f pipe-ready ]; do sleep 0.02; done; wait'
+    )
+    try:
+        with client.terminal(workspace) as terminal:
+            terminal.expect("New session", state="Ready")
+            terminal.submit(prompt)
+            client.provider.next(prompt).tool(
+                "run_command", "job-a", program="sh", args=["-c", script, "fixture", setsid],
+                background=True,
+            )
+            starter = client.provider.next("job-a")
+            a = json.loads(starter.tool_result("job-a")["content"])["job_id"]
+            eventually("the pipe holder to start", lambda: (workspace / "pipe-ready").is_file())
+            client.gated_tool(workspace, starter, "job-b", background=True)
+            stopper = client.provider.next("job-b")
+            b = json.loads(stopper.tool_result("job-b")["content"])["job_id"]
+            stopper.tool("cancel_job", "stop-a", job_id=a)
+            waiter = client.provider.next("stop-a")
+            assert "capture incomplete" in waiter.tool_result("stop-a")["content"]
+            waiter.tool("wait_job", "wait-b", job_id=b)
+            client.provider.assert_idle(duration=0.2)
+            client.release_tool(workspace)
+            settled = client.provider.next("wait-b")
+            settled.expect_tool_output("wait-b", TOOL_OUTPUT)
+            settled.text("Independent job completed.")
+            terminal.expect("Independent job completed.", also=("Review " + a,))
+            session = client.session(workspace)
+            terminal.submit(follow_up)
+            terminal.expect("1 saved", also=(follow_up, "Review " + a))
+            client.provider.assert_idle(duration=0.2)
+            terminal.exit_cleanly()
+
+        with client.terminal(workspace) as terminal:
+            terminal.resume(prompt)
+            terminal.expect("1 saved", also=(follow_up, "Review " + a))
+            query = urlencode({"workspace": workspace, "agent": "main"})
+            job_path = f"/sessions/{session}/jobs/{a}?{query}"
+            a_result = client.request("GET", job_path).as_json()
+            assert a_result["status"] == "interrupted"
+            assert a_result["result"]["cleanup_incomplete"]
+            assert not a_result["result"]["output_persistence_failed"]
+            assert client.request("DELETE", job_path).as_json() == a_result
+            focus_action(terminal, "Review job cleanup")
+            terminal.press("\r")
+            terminal.expect("Review cleanup", also=("Partial output saved", "Read saved output"))
+            terminal.press("\x1b[B\r")
+            terminal.expect("Continue after review", also=("Keep paused",))
+            client.provider.assert_idle(duration=0.2)
+            terminal.press("\x1b[B\r")
+            resumed = client.provider.next(follow_up)
+            assert json.dumps(resumed.request["messages"]).count(follow_up) == 1
+            resumed.text("Queue resumed after review.")
+            terminal.expect("Queue resumed after review.", absent=("Review " + a,))
+            terminal.exit_cleanly()
+    finally:
+        release.touch()
+    print("A's unconfirmed cleanup stayed with A. B returned its result and the reviewed queue ran once.")
 
 def queued_receipt(client, workspace, session, text):
     query = urlencode({"workspace": workspace, "agent": "main"})
@@ -1167,6 +1242,7 @@ def main():
                  ("composer-actions", composer_actions),
                  ("agent-setup", agent_setup),
                  ("interrupt", preserve_draft_after_interrupt),
+                 ("job-cleanup", isolated_job_cleanup),
                  ("paste", editable_multiline_paste),
                  ("remote-and-script", lambda client: remote_authorization_and_script_json(
                      client, client.workspace("work-script"))),

@@ -134,6 +134,9 @@ pub(super) enum Record {
     ExecutionStarted {
         address: String,
     },
+    ExecutionDeferred {
+        address: String,
+    },
     CompactionRequested {
         command: Command,
         address: String,
@@ -230,6 +233,11 @@ pub(super) enum Record {
         address: String,
         message: String,
     },
+    JobCleanupReviewed {
+        command: Command,
+        address: String,
+        job_id: String,
+    },
     JobFinished {
         job_id: String,
         agent: String,
@@ -314,6 +322,11 @@ pub(super) struct AgentState {
 impl AgentState {
     pub(super) fn discard_on_resume(&self) -> bool {
         self.stopped_at.is_some() && self.discard_cancelled_turn
+    }
+
+    pub(super) fn can_admit(&self, input: &Input) -> bool {
+        self.snapshot.job_needing_review().is_none()
+            || input.command_id.starts_with(JOB_DELIVERY_PREFIX) && input.source.is_job_delivery()
     }
 
     pub(super) fn submitted_inputs(&self) -> usize {
@@ -451,6 +464,7 @@ impl State {
                             last_output: None,
                             last_error: None,
                             resume_blocked: false,
+                            job_cleanup_reviews: Vec::new(),
                             permission: None,
                             question: None,
                             usage: UsageTotals::default(),
@@ -663,6 +677,14 @@ impl State {
                 snapshot.status = AgentStatus::Running;
                 snapshot.last_error = None;
                 snapshot.resume_blocked = false;
+            }
+            Record::ExecutionDeferred { address } => {
+                let agent = self.agent_mut(&address)?;
+                agent.snapshot.status = AgentStatus::Idle;
+                agent.snapshot.execution_id = None;
+                if agent.permission_reply.is_none() {
+                    agent.set_active_config(None);
+                }
             }
             Record::CompactionRequested {
                 command, address, ..
@@ -942,7 +964,25 @@ impl State {
                     status,
                     elapsed_ms,
                 })?;
+                if result.cleanup_incomplete {
+                    let owner = self.agent_mut(&agent)?;
+                    owner.snapshot.job_cleanup_reviews.push(job_id);
+                }
                 self.deliver(event_id, String::new(), *delivery, Vec::new())?;
+            }
+            Record::JobCleanupReviewed {
+                command,
+                address,
+                job_id,
+            } => {
+                let owner = self.agent_mut(&address)?;
+                if owner.snapshot.job_needing_review() != Some(job_id.as_str()) {
+                    return Err(Error::InvalidEventStream(format!(
+                        "invalid cleanup review for job '{job_id}'"
+                    )));
+                }
+                owner.snapshot.job_cleanup_reviews.remove(0);
+                self.remember_command(command, event_id, address);
             }
             Record::CleanupFailed { address, message } => {
                 self.agent_mut(&address)?.snapshot.last_error = Some(message.clone());

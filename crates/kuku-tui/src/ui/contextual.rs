@@ -115,7 +115,9 @@ pub(super) fn label(control: &ContextControl) -> String {
         ContextControl::RepairCredentials { .. } => "F2 Repair credentials · Enter".into(),
         ContextControl::Continue { .. } => "F2 Continue · Enter".into(),
         ContextControl::Interrupt { .. } => "F2 Stop · Enter".into(),
-        ContextControl::ReviewBlocked { .. } | ContextControl::PendingRecovery { .. } => {
+        ContextControl::ReviewJobCleanup { .. }
+        | ContextControl::ReviewBlocked { .. }
+        | ContextControl::PendingRecovery { .. } => {
             format!("{} · F2", action_label(control))
         }
         ContextControl::PreviousAgent { .. } => "F2 Back · Enter".into(),
@@ -133,6 +135,7 @@ pub(super) fn action_label(control: &ContextControl) -> &'static str {
         ContextControl::RepairCredentials { .. } => "Repair credentials",
         ContextControl::Continue { .. } => "Continue",
         ContextControl::Interrupt { .. } => "Stop",
+        ContextControl::ReviewJobCleanup { .. } => "Review job cleanup",
         ContextControl::ReviewBlocked { .. } => "Review unconfirmed tool",
         ContextControl::PendingRecovery { .. } if control.is_send_recovery() => "Unconfirmed send",
         ContextControl::PendingRecovery { .. } if control.is_interrupt_recovery() => {

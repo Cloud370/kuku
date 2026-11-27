@@ -133,6 +133,7 @@ export interface Snapshot {
     status: AgentStatus;
     config: AgentConfig;
     turn: number | null;
+    job_cleanup_reviews?: string[];
     last_error: string | null;
     permission: PermissionRequest | null;
     question: QuestionRequest | null;

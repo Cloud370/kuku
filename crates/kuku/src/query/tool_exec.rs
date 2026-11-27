@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::event::{EventPayload, EventStore};
 use crate::provider::types::ProviderToolCall;
 use crate::session::runtime::JobControl;
@@ -368,6 +368,27 @@ pub(super) async fn execute_tool_call(
         result.structured = structured;
     }
     Ok(result)
+}
+
+pub(super) fn runtime_hooks_allowed(query: &super::types::Query) -> Result<bool> {
+    let Some(runtime) = &query.runtime else {
+        return Ok(true);
+    };
+    let inner = runtime
+        .upgrade()
+        .ok_or_else(|| Error::ExecutionNotActive(query.runtime_execution.unwrap_or_default()))?;
+    Ok(crate::Session { inner }
+        .job_needing_review(query.conversation.as_str())?
+        .is_none())
+}
+
+pub(super) fn end_hook_registry(
+    pending: &PendingRun,
+) -> Result<Option<std::sync::Arc<crate::plugin::PluginRegistry>>> {
+    match &pending.plugin_registry {
+        Some(registry) if runtime_hooks_allowed(&pending.query)? => Ok(Some(registry.clone())),
+        _ => Ok(None),
+    }
 }
 
 pub(super) async fn run_tool_pre_hooks(

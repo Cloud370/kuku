@@ -417,7 +417,11 @@ impl EventStore {
         patch_event_id(&mut payload, id)?;
         let event = StoredEvent { id, payload };
         let record = serialize_record(&event)?;
-        writer.write(&self.inner.path, id, &record)?;
+        if let Err(error) = writer.write(&self.inner.path, id, &record) {
+            drop(writer);
+            self.changed().notify_waiters();
+            return Err(error);
+        }
         writer.advance(&event, record.len());
         drop(writer);
         self.changed().notify_waiters();
@@ -447,7 +451,11 @@ impl EventStore {
             records.extend(record);
             events.push((event, length));
         }
-        writer.write(path, first, &records)?;
+        if let Err(error) = writer.write(path, first, &records) {
+            drop(writer);
+            self.changed().notify_waiters();
+            return Err(error);
+        }
         let events = events
             .into_iter()
             .map(|(event, bytes)| {
@@ -468,6 +476,14 @@ impl EventStore {
             serialize_record(&StoredEvent { id, payload })?;
         }
         Ok(())
+    }
+
+    pub(crate) fn check_write_health(&self) -> Result<()> {
+        self.inner
+            .writer
+            .lock()
+            .unwrap()
+            .ensure_healthy(&self.inner.path)
     }
 
     #[cfg(test)]
@@ -696,6 +712,7 @@ impl EventStore {
         self.last_id().saturating_add(1)
     }
 
+    /// Wakes readers after a commit or a writer durability failure.
     pub(crate) fn changed(&self) -> Arc<Notify> {
         Arc::clone(&self.inner.changed)
     }

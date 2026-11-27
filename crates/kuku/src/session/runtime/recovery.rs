@@ -18,7 +18,7 @@ pub(super) struct Projection {
     id: String,
     pub(super) state: State,
     pub(super) startup: StartupCache,
-    jobs: JobReplay,
+    pub(super) jobs: JobReplay,
 }
 
 impl Projection {

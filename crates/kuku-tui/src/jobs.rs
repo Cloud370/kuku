@@ -122,6 +122,7 @@ pub(crate) enum Job {
     Save(Command),
     SaveValue(Selection, Box<ValueSave>),
     CancelBackground(Selection, String),
+    InspectBackground(Selection, String),
     Send(Command),
     Check(Command),
     Discard(Command),
@@ -213,6 +214,7 @@ pub(crate) enum Update {
     Saved(Command, Result<(), Error>),
     ValueSaved(Selection, Option<String>, Result<NamedValue, Error>),
     BackgroundJobCancelled(Selection, Result<JobSnapshot, Error>),
+    BackgroundJobInspected(Selection, Result<JobSnapshot, Error>),
     Sent(String, Result<Acknowledgement, Error>),
     Checked(String, Result<Option<Acknowledgement>, Error>),
     Discarded(String, Result<(), Error>),
@@ -661,6 +663,10 @@ async fn run_connected(job: Job, connection: Connection) -> Update {
             };
             Update::ValueSaved(selection, text, result)
         }
+        Job::InspectBackground(selection, id) => {
+            let result = client.job(&selection.target, &id).await;
+            Update::BackgroundJobInspected(selection, result)
+        }
         Job::CancelBackground(selection, id) => {
             let result = client.cancel_job(&selection.target, &id).await;
             Update::BackgroundJobCancelled(selection, result)
@@ -841,6 +847,26 @@ pub(crate) fn job_detail(job: &JobSnapshot) -> String {
     );
     if let Some(ms) = job.elapsed_ms {
         detail.push_str(&format!(" · {}", format_duration_ms(ms)));
+    }
+    if let Some(result) = &job.result {
+        if let Some(facts) = &result.structured {
+            if let Some(signal) = facts["signal"].as_i64() {
+                detail.push_str(&format!("\nProcess stopped · signal {signal}"));
+            } else if let Some(code) = facts["exit_code"].as_i64() {
+                detail.push_str(&format!("\nProcess exited · code {code}"));
+            }
+        }
+        if result.cleanup_incomplete {
+            detail.push_str("\nCleanup unconfirmed");
+        }
+        if result.output_persistence_failed {
+            detail.push_str("\nOutput could not be saved");
+        } else if let Some(facts) = &result.structured
+            && facts["capture_complete"] == false
+            && job.output_id.is_some()
+        {
+            detail.push_str("\nPartial output saved");
+        }
     }
     let title = single_line(job_title(job));
     detail.push_str(&format!("\nTask · {title}"));

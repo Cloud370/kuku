@@ -30,7 +30,7 @@ pub(crate) use script_permissions::ScriptOwner;
 pub(crate) use selection::resolve_agent_model;
 pub(crate) use values::OutputSelector;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
@@ -66,6 +66,13 @@ use record::{Command, Record, State, fingerprint};
 
 type WorkerOutcome = std::result::Result<(), String>;
 type CleanupOutcome = Option<WorkerOutcome>;
+type CloseOutcome = Option<std::result::Result<(), CloseFailure>>;
+
+#[derive(Clone)]
+enum CloseFailure {
+    Shutdown(String),
+    JobsNeedingReview(Vec<String>),
+}
 
 pub(crate) struct SessionInner {
     id: String,
@@ -81,13 +88,14 @@ pub(crate) struct SessionInner {
     workers: Mutex<HashMap<u64, Worker>>,
     worker_outcomes: Mutex<HashMap<String, (u64, WorkerOutcome)>>,
     job_workers: Mutex<HashMap<String, jobs::JobWorker>>,
-    settlement_failure: OnceLock<String>,
+    foreground_output_failures: Mutex<BTreeMap<String, String>>,
+    journal_failure: OnceLock<String>,
     live: broadcast::Sender<observe::LiveObservation>,
     model_capacity: Arc<Semaphore>,
     tool_adapters: Arc<std::collections::BTreeMap<String, crate::adapter::RegisteredTool>>,
     model_request_budget: Option<Arc<std::sync::atomic::AtomicU64>>,
     lease: Mutex<Option<SessionLease>>,
-    close_result: Mutex<Option<watch::Receiver<CleanupOutcome>>>,
+    close_result: Mutex<Option<watch::Receiver<CloseOutcome>>>,
 }
 
 struct SessionLease(PathBuf);
@@ -183,7 +191,10 @@ impl Session {
             options.limits.context_replay_bytes(),
         )?;
         let recovery::Projection {
-            mut state, startup, ..
+            mut state,
+            startup,
+            jobs,
+            ..
         } = checkpoint;
         creation::prepare_journal(
             &mut writer,
@@ -201,9 +212,6 @@ impl Session {
         }
         usage::recover_compaction(&mut writer, &mut state)?;
         state.mark_interrupted();
-        for (address, agent) in &mut state.agents {
-            controls::refresh_cancelled_turn_blocker(&events_path, address, agent, u64::MAX)?;
-        }
         state.outputs.collect(
             &output_dir,
             options.limits.output_retention_secs,
@@ -230,7 +238,8 @@ impl Session {
                 workers: Mutex::new(HashMap::new()),
                 worker_outcomes: Mutex::new(HashMap::new()),
                 job_workers: Mutex::new(HashMap::new()),
-                settlement_failure: OnceLock::new(),
+                foreground_output_failures: Mutex::new(BTreeMap::new()),
+                journal_failure: OnceLock::new(),
                 live,
                 model_capacity,
                 tool_adapters,
@@ -239,8 +248,20 @@ impl Session {
                 close_result: Mutex::new(None),
             }),
         };
-        session.recover_script_permissions()?;
         session.recover_jobs()?;
+        jobs.settle_unanswered_controls(&session)?;
+        session.recover_script_permissions()?;
+        {
+            let mut state = session.inner.state.lock().unwrap();
+            for (address, agent) in &mut state.agents {
+                controls::refresh_cancelled_turn_blocker(
+                    session.events_path(),
+                    address,
+                    agent,
+                    u64::MAX,
+                )?;
+            }
+        }
         Ok(session)
     }
 
@@ -870,12 +891,27 @@ impl Session {
             match &*close {
                 Some(result) => result.clone(),
                 None => {
-                    self.inner.state.lock().unwrap().closing = true;
+                    let (jobs, closing_jobs) = {
+                        let mut state = self.inner.state.lock().unwrap();
+                        state.closing = true;
+                        let jobs = std::mem::take(&mut *self.inner.job_workers.lock().unwrap());
+                        let closing_jobs = jobs
+                            .iter()
+                            .filter(|(id, job)| {
+                                state
+                                    .jobs
+                                    .get(&job.agent, id)
+                                    .is_ok_and(|snapshot| snapshot.status == JobStatus::Running)
+                            })
+                            .map(|(id, job)| (id.clone(), job.agent.clone()))
+                            .collect::<Vec<_>>();
+                        (jobs, closing_jobs)
+                    };
                     let (complete, result) = watch::channel(None);
                     *close = Some(result.clone());
                     let session = self.clone();
                     tokio::spawn(async move {
-                        let outcome = session.finish_close().await;
+                        let outcome = session.finish_close(jobs, closing_jobs).await;
                         let _ = complete.send(Some(outcome));
                     });
                     result
@@ -884,7 +920,12 @@ impl Session {
         };
         loop {
             if let Some(outcome) = result.borrow().clone() {
-                return outcome.map_err(Error::InvalidEventStream);
+                return outcome.map_err(|failure| match failure {
+                    CloseFailure::Shutdown(error) => Error::InvalidEventStream(error),
+                    CloseFailure::JobsNeedingReview(jobs) => {
+                        Error::SessionJobCleanupIncomplete(jobs.join(", "))
+                    }
+                });
             }
             result.changed().await.map_err(|_| {
                 Error::InvalidEventStream("session cleanup task ended without a result".into())
@@ -892,14 +933,17 @@ impl Session {
         }
     }
 
-    async fn finish_close(&self) -> std::result::Result<(), String> {
+    async fn finish_close(
+        &self,
+        jobs: HashMap<String, jobs::JobWorker>,
+        closing_jobs: Vec<(String, String)>,
+    ) -> std::result::Result<(), CloseFailure> {
         let workers = std::mem::take(&mut *self.inner.workers.lock().unwrap());
-        let jobs = std::mem::take(&mut *self.inner.job_workers.lock().unwrap());
         for worker in workers.values() {
             let _ = worker.cancel.send(true);
         }
-        for job in jobs.values() {
-            job.cancel();
+        for (id, _) in &closing_jobs {
+            jobs[id].cancel();
         }
         let mut failure = None;
         for (_, worker) in workers {
@@ -934,14 +978,14 @@ impl Session {
         {
             failure.get_or_insert(error);
         }
-        let writer = {
+        let (writer, jobs_needing_review) = {
             let _values = self.inner.value_writes.lock().await;
             let mut state = self.inner.state.lock().unwrap();
             if let Some(message) = state.cleanup_failures.values().next() {
                 failure.get_or_insert_with(|| Error::InvalidEventStream(message.clone()));
             }
             if let Err(error) = self.commit(&mut state, Record::SessionClosed) {
-                failure.get_or_insert(error);
+                failure = Some(error);
             }
             state.closed = true;
             let writer = self.inner.writer.lock().unwrap().take();
@@ -950,11 +994,30 @@ impl Session {
                 writer.changed().notify_waiters();
             }
             self.inner.startup.lock().unwrap().clear();
-            writer
+            let mut reviews: Vec<_> = closing_jobs
+                .into_iter()
+                .filter_map(|(id, agent)| {
+                    state
+                        .agents
+                        .get(&agent)?
+                        .snapshot
+                        .job_cleanup_reviews
+                        .contains(&id)
+                        .then_some(id)
+                })
+                .collect();
+            reviews.sort_unstable();
+            (writer, reviews)
         };
+        if failure.is_none() {
+            let output_failures = self.inner.foreground_output_failures.lock().unwrap();
+            if let Some(error) = output_failures.values().next() {
+                failure = Some(Error::InvalidEventStream(error.clone()));
+            }
+        }
         if let Some(writer) = writer {
             if failure.is_none()
-                && self.inner.settlement_failure.get().is_none()
+                && self.inner.journal_failure.get().is_none()
                 && writer.needs_packing()
             {
                 let id = self.id().to_owned();
@@ -983,33 +1046,49 @@ impl Session {
         }
         self.inner.lease.lock().unwrap().take();
         match (
-            self.inner.settlement_failure.get(),
+            self.inner.journal_failure.get(),
             failure.map(|error| error.to_string()),
         ) {
             (Some(settlement), Some(other)) if settlement != &other => {
-                Err(format!("{settlement}\n{other}"))
+                Err(CloseFailure::Shutdown(format!("{settlement}\n{other}")))
             }
-            (Some(settlement), _) => Err(settlement.clone()),
-            (None, Some(error)) => Err(error),
+            (Some(settlement), _) => Err(CloseFailure::Shutdown(settlement.clone())),
+            (None, Some(error)) => Err(CloseFailure::Shutdown(error)),
+            (None, None) if !jobs_needing_review.is_empty() => {
+                Err(CloseFailure::JobsNeedingReview(jobs_needing_review))
+            }
             (None, None) => Ok(()),
         }
     }
 
-    fn remember_settlement_failure(&self, error: Error) -> Error {
-        self.inner
-            .settlement_failure
-            .get_or_init(|| error.to_string());
+    fn ensure_journal_healthy(&self) -> Result<()> {
+        if let Some(error) = self.inner.journal_failure.get() {
+            return Err(Error::InvalidEventStream(error.clone()));
+        }
+        if let Some(writer) = self.inner.writer.lock().unwrap().as_ref() {
+            writer.check_write_health()?;
+        }
+        Ok(())
+    }
+
+    fn remember_journal_failure(&self, error: Error) -> Error {
+        self.inner.journal_failure.get_or_init(|| error.to_string());
         error
     }
 
     fn commit(&self, state: &mut State, record: Record) -> Result<u64> {
+        self.ensure_journal_healthy()?;
         let mut writer = self.inner.writer.lock().unwrap();
         let writer = writer
             .as_mut()
             .ok_or_else(|| Error::InvalidArgument("session resources are closed".into()))?;
         let event = writer.append(record.payload()?)?;
         state.turns.observe(&event, Some(&record));
-        state.reduce(event.id, record)?;
+        state.reduce(event.id, record).map_err(|error| {
+            let failure = self.remember_journal_failure(error);
+            writer.changed().notify_waiters();
+            failure
+        })?;
         Ok(event.id)
     }
 }

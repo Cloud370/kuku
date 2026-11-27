@@ -52,6 +52,10 @@ impl Session {
         payload: EventPayload,
     ) -> Result<bool> {
         let state = self.inner.state.lock().unwrap();
+        self.ensure_journal_healthy()?;
+        if let Some(job_id) = state.agent(agent)?.snapshot.job_needing_review() {
+            return Err(Error::JobCleanupReviewRequired(job_id.to_owned()));
+        }
         if !owner.can_dispatch(&state, agent)? {
             return Ok(false);
         }

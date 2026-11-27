@@ -224,7 +224,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
 
         if let Some(ref plugin_reg) = pending.plugin_registry {
             let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ModelPostResponse);
-            if !hooks.is_empty() {
+            if !hooks.is_empty() && super::tool_exec::runtime_hooks_allowed(&pending.query)? {
                 let input = crate::plugin::executor::HookInput {
                     event: "model.post_response".into(),
                     session_dir: pending
@@ -297,7 +297,7 @@ pub(super) async fn finish_streaming(mut state: StreamingChunkState) -> Result<P
                         errors: pending.tool_errors,
                         rounds: pending.tool_rounds,
                     },
-                    plugin_registry: pending.plugin_registry.clone(),
+                    plugin_registry: super::tool_exec::end_hook_registry(&pending)?,
                     session_dir: pending.events_path.parent().unwrap().to_path_buf(),
                     workspace: pending.workspace.clone(),
                 },
@@ -466,7 +466,7 @@ pub(super) fn cancellation_step(mut pending: PendingRun) -> Result<PendingStep> 
                 errors: pending.tool_errors,
                 rounds: pending.tool_rounds,
             },
-            plugin_registry: pending.plugin_registry.clone(),
+            plugin_registry: super::tool_exec::end_hook_registry(&pending)?,
             session_dir: pending.events_path.parent().unwrap().to_path_buf(),
             workspace: pending.workspace.clone(),
         },

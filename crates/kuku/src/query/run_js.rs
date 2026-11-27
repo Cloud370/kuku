@@ -189,6 +189,15 @@ impl WorkspaceHost {
                 name,
             ));
         };
+        if (!definition.read_only
+            || super::runtime_tools::pre_execute_hooks(self.plugins.as_deref()))
+            && let Some(job_id) = self
+                .actions
+                .session
+                .job_needing_review(&self.actions.agent)?
+        {
+            return Ok(super::runtime_tools::job_review_blocked(&job_id));
+        }
         let id = format!("{}/{}", self.call_id, call.id);
         let mut context = vec![];
         let prepared = super::tool_exec::prepare_host_action(
@@ -451,14 +460,21 @@ impl WorkspaceHost {
                 "dispatched",
                 json!({"args_sha256":hash}),
             )?;
-            if !self.actions.session.mark_script_action_dispatched(
+            match self.actions.session.mark_script_action_dispatched(
                 &self.actions.agent,
                 &self.owner,
                 payload,
-            )? {
-                return Ok(ToolResultEnvelope::cancelled(
-                    "stopped before prepared action dispatch",
-                ));
+            ) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Ok(ToolResultEnvelope::cancelled(
+                        "stopped before prepared action dispatch",
+                    ));
+                }
+                Err(Error::JobCleanupReviewRequired(job_id)) => {
+                    return Ok(super::runtime_tools::job_review_blocked(&job_id));
+                }
+                Err(error) => return Err(error),
             }
         }
         let result = match operation {

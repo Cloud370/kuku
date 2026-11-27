@@ -40,6 +40,7 @@ pub(super) async fn dispatch_provider_step(
     existing_events: Vec<crate::event::StoredEvent>,
     mut frozen_context: Option<crate::query::frozen::ContextCommit>,
 ) -> Result<PendingStep> {
+    super::require_runtime_execution(&pending)?;
     run_model_pre_request_hooks(&mut pending, &resolved_config).await?;
     let handoff_active = pending.handoff_triggered;
     let correlation = super::request_correlation(&pending, &resolved_config);
@@ -560,7 +561,7 @@ async fn run_model_pre_request_hooks(
 ) -> Result<()> {
     if let Some(ref plugin_reg) = pending.plugin_registry {
         let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::ModelPreRequest);
-        if !hooks.is_empty() {
+        if !hooks.is_empty() && crate::query::tool_exec::runtime_hooks_allowed(&pending.query)? {
             let input = crate::plugin::executor::HookInput {
                 event: "model.pre_request".into(),
                 session_dir: pending

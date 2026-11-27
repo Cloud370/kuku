@@ -334,7 +334,11 @@ impl InputObservation {
         if queued {
             result.turn = None;
         }
-        if let Some(approval) = script {
+        if let Some(job_id) = agent.job_needing_review().filter(|_| queued) {
+            result.error = Some(format!(
+                "Input saved in the queue. Review the unconfirmed cleanup of {job_id} in /jobs."
+            ));
+        } else if let Some(approval) = script {
             result.permission = Some(approval.request.clone());
         } else if matches!(
             agent.status,

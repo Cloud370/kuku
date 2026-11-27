@@ -22,6 +22,12 @@ impl App {
         if let Some(request) = self.credential_failure() {
             controls.push(ContextControl::RepairCredentials { request });
         }
+        if let Some(job_id) = self.job_needing_review() {
+            controls.push(ContextControl::ReviewJobCleanup {
+                target: self.selection().target,
+                job_id: job_id.into(),
+            });
+        }
         let recovery = self.pending_recovery_control();
         let interrupt_recovery = recovery.as_ref().is_some_and(|control| {
             control.is_interrupt_recovery() && control.recovers_target(&self.selection().target)
@@ -59,6 +65,10 @@ impl App {
         controls
     }
 
+    pub(crate) fn job_needing_review(&self) -> Option<&str> {
+        self.pane().snapshot.as_ref()?.agent.job_needing_review()
+    }
+
     pub(crate) fn run_control(&self) -> Option<ContextControl> {
         let pane = self.pane();
         let target = self.selection().target;
@@ -72,7 +82,7 @@ impl App {
             return None;
         }
         let snapshot = pane.snapshot.as_ref()?;
-        if snapshot.cleaning_up {
+        if snapshot.cleaning_up || self.job_needing_review().is_some() {
             return None;
         }
         if snapshot.agent.resume_blocked {

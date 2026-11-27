@@ -65,6 +65,7 @@ struct CommandOutcome {
     timed_out: bool,
     cancelled: bool,
     cleanup_incomplete: bool,
+    pipe_capture_incomplete: bool,
     dropped_events: u64,
 }
 
@@ -307,11 +308,17 @@ pub(crate) async fn run_command_to(
         outcome.exit_status.and_then(|status| status.code())
     };
     let capture = match writer
-        .finish_command(outcome.cleanup_incomplete, exit_code)
+        .finish_command(outcome.pipe_capture_incomplete, exit_code)
         .await
     {
         Ok(result) => result,
-        Err(error) => return output_error("sync", error, outcome.cleanup_incomplete),
+        Err(error) => {
+            return outcome.annotate_failure(output_error(
+                "sync",
+                error,
+                outcome.cleanup_incomplete,
+            ));
+        }
     };
     let memory_bytes = output.memory_bytes;
     let mut result = render_command_result(&request, outcome, capture, started.elapsed(), output);
@@ -373,24 +380,101 @@ async fn execute_command(
         }
     };
     drop(directory);
-    let mut capture =
-        capture_command(&mut child, &mut tree, request, output, &event_tx, cancelled).await;
+    let mut outcome = CommandOutcome {
+        started: true,
+        ..CommandOutcome::default()
+    };
+    let mut capture = capture_command(
+        &mut child,
+        &mut tree,
+        request,
+        output,
+        &event_tx,
+        cancelled,
+        &mut outcome,
+    )
+    .await;
     if child.id().is_some() {
         let stop = tree.request_stop(&mut child);
-        let status = timeout(CLEANUP_TIMEOUT, tree.wait(&mut child))
+        let waited = timeout(CLEANUP_TIMEOUT, tree.wait(&mut child))
             .await
             .unwrap_or_else(|_| {
                 Err(io::Error::other(
                     "command process did not exit during cleanup",
                 ))
-            })
-            .map_err(cleanup_error)?;
-        stop.map_err(cleanup_error)?;
-        if let Ok(outcome) = &mut capture {
-            outcome.exit_status = Some(status);
+            });
+        match waited {
+            Ok(status) => outcome.exit_status = Some(status),
+            Err(error) => {
+                outcome.cleanup_incomplete = true;
+                if capture.is_ok() {
+                    capture = Err(cleanup_error(error));
+                }
+            }
+        }
+        if let Err(error) = stop {
+            outcome.cleanup_incomplete = true;
+            if capture.is_ok() {
+                capture = Err(cleanup_error(error));
+            }
         }
     }
-    capture
+    #[cfg(windows)]
+    {
+        if outcome.exit_status.is_none() {
+            // A failed Job Object operation may follow a successful child wait.
+            outcome.exit_status = child.try_wait().ok().flatten();
+        }
+        let cleanup_confirmed = timeout(CLEANUP_TIMEOUT, tree.wait_for_empty())
+            .await
+            .is_ok_and(|result| result.is_ok());
+        outcome.cleanup_incomplete = !cleanup_confirmed || outcome.exit_status.is_none();
+    }
+    match capture {
+        Ok(()) => Ok(outcome),
+        Err(mut result) => {
+            #[cfg(unix)]
+            {
+                outcome.cleanup_incomplete |= result.faults.cleanup_incomplete;
+            }
+            result.faults.cleanup_incomplete = outcome.cleanup_incomplete;
+            if let Some(data) = result.structured.as_mut() {
+                data["cleanup_incomplete"] = serde_json::json!(outcome.cleanup_incomplete);
+            }
+            Err(outcome.annotate_failure(result))
+        }
+    }
+}
+
+impl CommandOutcome {
+    fn annotate_failure(&self, result: ToolResultEnvelope) -> ToolResultEnvelope {
+        annotate_command_failure(
+            result,
+            self.started,
+            self.exit_status.and_then(|status| status.code()),
+            render::exit_signal(self.exit_status),
+            self.cancelled,
+            self.timed_out,
+        )
+    }
+}
+
+fn annotate_command_failure(
+    mut result: ToolResultEnvelope,
+    started: bool,
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+    cancelled: bool,
+    timed_out: bool,
+) -> ToolResultEnvelope {
+    if let Some(data) = result.structured.as_mut() {
+        data["started"] = serde_json::json!(started);
+        data["exit_code"] = serde_json::json!(exit_code);
+        data["signal"] = serde_json::json!(signal);
+        data["cancelled"] = serde_json::json!(cancelled);
+        data["timed_out"] = serde_json::json!(timed_out);
+    }
+    result
 }
 
 async fn capture_command(
@@ -400,15 +484,12 @@ async fn capture_command(
     output: &mut OutputWriter,
     event_tx: &Option<mpsc::Sender<CommandEvent>>,
     mut cancelled: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
-) -> Result<CommandOutcome, ToolResultEnvelope> {
+    outcome: &mut CommandOutcome,
+) -> Result<(), ToolResultEnvelope> {
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let mut stdout_buf = [0; READ_BUFFER_BYTES];
     let mut stderr_buf = [0; READ_BUFFER_BYTES];
-    let mut outcome = CommandOutcome {
-        started: true,
-        ..CommandOutcome::default()
-    };
     let mut exited = false;
     let mut stopping = false;
     let deadline = request
@@ -457,12 +538,19 @@ async fn capture_command(
                         continue;
                     }
                 }
-                outcome.cleanup_incomplete = stdout.is_some() || stderr.is_some();
+                outcome.pipe_capture_incomplete = stdout.is_some() || stderr.is_some();
+                outcome.cleanup_incomplete = !exited;
+                #[cfg(unix)]
+                {
+                    // A pipe held beyond the process-group sweep is evidence
+                    // that a holder outside our confirmed cleanup may remain.
+                    outcome.cleanup_incomplete |= outcome.pipe_capture_incomplete;
+                }
                 break;
             }
         }
     }
-    Ok(outcome)
+    Ok(())
 }
 
 async fn read_stream<P: AsyncRead + Unpin>(
@@ -505,7 +593,11 @@ fn capture_error(error: io::Error) -> ToolResultEnvelope {
 }
 
 fn cleanup_error(error: io::Error) -> ToolResultEnvelope {
-    output_error("cleanup", error, true)
+    let detail = format!("command process cleanup could not be confirmed: {error}");
+    let mut result = ToolResultEnvelope::error(&detail, &detail);
+    result.faults.cleanup_incomplete = true;
+    result.structured = Some(serde_json::json!({"kind":"error","cleanup_incomplete":true}));
+    result
 }
 
 fn output_error(operation: &str, error: io::Error, cleanup_incomplete: bool) -> ToolResultEnvelope {

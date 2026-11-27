@@ -133,6 +133,9 @@ impl RunManager {
             ),
             Command::RestoreContext => open.session.restore_context_command(command_id, address),
             Command::Advance => open.session.advance_command(command_id, address),
+            Command::ReviewJobCleanup { job_id } => open
+                .session
+                .review_job_cleanup(command_id, address, &job_id),
             Command::Cancel { execution_id } => {
                 open.session
                     .cancel_execution(command_id, address, execution_id)
@@ -174,9 +177,10 @@ pub(crate) fn input_status(session: &Session, receipt: &Receipt) -> Option<Input
 fn activating(command: &Command, session: &Session, address: &str) -> bool {
     let agent = session.agent(address).ok();
     match command {
-        Command::Send { .. } => agent
-            .as_ref()
-            .is_none_or(|agent| matches!(agent.status, AgentStatus::Idle | AgentStatus::Stopped)),
+        Command::Send { .. } => agent.as_ref().is_none_or(|agent| {
+            agent.job_needing_review().is_none()
+                && matches!(agent.status, AgentStatus::Idle | AgentStatus::Stopped)
+        }),
         Command::ReplyPermission { request_id, .. } => agent.is_some_and(|agent| {
             agent.status == AgentStatus::Waiting
                 && agent.question.is_none()
@@ -191,7 +195,7 @@ fn activating(command: &Command, session: &Session, address: &str) -> bool {
                     .question
                     .is_some_and(|request| request.id == *request_id)
         }),
-        Command::Advance => agent.is_some_and(|agent| {
+        Command::Advance | Command::ReviewJobCleanup { .. } => agent.is_some_and(|agent| {
             matches!(
                 agent.status,
                 AgentStatus::Idle | AgentStatus::Stopped | AgentStatus::Interrupted

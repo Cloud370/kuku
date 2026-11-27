@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 export type ComposerProps = {
   agent?: string;
   busy?: boolean;
+  jobNeedingReview?: string;
   value?: string;
   onChange?: (value: string) => void;
   onSubmit?: (text: string, timing: SendTiming) => void;
@@ -19,6 +20,7 @@ export type ComposerProps = {
 export function Composer({
   agent,
   busy,
+  jobNeedingReview,
   value,
   onChange,
   onSubmit,
@@ -63,6 +65,11 @@ export function Composer({
           )}
         </div>
       )}
+      {jobNeedingReview && (
+        <p role="status" className="mb-2 text-xs text-[var(--color-text-muted)]">
+          Messages will be queued until you review {jobNeedingReview} in the terminal.
+        </p>
+      )}
       <div className="flex flex-col gap-2">
         {(agent || modelControl) && (
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
@@ -98,7 +105,7 @@ export function Composer({
                 handleSend("steer");
               }}
             >
-              {busy ? "Steer" : "Send"}
+              {jobNeedingReview ? "Queue message" : busy ? "Steer" : "Send"}
             </Button>
             {busy && (
               <Button

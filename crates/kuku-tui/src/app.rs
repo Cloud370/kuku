@@ -885,6 +885,12 @@ impl App {
             Update::ValueSaved(selection, text, result) => {
                 self.value_saved(selection, text, result)
             }
+            Update::BackgroundJobInspected(selection, result) if selection == self.selection() => {
+                match result {
+                    Ok(job) => self.open_background_job(job),
+                    Err(error) => self.problem(format!("Open background job · {error}")),
+                }
+            }
             Update::BackgroundJobCancelled(selection, result) if selection == self.selection() => {
                 match result {
                     Ok(job) => {
@@ -930,6 +936,7 @@ impl App {
             | Update::Observation(..)
             | Update::Refreshed(..)
             | Update::BackgroundJobCancelled(..)
+            | Update::BackgroundJobInspected(..)
             | Update::StartupSkills(..) => {}
         }
         self.sync_pending_picker();
