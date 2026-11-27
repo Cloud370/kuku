@@ -97,7 +97,7 @@ pub(super) fn render_command_result(
         },
         capture_complete: !metadata.quota_truncated && !metadata.cleanup_incomplete,
         quota_truncated: metadata.quota_truncated,
-        cleanup_incomplete: metadata.cleanup_incomplete,
+        cleanup_incomplete: outcome.cleanup_incomplete,
         output_filtered: false,
         output_summary: None,
         preview_truncated: false,
@@ -186,7 +186,7 @@ fn render_model(
     };
     let chunk = match read_output(output.dir, output.id, request) {
         Ok(chunk) => chunk,
-        Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
+        Err(error) => return output_read_error(error, &facts),
     };
     let raw_preview = render_streams(&chunk.segments);
     let mut output_preview = if chunk
@@ -276,7 +276,7 @@ fn render_failure_tail(
     let [stdout, stderr] =
         match read_output_tails(output.dir, output.id, stdout_limit, stderr_limit) {
             Ok(tails) => tails,
-            Err(error) => return output_error("read", error, metadata.cleanup_incomplete),
+            Err(error) => return output_read_error(error, &facts),
         };
     let decoded_lossy = stdout.lossy_utf8 || stderr.lossy_utf8;
     if decoded_lossy {
@@ -598,7 +598,7 @@ fn render_script(
             },
         ) {
             Ok(chunk) => Some(chunk.segments),
-            Err(error) => return output_error("read", error, facts.cleanup_incomplete),
+            Err(error) => return output_read_error(error, &facts),
         }
     } else {
         None
@@ -663,13 +663,24 @@ fn outcome_summary(request: &CommandRequest, outcome: &CommandOutcome, duration_
     }
 }
 
+fn output_read_error(error: std::io::Error, facts: &CommandExecutionFacts) -> ToolResultEnvelope {
+    super::annotate_command_failure(
+        output_error("read", error, facts.cleanup_incomplete),
+        facts.started,
+        facts.exit_code,
+        facts.signal,
+        facts.cancelled,
+        facts.timed_out,
+    )
+}
+
 #[cfg(unix)]
-fn exit_signal(status: Option<ExitStatus>) -> Option<i32> {
+pub(super) fn exit_signal(status: Option<ExitStatus>) -> Option<i32> {
     status.and_then(|status| status.signal())
 }
 
 #[cfg(not(unix))]
-fn exit_signal(_: Option<ExitStatus>) -> Option<i32> {
+pub(super) fn exit_signal(_: Option<ExitStatus>) -> Option<i32> {
     None
 }
 

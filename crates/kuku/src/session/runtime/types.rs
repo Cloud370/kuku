@@ -858,6 +858,9 @@ pub struct AgentSnapshot {
     /// An unresolved tool call prevents normal advance until its outcome is reconciled.
     #[serde(default)]
     pub resume_blocked: bool,
+    /// Jobs whose unconfirmed cleanup requires explicit review, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub job_cleanup_reviews: Vec<String>,
     /// Pending authorization requiring a matching reply.
     pub permission: Option<crate::query::PermissionRequest>,
     /// Pending question requiring a matching host reply.
@@ -865,6 +868,13 @@ pub struct AgentSnapshot {
     /// Cumulative reported usage.
     #[serde(default)]
     pub usage: UsageTotals,
+}
+
+impl AgentSnapshot {
+    /// Oldest Job whose unconfirmed cleanup requires review, if any.
+    pub fn job_needing_review(&self) -> Option<&str> {
+        self.job_cleanup_reviews.first().map(String::as_str)
+    }
 }
 
 /// Consistent session state and journal cursor for a selected agent.

@@ -114,6 +114,7 @@ impl App {
                 self.issue(self.active.clone(), Action::Advance);
             }
             ContextControl::Interrupt { .. } => self.interrupt(),
+            ContextControl::ReviewJobCleanup { job_id, .. } => self.inspect_background_job(job_id),
             ContextControl::ReviewBlocked { .. } => {
                 let reason = self
                     .pane()

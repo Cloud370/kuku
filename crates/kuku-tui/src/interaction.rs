@@ -614,8 +614,16 @@ impl App {
             ChoiceKind::Reconnect => self.reconnect(),
             ChoiceKind::Detail { key, message } => self.toggle_detail_choice(key, message),
             ChoiceKind::Tool(tool) => self.show_output(tool),
-            ChoiceKind::BackgroundJob(job) => self.open_background_job(*job),
+            ChoiceKind::BackgroundJob(job) => {
+                if job.status == kuku_client::JobStatus::Interrupted {
+                    self.inspect_background_job(job.id);
+                } else {
+                    self.open_background_job(*job);
+                }
+            }
             ChoiceKind::CancelBackground(id) => self.cancel_background_job(id),
+            ChoiceKind::ReviewJobCleanup(id) => self.confirm_job_cleanup_review(id),
+            ChoiceKind::AcceptJobCleanup(id) => self.accept_job_cleanup_review(id),
             ChoiceKind::Value(value) => self.open_value(value),
             ChoiceKind::AttachValue(value) => self.attach_value(value),
             ChoiceKind::ReadValue(value) => self.read_value(value),
@@ -898,6 +906,7 @@ fn pending_label(item: &PendingItem) -> String {
         Action::RestoreContext => "Restore context".to_owned(),
         Action::HistoryJump { .. } => "Switch conversation branch".to_owned(),
         Action::Advance => "Continue Agent".to_owned(),
+        Action::ReviewJobCleanup { job_id } => format!("Review {job_id} cleanup"),
         Action::Cancel { .. } => "Stop execution".to_owned(),
         Action::Interrupt { .. } => "Interrupt execution · continue queue".to_owned(),
     }

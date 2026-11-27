@@ -75,6 +75,12 @@ pub enum Error {
         available: u64,
     },
 
+    #[error("job '{0}' cleanup is unconfirmed and requires review")]
+    JobCleanupReviewRequired(String),
+
+    #[error("session closed with unconfirmed cleanup for jobs: {0}")]
+    SessionJobCleanupIncomplete(String),
+
     #[error("interrupted open tool state: {0}")]
     InterruptedOpenTool(String),
 
@@ -151,6 +157,8 @@ impl Error {
             Error::OutputUnavailable(_) => "output_unavailable",
             Error::OutputQuotaExceeded { .. } => "output_quota_exceeded",
             Error::InterruptedOpenTool(_) => "interrupted_open_tool",
+            Error::JobCleanupReviewRequired(_) => "job_cleanup_review_required",
+            Error::SessionJobCleanupIncomplete(_) => "session_job_cleanup_incomplete",
             Error::PromptRender(_) => "internal",
             Error::ConfigLoad(_) | Error::ConfigField { .. } => "internal",
             Error::InvalidArgument(_) => "invalid_request",

@@ -342,10 +342,10 @@ pub(crate) fn render_at(
             if app.setup_required {
                 return shorten("Ctrl+L or /model to set up a model", content_width);
             }
-            let paused = pane
-                .snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.agent.status == AgentStatus::Interrupted);
+            let paused = pane.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.agent.status == AgentStatus::Interrupted
+                    || snapshot.agent.job_needing_review().is_some()
+            });
             let send = match (paused, pane.value_attachments.is_empty()) {
                 (true, true) => "Enter queue only",
                 (true, false) => "Enter queue with values",

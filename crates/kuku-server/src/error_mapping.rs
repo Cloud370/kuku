@@ -69,9 +69,9 @@ impl From<kuku::Error> for ApiError {
             Error::PermissionRequestNotPending(_) | Error::QuestionRequestNotPending(_) => {
                 (StatusCode::CONFLICT, "reply_not_pending")
             }
-            Error::SessionLocked { .. } | Error::InterruptedOpenTool(_) => {
-                (StatusCode::CONFLICT, error.code())
-            }
+            Error::SessionLocked { .. }
+            | Error::InterruptedOpenTool(_)
+            | Error::JobCleanupReviewRequired(_) => (StatusCode::CONFLICT, error.code()),
             Error::MissingProviderConfig(_) | Error::ConfigLoad(_) => {
                 (StatusCode::BAD_REQUEST, "model_configuration")
             }

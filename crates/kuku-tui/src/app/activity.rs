@@ -775,10 +775,10 @@ impl App {
     pub(crate) fn input_status(&self) -> InputActivity {
         let pane = self.pane();
         let queued = pane.snapshot.as_ref().map_or(0, |snapshot| {
-            snapshot
-                .agent
-                .pending_inputs
-                .saturating_sub(pane.deliveries.hidden_queue_count(snapshot))
+            let job_notices = snapshot.pending.iter().filter(|entry|
+                matches!(&entry.input.source, kuku_client::InputSource::External(source) if source == "session_job")
+            ).count();
+            snapshot.agent.pending_inputs.saturating_sub(job_notices + pane.deliveries.hidden_queue_count(snapshot))
         });
         let mut rejected = false;
         let pending = self.pending.values().find_map(|item| {
@@ -842,7 +842,7 @@ impl Pane {
                 );
                 self.live_floor = id;
             }
-            Some("turn_settled" | "compaction_settled") => {
+            Some("turn_settled" | "compaction_settled" | "execution_deferred") => {
                 self.execution = None;
                 if !self.progress.preserve_reply_preview_on_settle() {
                     self.transcript.clear_preview();

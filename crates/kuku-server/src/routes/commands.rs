@@ -156,6 +156,7 @@ fn validate_command(workspace: &FsPath, command: &mut Command) -> Result<Option<
         | Command::HistoryJump { .. }
         | Command::Compact
         | Command::RestoreContext
+        | Command::ReviewJobCleanup { .. }
         | Command::Advance
         | Command::Cancel { .. }
         | Command::Interrupt { .. } => {}

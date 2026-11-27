@@ -227,8 +227,10 @@ mod windows {
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_JOB_MEMORY,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
         CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
@@ -256,24 +258,66 @@ mod windows {
             Ok((child, Self { job: Some(job) }))
         }
 
-        pub(crate) fn request_stop(&mut self, child: &mut Child) -> io::Result<()> {
-            self.job.take();
-            let _ = child.start_kill();
-            Ok(())
+        pub(crate) fn request_stop(&self, _child: &mut Child) -> io::Result<()> {
+            self.terminate_owned()
         }
 
         pub(crate) async fn wait(&mut self, child: &mut Child) -> io::Result<ExitStatus> {
             let status = child.wait().await?;
-            self.job.take();
+            self.terminate_owned()?;
             Ok(status)
         }
 
         pub(crate) fn try_wait(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
             let status = child.try_wait()?;
             if status.is_some() {
-                self.job.take();
+                self.terminate_owned()?;
             }
             Ok(status)
+        }
+
+        fn terminate_owned(&self) -> io::Result<()> {
+            if let Some(job) = &self.job
+                && !self.is_empty()?
+            {
+                // SAFETY: The retained handle identifies this command's Job Object.
+                if unsafe { TerminateJobObject(job.as_raw_handle(), 1) } == 0 {
+                    let error = io::Error::last_os_error();
+                    if !self.is_empty()? {
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn is_empty(&self) -> io::Result<bool> {
+            let Some(job) = &self.job else {
+                return Ok(true);
+            };
+            // SAFETY: The buffer matches the requested accounting information
+            // class and the retained Job Object handle is live.
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+            let read = unsafe {
+                QueryInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectBasicAccountingInformation,
+                    (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    std::mem::size_of_val(&info) as u32,
+                    ptr::null_mut(),
+                )
+            };
+            if read == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(info.ActiveProcesses == 0)
+        }
+
+        pub(crate) async fn wait_for_empty(&self) -> io::Result<()> {
+            while !self.is_empty()? {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Ok(())
         }
     }
 

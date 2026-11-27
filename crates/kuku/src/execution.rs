@@ -196,7 +196,7 @@ pub struct CommandExecutionFacts {
     pub capture_complete: bool,
     /// Whether the retention quota caused observed bytes to be discarded.
     pub quota_truncated: bool,
-    /// Whether process or pipe cleanup could not be confirmed complete.
+    /// Whether cleanup of the command’s owned process resources could not be confirmed.
     pub cleanup_incomplete: bool,
     /// Whether the initial model evidence selected recognized report lines.
     pub output_filtered: bool,

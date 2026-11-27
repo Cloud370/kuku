@@ -47,7 +47,9 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
     let run = controls.iter().find(|control| {
         matches!(
             control,
-            ContextControl::ReviewBlocked { .. } | ContextControl::Continue { .. }
+            ContextControl::ReviewJobCleanup { .. }
+                | ContextControl::ReviewBlocked { .. }
+                | ContextControl::Continue { .. }
         )
     });
     let target = app.selection().target;
@@ -58,7 +60,12 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
     // Review remains locally available. Never offer Advance ahead of an
     // unresolved receipt, or when the service cannot accept the command.
     let action_control = run
-        .filter(|control| matches!(control, ContextControl::ReviewBlocked { .. }))
+        .filter(|control| {
+            matches!(
+                control,
+                ContextControl::ReviewJobCleanup { .. } | ContextControl::ReviewBlocked { .. }
+            )
+        })
         .or(recovery.filter(|control| control.is_interrupt_recovery()))
         .or(run.filter(|_| online && !rows.is_empty()))
         .or(recovery);
@@ -91,7 +98,9 @@ pub(super) fn lines(app: &App, width: usize, limit: u16) -> DeliveryView {
         .iter()
         .filter(|row| row.status == SubmissionStatus::Queued)
         .count();
-    let state = if matches!(run, Some(ContextControl::ReviewBlocked { .. })) {
+    let state = if matches!(run, Some(ContextControl::ReviewJobCleanup { .. })) {
+        "Cleanup unconfirmed"
+    } else if matches!(run, Some(ContextControl::ReviewBlocked { .. })) {
         "Tool result unknown"
     } else if !online {
         "Offline"
@@ -231,7 +240,12 @@ fn action_title(
     app: &App,
     control: &ContextControl,
 ) -> (Line<'static>, Option<(Range<u16>, ContextControl)>) {
+    let job_action;
     let name = match control {
+        ContextControl::ReviewJobCleanup { job_id, .. } => {
+            job_action = format!("Review {job_id}");
+            &job_action
+        }
         ContextControl::Continue { .. } if app.is_subagent() => "Continue agent",
         ContextControl::Continue { .. } => "Continue session",
         ContextControl::ReviewBlocked { .. } if width < 42 => "Review tool result",

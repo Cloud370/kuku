@@ -13,6 +13,7 @@ use crate::event::{EventPayload, EventStore, StoredEvent};
 use crate::tool::{ToolFaults, ToolResultEnvelope};
 use crate::{Error, Result};
 
+use super::controls::command;
 use super::record::{Record, State, timestamp};
 use super::{
     Activation, CleanupOutcome, Input, InputSource, InputTiming, JobResult, JobSnapshot, JobStatus,
@@ -71,7 +72,7 @@ pub(crate) struct JobRequest {
 }
 
 pub(super) struct JobWorker {
-    agent: String,
+    pub(super) agent: String,
     cancel: Arc<Notify>,
     cancelling: Arc<AtomicBool>,
     done: watch::Receiver<CleanupOutcome>,
@@ -194,6 +195,45 @@ impl JobReplay {
                     .retain(|(agent, call_turn, _), _| agent != conversation || call_turn != turn);
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    pub(super) fn settle_unanswered_controls(self, session: &Session) -> Result<()> {
+        let state = session.inner.state.lock().unwrap();
+        let mut calls = self.calls.into_iter().collect::<Vec<_>>();
+        calls.sort_unstable_by(|(key, _), (other, _)| key.cmp(other));
+        for ((agent, turn, id), call) in calls {
+            let JobCall::Control {
+                control,
+                job_id,
+                dispatched: true,
+            } = call
+            else {
+                continue;
+            };
+            let reason = match control {
+                JobControl::Wait => "Job observation ended when the service stopped",
+                JobControl::Cancel
+                    if job_id.as_deref().is_some_and(|id| {
+                        state
+                            .jobs
+                            .get(&agent, id)
+                            .is_ok_and(|job| job.finished_at.is_some())
+                    }) =>
+                {
+                    "Job cancellation response was interrupted; inspect the Job's durable result"
+                }
+                JobControl::Cancel => continue,
+            };
+            EventStore::open(session.events_path())?.append(
+                super::controls::cancelled_tool_result(
+                    &agent,
+                    turn,
+                    &id,
+                    ToolResultEnvelope::cancelled(reason),
+                )?,
+            )?;
         }
         Ok(())
     }
@@ -369,10 +409,69 @@ impl Session {
                 None
             }
         };
-        if let Some(done) = done {
-            await_job_cleanup(done).await?;
+        if let Some(done) = done
+            && let Err(error) = await_job_cleanup(done).await
+        {
+            let observed = self.observe_job(agent, job_id)?;
+            if observed.snapshot.finished_at.is_some() {
+                return Ok(observed);
+            }
+            return Err(error);
         }
         self.observe_job(agent, job_id)
+    }
+
+    /// Acknowledge the known uncertainty of the selected Job, permitting new work.
+    /// The original Job and its cleanup evidence remain in the journal.
+    pub fn review_job_cleanup(
+        &self,
+        command_id: &str,
+        address: &str,
+        job_id: &str,
+    ) -> Result<super::Receipt> {
+        let command = command(
+            command_id,
+            address,
+            &("review_job_cleanup", address, job_id),
+        )?;
+        let mut state = self.inner.state.lock().unwrap();
+        ensure_open(&state)?;
+        if let Some(receipt) = state.retry(command_id, &command.fingerprint)? {
+            return Ok(receipt);
+        }
+        let agent = state.agent(address)?;
+        if agent.snapshot.job_needing_review() != Some(job_id) {
+            return Err(Error::InvalidArgument(format!(
+                "job '{job_id}' is not the current cleanup review"
+            )));
+        }
+        self.commit(
+            &mut state,
+            Record::JobCleanupReviewed {
+                command,
+                address: address.into(),
+                job_id: job_id.into(),
+            },
+        )?;
+        if state
+            .agent(address)?
+            .snapshot
+            .job_needing_review()
+            .is_none()
+        {
+            self.schedule_locked(&mut state, address)?;
+        }
+        Ok(state.commands[command_id].1.clone())
+    }
+
+    pub(crate) fn job_needing_review(&self, address: &str) -> Result<Option<String>> {
+        let state = self.inner.state.lock().unwrap();
+        self.ensure_journal_healthy()?;
+        Ok(state
+            .agent(address)?
+            .snapshot
+            .job_needing_review()
+            .map(str::to_owned))
     }
 
     pub(crate) fn active_jobs(&self, agent: &str) -> usize {
@@ -435,14 +534,11 @@ impl Session {
                 if target.snapshot.turn != Some(turn) {
                     return Err(Error::ExecutionNotActive(execution_id));
                 }
-                if let Some(error) = self.inner.settlement_failure.get() {
-                    return Err(Error::InvalidEventStream(error.clone()));
-                }
-                if target
-                    .inbox
-                    .iter()
-                    .any(|delivery| delivery.input.timing == InputTiming::NextStep)
-                {
+                self.ensure_journal_healthy()?;
+                if target.inbox.iter().any(|delivery| {
+                    delivery.input.timing == InputTiming::NextStep
+                        && target.can_admit(&delivery.input)
+                }) {
                     return Ok(());
                 }
             }
@@ -605,17 +701,6 @@ impl Session {
         let mut state = self.inner.state.lock().unwrap();
         let job = state.jobs.get(agent, job_id)?;
         let status = JobStatus::for_result(&outcome);
-        let failure =
-            if outcome.faults.output_persistence_failed || outcome.faults.cleanup_incomplete {
-                Some(
-                    self.remember_settlement_failure(Error::InvalidEventStream(format!(
-                        "job '{job_id}' could not confirm output persistence or cleanup: {}",
-                        outcome.summary
-                    ))),
-                )
-            } else {
-                None
-            };
         let mut result = JobResult {
             status: outcome.status,
             summary: outcome.summary,
@@ -632,7 +717,7 @@ impl Session {
             Some(elapsed_ms),
         );
         let turn = job.turn;
-        if let Err(error) = self.commit(
+        self.commit(
             &mut state,
             Record::JobFinished {
                 job_id: job_id.into(),
@@ -643,17 +728,8 @@ impl Session {
                 elapsed_ms: Some(elapsed_ms),
                 delivery: Box::new(delivery),
             },
-        ) {
-            let error = self.remember_settlement_failure(error);
-            if let Some(writer) = self.inner.writer.lock().unwrap().as_ref() {
-                writer.changed().notify_waiters();
-            }
-            return Err(error);
-        }
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        if !state.closing {
+        )?;
+        if !state.closing && self.inner.journal_failure.get().is_none() {
             self.schedule_locked(&mut state, agent)?;
         }
         Ok(())
@@ -732,9 +808,7 @@ impl Session {
         if snapshot.status != JobStatus::Running {
             return hydrate_job(self.events_path(), snapshot).map(Some);
         }
-        if let Some(error) = self.inner.settlement_failure.get() {
-            return Err(Error::InvalidEventStream(error.clone()));
-        }
+        self.ensure_journal_healthy()?;
         if closed {
             return Err(interrupted_job(job_id));
         }
@@ -821,7 +895,7 @@ impl JobIndex {
         Ok(())
     }
 
-    fn get(&self, agent: &str, id: &str) -> Result<&JobSnapshot> {
+    pub(super) fn get(&self, agent: &str, id: &str) -> Result<&JobSnapshot> {
         job_sequence(id)
             .and_then(|sequence| self.agents.get(agent)?.jobs.get(&sequence))
             .filter(|job| job.id == id)

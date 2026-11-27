@@ -72,6 +72,8 @@ pub(crate) enum ChoiceKind {
     Tool(ToolView),
     BackgroundJob(Box<JobSnapshot>),
     CancelBackground(String),
+    ReviewJobCleanup(String),
+    AcceptJobCleanup(String),
     Value(NamedValue),
     AttachValue(NamedValue),
     ReadValue(NamedValue),

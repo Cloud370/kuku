@@ -148,6 +148,8 @@ Agent 快照和摘要可以包含 `admitted_task` 和 `queued_task`。这两个�
 
 所选 Agent 的 `resume_blocked:true` 表示有工具结果未确认，无法正常继续；具体原因见 `last_error`。已提交的 `interrupt` 或 `cancel` 即使后续清理失败，也返回命令回执；清理失败由快照单独报告。
 
+所选 Agent 可以通过 `job_cleanup_reviews` 给出有待复核的 Job ID（按复核顺序排列）。读取对应 Job 查看终态。显式的 `review_job_cleanup` 命令用 `job_id` 指定已检查的 Job。确认后解除该项复核，原 Job 和待发输入的回执继续可查。
+
 回复 `ask_user` 或待决工具授权时，使用快照里的请求标识。并发的回复逐一核对同一待决请求。重开 Session 会保留待决请求和排队输入。已派发但没有确认结果的工具可能已经修改文件或触发副作用。继续中断的工作前检查工作区。[Session](../how-it-works/sessions.md)
 
 ## 原始事件与工具输出

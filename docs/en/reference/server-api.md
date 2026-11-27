@@ -148,6 +148,8 @@ Agent snapshots and summaries can include `admitted_task` and `queued_task`. The
 
 A selected Agent with `resume_blocked:true` has an unconfirmed tool result that prevents normal advancement. Inspect `last_error` for the reason. A committed `interrupt` or `cancel` returns its command receipt even if later cleanup fails; the snapshot reports that failure separately.
 
+A selected Agent can expose `job_cleanup_reviews`, the outstanding Job IDs in review order. Fetch the relevant Job to inspect its terminal result. An explicit `review_job_cleanup` command binds approval to its `job_id`. It releases that review while preserving the original Job and the queued input receipts.
+
 To answer `ask_user` or a deferred tool authorization, use the request ID from the snapshot. Competing replies are checked against the exact pending request. Reopening a Session preserves pending requests and queued inputs. A dispatch without a confirmed result may have changed files or triggered a side effect. Inspect the workspace before continuing interrupted work. [Sessions](../how-it-works/sessions.md)
 
 ## Raw events and retained tool output

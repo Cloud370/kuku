@@ -27,6 +27,7 @@ Hitting the observation window does not trigger a model request by itself. When 
 - `Session::cancel(agent)` stops that Agent **and** cancels its Jobs.
 - Closing a Session cancels all live Jobs and waits for cleanup and durable writes.
 - If the process dies before a Job settles, reopening marks it `interrupted` — check actual side effects before re-running.
+A Job's durable completion separates its execution outcome, cleanup uncertainty, and retained output. Cancelling a Job returns its own terminal snapshot. Waiting for another Job continues independently. If cleanup is unconfirmed, its owning Agent can inspect the Job and wait for work already dispatched. New side effects and ordinary queued inputs for that Agent wait for an explicit Job review. The review is durable and preserves the original cleanup facts. A capture or output-file failure alone stays with its Job. A failure to commit the Session journal stops new execution in that Session.
 
 ## Storage and journal sealing
 
@@ -71,6 +72,6 @@ Command `stdout`/`stderr` stream from the first byte into bounded frames in a Se
 
 Agents can bind captures to [named Session values](../reference/tools.md#named-session-values). Plain captures may age out, whereas named values and references attached to delivered inputs retain their bytes across reopens (updating a name leaves already-delivered references intact). Write long-lived deliverables as normal workspace files.
 
-Cancellation cleans up process trees via Unix process groups and Windows Job objects (deliberate sandbox escape is outside the trusted local boundary; inherited pipes have a cleanup deadline). Any known incomplete cleanup is persisted and causes cancel/close to return an error.
+Cancellation cleans up process trees via Unix process groups and Windows Job objects (deliberate sandbox escape is outside the trusted local boundary; inherited pipes have a cleanup deadline). Incomplete cleanup is persisted. Job cancellation returns the affected Job. Session close reports Jobs whose cleanup could not be confirmed while closing.
 
 `Session::close().await` cancels live Jobs, waits for cleanup, and releases the writer lock. Reopening never auto-wakes Agents or replays interrupted side effects. Provider traces are optional diagnostic logs stored separately from Session facts.

@@ -540,6 +540,7 @@ mod retry_progress_tests {
             last_output: None,
             last_error: Some("connection failed".into()),
             resume_blocked: false,
+            job_cleanup_reviews: Vec::new(),
             permission: None,
             question: None,
             usage: UsageTotals::default(),

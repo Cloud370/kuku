@@ -177,6 +177,11 @@ pub enum Action {
     RestoreContext,
     /// Explicitly let an Agent advance eligible work.
     Advance,
+    /// Confirm review of the current unresolved cleanup before allowing more work.
+    ReviewJobCleanup {
+        /// Exact Job being reviewed.
+        job_id: String,
+    },
     /// Stop the specific execution the client observed and pause queued inputs.
     Cancel {
         /// Opaque execution identity from the Agent snapshot or a progress event.

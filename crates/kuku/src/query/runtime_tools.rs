@@ -57,6 +57,15 @@ pub(super) async fn advance(
         let result = ToolResultEnvelope::error("unknown tool", message);
         return finish_inline(pending, queued, result);
     };
+    if pending.query.runtime.is_some()
+        && (!can_run_during_job_review(&pending, &definition.name)
+            || queued.preparation.is_none()
+                && pre_execute_hooks(pending.plugin_registry.as_deref()))
+        && let Some(job_id) =
+            runtime_session(&pending)?.job_needing_review(pending.conversation.as_str())?
+    {
+        return finish_inline(pending, queued, job_review_blocked(&job_id));
+    }
     match prepare(&mut pending, &mut queued, &definition).await {
         Ok(Some(reason)) => {
             return finish_inline(
@@ -172,6 +181,35 @@ pub(super) async fn advance(
     }
 }
 
+pub(super) fn pre_execute_hooks(plugins: Option<&crate::plugin::PluginRegistry>) -> bool {
+    plugins.is_some_and(|plugins| {
+        !plugins
+            .hooks_for(crate::plugin::HookEvent::ToolPreExecute)
+            .is_empty()
+    })
+}
+
+pub(super) fn job_review_blocked(job_id: &str) -> ToolResultEnvelope {
+    ToolResultEnvelope::blocked(
+        format!("job '{job_id}' cleanup needs review"),
+        "Inspect the Job and ask the user to review it before dispatching another action.",
+    )
+}
+
+// Write dispatch and check Job review under the same runtime lock. A
+// cleanup that settles during preparation produces a blocked tool result.
+macro_rules! dispatch_or_block {
+    ($pending:ident, $queued:ident) => {
+        match mark_dispatched(&$pending, &$queued) {
+            Ok(()) => {}
+            Err(Error::JobCleanupReviewRequired(job_id)) => {
+                return finish_inline($pending, $queued, job_review_blocked(&job_id))
+            }
+            Err(error) => return Err(error),
+        }
+    };
+}
+
 pub(super) async fn dispatch(
     mut pending: PendingRun,
     queued: QueuedToolCall,
@@ -197,7 +235,7 @@ pub(super) async fn dispatch(
         return dispatch_standalone(pending, queued, event_tx).await;
     }
     if super::helpers::is_skill_tool(&queued.tool_call.name) || is_inline(&queued.tool_call.name) {
-        mark_dispatched(&pending, &queued)?;
+        dispatch_or_block!(pending, queued);
         pending.record_tool_call(&queued.tool_call.name);
         let result = Box::pin(execute_tool_call(&mut pending, &queued.tool_call)).await?;
         return finish_inline_event(pending, queued, result);
@@ -212,7 +250,7 @@ pub(super) async fn dispatch(
             Ok(output) => output,
             Err(error) => return output_admission_failed(pending, queued, error),
         };
-        mark_dispatched(&pending, &queued)?;
+        dispatch_or_block!(pending, queued);
         let definition = find_tool_definition(&pending, &queued.tool_call.name)
             .expect("authorized tool definition exists");
         let action = crate::permission::ToolAuthorization {
@@ -237,7 +275,7 @@ pub(super) async fn dispatch(
     }
     if let Some(control) = JobControl::for_tool(&queued.tool_call.name) {
         let session = runtime_session(&pending)?;
-        mark_dispatched(&pending, &queued)?;
+        dispatch_or_block!(pending, queued);
         let slot = super::slots::spawn_job_control(session, &pending, &queued, control, event_tx);
         return start_slot(pending, queued, slot);
     }
@@ -246,7 +284,7 @@ pub(super) async fn dispatch(
     }
     if queued.tool_call.name == "view_image" {
         let session = runtime_session(&pending)?;
-        mark_dispatched(&pending, &queued)?;
+        dispatch_or_block!(pending, queued);
         let slot = media::spawn(session, &pending, &queued, event_tx);
         return start_slot(pending, queued, slot);
     }
@@ -263,7 +301,7 @@ pub(super) async fn dispatch(
     } else {
         None
     };
-    mark_dispatched(&pending, &queued)?;
+    dispatch_or_block!(pending, queued);
     let (slot, _) = super::slots::dispatch_tool_slot(super::slots::SlotDispatchArgs {
         capacity: runtime_session(&pending)?.workspace_execution_host(),
         workspace_access: workspace_access(&pending, &queued.tool_call.name),
@@ -305,7 +343,7 @@ fn start_job_capable_slot(
             Ok(output) => output,
             Err(error) => return output_admission_failed(pending, queued, error),
         };
-        mark_dispatched(&pending, &queued)?;
+        dispatch_or_block!(pending, queued);
         let job = ForegroundJob::start(&pending, &queued, Some(output.id.clone()));
         super::slots::spawn_command_slot(
             queued.tool_call.id.clone(),
@@ -319,7 +357,7 @@ fn start_job_capable_slot(
             Some(job),
         )
     } else {
-        mark_dispatched(&pending, &queued)?;
+        dispatch_or_block!(pending, queued);
         super::run_js::spawn(
             &pending,
             &queued,
@@ -413,7 +451,7 @@ pub(super) fn yield_step(pending: PendingRun) -> Result<PendingStep> {
             errors: pending.tool_errors,
             rounds: pending.tool_rounds,
         },
-        plugin_registry: pending.plugin_registry.clone(),
+        plugin_registry: super::tool_exec::end_hook_registry(&pending)?,
         session_dir: pending
             .events_path
             .parent()
@@ -995,6 +1033,12 @@ async fn prepare(
     Ok(None)
 }
 
+fn can_run_during_job_review(pending: &PendingRun, tool: &str) -> bool {
+    matches!(tool, "wait_job" | "cancel_job" | "run_js")
+        || !pending.query.tool_adapters.contains_key(tool)
+            && find_tool_definition(pending, tool).is_some_and(|definition| definition.read_only)
+}
+
 fn mark_dispatched(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> {
     let execution = pending
         .query
@@ -1006,6 +1050,7 @@ fn mark_dispatched(pending: &PendingRun, queued: &QueuedToolCall) -> Result<()> 
         pending.turn,
         &queued.tool_call.id,
         &queued.tool_call.name,
+        can_run_during_job_review(pending, &queued.tool_call.name),
     )
 }
 

@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Version injection at build time (`kuku --version`)
 - Makefile with build-web, build, build-all targets
 
+## [0.1.0-alpha.9]
+
+### Bug 修复
+
+- 取消后台 Job 时，如果清理结果未确认，待发区会指出是哪一个 Job，并保留你的消息。其他已经启动的 Job 仍能返回自己的结果。
+- 可从待发区查看 Job 详情和已保存的输出，检查后明确继续。重新打开 TUI 仍可看到相同的复核状态。只有输出不完整且进程清理已确认时，队列照常推进。
+
 ## [0.1.0-alpha.8]
 
 这版修复了打断后会话卡住、已排队消息不知道该如何继续的问题，也改善了 OpenRouter 的思考显示和大文件阅读。

@@ -416,6 +416,7 @@ export function Session({ target, workspacePanel }: { target: Target; workspaceP
         )}
         <Composer
           agent={agent}
+          jobNeedingReview={snapshot?.agent.job_cleanup_reviews?.[0]}
           busy={busy}
           value={draft}
           onChange={(text) => {

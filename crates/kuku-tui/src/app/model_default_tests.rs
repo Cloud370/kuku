@@ -64,6 +64,7 @@ fn snapshot(selection: AgentSelection, pending_selection: Option<AgentSelection>
         last_output: None,
         last_error: None,
         resume_blocked: false,
+        job_cleanup_reviews: Vec::new(),
         permission: None,
         question: None,
         usage: UsageTotals::default(),

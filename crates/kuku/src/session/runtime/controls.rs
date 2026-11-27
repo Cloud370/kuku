@@ -425,6 +425,11 @@ impl Session {
         command: Option<Command>,
     ) -> Result<()> {
         let agent = state.agent(address)?;
+        if command.is_some()
+            && let Some(job_id) = agent.snapshot.job_needing_review()
+        {
+            return Err(Error::JobCleanupReviewRequired(job_id.to_owned()));
+        }
         let paused = matches!(
             agent.snapshot.status,
             AgentStatus::Stopped | AgentStatus::Interrupted

@@ -80,6 +80,9 @@ pub(crate) enum Command {
     Compact,
     RestoreContext,
     Advance,
+    ReviewJobCleanup {
+        job_id: String,
+    },
     Cancel {
         execution_id: u64,
     },

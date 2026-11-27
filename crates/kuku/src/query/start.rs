@@ -386,7 +386,7 @@ impl Query {
 
         if let (None, Some(plugin_reg)) = (&resumed_permission, &plugin_registry_opt) {
             let hooks = plugin_reg.hooks_for(crate::plugin::HookEvent::SessionStart);
-            if !hooks.is_empty() {
+            if !hooks.is_empty() && super::tool_exec::runtime_hooks_allowed(&self)? {
                 let input = crate::plugin::executor::HookInput {
                     event: "session.start".to_string(),
                     session_dir: events_path.parent().unwrap().to_string_lossy().to_string(),

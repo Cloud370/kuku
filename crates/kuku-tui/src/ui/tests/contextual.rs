@@ -1005,3 +1005,52 @@ fn failed_configure_and_other_saved_action_open_recovery_without_a_send() {
         Some(Modal::Picker(picker)) if matches!(picker.kind, PickerKind::Pending)
     ));
 }
+
+#[test]
+fn job_review_opens_exact_job_and_requires_explicit_confirmation() {
+    let mut app = app();
+    load_snapshot(&mut app, "idle", true);
+    app.pane_mut()
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .agent
+        .job_cleanup_reviews
+        .push("job-121".into());
+
+    let view = screen(&mut app, 90, 24);
+    assert!(
+        view.contains("1 saved · Cleanup unconfirmed · Review job-121"),
+        "{view}"
+    );
+    assert!(view.contains("Enter queue only"), "{view}");
+    key(&mut app, KeyCode::F(2), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(app.effects.last(), Some(Job::InspectBackground(_, id)) if id == "job-121"));
+
+    let job = serde_json::from_value(json!({
+        "id": "job-121", "agent": "main", "turn": 49, "tool_call_id":"fixture",
+        "tool": "run_command", "status": "interrupted", "summary": "process stopped",
+        "started_at": 50, "finished_at": 52, "output_id": null,
+        "result": {"status":"cancelled","summary":"process stopped", "structured":null,
+            "truncated":false, "output_persistence_failed":false, "cleanup_incomplete":true}
+    }))
+    .unwrap();
+    app.update(Update::BackgroundJobInspected(app.selection(), Ok(job)));
+    let detail = screen(&mut app, 90, 24);
+    assert!(detail.contains("Cleanup unconfirmed"), "{detail}");
+    assert!(detail.contains("Review cleanup"), "{detail}");
+
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!app.effects.iter().any(|job| matches!(job, Job::Save(_))));
+    let confirm = screen(&mut app, 90, 24);
+    assert!(
+        confirm.contains("Keep paused") && confirm.contains("Continue after review"),
+        "{confirm}"
+    );
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.effects.iter().any(|job| matches!(job,
+        Job::Save(command) if matches!(&command.action, Action::ReviewJobCleanup { job_id } if job_id == "job-121")
+    )));
+}

@@ -1123,6 +1123,11 @@ impl App {
                 }
             }
             Action::Compact | Action::RestoreContext => {}
+            Action::ReviewJobCleanup { job_id } => {
+                if active {
+                    self.confirmation(format!("{job_id} cleanup reviewed"));
+                }
+            }
             Action::Advance => {
                 if active && !self.notice.as_ref().is_some_and(|notice| notice.error) {
                     self.confirmation("Continue request received");
